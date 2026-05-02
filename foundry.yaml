@@ -55,6 +55,6 @@ molds:
 
   - name: plugin-to-mold
     source: github.com/kriscoleman/plugin-to-mold
-    description: "Scaffolds a multi-target ailloy mold from a Claude Code plugin"
-    tags: ["ailloy-mold", "scaffolding", "claude", "opencode", "converter"]
-    version: "v0.1.0"
+    description: "Conversion toolkit: skills and agent that automate converting Claude Code plugins to multi-target ailloy molds"
+    tags: ["ailloy-mold", "conversion", "claude", "opencode", "toolkit", "foundry"]
+    version: "v1.0.0"
