@@ -1,0 +1,4 @@
+- name: agent.targets
+  type: list
+  description: "AI agents to generate configuration for (con-voyage is Claude Code / Gas Town specific)"
+  default: "[claude]"

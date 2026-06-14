@@ -1,32 +1,50 @@
-# Nimble Foundry
+# Kris Coleman's Foundry
 
-The official [Ailloy](https://github.com/nimble-giant/ailloy) foundry index by [Nimble Giant](https://github.com/nimble-giant).
+An [Ailloy](https://github.com/nimble-giant/ailloy) foundry of Gas Town and Claude Code workflow molds.
 
-## What is a Foundry Index?
+This repo is both a **foundry index** (a catalog for mold discovery) and a **monorepo** that holds the molds themselves under `molds/`.
 
-A foundry index is a YAML catalog of Ailloy molds that enables SCM-agnostic mold discovery.
-Users can register this foundry with:
+## Register and use
 
-```bash
-ailloy foundry add https://github.com/nimble-giant/foundry
-```
-
-Then search for molds across all registered foundries:
+Register this foundry with ailloy:
 
 ```bash
-ailloy foundry search <query>
+ailloy foundry add https://github.com/kriscoleman/foundry
 ```
 
-Molds from this official foundry are displayed with a **verified** badge in search results.
+Search across registered foundries:
+
+```bash
+ailloy foundry search con-voyage
+```
+
+Or cast a mold directly:
+
+```bash
+ailloy cast github.com/kriscoleman/foundry//molds/con-voyage
+```
 
 ## Molds
 
 | Name | Description |
 |------|-------------|
-| [nimble-mold](https://github.com/nimble-giant/nimble-mold) | Distributable, reusable, and agnostic AI instruction blanks for common SDLC workflows |
+| [con-voyage](molds/con-voyage) | Gas Town orchestration: deliver an issue with a polecat team through implementation, code/security review, CI, and human-review loops — and never merge until a human does. Claude Code / Gas Town specific. |
 
-## Adding Molds
+## Developing
 
-To submit a mold for inclusion in the official index, open a pull request adding your mold to `foundry.yaml`.
+Molds live in `molds/<name>/`. Local checks (auto-installs ailloy if missing):
+
+```bash
+make test        # temper (structure) + assay (instruction quality) + markdown link check
+make cast-test   # test-cast every mold into a temp dir
+```
+
+CI runs the same validation on every PR via `.github/workflows/mold-validate.yml`.
+
+## Adding a mold
+
+1. Create `molds/<name>/` with `mold.yaml`, `flux.yaml`, `flux.schema.yaml`, and your content (`skills/`, `agents/`, `commands/`).
+2. Add the mold to `foundry.yaml`.
+3. Run `make test` and `make cast-test`.
 
 See the [foundry documentation](https://github.com/nimble-giant/ailloy/blob/main/docs/foundry.md) for the full schema reference.

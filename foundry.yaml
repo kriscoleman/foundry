@@ -1,12 +1,12 @@
 apiVersion: v1
 kind: foundry-index
-name: nimble-foundry
-description: "Official Ailloy foundry index by Nimble Giant"
+name: kriscoleman-foundry
+description: "Kris Coleman's Ailloy foundry — Gas Town and Claude Code workflow molds"
 author:
-  name: Nimble Giant
-  url: https://github.com/nimble-giant
+  name: Kris Coleman
+  url: https://github.com/kriscoleman
 molds:
-  - name: nimble-mold
-    source: github.com/nimble-giant/nimble-mold
-    description: "Distributable, reusable, and agnostic AI instruction blanks for common SDLC workflows"
-    tags: ["ailloy-mold", "workflows", "claude", "sdlc"]
+  - name: con-voyage
+    source: github.com/kriscoleman/foundry//molds/con-voyage
+    description: "Gas Town orchestration: deliver an issue with a polecat team through review, CI, and human feedback loops until a human merges."
+    tags: ["ailloy-mold", "gas-town", "claude", "orchestration", "workflows"]
