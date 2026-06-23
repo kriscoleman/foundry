@@ -1,0 +1,52 @@
+name: Mold Validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ailloy
+        uses: nimble-giant/ailloy-action@main
+        with:
+          version: v0.6.34
+
+      - name: Validate mold structure
+        run: |
+          errors=0
+          for mold_yaml in molds/*/mold.yaml; do
+            mold_dir=$(dirname "$mold_yaml")
+            mold_name=$(basename "$mold_dir")
+            echo "==> ailloy temper $mold_dir"
+            ailloy temper "$mold_dir" || errors=$((errors+1))
+          done
+          if [ "$errors" -gt 0 ]; then
+            echo "FAIL: $errors mold(s) failed validation."
+            exit 1
+          fi
+
+      - name: Lint AI instruction quality
+        run: |
+          errors=0
+          for mold_yaml in molds/*/mold.yaml; do
+            mold_dir=$(dirname "$mold_yaml")
+            mold_name=$(basename "$mold_dir")
+            echo "==> ailloy assay $mold_dir"
+            ailloy assay --fail-on error "$mold_dir" || errors=$((errors+1))
+          done
+          if [ "$errors" -gt 0 ]; then
+            echo "FAIL: $errors mold(s) failed AI lint."
+            exit 1
+          fi
+
+      - name: Check markdown links
+        run: python3 scripts/check-md-links.py .
