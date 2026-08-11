@@ -10,3 +10,7 @@ molds:
     source: github.com/kriscoleman/foundry//molds/con-voyage
     description: "Gas Town orchestration: deliver an issue with a polecat team through review, CI, and human feedback loops until a human merges."
     tags: ["ailloy-mold", "gas-town", "claude", "orchestration", "workflows"]
+  - name: engineering-planning
+    source: github.com/kriscoleman/foundry//molds/engineering-planning
+    description: "Conversational Agile-Coach planner: interview stakeholders, brainstorm work items, refine them into create-issue-format GitHub issues with epic/sub-issue decomposition, gate on consensus, then create the issues and optionally track them as a Projects iteration."
+    tags: ["ailloy-mold", "claude", "planning", "agile", "github-issues", "workflows"]
