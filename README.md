@@ -29,6 +29,7 @@ ailloy cast github.com/kriscoleman/foundry//molds/con-voyage
 | Name | Description |
 |------|-------------|
 | [con-voyage](molds/con-voyage) | Gas Town orchestration: deliver an issue with a polecat team through implementation, code/security review, CI, and human-review loops — and never merge until a human does. Claude Code / Gas Town specific. |
+| [engineering-planning](molds/engineering-planning) | Conversational Agile-Coach / Scrum-Master facilitator: interview stakeholders, brainstorm work items, refine them into create-issue-format GitHub issues with epic/sub-issue decomposition, gate on explicit consensus, then create the issues via `gh` and optionally track them as a GitHub Projects iteration. |
 
 ## Developing
 
