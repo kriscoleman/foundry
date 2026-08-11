@@ -79,7 +79,7 @@ Title: type(scope): short lowercase imperative description
 - **Acceptance Criteria** — the heart of the issue. Each item testable and observable. If you cannot write a testable criterion, the item is not understood yet — keep interviewing.
 - **Notes** — optional; drop the section entirely when there is nothing to say.
 
-**Epics use a different body shape.** Per the create-issue convention, features/fixes use `## Acceptance Criteria`, but an **epic** issue uses `## Requirements` (the theme's scope) plus a `## Sub-issues` task list of its children. Reserve `## Acceptance Criteria` for the child issues.
+**Epics use a different body shape.** By this mold's convention, features/fixes use `## Acceptance Criteria`, but an **epic** issue uses `## Requirements` (the theme's scope) plus a `## Sub-issues` task list of its children. Reserve `## Acceptance Criteria` for the child issues.
 
 ### Epic vs single issue — decision heuristic
 
@@ -114,7 +114,7 @@ Do **not** create anything until you get an explicit yes. If there are multiple 
 
 On approval, create with `gh`. **Parents before children** so children can reference the real parent number — then **backfill** the epic's sub-issue list once the children exist.
 
-**Shell-safety (do this every time):** pass the issue **body** via a single-quoted heredoc (`<<'EOF'`) so `$(...)`/backticks in stakeholder text are inert. The `--title` value is a double-quoted argv string and is **not** protected — it still undergoes `$()`/backtick expansion. Never build `--title` by interpolating raw stakeholder text: keep the title a literal you authored (a clean `type(scope): description`), free of `$(`, backticks, and `${`. If a title must include untrusted text, sanitize it first or pass it via `--title-file`/stdin under the same discipline as the body.
+**Shell-safety (do this every time):** pass the issue **body** via a single-quoted heredoc (`<<'EOF'`) so `$(...)`/backticks in stakeholder text are inert. The `--title` value is a double-quoted argv string and is **not** protected — it still undergoes `$()`/backtick expansion. Never build `--title` by interpolating raw stakeholder text: keep the title a literal you authored (a clean `type(scope): description`), free of `$(`, backticks, and `${`. `gh issue create` has no title-file or stdin-title path, so there is no safe channel for untrusted title text — if an item's name contains such characters, sanitize it into a clean literal before using it as the title.
 
 ```bash
 # 1. Parent epic first — capture its number. Sub-issues list is a placeholder here.
@@ -143,23 +143,28 @@ EOF
 )")
 ```
 
+Note: inside a single-quoted heredoc (`<<'EOF'`) nothing expands, so `#<epic_num>` is **not** shell substitution — hand-write the real number you captured above (e.g. `Parent epic: #42`) into the body before running the command.
+
 **Link children to the epic** (after all children exist):
 
 - **Preferred — native GitHub sub-issues** via the GraphQL `addSubIssue` mutation (there is no native `gh` sub-issue subcommand). Resolve each issue's node id, then attach:
   ```bash
+  # -f passes String! vars (owner/repo) as strings; -F type-infers, so an all-numeric
+  # repo/owner name (e.g. a repo named "2024") would be sent as an Int and rejected.
+  # Use -F only for the Int! variable (n).
   parent_id=$(gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){issue(number:$n){id}}}' \
-    -F o=<owner> -F r=<repo> -F n=$epic_num --jq '.data.repository.issue.id')
+    -f o=<owner> -f r=<repo> -F n=$epic_num --jq '.data.repository.issue.id')
   child_id=$(gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){issue(number:$n){id}}}' \
-    -F o=<owner> -F r=<repo> -F n=<child_num> --jq '.data.repository.issue.id')
+    -f o=<owner> -f r=<repo> -F n=<child_num> --jq '.data.repository.issue.id')
   gh api graphql -f query='mutation($p:ID!,$c:ID!){addSubIssue(input:{issueId:$p,subIssueId:$c}){issue{number}}}' \
     -F p="$parent_id" -F c="$child_id"
   ```
-- **Fallback — task list** if the sub-issue API is unavailable: **backfill** the epic body with the real child numbers so GitHub renders them as tracked sub-issues. (Keep the heredoc at column 0 — an indented `EOF` won't close it.)
+- **Fallback — task list** if the sub-issue API is unavailable: **backfill** the epic body with the real child numbers so GitHub renders them as tracked sub-issues. **`gh issue edit --body` replaces the entire body** (it does not append), so you must re-supply the complete original `## Requirements` text alongside the new `## Sub-issues` list — otherwise the Requirements section is clobbered. (Keep the heredoc at column 0 — an indented `EOF` won't close it.)
 
 ```bash
 gh issue edit $epic_num --repo <owner/repo> --body "$(cat <<'EOF'
 ## Requirements
-<unchanged>
+<paste the epic's original Requirements text here verbatim — --body overwrites, it does not merge>
 
 ## Sub-issues
 - [ ] #<child_num_1>
