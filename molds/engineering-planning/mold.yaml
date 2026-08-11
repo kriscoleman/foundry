@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: mold
+name: engineering-planning
+version: 0.1.0
+description: >-
+  Engineering planning — a conversational Agile-Coach / Scrum-Master facilitator
+  that interviews stakeholders to turn loosely-defined work into well-formed
+  GitHub issues: brainstorm work items, refine each into create-issue detail with
+  epic/sub-issue decomposition, gate on explicit consensus, then create the issues
+  and optionally track them as a GitHub Projects iteration.
+author:
+  name: Kris Coleman
+  url: https://github.com/kriscoleman
+requires:
+  ailloy: ">=0.6.17"

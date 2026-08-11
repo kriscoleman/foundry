@@ -1,0 +1,6 @@
+assay:
+  rules:
+    agents-md-presence:
+      enabled: false
+    import-validation:
+      enabled: true

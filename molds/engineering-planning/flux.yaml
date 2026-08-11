@@ -1,0 +1,7 @@
+agent:
+  targets:
+    - claude
+
+output:
+  skills:
+    dest: .claude/skills
