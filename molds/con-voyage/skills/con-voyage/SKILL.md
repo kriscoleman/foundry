@@ -15,20 +15,23 @@ A con-voyage is a **Gas Town** operation. It runs on `gt sling` / `gt convoy` / 
 
 **If the target repo is not a rig yet, create one — do not bypass the idioms because "it's not a rig."**
 
+One consistent recipe — the rig name, the beads database, and the `--database`
+value are all the same `<rig>`; `<p>` is the issue prefix:
+
 ```bash
 # Register the repo as a rig. Use the SSH remote (git@github.com:<org>/<repo>.git)
 # when the local gh token lacks the `workflow` scope, or polecats can't push.
-gt rig add <name> git@github.com:<org>/<repo>.git --prefix <p>
-gt rig boot <name>
+gt rig add <rig> git@github.com:<org>/<repo>.git --prefix <p>
+gt rig boot <rig>
 
 # If beads reports "issue_prefix missing", initialise beads in SERVER mode against
-# the shared Dolt server. Do NOT flip to embedded mode.
-bd init --prefix <p> --server --server-host 127.0.0.1 --server-port 3307 --database <rig> --force
+# the shared Dolt server. The --database is the rig name. Do NOT flip to embedded mode.
+bd init --prefix <p> --database <rig> --server --server-host 127.0.0.1 --server-port 3307 --force
 ```
 
 ## Review lenses: the persona roster
 
-The review panel is a **configurable roster of lenses**, not a fixed code+security pair. Each lens is a review persona whose charter comes from the **`con-voyage-personas` mold** (cast it alongside this one). Available lenses:
+The review panel is a **configurable roster of lenses**, not a fixed code+security pair. Each lens is a review persona whose charter comes from the **`con-voyage-personas` mold**, which this mold declares as a dependency (`mold.yaml`) — casting con-voyage pulls the personas automatically. Available lenses:
 
 | Lens | Reviews for |
 |---|---|
@@ -41,13 +44,16 @@ The review panel is a **configurable roster of lenses**, not a fixed code+securi
 
 **Pick the lenses that fit the change** — not every change needs every lens. A library refactor might be principal-engineer + janitor; a customer-facing feature pulls in product-owner + dev-ex + security. The **native-language principal engineer and security lenses are the default floor** for any code change. Record the chosen roster on the convoy so every review cycle re-runs the same set.
 
+- **Native-language lens coverage.** The code lens ships as concrete personas for **Go and frontend** today. For any other language, fall back to con-voyage's inline code-reviewer charter (Phase 2), parameterised with the language — the persona mold is additive, never a hard gate on languages it doesn't cover yet.
+- **Dev-ex vs product-owner** — they overlap but aren't the same call. Add **dev-ex** when the change has deep *adoption mechanics* (APIs, config, extension points a developer must wire up). Add **product-owner** for the *appetite* question, the *two audiences* (buyer + their customers), and *docs*. A public-facing SDK feature usually wants both.
+
 ## Agent identity on every PR comment
 
 Any comment an agent posts to the PR — a reviewer posting findings, the monitor posting status, or YOU posting reviews for posterity — MUST lead with a bold identity prefix:
 
 **`[<rig>/<agent> — <lens>]`**  → e.g. `**[foundry/polecat-3 — security]**`
 
-This lets a human tell which agent spoke and, crucially, distinguish agent comments from the human's own (unprefixed) comments. A human's comments are never prefixed; that asymmetry is the signal. Bake this line into every reviewer and monitor charter, and use it for the Phase-3 posterity comments.
+This lets a human tell which agent spoke and, crucially, distinguish agent comments from the human's own (unprefixed) comments. A human's comments are never prefixed; that asymmetry is the signal. The persona charters in the `con-voyage-personas` mold stay generic (reusable across rigs) — **YOU, the orchestrator, inject the concrete `[<rig>/<agent> — <lens>]` prefix into each charter at sling time**, and use it for the Phase-3 posterity comments you post yourself.
 
 ## Usage
 
@@ -55,8 +61,10 @@ This lets a human tell which agent spoke and, crucially, distinguish agent comme
 /con-voyage <issue-number|issue-url|bead-id|"task description"> <rig> [--lenses <lens,lens,...>] [--no-pr-comments]
 ```
 
-- `--lenses <list>` — override the review roster (see the persona roster above); default is auto-selected from the change, with the native-language + security lenses as the floor
+- `--lenses <list>` — override the review roster (see the persona roster above). Auto-selection from the change is **best-effort**; the native-language + security **floor is always applied** regardless of `--lenses`, so you can never accidentally ship past code or security review.
 - `--no-pr-comments` — suppress reviewers posting their final reviews on the PR (default: they post for posterity)
+
+**Prerequisites:** the non-floor review lenses come from the **`con-voyage-personas` mold**, declared as a dependency in `mold.yaml` — `ailloy cast` pulls it automatically. The code + security **floor charters are inline in this skill**, so a con-voyage still runs (floor-only) even if the personas mold is unavailable.
 
 ## The Journey
 
@@ -146,11 +154,35 @@ You must not commit, push, or modify any code. If you post anything to the PR, l
 EOF
 ```
 
+**Adding any other lens — use this one reusable block** so hand-adding a lens can never drop the reporting-or-identity contract. Fill the three placeholders (`<lens>`, `<lens-focus>`, and paste the persona charter body from the `con-voyage-personas` mold); the reporting + identity lines are pre-filled and must stay verbatim. The floor lenses above keep their explicit blocks; everything else goes through this template:
+
+```bash
+bd create --title="<lens> review: <title>" --description="<lens> review of branch <branch> diff vs main for <work-bead>" --type=task
+gt convoy add <convoy-id> <lens-review-bead>
+
+gt sling <lens-review-bead> <rig> --review-only --stdin <<'EOF'
+You are the <lens> reviewer for this con-voyage. Review the diff of branch <branch> against main.
+<lens-focus — paste the persona charter body from the con-voyage-personas mold for this lens>
+Report by mail to <orchestrator>, subject "REVIEW <lens-review-bead>":
+- Verdict: PASS or CHANGES REQUIRED
+- Each finding tagged BLOCKING or LOW, with file:line and a concrete fix suggestion.
+You must not commit, push, or modify any code. If you post anything to the PR, lead the comment with `[<rig>/<you> — <lens>]`.
+EOF
+```
+
+The persona charters ship generic; **you inject the concrete `[<rig>/<you> — <lens>]` identity prefix here at sling time.**
+
 **Product-owner lens (first-class).** When the change is customer-facing, the product-owner lens is not optional. Its charter must cover:
 - **Appetite / worth-it:** is this change worth what it costs, and right-sized for the problem?
 - **Usability for BOTH audiences:** the vendor/buyer who operates it AND their end customers who feel it.
 - **UX / DevEx:** flows, defaults, error messages, and docs discoverability.
-- **Holistic docs:** the feature is not shippable without docs. Require a **matching downstream docs PR** (e.g. product docs) opened in **draft**, tracked as a convoy bead, and merged in **lockstep** when the feature PR merges. "Docs PR missing" is a BLOCKING product-owner finding.
+- **Holistic docs:** the feature is not shippable without docs. Require a **matching downstream docs PR** — and "Docs PR missing" is a BLOCKING product-owner finding.
+
+**Lockstep-docs recipe (how the matching docs PR is actually run).** The docs PR is its **own con-voyage in the docs repo's rig** — not a side task bolted onto this one:
+1. If the docs repo isn't a rig yet, `gt rig add <docs-rig> …` / `gt rig boot` it (same bootstrap recipe as above).
+2. Run it as its own con-voyage: its own work bead and convoy, its own implementor, reviewed with the doc-appropriate lenses (product-owner + native-language/prose).
+3. Open the docs PR in **draft**, and **cross-link** it to the feature PR (each PR body references the other) so a human sees the pair.
+4. **Merge in lockstep:** the docs PR leaves draft and merges together with the feature PR — neither lands alone. (Real example: `replicated-docs#4431` matching `reusable-workflows#23`.)
 
 **Loop rules — apply exactly. Finding tags are authoritative; verdicts are summaries (if they disagree, follow the tags):**
 - **Any BLOCKING finding (from any reviewer)** → consolidate ALL findings from every reviewer (including LOWs from a passing review) into one mail to the implementor, `gt nudge` it, wait for "FIXES PUSHED" → **re-sling ALL review beads against the new diff**. A fix can introduce a new defect in any dimension; a review of stale code proves nothing.
