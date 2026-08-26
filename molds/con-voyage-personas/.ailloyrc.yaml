@@ -1,0 +1,4 @@
+assay:
+  rules:
+    agents-md-presence:
+      enabled: false

@@ -1,0 +1,9 @@
+{{- if and (eq .agent.current_target "opencode") (has "opencode" .agent.targets) -}}
+{
+  "agent": {
+    "product-owner": {
+      "prompt": "{file:.opencode/agents/product-owner.md}"
+    }
+  }
+}
+{{- end -}}

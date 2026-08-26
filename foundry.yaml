@@ -14,3 +14,35 @@ molds:
     source: github.com/kriscoleman/foundry//molds/engineering-planning
     description: "Conversational Agile-Coach planner: interview stakeholders, brainstorm work items, refine them into create-issue-format GitHub issues with epic/sub-issue decomposition, gate on consensus, then create the issues and optionally track them as a Projects iteration."
     tags: ["ailloy-mold", "claude", "planning", "agile", "github-issues", "workflows"]
+  - name: con-voyage-personas
+    source: github.com/kriscoleman/foundry//molds/con-voyage-personas
+    description: "The con-voyage review crew in one cast — aggregate mold pulling in all seven reusable reviewer/engineering persona molds (founder/CTO, product owner, Go and frontend principal engineers, security reviewer, standards janitor, dev-ex reviewer)."
+    tags: ["ailloy-mold", "claude", "opencode", "agents", "review", "personas", "con-voyage"]
+  - name: founder-cto
+    source: github.com/kriscoleman/foundry//molds/founder-cto
+    description: "Founder/CTO strategic lens agent: executive ship/no-ship judgment on a change or proposal — vision fit, business risk, ROI, opportunity cost. Con-voyage reviewer or standalone advisor."
+    tags: ["ailloy-mold", "claude", "opencode", "agents", "review", "personas", "con-voyage"]
+  - name: product-owner
+    source: github.com/kriscoleman/foundry//molds/product-owner
+    description: "Product-owner appetite-and-worth-it lens agent: usability for the buyer and their customers, UX/DevEx, and holistic docs coverage. Con-voyage reviewer or standalone advisor."
+    tags: ["ailloy-mold", "claude", "opencode", "agents", "review", "personas", "con-voyage"]
+  - name: go-principal-engineer
+    source: github.com/kriscoleman/foundry//molds/go-principal-engineer
+    description: "Principal Go engineer lens agent: idioms, fail-loud wrapped error handling, safe concurrency, test quality, SOLID/DRY/KISS/YAGNI. Con-voyage code reviewer or standalone Go engineer."
+    tags: ["ailloy-mold", "claude", "opencode", "agents", "review", "personas", "con-voyage", "go"]
+  - name: frontend-principal-engineer
+    source: github.com/kriscoleman/foundry//molds/frontend-principal-engineer
+    description: "Principal frontend engineer lens agent: accessibility, component/state design, performance, design-system fit. Con-voyage code reviewer or standalone frontend engineer."
+    tags: ["ailloy-mold", "claude", "opencode", "agents", "review", "personas", "con-voyage", "frontend"]
+  - name: security-reviewer
+    source: github.com/kriscoleman/foundry//molds/security-reviewer
+    description: "Application security lens agent: injection, authn/authz, secret handling, supply-chain, least-privilege, input validation. Con-voyage security reviewer or standalone auditor."
+    tags: ["ailloy-mold", "claude", "opencode", "agents", "review", "personas", "con-voyage", "security"]
+  - name: standards-janitor
+    source: github.com/kriscoleman/foundry//molds/standards-janitor
+    description: "Standards and consistency lens agent: conventions/naming, lint/format, dead code, DRY across the diff, docs hygiene. Con-voyage reviewer or standalone standards pass."
+    tags: ["ailloy-mold", "claude", "opencode", "agents", "review", "personas", "con-voyage"]
+  - name: dev-ex-reviewer
+    source: github.com/kriscoleman/foundry//molds/dev-ex-reviewer
+    description: "Developer-experience adoption lens agent: error messages, sane defaults, discoverability, copy-paste onboarding. Con-voyage reviewer or standalone DevEx critique."
+    tags: ["ailloy-mold", "claude", "opencode", "agents", "review", "personas", "con-voyage", "devex"]

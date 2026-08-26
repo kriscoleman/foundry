@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: mold
+name: con-voyage-personas
+version: 0.1.0
+description: >-
+  The con-voyage review crew in one cast — reusable specialized reviewer and
+  engineering personas (founder/CTO, product owner, Go and frontend principal
+  engineers, security reviewer, standards janitor, dev-ex reviewer). Aggregate
+  mold: holds no content of its own, just pulls in each persona mold.
+author:
+  name: Kris Coleman
+  url: https://github.com/kriscoleman
+requires:
+  ailloy: ">=0.6.33"
+
+dependencies:
+  - mold: github.com/kriscoleman/foundry//molds/founder-cto
+    version: "^0.1.0"
+  - mold: github.com/kriscoleman/foundry//molds/product-owner
+    version: "^0.1.0"
+  - mold: github.com/kriscoleman/foundry//molds/go-principal-engineer
+    version: "^0.1.0"
+  - mold: github.com/kriscoleman/foundry//molds/frontend-principal-engineer
+    version: "^0.1.0"
+  - mold: github.com/kriscoleman/foundry//molds/security-reviewer
+    version: "^0.1.0"
+  - mold: github.com/kriscoleman/foundry//molds/standards-janitor
+    version: "^0.1.0"
+  - mold: github.com/kriscoleman/foundry//molds/dev-ex-reviewer
+    version: "^0.1.0"

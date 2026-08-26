@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: mold
+name: dev-ex-reviewer
+version: 0.1.0
+description: >-
+  Developer-experience adoption lens. Use when judging how easy a change is to adopt — error-message quality, sane defaults, discoverability, and copy-paste onboarding — as a con-voyage reviewer or standalone DevEx critique.
+author:
+  name: Kris Coleman
+  url: https://github.com/kriscoleman
+requires:
+  ailloy: ">=0.6.17"

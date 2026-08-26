@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: mold
+name: frontend-principal-engineer
+version: 0.1.0
+description: >-
+  Principal frontend engineer lens. Use when reviewing or building UI for accessibility, component/state design, performance, and design-system fit — as a con-voyage code reviewer or standalone frontend engineer.
+author:
+  name: Kris Coleman
+  url: https://github.com/kriscoleman
+requires:
+  ailloy: ">=0.6.17"
