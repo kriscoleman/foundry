@@ -16,7 +16,12 @@ temper: deps
 	@errors=0; \
 	for m in $(MOLDS); do \
 		if grep -q '^dependencies:' molds/$$m/mold.yaml; then \
-			echo "==> skipping molds/$$m (dependency-only aggregate — validated at release)"; \
+			if [ -d molds/$$m/agents ]; then \
+				echo "FAIL: molds/$$m declares dependencies AND ships an agents/ dir — a dependency-only aggregate must not ship its own content."; \
+				errors=$$((errors+1)); \
+				continue; \
+			fi; \
+			echo "==> skipping molds/$$m (dependency-only aggregate — resolves deps from published tags at release)"; \
 			continue; \
 		fi; \
 		echo "==> ailloy temper molds/$$m"; \
@@ -52,7 +57,12 @@ cast-test: deps
 	@errors=0; \
 	for m in $(MOLDS); do \
 		if grep -q '^dependencies:' molds/$$m/mold.yaml; then \
-			echo "==> skipping molds/$$m (dependency-only aggregate — casts from published deps at release)"; \
+			if [ -d molds/$$m/agents ]; then \
+				echo "FAIL: molds/$$m declares dependencies AND ships an agents/ dir — a dependency-only aggregate must not ship its own content."; \
+				errors=$$((errors+1)); \
+				continue; \
+			fi; \
+			echo "==> skipping molds/$$m (dependency-only aggregate — resolves deps from published tags at release)"; \
 			continue; \
 		fi; \
 		dest=$$(mktemp -d); \

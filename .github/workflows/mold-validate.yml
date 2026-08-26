@@ -29,8 +29,16 @@ jobs:
             # Dependency-only aggregate molds resolve their deps from published
             # semver tags, which don't exist until release. They're validated via
             # smelt at release — skip temper here (its deps won't resolve pre-publish).
+            # Only skip a TRUE aggregate: it must ship no content of its own. A mold
+            # that declares dependencies AND ships an agents/ dir is a latent coverage
+            # hole (its own content would go unvalidated) — fail loudly instead.
             if grep -q '^dependencies:' "$mold_yaml"; then
-              echo "==> skipping $mold_dir (dependency-only aggregate — validated at release)"
+              if [ -d "$mold_dir/agents" ]; then
+                echo "FAIL: $mold_dir declares dependencies AND ships an agents/ dir — a dependency-only aggregate must not ship its own content."
+                errors=$((errors+1))
+                continue
+              fi
+              echo "==> skipping $mold_dir (dependency-only aggregate — resolves deps from published tags at release)"
               continue
             fi
             echo "==> ailloy temper $mold_dir"
