@@ -17,11 +17,17 @@ Hardened orchestration practices validated in live convoys folded into the
 - **Persona-based review roster.** Generalised the fixed code+security pair into
   a configurable roster of review lenses sourced from the `con-voyage-personas`
   mold (native-language principal engineer, security, dev-ex, founder/CTO,
-  product owner, standards/best-practices janitor). Added `--lenses`. Loop rules
-  preserved exactly, generalised from BOTH reviewers to ALL reviewers.
+  product owner, standards/best-practices janitor), now declared as a **mold
+  dependency** in `mold.yaml` so casting con-voyage pulls the personas. The
+  code+security floor charters stay inline for graceful degradation. Added a
+  reusable sling template for hand-added lenses, `--lenses` (floor always
+  applied), and a `Prerequisites` note. Loop rules preserved exactly,
+  generalised from BOTH reviewers to ALL reviewers.
 - **Product-owner lens as first-class**, covering appetite/worth-it, usability
   for the vendor/buyer AND their customers, UX/DevEx, and holistic docs —
-  requiring a matching downstream docs PR opened in draft to merge in lockstep.
+  requiring a matching downstream docs PR opened in draft to merge in lockstep,
+  with the lockstep-docs recipe codified (the docs PR is its own con-voyage in
+  the docs repo's rig, cross-linked and merged alongside the feature PR).
 - Preserved all prior guidance: `--merge=local` (do not pass `--no-convoy`), the
   never-`gt done` warnings, re-sling mechanics (`bd reopen` + `--force`), and the
   defense-in-depth witness standing order.
