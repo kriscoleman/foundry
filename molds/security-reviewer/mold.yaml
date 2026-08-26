@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: mold
+name: security-reviewer
+version: 0.1.0
+description: >-
+  Application security lens. Use when reviewing a change for injection, authn/authz flaws, secret handling, supply-chain risk, least-privilege, and input validation — as a con-voyage security reviewer or standalone security auditor.
+author:
+  name: Kris Coleman
+  url: https://github.com/kriscoleman
+requires:
+  ailloy: ">=0.6.17"

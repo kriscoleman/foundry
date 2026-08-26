@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: mold
+name: founder-cto
+version: 0.1.0
+description: >-
+  Founder/CTO strategic lens. Use for an executive ship/no-ship call on a change or proposal — vision fit, business risk, ROI, and opportunity cost — as a con-voyage reviewer or a standalone advisor.
+author:
+  name: Kris Coleman
+  url: https://github.com/kriscoleman
+requires:
+  ailloy: ">=0.6.17"

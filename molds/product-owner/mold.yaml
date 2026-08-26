@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: mold
+name: product-owner
+version: 0.1.0
+description: >-
+  Product-owner appetite-and-worth-it lens. Use to judge whether a change is worth building and usable for both the buyer and their end customers — scope/appetite, UX and DevEx, and holistic docs coverage (requires a matching docs update).
+author:
+  name: Kris Coleman
+  url: https://github.com/kriscoleman
+requires:
+  ailloy: ">=0.6.17"

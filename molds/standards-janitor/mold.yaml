@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: mold
+name: standards-janitor
+version: 0.1.0
+description: >-
+  Standards and consistency lens. Use when checking a change for convention/naming consistency, lint/format cleanliness, dead code, DRY across the diff, and docs hygiene — as a con-voyage reviewer or standalone standards pass.
+author:
+  name: Kris Coleman
+  url: https://github.com/kriscoleman
+requires:
+  ailloy: ">=0.6.17"

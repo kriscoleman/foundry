@@ -15,6 +15,10 @@ lint: check-links temper assay
 temper: deps
 	@errors=0; \
 	for m in $(MOLDS); do \
+		if grep -q '^dependencies:' molds/$$m/mold.yaml; then \
+			echo "==> skipping molds/$$m (dependency-only aggregate — validated at release)"; \
+			continue; \
+		fi; \
 		echo "==> ailloy temper molds/$$m"; \
 		ailloy temper molds/$$m || errors=$$((errors+1)); \
 	done; \
@@ -47,6 +51,10 @@ deps:
 cast-test: deps
 	@errors=0; \
 	for m in $(MOLDS); do \
+		if grep -q '^dependencies:' molds/$$m/mold.yaml; then \
+			echo "==> skipping molds/$$m (dependency-only aggregate — casts from published deps at release)"; \
+			continue; \
+		fi; \
 		dest=$$(mktemp -d); \
 		echo "==> casting molds/$$m into $$dest"; \
 		(cd "$$dest" && ailloy cast $(CURDIR)/molds/$$m 2>&1) | tail -1; \

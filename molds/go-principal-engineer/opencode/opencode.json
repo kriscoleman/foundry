@@ -1,0 +1,9 @@
+{{- if and (eq .agent.current_target "opencode") (has "opencode" .agent.targets) -}}
+{
+  "agent": {
+    "go-principal-engineer": {
+      "prompt": "{file:.opencode/agents/go-principal-engineer.md}"
+    }
+  }
+}
+{{- end -}}

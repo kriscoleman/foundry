@@ -26,6 +26,13 @@ jobs:
           for mold_yaml in molds/*/mold.yaml; do
             mold_dir=$(dirname "$mold_yaml")
             mold_name=$(basename "$mold_dir")
+            # Dependency-only aggregate molds resolve their deps from published
+            # semver tags, which don't exist until release. They're validated via
+            # smelt at release — skip temper here (its deps won't resolve pre-publish).
+            if grep -q '^dependencies:' "$mold_yaml"; then
+              echo "==> skipping $mold_dir (dependency-only aggregate — validated at release)"
+              continue
+            fi
             echo "==> ailloy temper $mold_dir"
             ailloy temper "$mold_dir" || errors=$((errors+1))
           done
