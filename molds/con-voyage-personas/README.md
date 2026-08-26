@@ -20,6 +20,17 @@ con-voyage.
 | [`standards-janitor`](../standards-janitor) | Conventions/naming, lint/format, dead code, DRY across the diff, docs hygiene. |
 | [`dev-ex-reviewer`](../dev-ex-reviewer) | Adoption ease, error messages, sane defaults, discoverability, copy-paste onboarding. |
 
+> **Code lens coverage:** the language-engineering lens ships as `go-principal-engineer`
+> and `frontend-principal-engineer` today. For code in other languages, con-voyage
+> falls back to its own inline code-reviewer charter — add a language-specific persona
+> here when one is needed.
+
+> **`product-owner` vs `dev-ex-reviewer`:** both look at experience, but from
+> different seats. Use **`product-owner`** for *whether the change is worth it and
+> lands for the buyer and their customers* — appetite, value, holistic docs. Use
+> **`dev-ex-reviewer`** for *whether a developer can actually adopt it* — error
+> messages, sane defaults, discoverability, copy-paste onboarding.
+
 ## Install with ailloy
 
 ```bash
@@ -48,5 +59,7 @@ cast with `agent.targets`, e.g. `--set 'agent.targets=[claude]'`.
 
 ## Requirements
 
-- [ailloy](https://github.com/nimble-giant/ailloy) v0.6.33+ (dependency
-  resolution).
+- [ailloy](https://github.com/nimble-giant/ailloy) v0.6.33+ — higher than the
+  personas' own v0.6.17+ floor because **this aggregate requires ailloy's
+  dependency-resolution support** to pull in the seven persona molds. Casting a
+  persona directly only needs v0.6.17+; casting this aggregate needs v0.6.33+.
