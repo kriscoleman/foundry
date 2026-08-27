@@ -1,0 +1,9 @@
+{{- if and (eq .agent.current_target "opencode") (has "opencode" .agent.targets) -}}
+{
+  "agent": {
+    "documentation": {
+      "prompt": "{file:.opencode/agents/documentation.md}"
+    }
+  }
+}
+{{- end -}}

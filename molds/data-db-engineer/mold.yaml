@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: mold
+name: data-db-engineer
+version: 0.1.0
+description: >-
+  Data/database engineering lens. Use for schema and migration safety, SQL correctness, and query performance — as a con-voyage reviewer or a standalone advisor.
+author:
+  name: Kris Coleman
+  url: https://github.com/kriscoleman
+requires:
+  ailloy: ">=0.6.17"

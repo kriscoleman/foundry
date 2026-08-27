@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: mold
+name: api-platform-contract
+version: 0.1.0
+description: >-
+  API/platform contract lens. Use for API design, backward compatibility, versioning, and contract stability — as a con-voyage reviewer or a standalone advisor.
+author:
+  name: Kris Coleman
+  url: https://github.com/kriscoleman
+requires:
+  ailloy: ">=0.6.17"

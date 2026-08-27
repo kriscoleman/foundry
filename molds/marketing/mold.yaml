@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: mold
+name: marketing
+version: 0.1.0
+description: >-
+  Marketing and positioning lens. Use to pressure-test positioning, messaging, naming, value-prop clarity, and launch/GTM readiness — as a con-voyage reviewer or a standalone advisor.
+author:
+  name: Kris Coleman
+  url: https://github.com/kriscoleman
+requires:
+  ailloy: ">=0.6.17"

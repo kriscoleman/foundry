@@ -1,0 +1,9 @@
+{{- if and (eq .agent.current_target "opencode") (has "opencode" .agent.targets) -}}
+{
+  "agent": {
+    "api-platform-contract": {
+      "prompt": "{file:.opencode/agents/api-platform-contract.md}"
+    }
+  }
+}
+{{- end -}}

@@ -1,0 +1,9 @@
+{{- if and (eq .agent.current_target "opencode") (has "opencode" .agent.targets) -}}
+{
+  "agent": {
+    "sre-reliability": {
+      "prompt": "{file:.opencode/agents/sre-reliability.md}"
+    }
+  }
+}
+{{- end -}}

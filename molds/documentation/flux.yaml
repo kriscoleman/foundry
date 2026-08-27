@@ -1,0 +1,18 @@
+agent:
+  targets:
+    - claude
+    - opencode
+
+output:
+  opencode:
+    - dest: .
+      strategy: merge
+      set:
+        agent.current_target: opencode
+  agents:
+    - dest: .claude/agents
+      set:
+        agent.current_target: claude
+    - dest: .opencode/agents
+      set:
+        agent.current_target: opencode
