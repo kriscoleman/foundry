@@ -16,7 +16,7 @@ molds:
     tags: ["ailloy-mold", "claude", "planning", "agile", "github-issues", "workflows"]
   - name: con-voyage-personas
     source: github.com/kriscoleman/foundry//molds/con-voyage-personas
-    description: "The con-voyage review crew in one cast — aggregate mold pulling in all seven reusable reviewer/engineering persona molds (founder/CTO, product owner, Go and frontend principal engineers, security reviewer, standards janitor, dev-ex reviewer)."
+    description: "The con-voyage review crew in one cast — aggregate mold pulling in all fifteen reusable reviewer/engineering persona molds across strategy, product, design, engineering, quality, operations, security, compliance, data, and communication."
     tags: ["ailloy-mold", "claude", "opencode", "agents", "review", "personas", "con-voyage"]
   - name: founder-cto
     source: github.com/kriscoleman/foundry//molds/founder-cto
@@ -46,3 +46,35 @@ molds:
     source: github.com/kriscoleman/foundry//molds/dev-ex-reviewer
     description: "Developer-experience adoption lens agent: error messages, sane defaults, discoverability, copy-paste onboarding. Con-voyage reviewer or standalone DevEx critique."
     tags: ["ailloy-mold", "claude", "opencode", "agents", "review", "personas", "con-voyage", "devex"]
+  - name: marketing
+    source: github.com/kriscoleman/foundry//molds/marketing
+    description: "Marketing and positioning lens agent: positioning, messaging, naming, value-prop clarity, launch/GTM readiness. Con-voyage reviewer or standalone advisor."
+    tags: ["ailloy-mold", "claude", "opencode", "agents", "review", "personas", "con-voyage", "marketing"]
+  - name: design-ux
+    source: github.com/kriscoleman/foundry//molds/design-ux
+    description: "Design/UX lens agent: interaction and visual design, UX flows, information architecture, design-system consistency. Con-voyage reviewer or standalone advisor."
+    tags: ["ailloy-mold", "claude", "opencode", "agents", "review", "personas", "con-voyage", "design", "ux"]
+  - name: documentation
+    source: github.com/kriscoleman/foundry//molds/documentation
+    description: "Technical-writer documentation lens agent: prose quality, docs structure and standards, clarity, grammar, completeness (Strunk & White). Con-voyage reviewer or standalone editor."
+    tags: ["ailloy-mold", "claude", "opencode", "agents", "review", "personas", "con-voyage", "docs"]
+  - name: qa-test-engineer
+    source: github.com/kriscoleman/foundry//molds/qa-test-engineer
+    description: "QA test-engineering lens agent: test strategy, coverage, edge cases, regression risk. Con-voyage reviewer or standalone QA advisor."
+    tags: ["ailloy-mold", "claude", "opencode", "agents", "review", "personas", "con-voyage", "qa", "testing"]
+  - name: sre-reliability
+    source: github.com/kriscoleman/foundry//molds/sre-reliability
+    description: "SRE reliability lens agent: observability, failure modes, rollout/rollback safety, SLOs. Con-voyage reviewer or standalone SRE advisor."
+    tags: ["ailloy-mold", "claude", "opencode", "agents", "review", "personas", "con-voyage", "sre", "reliability"]
+  - name: api-platform-contract
+    source: github.com/kriscoleman/foundry//molds/api-platform-contract
+    description: "API/platform contract lens agent: API design, backward compatibility, versioning, contract stability. Con-voyage reviewer or standalone API architect."
+    tags: ["ailloy-mold", "claude", "opencode", "agents", "review", "personas", "con-voyage", "api", "platform"]
+  - name: compliance-privacy
+    source: github.com/kriscoleman/foundry//molds/compliance-privacy
+    description: "Compliance and privacy lens agent: data handling, PII, SOC 2/enterprise compliance, auditability. Con-voyage reviewer or standalone governance advisor."
+    tags: ["ailloy-mold", "claude", "opencode", "agents", "review", "personas", "con-voyage", "compliance", "privacy"]
+  - name: data-db-engineer
+    source: github.com/kriscoleman/foundry//molds/data-db-engineer
+    description: "Data/database engineering lens agent: schema and migration safety, SQL correctness, query performance. Con-voyage reviewer or standalone data engineer."
+    tags: ["ailloy-mold", "claude", "opencode", "agents", "review", "personas", "con-voyage", "data", "database"]

@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: mold
+name: design-ux
+version: 0.1.0
+description: >-
+  Design/UX lens. Use for interaction and visual design, UX flows, information architecture, and design-system consistency — as a con-voyage reviewer or a standalone advisor.
+author:
+  name: Kris Coleman
+  url: https://github.com/kriscoleman
+requires:
+  ailloy: ">=0.6.17"

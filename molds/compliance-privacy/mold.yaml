@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: mold
+name: compliance-privacy
+version: 0.1.0
+description: >-
+  Compliance and privacy lens. Use for data handling, PII, SOC 2/enterprise compliance, and auditability — as a con-voyage reviewer or a standalone advisor.
+author:
+  name: Kris Coleman
+  url: https://github.com/kriscoleman
+requires:
+  ailloy: ">=0.6.17"

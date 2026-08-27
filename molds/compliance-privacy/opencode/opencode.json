@@ -1,0 +1,9 @@
+{{- if and (eq .agent.current_target "opencode") (has "opencode" .agent.targets) -}}
+{
+  "agent": {
+    "compliance-privacy": {
+      "prompt": "{file:.opencode/agents/compliance-privacy.md}"
+    }
+  }
+}
+{{- end -}}

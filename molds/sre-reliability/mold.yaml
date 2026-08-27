@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: mold
+name: sre-reliability
+version: 0.1.0
+description: >-
+  SRE reliability lens. Use for observability, failure modes, rollout/rollback safety, and SLOs — as a con-voyage reviewer or a standalone advisor.
+author:
+  name: Kris Coleman
+  url: https://github.com/kriscoleman
+requires:
+  ailloy: ">=0.6.17"
