@@ -5,7 +5,7 @@ no persona content of its own — it just depends on the fifteen per-persona mol
 so a consumer can grab the whole review-and-engineering crew with a single
 install.
 
-These are the reusable lenses used by the [`con-voyage`](../con-voyage) skill's
+These are the reusable lenses used by the [`con-voyage`](../con-voyage-gastown) skill's
 review loop. Each is also usable **standalone** as a subagent, independent of
 con-voyage.
 
