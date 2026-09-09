@@ -39,17 +39,23 @@ Honour `--lenses` if the user passed it; the floor is always applied regardless.
 
 Activate each chosen roster lens with its own `--var enable_<lens>=true`. Floor lanes (security, code, acceptance, test-evidence, simplicity) are always on; no var needed for them.
 
+Detect the dominant language of the repo or the touched files to choose the native-language code lens:
+- Go repos → `--var code_lens=con-voyage.cv-go-principal-engineer` (default; no flag needed)
+- JS/TS repos → `--var code_lens=con-voyage.cv-frontend-principal-engineer`
+- Other languages → `--var code_lens=con-voyage.cv-code-reviewer`
+
 ```bash
-gc sling <work-bead> \
-  --var push=false \
+gc sling <target> <work-bead> --formula \
+  --var push=true \
   --var open_pr=true \
+  [--var code_lens=con-voyage.cv-frontend-principal-engineer] \
   --var enable_<lens>=true \
   [--var enable_<lens2>=true ...]
 ```
 
 Available roster lens vars: `enable_product_owner`, `enable_founder_cto`, `enable_dev_ex`, `enable_standards_janitor`, `enable_qa_test`, `enable_sre`, `enable_design_ux`, `enable_documentation`, `enable_marketing`, `enable_api_platform`, `enable_compliance`, `enable_data_db`.
 
-`push=false open_pr=true` is mandatory — the PR is opened, but the branch is never auto-merged. A human lands it.
+`push=true open_pr=true` is the correct never-merge posture: the work branch is pushed to origin (required before a PR can be opened), a PR is opened, but the branch is **never auto-merged**. Auto-merge is prevented by `merge_queue="observe"` in `city.toml` — not by suppressing the push. A human lands the PR.
 
 ### Phase 3 — Route review / CI / human feedback to the SAME implementor
 
@@ -80,7 +86,7 @@ When the `cv-product-owner` lens is active, "docs PR missing" is a **BLOCKING** 
 
 ### Phase 6 — Never merge; human lands
 
-You open the PR (`open_pr=true`). You do not merge it. Done means a human merged or closed it.
+You push the branch (`push=true`) and open the PR (`open_pr=true`). You do not merge it. The `merge_queue="observe"` setting in `city.toml` ensures no auto-merge path exists. Done means a human merged or closed it.
 
 On "PR LANDED":
 1. `gc bd close` the work bead and all team beads. Reason must reflect reality: merged → "landed: PR #<n> merged"; closed without merge → "abandoned: PR #<n> closed without merge".
