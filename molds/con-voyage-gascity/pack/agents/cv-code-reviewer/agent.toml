@@ -1,0 +1,2 @@
+description = "con-voyage generic code review lens: correctness, idioms, error handling, tests, API design, SOLID/KISS/DRY — language-parameterized fallback"
+scope = "rig"
