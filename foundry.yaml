@@ -6,10 +6,14 @@ author:
   name: Kris Coleman
   url: https://github.com/kriscoleman
 molds:
-  - name: con-voyage
-    source: github.com/kriscoleman/foundry//molds/con-voyage
-    description: "Gas Town orchestration: deliver an issue with a polecat team through review, CI, and human feedback loops until a human merges."
+  - name: con-voyage-gastown
+    source: github.com/kriscoleman/foundry//molds/con-voyage-gastown
+    description: "Gas Town (gt) orchestration: deliver an issue with a polecat team through review, CI, and human feedback loops until a human merges."
     tags: ["ailloy-mold", "gas-town", "claude", "orchestration", "workflows"]
+  - name: con-voyage-gascity
+    source: github.com/kriscoleman/foundry//molds/con-voyage-gascity
+    description: "Gas City-native con-voyage: casts a chief-of-staff + reviewer lenses + delivery loop into a gas city."
+    tags: ["ailloy-mold", "gas-city", "claude", "orchestration", "workflows"]
   - name: engineering-planning
     source: github.com/kriscoleman/foundry//molds/engineering-planning
     description: "Conversational Agile-Coach planner: interview stakeholders, brainstorm work items, refine them into create-issue-format GitHub issues with epic/sub-issue decomposition, gate on consensus, then create the issues and optionally track them as a Projects iteration."
