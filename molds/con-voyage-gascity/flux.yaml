@@ -1,0 +1,7 @@
+agent:
+  targets: [claude]
+output:
+  pack:
+    dest: packs/con-voyage
+  skills:
+    dest: .claude/skills
