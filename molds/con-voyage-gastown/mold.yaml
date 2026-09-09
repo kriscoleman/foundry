@@ -1,12 +1,12 @@
 apiVersion: v1
 kind: mold
-name: con-voyage
-version: 0.2.0
+name: con-voyage-gastown
+version: 0.2.1
 description: >-
-  Con voyage — Gas Town orchestration. Deliver an issue, bead, or task
-  description with a polecat team through nested implementation, a configurable
-  roster of persona review lenses, CI, and human-review feedback loops, and
-  never merge until a human does.
+  [Gas Town / gt] Con voyage — Gas Town orchestration. Deliver an issue, bead,
+  or task description with a polecat team through nested implementation, a
+  configurable roster of persona review lenses, CI, and human-review feedback
+  loops, and never merge until a human does.
 author:
   name: Kris Coleman
   url: https://github.com/kriscoleman
