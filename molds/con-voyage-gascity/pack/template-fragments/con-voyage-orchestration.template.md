@@ -37,13 +37,17 @@ Honour `--lenses` if the user passed it; the floor is always applied regardless.
 
 ### Phase 2 — Sling the formula
 
+Activate each chosen roster lens with its own `--var enable_<lens>=true`. Floor lanes (security, code, acceptance, test-evidence, simplicity) are always on; no var needed for them.
+
 ```bash
-gc formula sling con-voyage <work-bead> \
-  --rig <rig> \
-  --push=false \
-  --open-pr=true \
-  --lenses <chosen-lenses-comma-separated>
+gc sling <work-bead> \
+  --var push=false \
+  --var open_pr=true \
+  --var enable_<lens>=true \
+  [--var enable_<lens2>=true ...]
 ```
+
+Available roster lens vars: `enable_product_owner`, `enable_founder_cto`, `enable_dev_ex`, `enable_standards_janitor`, `enable_qa_test`, `enable_sre`, `enable_design_ux`, `enable_documentation`, `enable_marketing`, `enable_api_platform`, `enable_compliance`, `enable_data_db`.
 
 `push=false open_pr=true` is mandatory — the PR is opened, but the branch is never auto-merged. A human lands it.
 
