@@ -1,0 +1,21 @@
+{
+  "molds/api-platform-contract": "0.1.0",
+  "molds/compliance-privacy": "0.1.0",
+  "molds/con-voyage-gascity": "0.1.0",
+  "molds/con-voyage-gastown": "0.2.1",
+  "molds/con-voyage-personas": "0.1.0",
+  "molds/data-db-engineer": "0.1.0",
+  "molds/design-ux": "0.1.0",
+  "molds/dev-ex-reviewer": "0.1.0",
+  "molds/documentation": "0.1.0",
+  "molds/engineering-planning": "0.1.0",
+  "molds/founder-cto": "0.1.0",
+  "molds/frontend-principal-engineer": "0.1.0",
+  "molds/go-principal-engineer": "0.1.0",
+  "molds/marketing": "0.1.0",
+  "molds/product-owner": "0.1.0",
+  "molds/qa-test-engineer": "0.1.0",
+  "molds/security-reviewer": "0.1.0",
+  "molds/sre-reliability": "0.1.0",
+  "molds/standards-janitor": "0.1.0"
+}

@@ -1,0 +1,217 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "separate-pull-requests": true,
+  "include-component-in-tag": true,
+  "tag-separator": "-",
+  "packages": {
+    "molds/api-platform-contract": {
+      "component": "api-platform-contract",
+      "release-type": "simple",
+      "extra-files": [
+        {
+          "type": "yaml",
+          "path": "mold.yaml",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "molds/compliance-privacy": {
+      "component": "compliance-privacy",
+      "release-type": "simple",
+      "extra-files": [
+        {
+          "type": "yaml",
+          "path": "mold.yaml",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "molds/con-voyage-gascity": {
+      "component": "con-voyage-gascity",
+      "release-type": "simple",
+      "extra-files": [
+        {
+          "type": "yaml",
+          "path": "mold.yaml",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "molds/con-voyage-gastown": {
+      "component": "con-voyage-gastown",
+      "release-type": "simple",
+      "extra-files": [
+        {
+          "type": "yaml",
+          "path": "mold.yaml",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "molds/con-voyage-personas": {
+      "component": "con-voyage-personas",
+      "release-type": "simple",
+      "extra-files": [
+        {
+          "type": "yaml",
+          "path": "mold.yaml",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "molds/data-db-engineer": {
+      "component": "data-db-engineer",
+      "release-type": "simple",
+      "extra-files": [
+        {
+          "type": "yaml",
+          "path": "mold.yaml",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "molds/design-ux": {
+      "component": "design-ux",
+      "release-type": "simple",
+      "extra-files": [
+        {
+          "type": "yaml",
+          "path": "mold.yaml",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "molds/dev-ex-reviewer": {
+      "component": "dev-ex-reviewer",
+      "release-type": "simple",
+      "extra-files": [
+        {
+          "type": "yaml",
+          "path": "mold.yaml",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "molds/documentation": {
+      "component": "documentation",
+      "release-type": "simple",
+      "extra-files": [
+        {
+          "type": "yaml",
+          "path": "mold.yaml",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "molds/engineering-planning": {
+      "component": "engineering-planning",
+      "release-type": "simple",
+      "extra-files": [
+        {
+          "type": "yaml",
+          "path": "mold.yaml",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "molds/founder-cto": {
+      "component": "founder-cto",
+      "release-type": "simple",
+      "extra-files": [
+        {
+          "type": "yaml",
+          "path": "mold.yaml",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "molds/frontend-principal-engineer": {
+      "component": "frontend-principal-engineer",
+      "release-type": "simple",
+      "extra-files": [
+        {
+          "type": "yaml",
+          "path": "mold.yaml",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "molds/go-principal-engineer": {
+      "component": "go-principal-engineer",
+      "release-type": "simple",
+      "extra-files": [
+        {
+          "type": "yaml",
+          "path": "mold.yaml",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "molds/marketing": {
+      "component": "marketing",
+      "release-type": "simple",
+      "extra-files": [
+        {
+          "type": "yaml",
+          "path": "mold.yaml",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "molds/product-owner": {
+      "component": "product-owner",
+      "release-type": "simple",
+      "extra-files": [
+        {
+          "type": "yaml",
+          "path": "mold.yaml",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "molds/qa-test-engineer": {
+      "component": "qa-test-engineer",
+      "release-type": "simple",
+      "extra-files": [
+        {
+          "type": "yaml",
+          "path": "mold.yaml",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "molds/security-reviewer": {
+      "component": "security-reviewer",
+      "release-type": "simple",
+      "extra-files": [
+        {
+          "type": "yaml",
+          "path": "mold.yaml",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "molds/sre-reliability": {
+      "component": "sre-reliability",
+      "release-type": "simple",
+      "extra-files": [
+        {
+          "type": "yaml",
+          "path": "mold.yaml",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "molds/standards-janitor": {
+      "component": "standards-janitor",
+      "release-type": "simple",
+      "extra-files": [
+        {
+          "type": "yaml",
+          "path": "mold.yaml",
+          "jsonpath": "$.version"
+        }
+      ]
+    }
+  }
+}
