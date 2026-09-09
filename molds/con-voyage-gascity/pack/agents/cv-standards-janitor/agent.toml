@@ -1,0 +1,2 @@
+description = "con-voyage janitor review lens: conventions, lint/format, dead code, DRY, docs hygiene"
+scope = "rig"

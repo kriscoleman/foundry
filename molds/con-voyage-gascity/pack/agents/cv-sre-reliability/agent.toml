@@ -1,0 +1,2 @@
+description = "con-voyage SRE review lens: failure modes, observability, rollout/rollback safety, SLO impact"
+scope = "rig"
