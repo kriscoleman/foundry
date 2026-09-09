@@ -21,14 +21,15 @@ ailloy foundry search con-voyage
 Or cast a mold directly:
 
 ```bash
-ailloy cast github.com/kriscoleman/foundry//molds/con-voyage
+ailloy cast github.com/kriscoleman/foundry//molds/con-voyage-gastown
 ```
 
 ## Molds
 
 | Name | Description |
 |------|-------------|
-| [con-voyage](molds/con-voyage) | Gas Town orchestration: deliver an issue with a polecat team through implementation, code/security review, CI, and human-review loops — and never merge until a human does. Claude Code / Gas Town specific. |
+| [con-voyage-gastown](molds/con-voyage-gastown) | Gas Town (gt) orchestration: deliver an issue with a polecat team through implementation, code/security review, CI, and human-review loops — and never merge until a human does. Claude Code / Gas Town specific. |
+| [con-voyage-gascity](molds/con-voyage-gascity) | Gas City-native con-voyage: casts a chief-of-staff + reviewer lenses + delivery loop into a gas city. |
 | [engineering-planning](molds/engineering-planning) | Conversational Agile-Coach / Scrum-Master facilitator: interview stakeholders, brainstorm work items, refine them into create-issue-format GitHub issues with epic/sub-issue decomposition, gate on explicit consensus, then create the issues via `gh` and optionally track them as a GitHub Projects iteration. |
 
 ## Developing
