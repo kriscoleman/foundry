@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1
+
+- **Rename:** mold renamed from `con-voyage` to `con-voyage-gastown` to
+  distinguish the Gas Town / `gt`-specific mold from the upcoming
+  `con-voyage-gascity` variant. No functional changes — all `gt`-driving
+  orchestration logic is preserved intact.
+
 ## 0.2.0
 
 Hardened orchestration practices validated in live convoys folded into the

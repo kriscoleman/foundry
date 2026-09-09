@@ -1,6 +1,6 @@
 ---
-name: con-voyage
-description: Use when an issue, bead, or task description should be delivered by a Gas Town polecat team with full review, CI, and human feedback loops instead of solo implementation. Triggers - "con-voyage issue 42", "convoy this issue", "swarm a team on this", "start issue 42 with reviews", "send this off with an escort".
+name: con-voyage-gastown
+description: "[Gas Town / gt] Use when an issue, bead, or task description should be delivered by a Gas Town polecat team with full review, CI, and human feedback loops instead of solo implementation. Triggers - \"con-voyage issue 42\", \"convoy this issue\", \"swarm a team on this\", \"start issue 42 with reviews\", \"send this off with an escort\"."
 ---
 
 # Con Voyage
