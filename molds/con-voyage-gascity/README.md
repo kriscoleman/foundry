@@ -19,8 +19,10 @@ A Gas City pack containing:
 
 - **`con-voyage` formula** — an `expansion`/`graph.v2` formula that runs the full
   delivery pipeline: setup → parallel review lanes → synthesize → apply findings →
-  loop until approved → open PR. `push=false` and `open_pr=true` by default; the
-  branch is pushed and a PR opened, but no auto-merge path exists.
+  loop until approved → push branch → open PR. `push=true` and `open_pr=true` by
+  default; the work branch is pushed to origin and a PR is opened, but
+  `merge_queue="observe"` in `city.toml` prevents any auto-merge path. A human
+  must land the PR.
 
 - **16 reviewer-lens agents** (scope `rig`, prefixed `cv-`) — gascity-native persona
   agents ported from the full con-voyage roster:
@@ -58,10 +60,11 @@ select the roster, and slings the formula. All heavy orchestration lives in the 
 
 ### Never-merge posture
 
-The formula always runs with `push=false` at the top level (the branch is pushed and
-a PR opened, but there is no auto-merge path). The `[[github]]` monitor (see §
-"Per-rig `city.toml` snippet" below) is configured with `merge_queue = "observe"` —
-observe only, never auto-merges. A human must land the PR.
+The formula runs with `push=true open_pr=true` by default: the work branch is pushed
+to origin and a PR is opened. The `[[github]]` monitor (see § "Per-rig `city.toml`
+snippet" below) is configured with `merge_queue = "observe"` — observe only, never
+auto-merges. That monitor setting is what enforces the never-merge invariant, not
+suppressing the push. A human must land the PR.
 
 ---
 
@@ -198,10 +201,19 @@ The formula exposes one boolean enable var per optional roster lens. Pass
 lanes (security + native-language code review + acceptance + test-evidence +
 simplicity) are always active regardless.
 
+Override the native-language code lens when the repo's dominant language is not Go:
+
+| Language | `--var code_lens=` |
+|---|---|
+| Go | `con-voyage.cv-go-principal-engineer` (default; omit flag) |
+| JS / TS | `con-voyage.cv-frontend-principal-engineer` |
+| Other | `con-voyage.cv-code-reviewer` |
+
 ```bash
-gc sling <bead> con-voyage \
-  --var push=false \
+gc sling <target> <bead> --formula \
+  --var push=true \
   --var open_pr=true \
+  [--var code_lens=con-voyage.cv-frontend-principal-engineer] \
   --var enable_product_owner=true \
   --var enable_dev_ex=true \
   --var enable_qa_test=true \

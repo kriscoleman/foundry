@@ -14,16 +14,16 @@ contract = "graph.v2"
 
 [vars]
 [vars.push]
-description = "Push the branch to the remote. Set false to hold locally for human review."
-default = "false"
-
-[vars.open_pr]
-description = "Open a pull request after review passes. Always true for con-voyage."
+description = "Push the work branch to the remote. Set true (default) to push the branch so a PR can be opened. Set false to hold locally."
 default = "true"
 
-[vars.lenses]
-description = "Informational: comma-separated list of roster lenses chosen by the facilitator. Use the per-lens enable_* vars to activate lanes."
-default = ""
+[vars.open_pr]
+description = "Open a pull request after review passes and push succeeds. Always true for con-voyage."
+default = "true"
+
+[vars.code_lens]
+description = "Run-target for the native-language code review floor lane. Override to select a different language principal engineer or the generic code reviewer."
+default = "con-voyage.cv-go-principal-engineer"
 
 [vars.implementation_target]
 description = "Role target used to apply con-voyage review findings."
@@ -104,8 +104,8 @@ description_file = "../assets/workflows/con-voyage/{target}.security-review.md"
 
 [[template.children]]
 id = "{target}.code-review"
-title = "Con-voyage: code review (Go principal engineer)"
-metadata = { "gc.run_target" = "con-voyage.cv-go-principal-engineer" }
+title = "Con-voyage: code review (native-language)"
+metadata = { "gc.run_target" = "{code_lens}" }
 description_file = "../assets/workflows/con-voyage/{target}.code-review.md"
 
 # ---------------------------------------------------------------------------
@@ -295,13 +295,24 @@ metadata = { "gc.run_target" = "{implementation_target}", "gc.continuation_group
 description_file = "../assets/workflows/con-voyage/{target}.apply-review-findings.md"
 
 # ---------------------------------------------------------------------------
+# Publish step — pushes the work branch and opens the PR (never auto-merges)
+# ---------------------------------------------------------------------------
+
+[[template]]
+id = "{target}.publish"
+title = "Publish con-voyage result (push branch + open PR)"
+needs = ["{target}.con-voyage-review-loop"]
+metadata = { "gc.run_target" = "gc.publisher" }
+description_file = "../assets/workflows/con-voyage/{target}.publish.md"
+
+# ---------------------------------------------------------------------------
 # Finalize step — writes the build artifact, checked for validity
 # ---------------------------------------------------------------------------
 
 [[template]]
 id = "{target}"
 title = "Finalize con-voyage review"
-needs = ["{target}.con-voyage-review-loop"]
+needs = ["{target}.publish"]
 metadata = { "gc.run_target" = "gc.run-operator", "gc.build.artifact_schema" = "gc.build.review.v1", "gc.build.artifact_path_keys" = "gc.build.review_report_path" }
 description_file = "../assets/workflows/con-voyage/{target}.md"
 

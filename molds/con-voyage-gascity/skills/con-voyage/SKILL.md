@@ -34,14 +34,25 @@ Run this once per city before invoking `/con-voyage`. If the pack is already imp
 After intake and roster selection (Phase 0–1 of the orchestration fragment), sling the formula:
 
 ```bash
-gc sling <work-bead> \
-  --var push=false \
+gc sling <target> <work-bead> --formula \
+  --var push=true \
   --var open_pr=true \
+  [--var code_lens=con-voyage.cv-frontend-principal-engineer] \
   --var enable_<lens>=true \
   [--var enable_<lens2>=true ...]
 ```
 
 Each chosen roster lens is activated by its own `--var enable_<lens>=true`. Floor lanes (security, code, acceptance, test-evidence, simplicity) are always active — no var needed.
+
+**Code lens selection** — override the default (`cv-go-principal-engineer`) when the repo's dominant language differs:
+
+| Language | `--var code_lens=` |
+|---|---|
+| Go | `con-voyage.cv-go-principal-engineer` (default; omit flag) |
+| JS / TS | `con-voyage.cv-frontend-principal-engineer` |
+| Other | `con-voyage.cv-code-reviewer` |
+
+**Never-merge posture**: `push=true` pushes the work branch to origin (required to open a PR). `open_pr=true` opens the PR. Auto-merge is prevented by `merge_queue="observe"` in `city.toml`. A human must land the PR.
 
 ### Available roster lens vars
 
@@ -66,12 +77,12 @@ Full orchestration detail lives in the `con-voyage-orchestration` template fragm
 
 ```
 Intake → work bead + convoy
-  → SLING formula  (gc sling ... --var push=false --var open_pr=true --var enable_<lens>=true)
+  → SLING formula  (gc sling <target> <work-bead> --formula --var push=true --var open_pr=true --var enable_<lens>=true)
   → REVIEW LOOP   (floor lanes + chosen roster in parallel; blocking findings → fix → re-run)
-  → PR opened (push=false, open_pr=true); never auto-merged
-  → HUMAN LANDS   (you open the PR; a human merges or closes it)
+  → branch pushed + PR opened (push=true, open_pr=true); merge_queue="observe" prevents auto-merge
+  → HUMAN LANDS   (you push + open PR; a human merges or closes it)
 ```
 
-`push=false open_pr=true` is mandatory — the PR is opened but the branch is never auto-merged. A human lands it.
+`push=true open_pr=true` is the correct posture — the branch is pushed to origin and a PR is opened, but auto-merge is blocked by `merge_queue="observe"` in `city.toml`. A human lands it.
 
 Consult the `con-voyage-orchestration` fragment for the full phase-by-phase runbook: intake, convoy creation, roster rules, Phase 2 sling, feedback routing, PR posterity comments, lockstep docs PR, and landing protocol.
