@@ -1,0 +1,53 @@
+name: release-please
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+# Serialize release runs so the propagate -> re-run sequence can't race a
+# concurrent push.
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      # Run A: cut GitHub releases + <mold>-v<ver> tags for any merged release PRs,
+      # and open/update release PRs for unreleased conventional commits.
+      - uses: googleapis/release-please-action@v4
+        id: rp
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      # Propagate + re-run only when an actual release was cut this run.
+      - uses: actions/checkout@v4
+        if: ${{ steps.rp.outputs.releases_created == 'true' }}
+        with:
+          ref: main
+          fetch-depth: 0
+
+      # For each just-released mold, bump the constraint floor in any dependent
+      # aggregate and push a conventional `fix(...)`/`feat(...)` commit to main.
+      # This uses GITHUB_TOKEN; the push does not need to trigger a workflow
+      # because run B (below) opens the aggregate's release PR inline.
+      - name: Propagate release to dependent super-molds
+        if: ${{ steps.rp.outputs.releases_created == 'true' }}
+        env:
+          RP_OUTPUTS: ${{ toJson(steps.rp.outputs) }}
+        run: python3 scripts/propagate-mold-deps.py --commit --push
+
+      # Run B: pick up the propagation commit(s) and open the dependent
+      # aggregate's release PR. Actual release stays gated on a human merge,
+      # which re-triggers this workflow for the next hop of the cascade.
+      - uses: googleapis/release-please-action@v4
+        if: ${{ steps.rp.outputs.releases_created == 'true' }}
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
