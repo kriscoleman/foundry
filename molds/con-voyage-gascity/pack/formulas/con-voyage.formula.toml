@@ -267,6 +267,18 @@ needs = [
   "{target}.simplicity-review",
   "{target}.security-review",
   "{target}.code-review",
+  "{target}.product-owner-review",
+  "{target}.founder-cto-review",
+  "{target}.dev-ex-review",
+  "{target}.standards-janitor-review",
+  "{target}.qa-test-review",
+  "{target}.sre-review",
+  "{target}.design-ux-review",
+  "{target}.documentation-review",
+  "{target}.marketing-review",
+  "{target}.api-platform-review",
+  "{target}.compliance-review",
+  "{target}.data-db-review",
 ]
 metadata = { "gc.run_target" = "gc.review-synthesizer" }
 description_file = "../assets/workflows/con-voyage/{target}.synthesize-review.md"
