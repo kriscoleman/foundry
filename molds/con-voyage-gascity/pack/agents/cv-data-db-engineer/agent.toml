@@ -1,2 +1,3 @@
 description = "con-voyage data review lens: schema design, migration safety, query correctness, performance"
 scope = "rig"
+provider = "opus"
