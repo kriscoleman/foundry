@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: mold
 name: con-voyage-personas
-version: 0.1.0
+version: 0.1.1
 description: >-
   The con-voyage review crew in one cast — reusable specialized reviewer and
   engineering personas across strategy, product, engineering, quality,
@@ -11,36 +11,35 @@ author:
   name: Kris Coleman
   url: https://github.com/kriscoleman
 requires:
-  ailloy: ">=0.6.33"
-
+  ailloy: '>=0.6.33'
 dependencies:
   - mold: github.com/kriscoleman/foundry//molds/founder-cto
-    version: "^0.1.0"
+    version: ^0.1.0
   - mold: github.com/kriscoleman/foundry//molds/product-owner
-    version: "^0.1.0"
+    version: ^0.1.0
   - mold: github.com/kriscoleman/foundry//molds/go-principal-engineer
-    version: "^0.1.0"
+    version: ^0.1.0
   - mold: github.com/kriscoleman/foundry//molds/frontend-principal-engineer
-    version: "^0.1.0"
+    version: ^0.1.0
   - mold: github.com/kriscoleman/foundry//molds/security-reviewer
-    version: "^0.1.0"
+    version: ^0.1.0
   - mold: github.com/kriscoleman/foundry//molds/standards-janitor
-    version: "^0.1.0"
+    version: ^0.1.0
   - mold: github.com/kriscoleman/foundry//molds/dev-ex-reviewer
-    version: "^0.1.0"
+    version: ^0.1.0
   - mold: github.com/kriscoleman/foundry//molds/marketing
-    version: "^0.1.0"
+    version: ^0.1.0
   - mold: github.com/kriscoleman/foundry//molds/design-ux
-    version: "^0.1.0"
+    version: ^0.1.0
   - mold: github.com/kriscoleman/foundry//molds/documentation
-    version: "^0.1.0"
+    version: ^0.1.0
   - mold: github.com/kriscoleman/foundry//molds/qa-test-engineer
-    version: "^0.1.0"
+    version: ^0.1.0
   - mold: github.com/kriscoleman/foundry//molds/sre-reliability
-    version: "^0.1.0"
+    version: ^0.1.0
   - mold: github.com/kriscoleman/foundry//molds/api-platform-contract
-    version: "^0.1.0"
+    version: ^0.1.0
   - mold: github.com/kriscoleman/foundry//molds/compliance-privacy
-    version: "^0.1.0"
+    version: ^0.1.0
   - mold: github.com/kriscoleman/foundry//molds/data-db-engineer
-    version: "^0.1.0"
+    version: ^0.1.0
