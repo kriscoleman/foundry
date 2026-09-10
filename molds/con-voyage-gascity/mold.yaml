@@ -1,14 +1,14 @@
 apiVersion: v1
 kind: mold
 name: con-voyage-gascity
-version: 0.1.0
+version: 0.2.0
 description: >-
   Con voyage (Gas City) — cast into a gascity to install the chief-of-staff
   mayor, a persistent TDD implementor, a roster of persona review lenses, and
-  the full con-voyage delivery loop (implement → multi-lens review to clean →
-  PR → CI/human monitor), and never merge until a human does. Gas City / gc.
+  the full con-voyage delivery loop (implement → multi-lens review to clean → PR
+  → CI/human monitor), and never merge until a human does. Gas City / gc.
 author:
   name: Kris Coleman
   url: https://github.com/kriscoleman
 requires:
-  ailloy: ">=0.6.33"
+  ailloy: '>=0.6.33'
