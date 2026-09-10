@@ -1,0 +1,59 @@
+description = """
+Con-voyage CI repair formula — fix failing CI checks on a PR branch.
+
+Attached by the [[github.pr_monitor]] to beads created for con-voyage PRs
+with failing CI checks, merge conflicts, or branch-protection blocks. Receives
+the PR context as formula vars and routes the repair task to the con-voyage
+implementor for a focused TDD fix cycle.
+
+## Repair contract
+
+The implementor MUST:
+1. Check out the PR branch — never work on main or a new branch
+2. Read and understand the exact failing checks before touching any code
+3. Fix via TDD: write/update tests first, make them pass, then fix the code
+4. Run all tests and lint locally before pushing
+5. Push the fix to the PR branch — NEVER merge, NEVER submit to merge queue
+6. Close the repair bead with a brief summary of the fix
+
+The PR monitor re-evaluates the PR on the next backfill. If CI is still
+failing after the push, a new repair bead will be created for the next cycle.
+
+## Variables (injected by the monitor on backfill)
+
+| Variable         | Description                                      |
+|------------------|--------------------------------------------------|
+| bead_id          | The repair bead id (same as `bead`)              |
+| bead             | The repair bead id                               |
+| title            | PR title                                         |
+| pr               | PR number (integer string)                       |
+| repo             | Repository in owner/repo form                    |
+| branch           | PR head ref (the branch to check out and fix)    |
+| implementation_target | Route target for the implementor (default: gc.implementation-worker) |
+| escalation_target     | Mail recipient for blocked work (default: human)            |
+"""
+formula = "con-voyage-ci-repair"
+
+[requires]
+formula_compiler = ">=2.0.0"
+
+[vars.implementation_target]
+description = """
+Run target for the con-voyage implementor that will do the repair work.
+Defaults to gc.implementation-worker, which resolves to the rig's configured
+implementation worker (typically the con-voyage polecat).
+"""
+default = "gc.implementation-worker"
+
+[vars.escalation_target]
+description = """
+Mail recipient when the repair cannot be completed. Defaults to the reserved
+`human` alias. Cities that staff a work-health role can point this at it.
+"""
+default = "human"
+
+[[steps]]
+id = "ci-repair"
+title = "Repair CI failures on PR branch"
+metadata = { "gc.run_target" = "{{implementation_target}}" }
+description_file = "../assets/workflows/con-voyage-ci-repair/{target}.ci-repair.md"

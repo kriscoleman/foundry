@@ -1,2 +1,3 @@
 description = "con-voyage security review lens: injection, authn/authz, secrets, input validation, dependency risk"
 scope = "rig"
+provider = "opus"

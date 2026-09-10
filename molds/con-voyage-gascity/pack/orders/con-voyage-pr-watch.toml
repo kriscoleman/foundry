@@ -1,0 +1,25 @@
+# con-voyage-pr-watch — GitHub PR monitoring order
+#
+# Drives two monitoring duties that the native [[github.pr_monitor]] cannot
+# handle on its own:
+#
+#   (a) CI-failure repair — runs `gc github pr backfill --create-repair-beads`
+#       to evaluate all configured monitors and create deduped repair beads for
+#       actionable PRs (failed checks, DIRTY conflict, BEHIND, BLOCKED).
+#       The native monitor executes its backfill only when this order fires it;
+#       poll_interval in city.toml is inert at runtime.
+#
+#   (b) Human PR-comment routing — polls open con-voyage PRs for new human
+#       review feedback and routes it to the implementor. This is best-effort
+#       polling; the native monitor does not cover PR review comments.
+#
+# The order ships in the pack. The city controller runs it automatically while
+# the city is up, on a 10-minute cooldown interval.
+#
+# No auto-merge ever occurs from this order or from the native monitor.
+
+[order]
+description = "Drive GitHub PR monitoring: CI-failure repair beads + human-comment routing"
+trigger = "cooldown"
+interval = "10m"
+exec = "$PACK_DIR/assets/scripts/con-voyage-pr-watch.sh"

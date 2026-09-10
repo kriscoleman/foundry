@@ -61,10 +61,11 @@ select the roster, and slings the formula. All heavy orchestration lives in the 
 ### Never-merge posture
 
 The formula runs with `push=true open_pr=true` by default: the work branch is pushed
-to origin and a PR is opened. The `[[github]]` monitor (see § "Per-rig `city.toml`
-snippet" below) is configured with `merge_queue = "observe"` — observe only, never
-auto-merges. That monitor setting is what enforces the never-merge invariant, not
-suppressing the push. A human must land the PR.
+to origin and a PR is opened. The `[[github.pr_monitor]]` block (see § "GitHub
+monitoring" and "Per-rig `city.toml` snippet" below) is configured with
+`merge_queue = "observe"` — observe only, never auto-merges. That monitor setting
+is what enforces the never-merge invariant, not suppressing the push. A human must
+land the PR.
 
 ---
 
@@ -104,73 +105,93 @@ Add the following to your rig's `city.toml` after casting. Replace the angle-bra
 placeholders with real values for your rig.
 
 ```toml
-# GitHub PR monitor — CI + human feedback; observe only, never auto-merges
-[[github]]
+# GitHub PR monitor — CI check-runs + merge-state; observe only, never auto-merges.
+# repair_workflow points at the con-voyage CI repair formula shipped in the pack.
+[[github.pr_monitor]]
 name = "<rig>-prs"
 owner = "<org>"
 repo  = "<repo>"
 base_branches = ["main"]
 rig   = "<rig>"
-notify       = ["mayor"]
-repair_route = "<rig>/gc.implementation-worker"
-merge_queue  = "observe"
-
-# Run every reviewer lens on opus for this rig (one entry per cv-* agent)
-[[patches.agent]]
-rig = "*"; name = "cv-security-reviewer"; provider = "opus"
-
-[[patches.agent]]
-rig = "*"; name = "cv-go-principal-engineer"; provider = "opus"
-
-[[patches.agent]]
-rig = "*"; name = "cv-frontend-principal-engineer"; provider = "opus"
-
-[[patches.agent]]
-rig = "*"; name = "cv-code-reviewer"; provider = "opus"
-
-[[patches.agent]]
-rig = "*"; name = "cv-product-owner"; provider = "opus"
-
-[[patches.agent]]
-rig = "*"; name = "cv-founder-cto"; provider = "opus"
-
-[[patches.agent]]
-rig = "*"; name = "cv-dev-ex-reviewer"; provider = "opus"
-
-[[patches.agent]]
-rig = "*"; name = "cv-standards-janitor"; provider = "opus"
-
-[[patches.agent]]
-rig = "*"; name = "cv-qa-test-engineer"; provider = "opus"
-
-[[patches.agent]]
-rig = "*"; name = "cv-sre-reliability"; provider = "opus"
-
-[[patches.agent]]
-rig = "*"; name = "cv-design-ux"; provider = "opus"
-
-[[patches.agent]]
-rig = "*"; name = "cv-documentation"; provider = "opus"
-
-[[patches.agent]]
-rig = "*"; name = "cv-marketing"; provider = "opus"
-
-[[patches.agent]]
-rig = "*"; name = "cv-api-platform-contract"; provider = "opus"
-
-[[patches.agent]]
-rig = "*"; name = "cv-compliance-privacy"; provider = "opus"
-
-[[patches.agent]]
-rig = "*"; name = "cv-data-db-engineer"; provider = "opus"
+notify         = ["mayor"]
+repair_route   = "<rig>/gc.implementation-worker"
+repair_workflow = "con-voyage-ci-repair"
+merge_queue    = "observe"
 
 # Wire the chief-of-staff orchestration fragment into the mayor
 [mayor]
 append_fragments = ["con-voyage-orchestration"]
 ```
 
-The `merge_queue = "observe"` setting tells the `[github]` monitor to watch PRs for
-CI results and human feedback but never to enqueue them for automatic merging.
+The `merge_queue = "observe"` setting tells the `[[github.pr_monitor]]` to watch PRs
+for CI results and merge-state problems but never to enqueue them for automatic
+merging. `repair_workflow = "con-voyage-ci-repair"` attaches the formula shipped in
+the pack to repair beads (instead of the default `mol-polecat-work`).
+
+> **Reviewer model:** The 16 `cv-*` reviewer agents now ship with `provider = "opus"`
+> in their `agent.toml` files (inside the pack). No `[[patches.agent]]` blocks in
+> `city.toml` are needed — the pack already sets opus as the default model for all
+> reviewer lenses.
+
+---
+
+## GitHub monitoring
+
+Con-voyage native GitHub monitoring combines two mechanisms:
+
+### Native `[[github.pr_monitor]]` (CI checks + merge-state)
+
+The per-rig `[[github.pr_monitor]]` block declared in `city.toml` watches:
+
+- **Failed CI check-runs** — any required or reported check that fails
+- **DIRTY** — merge conflict between the PR branch and its base
+- **BEHIND** — PR branch is behind its base (needs rebasing)
+- **BLOCKED** — GitHub branch-protection block without a more specific cause
+
+When an actionable condition is detected, the monitor creates a deduped repair
+bead keyed by `(monitor-name, PR-number, head-sha)`. The bead is assigned to
+`repair_route` and the `con-voyage-ci-repair` formula is attached. The
+implementor reads the bead, checks out the PR branch, diagnoses the exact
+failing checks, fixes via TDD, and pushes — **never merges**.
+
+The monitor is **on-demand only** — it runs when `gc github pr backfill
+--create-repair-beads` is invoked. The `con-voyage-pr-watch` order (shipped in
+the pack) drives this on a 10-minute cooldown. `poll_interval` in `city.toml`
+is inert at runtime.
+
+### `con-voyage-pr-watch` order (human PR-comment routing)
+
+The native `[[github.pr_monitor]]` does **not** watch human PR review comments.
+The `con-voyage-pr-watch` order bridges this gap via best-effort polling.
+
+On each 10-minute tick the order script:
+
+1. Runs `gc github pr backfill --create-repair-beads` (Part A — CI repair).
+2. For each configured monitor's repo, lists open non-draft PRs and checks for
+   new human review comments and review feedback since the last run (Part B —
+   comment routing). Comments prefixed with `[<rig>/<agent> — <lens>]`
+   (con-voyage reviewer identity) and known bot logins are excluded. New human
+   feedback is routed to the implementor via `gc sling`. Idempotency is
+   maintained via a state file keyed by `(repo, PR-number, max-comment-id)` so
+   the same comment is never routed twice.
+
+### Coverage table
+
+| Signal | Native monitor | pr-watch order |
+|---|---|---|
+| Failed CI check-runs | Yes | Driven (Part A) |
+| Merge conflict (DIRTY) | Yes | Driven (Part A) |
+| Branch behind base | Yes | Driven (Part A) |
+| Branch-protection block | Yes | Driven (Part A) |
+| Human review comments | No | Yes (best-effort, Part B) |
+| Auto-merge | Never | Never |
+
+### Nothing ever auto-merges
+
+`merge_queue = "observe"` is set in `[[github.pr_monitor]]`. The native monitor
+has no merge capability. The `con-voyage-pr-watch` order has no merge capability.
+The `con-voyage-ci-repair` formula instructs the implementor to push fixes to the
+PR branch and explicitly prohibits merging. **A human must land every PR.**
 
 ---
 
