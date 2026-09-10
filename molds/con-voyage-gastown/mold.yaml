@@ -18,4 +18,4 @@ dependencies:
   # merge: con-voyage-personas (PR kc-clv) merges and tags first, then this mold.
   # The code+security floor charters stay inline in SKILL.md (graceful degradation).
   - mold: github.com/kriscoleman/foundry//molds/con-voyage-personas
-    version: "^0.1.0"
+    version: "^0.1.1"
