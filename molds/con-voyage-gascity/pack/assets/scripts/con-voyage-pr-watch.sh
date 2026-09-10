@@ -21,10 +21,17 @@
 #     (the con-voyage reviewer identity prefix). Bot/automation comments
 #     typically carry a [bot] suffix or a well-known bot login.
 #
+#     Inline review-thread comments (reviewThreads) are also captured in
+#     addition to top-level reviews and issue comments.
+#
+#     Deduplication uses GitHub GraphQL node-ID STRINGS (e.g. "PRR_kwDO...",
+#     "IC_kwDO..."). IDs are stored newline-delimited in a per-PR state file.
+#     The seen-set is capped each run to IDs from currently-open PRs to prevent
+#     unbounded growth.
+#
 #     Routing uses `gc sling` to create a routed task bead assigned to the
-#     implementor. Idempotency is maintained via a state file that records
-#     the last-seen comment/review ID per PR so the same comment is never
-#     routed twice.
+#     implementor. This script NEVER merges or closes PRs — it only reads
+#     GitHub and routes feedback.
 #
 #     This is BEST-EFFORT. Comment polling has no event-driven delivery
 #     guarantee; a comment posted moments before this script runs might be
@@ -46,6 +53,8 @@
 #
 # The order controller treats any non-zero exit as a transient failure and
 # retries on the next cooldown interval.
+#
+# Requires: bash 4+, gh CLI (authenticated), gc CLI, python3.
 
 set -euo pipefail
 
@@ -81,6 +90,11 @@ fi
 # Verify gh is authenticated (prints an error and exits non-zero if not)
 if ! "$GH" auth status >/dev/null 2>&1; then
   echo "con-voyage-pr-watch: ERROR: gh is not authenticated. Run 'gh auth login' or set GITHUB_TOKEN." >&2
+  exit 1
+fi
+
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "con-voyage-pr-watch: ERROR: python3 not found; required for PR comment filtering." >&2
   exit 1
 fi
 
@@ -130,30 +144,89 @@ fi
 
 echo "con-voyage-pr-watch: [PART B] scanning for human PR comments to route"
 
-# Extract unique owner/repo pairs from [[github.pr_monitor]] blocks.
-# We parse them with simple grep/sed — toml parsers are not guaranteed to be
-# available in the controller environment. This is intentionally simple and
-# conservative: it may miss monitors in included files (include = [...]) but
-# correctly handles monitors defined directly in city.toml.
+# Extract unique owner/repo pairs from [[github.pr_monitor]] blocks using awk.
+# Block-scoped extraction: awk activates at [[github.pr_monitor]], captures
+# owner= and repo= lines until the next top-level [...] header, then emits
+# the pair. Handles monitor blocks where owner/repo appear many lines below
+# the header (no fixed-line-count limit). Handles multiple monitor blocks.
 #
-# Format in city.toml:
-#   [[github.pr_monitor]]
-#   owner = "some-org"
-#   repo  = "some-repo"
-mapfile -t OWNERS < <(grep -A 5 '^\[\[github\.pr_monitor\]\]' "$CITY_TOML" | grep '^\s*owner\s*=' | sed 's/.*=\s*"\(.*\)"/\1/' | tr -d ' ')
-mapfile -t REPOS  < <(grep -A 5 '^\[\[github\.pr_monitor\]\]' "$CITY_TOML" | grep '^\s*repo\s*='  | sed 's/.*=\s*"\(.*\)"/\1/' | tr -d ' ')
+# Output format: one "OWNER/REPO" per line.
+mapfile -t MONITOR_REPOS < <(awk '
+  /^\[\[github\.pr_monitor\]\]/ {
+    in_block = 1
+    owner = ""
+    repo  = ""
+    next
+  }
+  in_block && /^\[/ {
+    # Next top-level header — emit pair if complete, then reset
+    if (owner != "" && repo != "") {
+      print owner "/" repo
+    }
+    in_block = 0
+    owner = ""
+    repo  = ""
+    # Check if this new header is itself a pr_monitor block
+    if (/^\[\[github\.pr_monitor\]\]/) {
+      in_block = 1
+    }
+    next
+  }
+  in_block && /^\s*owner\s*=/ {
+    val = $0
+    sub(/.*=\s*"/, "", val)
+    sub(/".*/, "", val)
+    owner = val
+    next
+  }
+  in_block && /^\s*repo\s*=/ {
+    val = $0
+    sub(/.*=\s*"/, "", val)
+    sub(/".*/, "", val)
+    repo = val
+    next
+  }
+  END {
+    # Emit last block if file ends without another header
+    if (in_block && owner != "" && repo != "") {
+      print owner "/" repo
+    }
+  }
+' "$CITY_TOML")
 
-if [ "${#OWNERS[@]}" -eq 0 ]; then
+if [ "${#MONITOR_REPOS[@]}" -eq 0 ]; then
   echo "con-voyage-pr-watch: [PART B] no [[github.pr_monitor]] blocks found in city.toml; nothing to poll"
   exit 0
 fi
 
+# ---------------------------------------------------------------------------
+# Helper: load seen node-IDs for a PR from its state file.
+# State file: one node-ID string per line (e.g. PRR_kwDO... or IC_kwDO...).
+# Returns a newline-delimited list to stdout.
+# ---------------------------------------------------------------------------
+load_seen_ids() {
+  local state_file="$1"
+  if [ -f "$state_file" ]; then
+    cat "$state_file" 2>/dev/null || true
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Helper: persist seen node-IDs back to the state file.
+# Accepts newline-delimited ids on stdin; writes them (sorted, deduped).
+# ---------------------------------------------------------------------------
+save_seen_ids() {
+  local state_file="$1"
+  sort -u > "$state_file"
+}
+
 # Process each monitor's repo
-for i in "${!OWNERS[@]}"; do
-  owner="${OWNERS[$i]:-}"
-  repo="${REPOS[$i]:-}"
+for monitor_repo in "${MONITOR_REPOS[@]}"; do
+  # Split "owner/repo" — use parameter expansion, not IFS tricks
+  owner="${monitor_repo%%/*}"
+  repo="${monitor_repo#*/}"
   if [ -z "$owner" ] || [ -z "$repo" ]; then
-    echo "con-voyage-pr-watch: [PART B] skipping monitor $i: incomplete owner/repo" >&2
+    echo "con-voyage-pr-watch: [PART B] skipping malformed entry '${monitor_repo}'" >&2
     continue
   fi
   full_repo="${owner}/${repo}"
@@ -172,112 +245,125 @@ for i in "${!OWNERS[@]}"; do
   }
 
   # Iterate over open, non-draft PRs
-  pr_count=$(printf '%s' "$open_prs_json" | python3 -c "import sys,json; data=json.load(sys.stdin); print(len([p for p in data if not p.get('isDraft',False)]))" 2>/dev/null || echo 0)
+  pr_count=$(printf '%s' "$open_prs_json" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+print(len([p for p in data if not p.get('isDraft', False)]))" 2>/dev/null || echo 0)
+
   if [ "$pr_count" -eq 0 ]; then
     echo "con-voyage-pr-watch: [PART B] ${full_repo}: no open non-draft PRs"
     continue
   fi
 
+  # Collect open PR numbers for state-file GC (cap seen-set to open PRs only)
+  open_pr_numbers=$(printf '%s' "$open_prs_json" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+for p in data:
+    if not p.get('isDraft', False):
+        print(p['number'])" 2>/dev/null || true)
+
   # Process each PR
   while IFS= read -r pr_json; do
-    pr_number=$(printf '%s' "$pr_json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['number'])" 2>/dev/null) || continue
-    pr_url=$(printf '%s' "$pr_json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['url'])" 2>/dev/null || echo "")
-    head_ref=$(printf '%s' "$pr_json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['headRefName'])" 2>/dev/null || echo "")
+    pr_number=$(printf '%s' "$pr_json" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(d['number'])" 2>/dev/null) || continue
 
-    # State file tracks last-seen comment ID per PR (keyed by repo+PR number)
+    pr_url=$(printf '%s' "$pr_json" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(d['url'])" 2>/dev/null || echo "")
+
+    head_ref=$(printf '%s' "$pr_json" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(d['headRefName'])" 2>/dev/null || echo "")
+
+    # State file tracks seen node-ID strings per PR (keyed by repo+PR number)
     state_key=$(printf '%s' "${full_repo}/${pr_number}" | tr '/' '_')
-    state_file="${CV_STATE_DIR}/${state_key}.last-comment-id"
-    last_seen_id=0
-    if [ -f "$state_file" ]; then
-      last_seen_id=$(cat "$state_file" 2>/dev/null || echo 0)
-    fi
+    state_file="${CV_STATE_DIR}/${state_key}.seen-ids"
 
-    # Fetch PR reviews and issue comments
+    # Load seen IDs into a temp file so we can pass to python3 via stdin
+    seen_ids_content=$(load_seen_ids "$state_file")
+
+    # Fetch PR reviews, issue comments, and inline review thread comments.
+    # Pass JSON via STDIN to python3 (avoids ARG_MAX limits on large PRs).
     pr_comments_json=$("$GH" pr view "$pr_number" \
       --repo "$full_repo" \
-      --json reviews,comments \
+      --json reviews,comments,reviewThreads \
       2>/dev/null) || {
       echo "con-voyage-pr-watch: [PART B] WARNING: gh pr view failed for ${full_repo}#${pr_number}; skipping" >&2
       continue
     }
 
-    # Extract new human comments using python3 (available in gc controller envs)
+    # Extract new human comments using python3.
+    # Reads PR JSON from stdin (fd 0) and seen-IDs + config from argv.
     # A comment is "human" if:
-    #   1. The author login is not a known bot (no [bot] suffix, not in BOT_PATTERNS)
+    #   1. The author login is not a known bot (no [bot] suffix, not in BOT_LOGINS)
     #   2. The comment body does NOT start with the con-voyage agent prefix pattern
-    #   3. The comment database ID is > last_seen_id
+    #   3. The comment's node-ID STRING is NOT in the seen-IDs set
     #
-    # We examine both PR review comments and issue (timeline) comments.
-    new_comments=$(python3 - "$pr_comments_json" "$last_seen_id" "$CV_AGENT_PREFIX_PATTERN" <<'PYEOF'
+    # Examines: reviews, comments (issue/timeline), reviewThreads (inline).
+    # Outputs: JSON array of new items, or "NONE".
+    # Also outputs "SEEN_IDS:<newline-delimited-ids>" of ALL seen IDs after
+    # including new ones (for state-file update).
+    # shellcheck disable=SC2016
+    _PY_SCAN_COMMENTS='
 import sys, json, re
 
-data = json.loads(sys.argv[1])
-last_seen = int(sys.argv[2])
-agent_prefix_re = re.compile(sys.argv[3])
+pr_data    = json.load(sys.stdin)   # PR JSON from stdin
+seen_ids   = set(line.strip() for line in sys.argv[1].splitlines() if line.strip())
+agent_re   = re.compile(sys.argv[2])
 
 BOT_SUFFIXES = ["[bot]"]
-BOT_LOGINS = {"github-actions", "dependabot", "renovate", "stale", "codecov"}
+BOT_LOGINS   = {"github-actions", "dependabot", "renovate", "stale", "codecov"}
 
 def is_bot(login):
-    login_lower = (login or "").lower()
-    for suffix in BOT_SUFFIXES:
-        if login_lower.endswith(suffix):
+    ll = (login or "").lower()
+    for s in BOT_SUFFIXES:
+        if ll.endswith(s):
             return True
-    return login_lower in BOT_LOGINS
+    return ll in BOT_LOGINS
 
 def is_agent_comment(body):
-    # Con-voyage agents prefix their comments with [<rig>/<agent> — <lens>]
-    return bool(agent_prefix_re.match(body or ""))
+    return bool(agent_re.match(body or ""))
 
-found = []
+found      = []
+new_ids    = set()
 
-# PR review comments (inline code comments + review summaries)
-for review in data.get("reviews", []):
-    # Reviews have an id (integer or string), author, body, state
-    rid = review.get("id")
-    if rid is None:
-        continue
-    # GitHub review IDs are large integers; compare numerically when possible
-    try:
-        rid_int = int(str(rid).strip())
-    except (ValueError, AttributeError):
-        continue
-    if rid_int <= last_seen:
+# --- PR review summaries ---
+for review in pr_data.get("reviews", []):
+    nid = str(review.get("id") or "").strip()
+    if not nid or nid in seen_ids:
         continue
     author = review.get("author", {}).get("login", "")
-    body = review.get("body", "") or ""
-    state = review.get("state", "") or ""
+    body   = review.get("body", "") or ""
+    state  = review.get("state", "") or ""
     if is_bot(author):
         continue
     if is_agent_comment(body):
         continue
-    # Only surface reviews with substantive feedback (APPROVED, CHANGES_REQUESTED,
-    # COMMENTED with a non-empty body). Skip PENDING (not yet submitted).
-    if state in ("PENDING",):
+    if state == "PENDING":
         continue
     if not body.strip() and state not in ("APPROVED", "CHANGES_REQUESTED"):
         continue
     found.append({
-        "id": rid_int,
-        "type": "review",
+        "id":     nid,
+        "type":   "review",
         "author": author,
-        "body": body[:200],
-        "state": state,
+        "body":   body[:200],
+        "state":  state,
     })
+    new_ids.add(nid)
 
-# Issue comments (timeline comments on the PR)
-for comment in data.get("comments", []):
-    cid = comment.get("id")
-    if cid is None:
-        continue
-    try:
-        cid_int = int(str(cid).strip())
-    except (ValueError, AttributeError):
-        continue
-    if cid_int <= last_seen:
+# --- Issue / timeline comments ---
+for comment in pr_data.get("comments", []):
+    nid = str(comment.get("id") or "").strip()
+    if not nid or nid in seen_ids:
         continue
     author = comment.get("author", {}).get("login", "")
-    body = comment.get("body", "") or ""
+    body   = comment.get("body", "") or ""
     if is_bot(author):
         continue
     if is_agent_comment(body):
@@ -285,57 +371,95 @@ for comment in data.get("comments", []):
     if not body.strip():
         continue
     found.append({
-        "id": cid_int,
-        "type": "comment",
+        "id":     nid,
+        "type":   "comment",
         "author": author,
-        "body": body[:200],
-        "state": "",
+        "body":   body[:200],
+        "state":  "",
     })
+    new_ids.add(nid)
 
+# --- Inline review-thread comments ---
+for thread in pr_data.get("reviewThreads", []):
+    for comment in thread.get("comments", {}).get("nodes", []):
+        nid = str(comment.get("id") or "").strip()
+        if not nid or nid in seen_ids:
+            continue
+        author = comment.get("author", {}).get("login", "")
+        body   = comment.get("body", "") or ""
+        if is_bot(author):
+            continue
+        if is_agent_comment(body):
+            continue
+        if not body.strip():
+            continue
+        found.append({
+            "id":     nid,
+            "type":   "inline",
+            "author": author,
+            "body":   body[:200],
+            "state":  "",
+        })
+        new_ids.add(nid)
+
+# Emit results
 if not found:
     print("NONE")
 else:
-    # Sort by id so we process in chronological order
-    found.sort(key=lambda x: x["id"])
+    # Stable order: new items first (their relative order from the API)
     print(json.dumps(found))
-PYEOF
-    ) || {
+
+# Always emit updated seen-IDs set (existing + newly routed) on a sentinel
+# line so the shell can persist it without a second python invocation.
+all_ids = seen_ids | new_ids
+print("SEEN_IDS:" + "\n".join(sorted(all_ids)))
+'
+    new_comments=$(printf '%s' "$pr_comments_json" | python3 -c "$_PY_SCAN_COMMENTS" "$seen_ids_content" "$CV_AGENT_PREFIX_PATTERN") || {
       echo "con-voyage-pr-watch: [PART B] WARNING: comment parsing failed for ${full_repo}#${pr_number}" >&2
       continue
     }
 
-    if [ "$new_comments" = "NONE" ] || [ -z "$new_comments" ]; then
+    # Split python3 output into the result and the SEEN_IDS block
+    result_line=$(printf '%s\n' "$new_comments" | grep -v '^SEEN_IDS:' | head -1)
+    updated_seen_ids=$(printf '%s\n' "$new_comments" | awk '/^SEEN_IDS:/{found=1; sub(/^SEEN_IDS:/,""); print; next} found{print}')
+
+    if [ "$result_line" = "NONE" ] || [ -z "$result_line" ]; then
       echo "con-voyage-pr-watch: [PART B] ${full_repo}#${pr_number}: no new human comments"
+      # Persist seen-IDs even when nothing new (idempotent — same content)
+      if [ -n "$updated_seen_ids" ]; then
+        printf '%s\n' "$updated_seen_ids" | save_seen_ids "$state_file"
+      fi
       continue
     fi
 
     echo "con-voyage-pr-watch: [PART B] ${full_repo}#${pr_number}: new human feedback found — routing to ${CV_IMPLEMENTOR}"
 
-    # Build a routing message summarizing the new feedback
-    feedback_summary=$(printf '%s' "$new_comments" | python3 -c "
+    # Build a routing message summarizing the new feedback.
+    # Pass JSON via stdin to avoid ARG_MAX issues.
+    # shellcheck disable=SC2016
+    _PY_SUMMARIZE='
 import sys, json
 items = json.load(sys.stdin)
 lines = []
-for item in items[:5]:  # cap at 5 items per run to avoid info overload
-    author = item.get('author','?')
-    kind = item.get('type','comment')
-    state = item.get('state','')
-    body = item.get('body','').strip()
-    if state:
-        lines.append(f'  [{kind}] @{author} ({state}): {body[:120]}')
-    else:
-        lines.append(f'  [{kind}] @{author}: {body[:120]}')
+for item in items[:5]:   # cap at 5 items per run to avoid info overload
+    author = item.get("author", "?")
+    kind   = item.get("type", "comment")
+    state  = item.get("state", "")
+    body   = item.get("body", "").strip()
+    nid    = item.get("id", "")
+    label  = (" (" + state + ")") if state else ""
+    lines.append("  [" + kind + "] @" + author + label + ": " + body[:120] + "  [id:" + nid + "]")
 if len(items) > 5:
-    lines.append(f'  ... and {len(items)-5} more comment(s)')
-print('\n'.join(lines))
-" 2>/dev/null || echo "  (summary unavailable)")
+    lines.append("  ... and " + str(len(items)-5) + " more comment(s)")
+print("\n".join(lines))
+'
+    feedback_summary=$(printf '%s' "$result_line" | python3 -c "$_PY_SUMMARIZE" 2>/dev/null || echo "  (summary unavailable)")
 
-    # Route the feedback to the implementor by slinging a task bead.
-    # gc sling creates a routed bead that the implementor will pick up.
-    # We use --title and --body to describe the task. The bead dedup key
-    # is the PR URL + max comment ID so duplicate routes within a run are
-    # prevented.
-    max_id=$(printf '%s' "$new_comments" | python3 -c "import sys,json; items=json.load(sys.stdin); print(max(x['id'] for x in items))" 2>/dev/null || echo 0)
+    # Dedup key uses the set of new node-IDs (stable across retries with same comments)
+    new_ids_for_key=$(printf '%s\n' "$result_line" | python3 -c "
+import sys, json
+items = json.load(sys.stdin)
+print(','.join(sorted(x['id'] for x in items)))" 2>/dev/null || echo "unknown")
 
     route_title="Human PR feedback on ${full_repo}#${pr_number}: ${head_ref}"
     route_body="New human review feedback on PR ${pr_url} (branch: ${head_ref}).
@@ -346,15 +470,17 @@ changes on the branch '${head_ref}' using TDD. Push the fix — do NOT merge.
 New feedback:
 ${feedback_summary}
 
-Routing from con-voyage-pr-watch (idempotency: pr-comment-${full_repo//\//_}-${pr_number}-${max_id})"
+Routing from con-voyage-pr-watch (idempotency: pr-comment-${full_repo//\//_}-${pr_number}-nodeids-${new_ids_for_key})"
 
     if "$GC" --city "$GC_CITY" sling "$CV_IMPLEMENTOR" \
       --title "$route_title" \
       --body "$route_body" \
       2>&1; then
       echo "con-voyage-pr-watch: [PART B] ${full_repo}#${pr_number}: routed to ${CV_IMPLEMENTOR}"
-      # Update last-seen ID to the highest ID we processed
-      echo "$max_id" > "$state_file"
+      # Persist updated seen-IDs only on successful route
+      if [ -n "$updated_seen_ids" ]; then
+        printf '%s\n' "$updated_seen_ids" | save_seen_ids "$state_file"
+      fi
     else
       echo "con-voyage-pr-watch: [PART B] WARNING: gc sling failed for ${full_repo}#${pr_number}; will retry next cycle" >&2
       # Do NOT update state file — we'll retry on next cycle
@@ -365,8 +491,25 @@ import sys, json
 data = json.load(sys.stdin)
 for pr in data:
     if not pr.get('isDraft', False):
-        print(json.dumps(pr))
-" 2>/dev/null)
+        print(json.dumps(pr))" 2>/dev/null)
+
+  # ---------------------------------------------------------------------------
+  # State-file GC: remove state files for PRs that are no longer open.
+  # This prevents unbounded accumulation of seen-ID files for merged/closed PRs.
+  # ---------------------------------------------------------------------------
+  if [ -n "$open_pr_numbers" ]; then
+    # Build set of expected state-file basenames for open PRs
+    for existing_state in "${CV_STATE_DIR}/${owner}_${repo}_"*.seen-ids; do
+      [ -f "$existing_state" ] || continue
+      basename_no_ext="${existing_state%.seen-ids}"
+      # Extract PR number suffix: state key is owner_repo_<number>
+      pr_num_from_file="${basename_no_ext##*_}"
+      if ! printf '%s\n' "$open_pr_numbers" | grep -qx "$pr_num_from_file"; then
+        echo "con-voyage-pr-watch: [PART B] GC: removing stale state for closed PR #${pr_num_from_file} (${full_repo})"
+        rm -f "$existing_state"
+      fi
+    done
+  fi
 
 done
 
