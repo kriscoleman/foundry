@@ -401,12 +401,14 @@ for monitor_repo in "${MONITOR_REPOS[@]}"; do
   #
   # AUTHOR SCOPING (see HARD INVARIANT in the header): --author "$CV_PR_AUTHOR"
   # restricts the enumeration to the operator's own PRs, so we never poll or
-  # route comments from anyone else's PR. This is the airtight gate for PART B.
+  # route comments from anyone else's PR. This is the first gate for PART B; a
+  # SECOND, defensive per-PR author re-check (below, mirroring PART A's exact
+  # match) verifies each PR's author == CV_PR_AUTHOR before routing any comment.
   open_prs_json=$("$GH" pr list \
     --repo "$full_repo" \
     --author "$CV_PR_AUTHOR" \
     --state open \
-    --json number,headRefName,url,isDraft \
+    --json number,headRefName,url,isDraft,author \
     2>/dev/null) || {
     echo "con-voyage-pr-watch: [PART B] WARNING: gh pr list failed for ${full_repo}; skipping" >&2
     continue
@@ -447,6 +449,27 @@ print(d['url'])" 2>/dev/null || echo "")
 import sys, json
 d = json.load(sys.stdin)
 print(d['headRefName'])" 2>/dev/null || echo "")
+
+    # DEFENSIVE AUTHOR RE-CHECK (belt-and-suspenders, mirrors PART A's exact
+    # gate). `gh pr list --author "$CV_PR_AUTHOR"` should already restrict this
+    # set to the operator's own PRs, but we re-verify the author of EACH PR
+    # before routing any comment. This makes it impossible for a comment from a
+    # PR not authored by CV_PR_AUTHOR to ever be routed — even if the upstream
+    # --author filter were bypassed, misbehaved, or the JSON were malformed.
+    #
+    # INVARIANT: PART B routes comments ONLY from CV_PR_AUTHOR-authored PRs.
+    # An unresolved/empty author is treated as "not ours" and dropped (fail
+    # closed) — it is always better to route NOTHING than to route a comment
+    # from someone else's PR.
+    pr_author=$(printf '%s' "$pr_json" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print((d.get('author') or {}).get('login', ''))" 2>/dev/null || echo "")
+
+    if [ "$pr_author" != "$CV_PR_AUTHOR" ]; then
+      echo "con-voyage-pr-watch: [PART B] DROP ${full_repo}#${pr_number} (author='${pr_author:-<unresolved>}' != '${CV_PR_AUTHOR}') — not routing any comment" >&2
+      continue
+    fi
 
     # State file tracks seen node-ID strings per PR (keyed by repo+PR number)
     state_key=$(printf '%s' "${full_repo}/${pr_number}" | tr '/' '_')
