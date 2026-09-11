@@ -241,6 +241,34 @@ has no merge capability. The `con-voyage-pr-watch` order has no merge capability
 The `con-voyage-ci-repair` formula instructs the implementor to push fixes to the
 PR branch and explicitly prohibits merging. **A human must land every PR.**
 
+### Testing the author-scoping invariant
+
+The author-scoping guarantee is security-critical (an earlier unfiltered version
+acted on PRs it did not own and got the operator removed from an org), so it has
+a dedicated regression test:
+
+```
+bash molds/con-voyage-gascity/tests/con-voyage-pr-watch.test.sh
+```
+
+The test is fully hermetic and offline — it builds recording stub `gh` and `gc`
+executables in a temp dir, points the script at them via `GH=`/`GC=`, and asserts
+on the recorded call-logs. It never touches the network or the real gc runtime.
+It exits `0` when every case passes, non-zero otherwise. Covered cases:
+
+- **Fail-closed** — no resolvable `CV_PR_AUTHOR` ⇒ exit 1 before any repo query.
+- **PART A author drop** — only the operator's PR gets a repair bead; other
+  humans and bots never do.
+- **Exact, case-sensitive match** — `kriscoleman2` and `KRISCOLEMAN` are dropped.
+- **Unresolved author** — a PR whose author can't be resolved is dropped.
+- **PART B scoping** — `gh pr list` carries `--author <operator>`, and comments
+  are routed only for the operator's PRs.
+- **Default resolution** — an unset `CV_PR_AUTHOR` falls back to the
+  authenticated `gh` login and then scopes to it.
+
+The `tests/` directory lives outside `pack/`, so it is never compiled into the
+shipped `packs/con-voyage` pack.
+
 ---
 
 ## Usage
