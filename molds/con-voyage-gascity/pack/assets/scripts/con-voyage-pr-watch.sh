@@ -1,15 +1,40 @@
 #!/usr/bin/env bash
 # con-voyage-pr-watch.sh — GitHub PR monitoring driver
 #
+# ############################################################################
+# # HARD INVARIANT — AUTHOR SCOPING                                          #
+# #                                                                          #
+# # This monitor MUST only ever act on PRs authored by the single           #
+# # configured user CV_PR_AUTHOR (default: the authenticated gh login).      #
+# # It NEVER creates a repair bead for, and NEVER routes comments from, a    #
+# # PR authored by anyone else.                                             #
+# #                                                                          #
+# # Rationale: an earlier unfiltered version acted on 43 PRs it did not own  #
+# # across other people's repos and got the operator removed from the org.   #
+# # Both duties below are author-scoped, and the script FAILS CLOSED (exits  #
+# # non-zero before any GitHub work) if CV_PR_AUTHOR cannot be resolved.     #
+# #                                                                          #
+# # The native [[github.pr_monitor]] config cannot express an author filter  #
+# # and `gc github pr backfill` has no --author flag, so author-scoping is   #
+# # enforced HERE, in this script, which is the sole runtime driver of the   #
+# # monitor (the native poll_interval is inert without it).                  #
+# ############################################################################
+#
 # Drives two monitoring duties:
 #
-#   PART A: CI-failure repair
-#     Runs `gc github pr backfill --create-repair-beads` against all configured
-#     [[github.pr_monitor]] blocks. The native monitor evaluates PR check-run
-#     state and merge-state, creates deduped repair beads for actionable PRs,
-#     and attaches the configured repair_workflow formula. This script is what
-#     actually invokes that backfill on a recurring basis — without it the
-#     native monitor never fires (poll_interval is inert at runtime).
+#   PART A: CI-failure repair (AUTHOR-SCOPED)
+#     Runs `gc github pr backfill --json` (REPORT-ONLY, no --create-repair-beads)
+#     against all configured [[github.pr_monitor]] blocks, then DROPS every PR
+#     not authored by CV_PR_AUTHOR, and creates a deduped repair bead only for
+#     each surviving actionable PR. This script is what actually invokes the
+#     backfill on a recurring basis — without it the native monitor never fires
+#     (poll_interval is inert at runtime).
+#
+#     NOTE: we deliberately do NOT use `gc github pr backfill
+#     --create-repair-beads`, because that native path creates a repair bead
+#     for EVERY actionable PR regardless of author (it has no author filter).
+#     Using the report-only JSON + our own per-PR author check + our own bead
+#     creation is the only way to guarantee the author-scoping invariant.
 #
 #   PART B: Human PR-comment routing (best-effort polling)
 #     The native [[github.pr_monitor]] watches CI checks and merge-state ONLY.
@@ -46,6 +71,10 @@
 #   CV_STATE_DIR    Directory for idempotency state files (default: .gc/cv-pr-watch)
 #   CV_IMPLEMENTOR  Implementor session/route target for routing human comments
 #                   (default: gc.implementation-worker)
+#   CV_PR_AUTHOR    REQUIRED (author-scoping). The single GitHub login whose PRs
+#                   this monitor is allowed to act on. Defaults to the
+#                   authenticated gh login. If it cannot be resolved, the script
+#                   FAILS CLOSED (exit 1) before touching any repo.
 #
 # Exit codes:
 #   0 — completed (some or all monitors may have had no actionable PRs)
@@ -66,6 +95,17 @@ GH="${GH:-gh}"
 GC_CITY="${GC_CITY:-.}"
 CV_STATE_DIR="${CV_STATE_DIR:-${GC_CITY}/.gc/cv-pr-watch}"
 CV_IMPLEMENTOR="${CV_IMPLEMENTOR:-gc.implementation-worker}"
+
+# AUTHOR SCOPING (see HARD INVARIANT in the header). The single GitHub login
+# whose PRs this monitor may act on. Defaults to the authenticated gh login.
+# Never leave this empty — the preflight fails closed if it is unresolved.
+#
+# NOTE: we do NOT resolve the gh-login default here. Under `set -e`, a failing
+# command substitution on this assignment line would abort the script BEFORE
+# the fail-closed guard could report a clear error. The gh-login fallback is
+# resolved (guarded against set -e) in the preflight below, after gh is known
+# to exist. Here we only accept an explicit CV_PR_AUTHOR from the environment.
+CV_PR_AUTHOR="${CV_PR_AUTHOR:-}"
 
 # Con-voyage reviewer identity prefix — comments starting with this pattern
 # are agent review comments, not human comments. The prefix format is:
@@ -98,29 +138,146 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# Resolve the CV_PR_AUTHOR gh-login default (guarded against set -e).
+#
+# If CV_PR_AUTHOR was not provided explicitly, fall back to the authenticated
+# gh login. This runs AFTER the gh existence/auth preflight, and the command
+# substitution is guarded with `|| true` so a gh failure leaves CV_PR_AUTHOR
+# empty and lets the fail-closed guard below report a clear error and exit —
+# rather than `set -e` aborting the script silently on this line.
+# ---------------------------------------------------------------------------
+if [ -z "${CV_PR_AUTHOR// /}" ]; then
+  CV_PR_AUTHOR="$("$GH" api user --jq .login 2>/dev/null || true)"
+fi
+
+# ---------------------------------------------------------------------------
+# FAIL-CLOSED author-scoping guard (see HARD INVARIANT in the header).
+#
+# If CV_PR_AUTHOR is empty/unresolved we MUST NOT proceed: an unscoped run
+# would act on every open PR in every configured repo, including PRs authored
+# by other people. Exit non-zero BEFORE any PART A / PART B work — before we
+# query a single repo.
+# ---------------------------------------------------------------------------
+if [ -z "${CV_PR_AUTHOR// /}" ]; then
+  echo "con-voyage-pr-watch: FATAL: CV_PR_AUTHOR is empty/unresolved." >&2
+  echo "con-voyage-pr-watch: author-scoping is mandatory — refusing to act on any PR." >&2
+  echo "con-voyage-pr-watch: set CV_PR_AUTHOR explicitly (e.g. CV_PR_AUTHOR=kriscoleman)" >&2
+  echo "con-voyage-pr-watch: or ensure 'gh api user --jq .login' resolves." >&2
+  exit 1
+fi
+echo "con-voyage-pr-watch: author-scoped to PRs authored by '${CV_PR_AUTHOR}' (all other PRs are ignored)"
+
 # Ensure state directory exists
 mkdir -p "$CV_STATE_DIR"
 
 # ---------------------------------------------------------------------------
-# PART A: CI-failure repair via native pr_monitor backfill
+# PART A: CI-failure repair (author-scoped)
 # ---------------------------------------------------------------------------
 #
-# gc github pr backfill reads all [[github.pr_monitor]] blocks from city.toml,
-# evaluates open PRs against each monitor, and creates deduped repair beads
-# for any actionable PR (failed checks, DIRTY, BEHIND, BLOCKED). Repair beads
-# are keyed by (monitor-name, PR-number, head-sha) so this call is idempotent.
+# AUTHOR-SCOPED FLOW (see HARD INVARIANT in the header):
 #
-# The --create-repair-beads flag is what triggers bead creation. Without it
-# the command only evaluates and prints results (useful for debugging).
+#   1. Run `gc github pr backfill --json` REPORT-ONLY (NO --create-repair-beads).
+#      This evaluates all [[github.pr_monitor]] blocks and reports every
+#      actionable PR (failed checks, DIRTY, BEHIND, BLOCKED) as JSON — but
+#      creates NO beads.
+#   2. For each actionable result, resolve the PR's author login (via
+#      `gh pr view`) and DROP the PR unless its author == CV_PR_AUTHOR.
+#   3. For each surviving PR, create ONE deduped repair bead by attaching the
+#      `con-voyage-ci-repair` formula to the monitor's repair_route, matching
+#      the native title/dedup shape:
+#        title: "Repair GitHub PR <owner>/<repo>#<n> readiness: <title>"
+#        dedup: repo + PR number + head-sha  (idempotent across cooldown ticks)
 #
-# Output goes to stdout (JSON lines). Failures are printed to stderr and the
-# exit code reflects the worst outcome; we tolerate per-monitor errors and
-# continue to Part B.
+# We deliberately AVOID `--create-repair-beads` because that native path has no
+# author filter and would create a bead for every actionable PR. The report +
+# per-PR author check + our own bead creation is the ONLY way to guarantee the
+# invariant: ZERO repair beads for PRs not authored by CV_PR_AUTHOR.
+#
+# ZERO-BEAD-FOR-OTHERS GUARANTEE: bead creation happens strictly inside the
+# `author == CV_PR_AUTHOR` branch below. Any PR whose author cannot be resolved
+# (empty login, gh error) is treated as "not ours" and skipped — fail closed.
+# It is always better to create NO bead than to create one for someone else.
 
-echo "con-voyage-pr-watch: [PART A] running gc github pr backfill --create-repair-beads"
-if ! "$GC" --city "$GC_CITY" github pr backfill --create-repair-beads 2>&1; then
-  echo "con-voyage-pr-watch: WARNING: backfill returned non-zero; repair beads may be incomplete" >&2
-  # Non-fatal: continue to Part B
+echo "con-voyage-pr-watch: [PART A] report-only backfill (gc github pr backfill --json), author-filtering to '${CV_PR_AUTHOR}'"
+
+backfill_json=$("$GC" --city "$GC_CITY" github pr backfill --json 2>/dev/null) || {
+  echo "con-voyage-pr-watch: [PART A] WARNING: report-only backfill returned non-zero; skipping repair-bead creation this cycle" >&2
+  backfill_json=""
+}
+
+if [ -n "$backfill_json" ]; then
+  # Emit only ACTIONABLE results as one JSON object per line for the shell loop.
+  # (report-only JSON never contains a per-PR author field, so we resolve the
+  # author separately below via gh — see ZERO-BEAD-FOR-OTHERS guarantee.)
+  actionable_prs=$(printf '%s' "$backfill_json" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for r in data.get('results', []):
+    if r.get('actionable'):
+        print(json.dumps(r))
+" 2>/dev/null || true)
+
+  if [ -z "$actionable_prs" ]; then
+    echo "con-voyage-pr-watch: [PART A] no actionable PRs reported; nothing to repair"
+  else
+    while IFS= read -r result_json; do
+      [ -n "$result_json" ] || continue
+
+      a_owner=$(printf '%s' "$result_json" | python3 -c "import sys,json;print(json.load(sys.stdin).get('owner',''))" 2>/dev/null || echo "")
+      a_repo=$(printf '%s' "$result_json"  | python3 -c "import sys,json;print(json.load(sys.stdin).get('repo',''))"  2>/dev/null || echo "")
+      a_num=$(printf '%s' "$result_json"   | python3 -c "import sys,json;print(json.load(sys.stdin).get('number',''))" 2>/dev/null || echo "")
+      a_title=$(printf '%s' "$result_json" | python3 -c "import sys,json;print(json.load(sys.stdin).get('title',''))" 2>/dev/null || echo "")
+      a_branch=$(printf '%s' "$result_json" | python3 -c "import sys,json;print(json.load(sys.stdin).get('head_ref_name',''))" 2>/dev/null || echo "")
+      a_sha=$(printf '%s' "$result_json"   | python3 -c "import sys,json;print(json.load(sys.stdin).get('head_sha',''))" 2>/dev/null || echo "")
+      a_route=$(printf '%s' "$result_json" | python3 -c "import sys,json;print(json.load(sys.stdin).get('repair_route',''))" 2>/dev/null || echo "")
+
+      if [ -z "$a_owner" ] || [ -z "$a_repo" ] || [ -z "$a_num" ]; then
+        echo "con-voyage-pr-watch: [PART A] skipping malformed backfill result: ${result_json}" >&2
+        continue
+      fi
+      a_full="${a_owner}/${a_repo}"
+
+      # Resolve the PR author. The report JSON has no author field, so ask gh.
+      pr_author=$("$GH" pr view "$a_num" --repo "$a_full" --json author \
+        --jq '.author.login' 2>/dev/null || echo "")
+
+      # AUTHOR FILTER — the airtight gate. Anything that is not exactly
+      # CV_PR_AUTHOR (including an unresolved/empty author) is dropped.
+      if [ "$pr_author" != "$CV_PR_AUTHOR" ]; then
+        echo "con-voyage-pr-watch: [PART A] DROP ${a_full}#${a_num} (author='${pr_author:-<unresolved>}' != '${CV_PR_AUTHOR}') — no repair bead created"
+        continue
+      fi
+
+      # Survivor: author matches. Create ONE deduped repair bead.
+      repair_title="Repair GitHub PR ${a_full}#${a_num} readiness: ${a_title}"
+      dedup_key="cv-ci-repair-${a_owner}-${a_repo}-${a_num}-${a_sha}"
+
+      if [ -z "$a_route" ]; then
+        echo "con-voyage-pr-watch: [PART A] WARNING: ${a_full}#${a_num} has no repair_route in backfill result; cannot create bead safely; skipping" >&2
+        continue
+      fi
+
+      echo "con-voyage-pr-watch: [PART A] KEEP ${a_full}#${a_num} (author='${pr_author}') — creating repair bead (dedup: ${dedup_key})"
+
+      if "$GC" --city "$GC_CITY" sling "$a_route" \
+        --on con-voyage-ci-repair \
+        --title "$repair_title" \
+        --var "title=${a_title}" \
+        --var "pr=${a_num}" \
+        --var "repo=${a_full}" \
+        --var "branch=${a_branch}" \
+        2>&1; then
+        echo "con-voyage-pr-watch: [PART A] ${a_full}#${a_num}: repair bead created/attached and routed to ${a_route}"
+      else
+        echo "con-voyage-pr-watch: [PART A] WARNING: repair-bead sling failed for ${a_full}#${a_num}; will retry next cycle" >&2
+        # Non-fatal: continue to next PR / Part B.
+      fi
+    done <<< "$actionable_prs"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -235,8 +392,13 @@ for monitor_repo in "${MONITOR_REPOS[@]}"; do
 
   # List open PRs. We only care about non-draft PRs (con-voyage PRs are
   # always non-draft by the time they reach review).
+  #
+  # AUTHOR SCOPING (see HARD INVARIANT in the header): --author "$CV_PR_AUTHOR"
+  # restricts the enumeration to the operator's own PRs, so we never poll or
+  # route comments from anyone else's PR. This is the airtight gate for PART B.
   open_prs_json=$("$GH" pr list \
     --repo "$full_repo" \
+    --author "$CV_PR_AUTHOR" \
     --state open \
     --json number,headRefName,url,isDraft \
     2>/dev/null) || {
