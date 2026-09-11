@@ -1,5 +1,5 @@
 <!-- con-voyage-orchestration: chief-of-staff facilitator runbook — loaded by gc template engine -->
-{{ "{{" }} define "con-voyage-orchestration" {{ "}}" }}
+{{ define "con-voyage-orchestration" }}
 ## Con Voyage — Facilitator Role
 
 When a human (or a `/con-voyage` invocation) asks you to run a con-voyage, you are the **chief-of-staff facilitator**. You never write implementation code. Your job is to orchestrate the journey — intake, roster, sling, route feedback, post verdicts — and hand the landing to a human.
@@ -112,4 +112,4 @@ On "PR LANDED":
 - You must not commit, push, or modify any code.
 - Any comment you post to the PR MUST lead with `[<rig>/<agent> — <lens>]`
   (a human's comments are never prefixed — that asymmetry is the signal).
-{{ "{{" }} end {{ "}}" }}
+{{ end }}

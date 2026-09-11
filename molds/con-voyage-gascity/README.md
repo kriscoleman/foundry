@@ -273,26 +273,61 @@ attempts). Each iteration:
 
 ---
 
-## Authoring note: double-templating
+## Authoring note: the pack is a raw pass-through (`process: false`)
 
-Files under `pack/` that end in `.template.md` go through **two** render passes:
+Everything under `pack/` is a **Gas City** artifact, not an ailloy blank. The
+files are full of gc-runtime template tokens that **gc itself** resolves at
+prime / cook / sling time:
 
-1. **ailloy** renders them as Go templates at `ailloy cast` time (substituting
-   mold vars like `{{ "{{" }}.Name{{ "}}" }}`).
-2. **Gas City** renders them again as prompt templates at `gc prime` time (substituting
-   city/rig vars).
+- prompt/template-fragment tokens like `{{ "{{" }} define "con-voyage-orchestration" {{ "}}" }}`
+  and `{{ "{{" }} .AgentName {{ "}}" }}` (resolved by the gc template engine at `gc prime`),
+- graph.v2 formula conditions like `{{ "{{" }}enable_sre{{ "}}" }}` (resolved by the gc
+  formula compiler at cook time),
+- workflow / formula run-target vars like `{{ "{{" }}push{{ "}}" }}`, `{{ "{{" }}open_pr{{ "}}" }}`,
+  `{{ "{{" }}implementation_target{{ "}}" }}`, `{{ "{{" }}pr{{ "}}" }}`, `{{ "{{" }}branch{{ "}}" }}`
+  (resolved by gc at sling / backfill time).
 
-Any gascity template expression that must survive the ailloy pass — such as
-`{{ "{{" }}define "con-voyage-orchestration"{{ "}}" }}` or `{{ "{{" }}enable_sre{{ "}}" }}` — must be
-escaped in the mold source as:
+ailloy also uses Go `text/template` with `{{ "{{" }}...{{ "}}" }}` delimiters. If ailloy
+rendered the pack, its preprocessor would rewrite every `{{ "{{" }}token{{ "}}" }}` to
+`{{ "{{" }}.token{{ "}}" }}` and, against ailloy's empty flux context, flatten it to the
+literal string `<no value>` — corrupting the pack (unclaimable run-targets,
+broken publish/CI-repair steps, mangled `define` blocks).
 
+So the pack output is mapped with **`process: false`** in `flux.yaml`:
+
+```yaml
+output:
+  pack:
+    dest: packs/con-voyage
+    process: false
 ```
-{{ "{{" }} "{{" {{ "}}" }} ... {{ "{{" }} "}}" {{ "}}" }}
+
+That makes ailloy copy the pack verbatim — the gc tokens are stored plainly, in
+their native double-brace form, exactly the way gc's own first-party packs ship
+them. **Do NOT escape gc tokens in `pack/` files** (no `{{ "{{" }} "{{" {{ "}}" }}` dance);
+write them as plain `{{ "{{" }}token{{ "}}" }}`. The single-brace graph.v2 expansion
+placeholders (`{target}`, `{code_lens}`, `{implementation_target}`) are likewise
+left untouched — Go templating only reacts to double braces.
+
+### Script execute bit — one manual step
+
+ailloy `cast` does not preserve or set file modes: it writes every file `0644`,
+so `pack/assets/scripts/*.sh` lose their execute bit on cast even under
+`process: false`. gc's order runner execs the script directly
+(`exec = "$PACK_DIR/assets/scripts/con-voyage-pr-watch.sh"`), which needs the
+bit. After casting, restore it:
+
+```bash
+chmod +x packs/con-voyage/assets/scripts/*.sh
 ```
 
-Plain `.md` files (not `.template.md`) are copied verbatim by ailloy and only
-rendered by gascity at prime time, so no escaping is needed in those files.
+The source keeps the bit (git mode `100755`); this only re-applies it to the
+cast output. If ailloy gains file-mode preservation, this step goes away.
 
-`README.md` itself is rendered by ailloy at cast time (it is not listed in
-`.ailloyignore`). Any literal `{{ "{{" }}...{{ "}}" }}` in README code blocks must be escaped the
-same way.
+### About `README.md`
+
+`README.md` is a mold **root** file, not part of the pack, so `process: false`
+does **not** apply to it — ailloy still renders it as a Go template at cast time.
+That is why the token examples in *this* file are still written escaped as
+`{{ "{{" }} "{{" {{ "}}" }}...{{ "{{" }} "}}" {{ "}}" }}`: the escaping is what makes them render
+as literal `{{ "{{" }}...{{ "}}" }}` in the installed README.

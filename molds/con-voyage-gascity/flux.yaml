@@ -3,5 +3,12 @@ agent:
 output:
   pack:
     dest: packs/con-voyage
+    # Gas City pack files carry gc-runtime template tokens ({{push}}, {{open_pr}},
+    # {{implementation_target}}, {{define ...}}, graph.v2 {{enable_*}} conditions,
+    # etc.) that gc itself resolves at prime/cook/sling time. ailloy must NOT run
+    # its Go text/template pass over them, or those tokens flatten to "<no value>".
+    # process: false makes the whole pack a raw pass-through — the tokens are
+    # stored verbatim, exactly as gc's own first-party packs ship them.
+    process: false
   skills:
     dest: .claude/skills

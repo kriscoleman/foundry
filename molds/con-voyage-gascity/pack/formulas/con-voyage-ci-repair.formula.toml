@@ -23,8 +23,7 @@ failing after the push, a new repair bead will be created for the next cycle.
 
 | Variable         | Description                                      |
 |------------------|--------------------------------------------------|
-| bead_id          | The repair bead id (same as `bead`)              |
-| bead             | The repair bead id                               |
+| convoy_id        | The repair bead id — the reserved v2 work-item id this formula is cooked against (use `{{convoy_id}}`; `bead_id` is NOT a valid v2 token) |
 | title            | PR title                                         |
 | pr               | PR number (integer string)                       |
 | repo             | Repository in owner/repo form                    |
