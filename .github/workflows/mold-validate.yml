@@ -49,6 +49,26 @@ jobs:
             exit 1
           fi
 
+      - name: Run mold shell tests
+        run: |
+          # Run every mold's tests/*.test.sh (hermetic, offline bash tests).
+          # These live outside pack/ so they're never shipped, but they guard
+          # runtime scripts the packs ship (e.g. con-voyage-pr-watch author
+          # scoping — a security-critical invariant).
+          errors=0
+          found=0
+          for test_file in molds/*/tests/*.test.sh; do
+            [ -f "$test_file" ] || continue
+            found=$((found+1))
+            echo "==> bash $test_file"
+            bash "$test_file" || errors=$((errors+1))
+          done
+          echo "ran $found mold shell test file(s)"
+          if [ "$errors" -gt 0 ]; then
+            echo "FAIL: $errors mold shell test file(s) failed."
+            exit 1
+          fi
+
       - name: Lint AI instruction quality
         run: |
           errors=0
