@@ -9,16 +9,16 @@ The monitor re-evaluates the PR on the next backfill — you do not merge.
 
 | Variable | Value              |
 |----------|--------------------|
-| pr       | {{pr}}             |
-| repo     | {{repo}}           |
-| branch   | {{branch}}         |
-| bead_id  | {{bead_id}}        |
-| title    | {{title}}          |
+| pr        | {{pr}}             |
+| repo      | {{repo}}           |
+| branch    | {{branch}}         |
+| convoy_id | {{convoy_id}}      |
+| title     | {{title}}          |
 
 ## Step 1 — Read the repair bead
 
 ```bash
-gc bd show "{{bead_id}}"
+gc bd show "{{convoy_id}}"
 ```
 
 The bead title and description list the failing checks and failure kind
@@ -112,7 +112,7 @@ Commit only the changes that fix the CI failure:
 
 ```bash
 git add -p   # stage only relevant changes
-git commit -m "fix: <brief description of CI fix> (repair {{bead_id}})"
+git commit -m "fix: <brief description of CI fix> (repair {{convoy_id}})"
 ```
 
 Push to the PR branch:
@@ -127,9 +127,9 @@ The PR stays open. A human lands it.
 ## Step 7 — Close the repair bead
 
 ```bash
-gc bd update "{{bead_id}}" \
+gc bd update "{{convoy_id}}" \
   --notes "CI repair pushed to {{branch}}: <one-line summary of fix>"
-gc bd close "{{bead_id}}"
+gc bd close "{{convoy_id}}"
 ```
 
 ## Failure / escalation
@@ -140,7 +140,7 @@ requirements, or the fix requires a human decision):
 ```bash
 gc mail send {{escalation_target}} \
   -s "CI repair blocked: {{repo}}#{{pr}}" \
-  -m "Repair bead {{bead_id}} is stuck. Reason: <brief explanation>. Branch: {{branch}}."
+  -m "Repair bead {{convoy_id}} is stuck. Reason: <brief explanation>. Branch: {{branch}}."
 gc runtime drain-ack
 exit 1
 ```

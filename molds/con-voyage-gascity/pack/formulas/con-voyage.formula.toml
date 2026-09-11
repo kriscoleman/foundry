@@ -129,7 +129,7 @@ default = "false"
 [[template.children]]
 id = "{target}.product-owner-review"
 title = "Con-voyage: product-owner review"
-condition = """{{ "{{" }}enable_product_owner{{ "}}" }}"""
+condition = """{{enable_product_owner}}"""
 metadata = { "gc.run_target" = "con-voyage.cv-product-owner" }
 description_file = "../assets/workflows/con-voyage/{target}.product-owner-review.md"
 
@@ -140,7 +140,7 @@ default = "false"
 [[template.children]]
 id = "{target}.founder-cto-review"
 title = "Con-voyage: founder-CTO review"
-condition = """{{ "{{" }}enable_founder_cto{{ "}}" }}"""
+condition = """{{enable_founder_cto}}"""
 metadata = { "gc.run_target" = "con-voyage.cv-founder-cto" }
 description_file = "../assets/workflows/con-voyage/{target}.founder-cto-review.md"
 
@@ -151,7 +151,7 @@ default = "false"
 [[template.children]]
 id = "{target}.dev-ex-review"
 title = "Con-voyage: developer experience review"
-condition = """{{ "{{" }}enable_dev_ex{{ "}}" }}"""
+condition = """{{enable_dev_ex}}"""
 metadata = { "gc.run_target" = "con-voyage.cv-dev-ex-reviewer" }
 description_file = "../assets/workflows/con-voyage/{target}.dev-ex-review.md"
 
@@ -162,7 +162,7 @@ default = "false"
 [[template.children]]
 id = "{target}.standards-janitor-review"
 title = "Con-voyage: standards and conventions review"
-condition = """{{ "{{" }}enable_standards_janitor{{ "}}" }}"""
+condition = """{{enable_standards_janitor}}"""
 metadata = { "gc.run_target" = "con-voyage.cv-standards-janitor" }
 description_file = "../assets/workflows/con-voyage/{target}.standards-janitor-review.md"
 
@@ -173,7 +173,7 @@ default = "false"
 [[template.children]]
 id = "{target}.qa-test-review"
 title = "Con-voyage: QA and test-engineering review"
-condition = """{{ "{{" }}enable_qa_test{{ "}}" }}"""
+condition = """{{enable_qa_test}}"""
 metadata = { "gc.run_target" = "con-voyage.cv-qa-test-engineer" }
 description_file = "../assets/workflows/con-voyage/{target}.qa-test-review.md"
 
@@ -184,7 +184,7 @@ default = "false"
 [[template.children]]
 id = "{target}.sre-review"
 title = "Con-voyage: SRE reliability review"
-condition = """{{ "{{" }}enable_sre{{ "}}" }}"""
+condition = """{{enable_sre}}"""
 metadata = { "gc.run_target" = "con-voyage.cv-sre-reliability" }
 description_file = "../assets/workflows/con-voyage/{target}.sre-review.md"
 
@@ -195,7 +195,7 @@ default = "false"
 [[template.children]]
 id = "{target}.design-ux-review"
 title = "Con-voyage: design and UX review"
-condition = """{{ "{{" }}enable_design_ux{{ "}}" }}"""
+condition = """{{enable_design_ux}}"""
 metadata = { "gc.run_target" = "con-voyage.cv-design-ux" }
 description_file = "../assets/workflows/con-voyage/{target}.design-ux-review.md"
 
@@ -206,7 +206,7 @@ default = "false"
 [[template.children]]
 id = "{target}.documentation-review"
 title = "Con-voyage: documentation review"
-condition = """{{ "{{" }}enable_documentation{{ "}}" }}"""
+condition = """{{enable_documentation}}"""
 metadata = { "gc.run_target" = "con-voyage.cv-documentation" }
 description_file = "../assets/workflows/con-voyage/{target}.documentation-review.md"
 
@@ -217,7 +217,7 @@ default = "false"
 [[template.children]]
 id = "{target}.marketing-review"
 title = "Con-voyage: marketing review"
-condition = """{{ "{{" }}enable_marketing{{ "}}" }}"""
+condition = """{{enable_marketing}}"""
 metadata = { "gc.run_target" = "con-voyage.cv-marketing" }
 description_file = "../assets/workflows/con-voyage/{target}.marketing-review.md"
 
@@ -228,7 +228,7 @@ default = "false"
 [[template.children]]
 id = "{target}.api-platform-review"
 title = "Con-voyage: API and platform contract review"
-condition = """{{ "{{" }}enable_api_platform{{ "}}" }}"""
+condition = """{{enable_api_platform}}"""
 metadata = { "gc.run_target" = "con-voyage.cv-api-platform-contract" }
 description_file = "../assets/workflows/con-voyage/{target}.api-platform-review.md"
 
@@ -239,7 +239,7 @@ default = "false"
 [[template.children]]
 id = "{target}.compliance-review"
 title = "Con-voyage: compliance and privacy review"
-condition = """{{ "{{" }}enable_compliance{{ "}}" }}"""
+condition = """{{enable_compliance}}"""
 metadata = { "gc.run_target" = "con-voyage.cv-compliance-privacy" }
 description_file = "../assets/workflows/con-voyage/{target}.compliance-review.md"
 
@@ -250,7 +250,7 @@ default = "false"
 [[template.children]]
 id = "{target}.data-db-review"
 title = "Con-voyage: data and database review"
-condition = """{{ "{{" }}enable_data_db{{ "}}" }}"""
+condition = """{{enable_data_db}}"""
 metadata = { "gc.run_target" = "con-voyage.cv-data-db-engineer" }
 description_file = "../assets/workflows/con-voyage/{target}.data-db-review.md"
 
