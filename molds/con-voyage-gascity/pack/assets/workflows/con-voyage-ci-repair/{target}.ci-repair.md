@@ -36,6 +36,33 @@ gh run view <run-id> --repo {{repo}} --log-failed
 
 Understand WHAT is failing and WHY before touching any code. Do not guess.
 
+## MANDATORY — machine identity on every PR comment/review
+
+You run under the operator's GitHub PAT. Any comment or review you post shows
+up as **@kriscoleman** (the human) — so anything you write WITHOUT a machine
+banner is an impersonation of Kris. This is a trust/security problem and it is
+NOT allowed.
+
+**Rule (mandatory, no exceptions):** every `gh pr comment`, `gh pr review`,
+`gh pr review --comment/--approve/--request-changes` body — any text you post
+to a PR or issue — MUST lead with this identity banner as the FIRST line of the
+body:
+
+```
+🤖 **Automated con-voyage agent** (con-voyage-ci-repair / <rig>/<agent>) — posted via @kriscoleman's token, not by Kris personally.
+```
+
+Substitute your actual rig and agent handle for `<rig>/<agent>` (the same
+identity the con-voyage reviewers use in their `[<rig>/<agent> — <lens>]`
+prefix). If you cannot resolve them, still post the banner with a clear
+`con-voyage-ci-repair` self-identification. Never post a bare comment as if a
+human wrote it.
+
+Note: this repair pass is normally SILENT on the PR — it pushes a code fix and
+lets the monitor re-evaluate. You generally do NOT need to comment. But IF you
+ever post a diagnosis comment, a review, or any other PR/issue text, the banner
+above is required. When in doubt, do not comment; push the fix.
+
 ## Step 3 — Check out the PR branch
 
 Work in the rig root. Fetch the branch and create a local tracking ref:
