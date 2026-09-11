@@ -27,14 +27,59 @@ The bead title and description list the failing checks and failure kind
 ## Step 2 — Fetch the exact failing checks
 
 ```bash
-# List all CI checks for this PR:
+# List all CI checks for this PR (shows each check's run and status):
 gh pr checks {{pr}} --repo {{repo}}
+
+# Resolve the failing run id(s) for the PR head commit:
+gh pr view {{pr}} --repo {{repo}} --json headRefOid --jq .headRefOid
+gh api "repos/{{repo}}/commits/<head-sha>/check-runs" \
+  --jq '.check_runs[] | select(.conclusion=="failure") | {name, run_id: .id, url: .html_url}'
+# Or list recent workflow runs for the branch:
+gh run list --repo {{repo}} --branch {{branch}}
 
 # For any failed run, fetch the logs:
 gh run view <run-id> --repo {{repo}} --log-failed
 ```
 
 Understand WHAT is failing and WHY before touching any code. Do not guess.
+
+### When the failure is a flake / infra blip (NOT a code problem)
+
+Sometimes CI fails for a reason that is NOT a code defect — a transient network
+error, a runner outage, a timed-out dependency download, a known-flaky job. In
+that case there is nothing to fix in the code; you just need to re-run CI.
+
+**Re-run CI the smart, non-destructive way — use the gh CLI:**
+
+```bash
+# PREFERRED: re-run ONLY the failed jobs of a run (cheapest, least noisy):
+gh run rerun <run-id> --failed --repo {{repo}}
+
+# Full re-run of a workflow run (use only if a partial re-run isn't enough):
+gh run rerun <run-id> --repo {{repo}}
+```
+
+Find `<run-id>` via `gh pr checks {{pr}}`, the `check-runs` API, or
+`gh run list` as shown above. Always prefer `--failed` (re-run failed jobs
+only) over a full re-run.
+
+### FORBIDDEN retrigger tactics — never do these
+
+An earlier version of this repair path retriggered CI destructively and got the
+operator in trouble. The following are STRICTLY FORBIDDEN — do NOT do any of
+them, ever, for any reason:
+
+- **Do NOT close and reopen the PR** to retrigger CI.
+- **Do NOT push an empty commit** (`git commit --allow-empty`) or any no-op /
+  whitespace-only / "trigger ci" commit to retrigger CI.
+- **Do NOT force-push** solely to retrigger CI.
+- **Do NOT amend/reword or re-push existing commits** just to kick a new run.
+
+Only push a commit when you have an ACTUAL code fix (see Step 6). If there is no
+code change to make, use `gh run rerun` — never a commit and never PR
+open/close churn. If `gh run rerun` is not available or you lack permission,
+escalate (see Failure / escalation) rather than resorting to any forbidden
+tactic.
 
 ## MANDATORY — machine identity on every PR comment/review
 
@@ -135,7 +180,9 @@ Do not push if any test or lint check fails.
 
 ## Step 6 — Commit and push
 
-Commit only the changes that fix the CI failure:
+Commit only the changes that fix the CI failure. Commit ONLY when there is a
+real code fix — never an empty/no-op commit and never a commit whose sole
+purpose is to retrigger CI (for that, use `gh run rerun` from Step 2):
 
 ```bash
 git add -p   # stage only relevant changes
@@ -148,8 +195,8 @@ Push to the PR branch:
 git push origin {{branch}}
 ```
 
-**NEVER push to main, NEVER merge, NEVER submit to any merge queue.**
-The PR stays open. A human lands it.
+**NEVER push to main, NEVER merge, NEVER approve, NEVER submit to any merge
+queue.** The PR stays open. A human lands it.
 
 ## Step 7 — Close the repair bead
 
