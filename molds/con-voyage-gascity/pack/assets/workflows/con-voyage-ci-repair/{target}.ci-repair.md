@@ -14,6 +14,47 @@ The monitor re-evaluates the PR on the next backfill — you do not merge.
 | branch    | {{branch}}         |
 | convoy_id | {{convoy_id}}      |
 | title     | {{title}}          |
+| cv_pr_author | {{cv_pr_author}} |
+
+## Step 0 — Author gate (fail-closed, mandatory)
+
+Before touching anything else — before even reading the bead — verify this PR
+is actually owned by the operator. A `con-voyage-ci-repair` bead can be minted
+for ANY PR by the native PR monitor (`--create-repair-beads` has no author
+filter), by `con-voyage-pr-watch.sh`, or by a manual mis-sling. This gate is
+what makes it safe for you to act on the bead at all; it re-checks the same
+invariant the `con-voyage-ci-repair-guard` order already swept for, in case
+that sweep lost a claim race with you.
+
+```bash
+CV_PR_AUTHOR="{{cv_pr_author}}"
+if [ -z "${CV_PR_AUTHOR// /}" ]; then
+  CV_PR_AUTHOR="$(gh api user --jq .login 2>/dev/null || true)"
+fi
+
+pr_author="$(gh pr view {{pr}} --repo {{repo}} --json author --jq '.author.login' 2>/dev/null || echo "")"
+```
+
+Compare `pr_author` to `CV_PR_AUTHOR` using an EXACT, case-sensitive match.
+Treat an empty/unresolved value on EITHER side as a mismatch — fail closed,
+never guess:
+
+- `pr_author` is empty/unresolved → not verifiably the operator's PR. Drop.
+- `CV_PR_AUTHOR` is empty/unresolved → identity cannot be verified. Drop.
+- `pr_author != CV_PR_AUTHOR` (any case difference counts as a mismatch) → Drop.
+
+**If it does not match, take ZERO further action** — no `gh run rerun`, no
+`git checkout`/`commit`/`push`, no `gh pr comment`/`review` — and close the
+bead immediately instead of continuing to Step 1:
+
+```bash
+gc bd update "{{convoy_id}}" \
+  --notes "dropped: not authored by operator (pr_author='${pr_author:-<unresolved>}', CV_PR_AUTHOR='${CV_PR_AUTHOR:-<unresolved>}')"
+gc bd close "{{convoy_id}}" --reason "dropped: not authored by operator"
+exit 0
+```
+
+Only continue to Step 1 when `pr_author` exactly matches `CV_PR_AUTHOR`.
 
 ## Step 1 — Read the repair bead
 

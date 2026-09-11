@@ -30,6 +30,18 @@ failing after the push, a new repair bead will be created for the next cycle.
 | branch           | PR head ref (the branch to check out and fix)    |
 | implementation_target | Route target for the implementor (default: gc.implementation-worker) |
 | escalation_target     | Mail recipient for blocked work (default: human)            |
+| cv_pr_author          | GitHub login the implementor's Step 0 gate must match against (default: kriscoleman) |
+
+## Author scoping (defense in depth)
+
+This formula's `ci-repair` step opens with a fail-closed Step 0 gate that
+re-verifies the PR's real author against `cv_pr_author` before taking any
+action — see the `{target}.ci-repair.md` prompt. `cv_pr_author` defaults to
+`kriscoleman` so the gate holds even when a bead is minted by a caller that
+does not pass the var explicitly (e.g. the native `[[github.pr_monitor]]`'s
+own `--create-repair-beads` path). `con-voyage-pr-watch.sh` and the
+`con-voyage-ci-repair-guard` order pass their own resolved `CV_PR_AUTHOR`
+through explicitly — all three share the same knob.
 """
 formula = "con-voyage-ci-repair"
 
@@ -50,6 +62,15 @@ Mail recipient when the repair cannot be completed. Defaults to the reserved
 `human` alias. Cities that staff a work-health role can point this at it.
 """
 default = "human"
+
+[vars.cv_pr_author]
+description = """
+GitHub login the implementor's Step 0 author gate must exactly match before
+acting on this repair bead. Change this to the operator's own login if this
+pack is cast for a different user (keep it in sync with `CV_PR_AUTHOR` in
+con-voyage-pr-watch.toml and con-voyage-ci-repair-guard.toml).
+"""
+default = "kriscoleman"
 
 [[steps]]
 id = "ci-repair"
