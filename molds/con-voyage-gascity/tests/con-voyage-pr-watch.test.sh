@@ -90,11 +90,23 @@ case "$sub" in
         # `gh pr list --repo R --author A --state open --json ...`
         # Vary by --author to prove filtering: only the configured operator's
         # PRs are returned; any other author yields an empty list.
+        #
+        # STUB_PRLIST_LEAK=1 simulates a leaky/bypassed upstream --author
+        # filter: the returned PR carries a DIFFERENT author than requested, so
+        # the script's defensive per-PR author re-check must drop it before
+        # routing. The `author` object mirrors gh's `--json author` shape.
         author="$(flagval --author "$@")"
-        if [ "$author" = "kriscoleman" ]; then
-          # Operator owns only PR #11 (open, non-draft).
+        if [ "${STUB_PRLIST_LEAK:-0}" = "1" ]; then
+          # Upstream filter "leaked": PR #999 authored by someone else slips in
+          # even though we asked for the operator's PRs. The defensive re-check
+          # must drop it (no comment fetch, no sling).
           cat <<'JSON'
-[{"number":11,"headRefName":"fix/con-voyage-author-scope-pr-monitor","url":"https://github.com/kriscoleman/foundry/pull/11","isDraft":false}]
+[{"number":999,"headRefName":"feature/not-ours","url":"https://github.com/kriscoleman/foundry/pull/999","isDraft":false,"author":{"login":"someone-else"}}]
+JSON
+        elif [ "$author" = "kriscoleman" ]; then
+          # Operator owns only PR #11 (open, non-draft), authored by kriscoleman.
+          cat <<'JSON'
+[{"number":11,"headRefName":"fix/con-voyage-author-scope-pr-monitor","url":"https://github.com/kriscoleman/foundry/pull/11","isDraft":false,"author":{"login":"kriscoleman"}}]
 JSON
         else
           # Any non-operator author sees nothing.
@@ -242,18 +254,33 @@ setup_case_env() {
   : > "$GH_LOG"
   : > "$GC_LOG"
   # A city.toml with one pr_monitor block so PART B has a repo to scan.
-  # NOTE: no spaces around `=`. Both are valid TOML, but the script parses this
-  # with awk using `\s` in its regexes, which BSD/macOS awk treats as a literal
-  # 's' (only GNU awk honors `\s`). Writing `owner="..."` (no space) parses
-  # correctly under BOTH awk flavors, keeping this test deterministic on macOS
-  # and Linux alike. (The production gc runtime is Linux/gawk, where either
-  # spacing works; this fixture just stays portable.)
+  # Unspaced assignments (owner="...") — parses under both BSD awk and gawk.
+  # (The spaced variant is exercised separately by setup_case_env_spaced, which
+  # guards the awk-portability fix.)
   cat > "${CITY_DIR}/city.toml" <<'TOML'
 [[github.pr_monitor]]
 owner="kriscoleman"
 repo="foundry"
 base="main"
 merge_queue="observe"
+TOML
+}
+
+# setup_case_env_spaced — like setup_case_env, but writes SPACED TOML
+# assignments (owner = "..."). This is the fixture that catches the awk
+# portability bug: the old parser used `\s`, which BSD/macOS awk treats as a
+# literal 's', so it parsed ZERO repos from spaced assignments and PART B
+# silently no-oped. With the [[:space:]] fix it parses correctly under BOTH
+# BSD awk and gawk. Run under the system awk (this box is macOS/BSD) so the
+# case actually exercises the bug.
+setup_case_env_spaced() {
+  setup_case_env "$1"
+  cat > "${CITY_DIR}/city.toml" <<'TOML'
+[[github.pr_monitor]]
+owner = "replicatedhq"
+repo = "x"
+base = "main"
+merge_queue = "observe"
 TOML
 }
 
@@ -376,6 +403,48 @@ fi
 assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*pr=11' 1 "ci-repair sling for #11 under default resolution"
 assert_log_count "$GC_LOG" 'sling .*pr=500' 0 "no sling for #500 under default resolution"
 assert_log_count "$GH_LOG" 'pr list .*--author kriscoleman' 1 "PART B pr list scoped to resolved login"
+
+# ===========================================================================
+# CASE 7 — PART B awk portability: SPACED assignments (owner = "replicatedhq")
+#   must parse under the system awk (this box is macOS/BSD). Before the
+#   [[:space:]] fix, the `\s`-based parser matched ZERO repos here and PART B
+#   no-oped ("no [[github.pr_monitor]] blocks found"). We assert the repo was
+#   parsed (gh pr list --repo replicatedhq/x was called) and that the
+#   no-blocks-found message is absent.
+# ===========================================================================
+start_case "7: PART B awk parses SPACED owner/repo (BSD-awk portability)"
+setup_case_env_spaced "7"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman"
+assert_eq "0" "$RC" "script exits 0"
+# The spaced fixture declares repo replicatedhq/x. If awk parsed it, PART B
+# lists PRs for exactly that repo. Before the fix this count would be 0.
+assert_log_count "$GH_LOG" 'pr list --repo replicatedhq/x' 1 "PART B parsed spaced repo and listed replicatedhq/x"
+if printf '%s' "$OUT" | grep -q 'no \[\[github.pr_monitor\]\] blocks found'; then
+  fail "PART B reported no blocks — awk failed to parse spaced assignments (the bug)"
+else
+  pass "PART B did not report 'no blocks found' (spaced assignments parsed)"
+fi
+
+# ===========================================================================
+# CASE 8 — PART B defensive author re-check: even if the upstream
+#   `gh pr list --author` filter LEAKS a PR authored by someone else, the
+#   per-PR author re-check drops it before any comment fetch or routing.
+#   STUB_PRLIST_LEAK=1 returns PR #999 authored by "someone-else".
+# ===========================================================================
+start_case "8: PART B defensive re-check drops a leaked non-operator PR"
+setup_case_env "8"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_PRLIST_LEAK=1
+assert_eq "0" "$RC" "script exits 0"
+# The leaked PR (#999, author someone-else) must NOT be fetched for comments...
+assert_log_count "$GH_LOG" 'pr view 999 .*reviews' 0 "no comment fetch for leaked #999"
+# ...and must NOT be routed to the implementor.
+assert_log_count "$GC_LOG" 'sling .*Human PR feedback on kriscoleman/foundry#999' 0 "no comment-route sling for leaked #999"
+# And the defensive DROP was logged.
+if printf '%s' "$OUT" | grep -q "DROP kriscoleman/foundry#999 (author='someone-else'"; then
+  pass "logs defensive PART B DROP for leaked #999"
+else
+  fail "expected defensive PART B DROP log for #999"
+fi
 
 # ===========================================================================
 # Summary
