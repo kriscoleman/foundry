@@ -187,6 +187,26 @@ On each 10-minute tick the order script:
    maintained via a state file keyed by `(repo, PR-number, max-comment-id)` so
    the same comment is never routed twice.
 
+### `con-voyage-ci-repair-guard` order (defense-in-depth author gate)
+
+A `con-voyage-ci-repair` bead is not only created by `con-voyage-pr-watch.sh`.
+The native `[[github.pr_monitor]]` can also mint one directly via
+`--create-repair-beads` (no author filter), and a bead can be mis-slung by
+hand. `con-voyage-ci-repair-guard` is the backstop for those other two paths:
+
+- Fires on `bead.created` (event-triggered, not a poll) so it races to close a
+  bad bead *before* a worker can claim it. It does **not** act only on the
+  bead named by the triggering event — every run re-sweeps **every open**
+  `con-voyage-ci-repair` step bead in the city (unlimited, not just the first
+  50), which is what makes it self-healing regardless of which bead.created
+  event happened to fire it.
+- For each one, resolves its PR's real author via `gh` and closes any bead
+  whose author is not `CV_PR_AUTHOR` — taking no other action (no
+  `gh run rerun`, no `git push`, no `gh pr comment`, no `gc sling`).
+- Fails closed the same way as `con-voyage-pr-watch`: an unresolved
+  `CV_PR_AUTHOR` or an unresolved PR author means the bead is dropped, never
+  guessed into being kept.
+
 ### Coverage table
 
 | Signal | Native monitor | pr-watch order |
@@ -201,38 +221,52 @@ On each 10-minute tick the order script:
 ### Author scoping
 
 **The monitor only ever touches PRs authored by a single configured user.**
+This is enforced by three independent, defense-in-depth layers, so that no
+single path — script, order, or workflow prompt — is the sole thing standing
+between a stranger's PR and an automated GitHub action:
 
-Both duties of the `con-voyage-pr-watch` order are scoped to the login in the
-`CV_PR_AUTHOR` environment variable:
+1. **`con-voyage-pr-watch` order (creation-time gate).** Both of its duties are
+   scoped to the login in the `CV_PR_AUTHOR` environment variable:
+   - **Part A (CI repair)** runs `gc github pr backfill --json` *report-only*
+     (never `--create-repair-beads`), then resolves each actionable PR's
+     author via `gh` and **drops every PR whose author is not
+     `CV_PR_AUTHOR`** before creating any repair bead. An unresolvable author
+     is treated as "not ours" and skipped (fail closed).
+   - **Part B (comment routing)** passes `--author "$CV_PR_AUTHOR"` to
+     `gh pr list`, so only the configured author's open PRs are ever polled
+     or routed.
+   - The hard invariant: **zero repair beads are ever created by this script
+     for a PR not authored by `CV_PR_AUTHOR`.**
+2. **`con-voyage-ci-repair-guard` order (backstop sweep).** Catches beads
+   created by paths Part A doesn't control — the native monitor's own
+   `--create-repair-beads`, or a manual mis-sling — and closes any whose
+   author doesn't match, before a worker can claim them. See above.
+3. **Step 0 in the `con-voyage-ci-repair` workflow itself (last resort).** The
+   implementor's own first instruction re-verifies `pr_author == CV_PR_AUTHOR`
+   and takes zero action on a mismatch, in case the guard sweep loses a claim
+   race. See `pack/assets/workflows/con-voyage-ci-repair/{target}.ci-repair.md`.
 
-- **Part A (CI repair)** runs `gc github pr backfill --json` *report-only* (never
-  `--create-repair-beads`), then resolves each actionable PR's author via `gh` and
-  **drops every PR whose author is not `CV_PR_AUTHOR`** before creating any repair
-  bead. A PR whose author cannot be resolved is treated as "not ours" and skipped
-  (fail closed). The hard invariant: **zero repair beads are ever created for a PR
-  not authored by `CV_PR_AUTHOR`.**
-- **Part B (comment routing)** passes `--author "$CV_PR_AUTHOR"` to `gh pr list`,
-  so only the configured author's open PRs are ever polled or routed.
+All three layers resolve the same author the same way:
 
-`CV_PR_AUTHOR` resolution:
+1. An explicit `CV_PR_AUTHOR` (in `[order.env]` for the two orders, or the
+   `cv_pr_author` formula var — default `kriscoleman` in all three places).
+2. If unset, fall back to the authenticated `gh` login (`gh api user --jq
+   .login`).
+3. If it still cannot be resolved, **fail closed** — refuse to act rather than
+   guess. The two scripts exit non-zero before querying any repo; Step 0
+   drops the bead it was handed.
 
-1. `[order.env]` in `con-voyage-pr-watch.toml` sets it explicitly (default
-   `kriscoleman`; change it to your own login when casting for a different user).
-2. If unset there, the script defaults to the authenticated `gh` login
-   (`gh api user --jq .login`).
-3. If it still cannot be resolved, the script **fails closed** — it prints an
-   error and exits non-zero **before querying any repo**. It never runs unscoped.
-
-> **Why this is enforced in the script, not the native config.** The
+> **Why this is enforced here, not in the native config.** The
 > `[[github.pr_monitor]]` blocks in `city.toml` have no author field and
 > `gc github pr backfill` has no `--author` flag, so author scoping cannot be
-> expressed natively. The `con-voyage-pr-watch` script is the sole runtime driver
-> of the monitor (the native `poll_interval` is inert without it), so scoping it
-> here covers every path by which the monitor can act on a PR.
+> expressed natively. Layering all three of the above covers every path by
+> which a `con-voyage-ci-repair` bead can come into existence.
 
 To change the allowed author, edit `[order.env] CV_PR_AUTHOR` in
-`con-voyage-pr-watch.toml` (or export `CV_PR_AUTHOR` in the controller
-environment).
+`con-voyage-pr-watch.toml` **and** `con-voyage-ci-repair-guard.toml`, and
+`[vars.cv_pr_author] default` in `con-voyage-ci-repair.formula.toml` (or
+export `CV_PR_AUTHOR` in the controller environment, which covers both
+orders).
 
 ### Nothing ever auto-merges
 
@@ -245,16 +279,19 @@ PR branch and explicitly prohibits merging. **A human must land every PR.**
 
 The author-scoping guarantee is security-critical (an earlier unfiltered version
 acted on PRs it did not own and got the operator removed from an org), so it has
-a dedicated regression test:
+dedicated regression tests — one per defense-in-depth layer:
 
 ```
 bash molds/con-voyage-gascity/tests/con-voyage-pr-watch.test.sh
+bash molds/con-voyage-gascity/tests/con-voyage-ci-repair-guard.test.sh
 ```
 
-The test is fully hermetic and offline — it builds recording stub `gh` and `gc`
-executables in a temp dir, points the script at them via `GH=`/`GC=`, and asserts
-on the recorded call-logs. It never touches the network or the real gc runtime.
-It exits `0` when every case passes, non-zero otherwise. Covered cases:
+Both are fully hermetic and offline — they build recording stub `gh` and `gc`
+executables in a temp dir, point the script under test at them via `GH=`/`GC=`,
+and assert on the recorded call-logs. Neither touches the network or the real
+gc runtime. Each exits `0` when every case passes, non-zero otherwise.
+
+`con-voyage-pr-watch.test.sh` covers layer 1 (creation-time gate):
 
 - **Fail-closed** — no resolvable `CV_PR_AUTHOR` ⇒ exit 1 before any repo query.
 - **PART A author drop** — only the operator's PR gets a repair bead; other
@@ -265,6 +302,25 @@ It exits `0` when every case passes, non-zero otherwise. Covered cases:
   are routed only for the operator's PRs.
 - **Default resolution** — an unset `CV_PR_AUTHOR` falls back to the
   authenticated `gh` login and then scopes to it.
+
+`con-voyage-ci-repair-guard.test.sh` covers layer 2 (the backstop sweep) and
+content-checks layer 3 (the workflow's own Step 0 gate):
+
+- **Fail-closed** — no resolvable `CV_PR_AUTHOR` ⇒ exit 1 before inspecting
+  any bead.
+- **Drop vs. keep** — a non-operator bead is closed with zero other GitHub
+  action taken (`gh run rerun` / `gh pr comment` / `gh pr review` / `gc sling`
+  all assert to zero); the operator's bead is left untouched for the worker.
+- **Exact, case-sensitive match** — `kriscoleman2` and `KRISCOLEMAN` are dropped.
+- **Unresolved PR author** — dropped, fail closed.
+- **Formula scoping** — a bead whose root is not a `con-voyage-ci-repair`
+  workflow is skipped entirely, never even looked up on GitHub.
+- **Step 0 content check** — `{target}.ci-repair.md` carries a `## Step 0`
+  section that precedes Step 1, the first `gh run rerun`, and the `git push`,
+  and that closes a mismatch with a `dropped: not authored by operator` note.
+- **Non-destructive retrigger content check** — the run-specific
+  `gh run rerun <run-id> --failed --repo` path is present, and the
+  close/reopen, empty-commit, and force-push prohibitions are still there.
 
 The `tests/` directory lives outside `pack/`, so it is never compiled into the
 shipped `packs/con-voyage` pack.

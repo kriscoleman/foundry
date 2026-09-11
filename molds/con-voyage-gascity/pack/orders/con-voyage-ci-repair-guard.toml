@@ -1,0 +1,38 @@
+# con-voyage-ci-repair-guard — defense-in-depth author gate for
+# con-voyage-ci-repair beads.
+#
+# A con-voyage-ci-repair bead can be minted for ANY PR by three different
+# paths: the native [[github.pr_monitor]] (--create-repair-beads has no
+# author filter), con-voyage-pr-watch.sh (already author-scoped), or a manual
+# mis-sling. This order sweeps every open con-voyage-ci-repair bead the
+# moment one is created and closes any whose PR is not authored by
+# CV_PR_AUTHOR — BEFORE a worker can claim it and take any GitHub action.
+#
+# Event-triggered (bead.created) rather than a cooldown poll: the whole point
+# is to win the race against a worker claim, so it fires as soon as a
+# candidate bead exists instead of waiting out a poll interval. See
+# assets/scripts/con-voyage-ci-repair-guard.sh for the sweep logic — it is a
+# full open-bead sweep each time (not an event-payload diff), so it is
+# naturally idempotent and self-healing regardless of which bead.created
+# event triggered this run.
+#
+# A THIRD, independent gate (Step 0 in {target}.ci-repair.md) re-verifies the
+# same invariant inside the workflow itself, in case this sweep loses the
+# claim race. Belt and suspenders: this order is the fast path, Step 0 is the
+# last line of defense.
+#
+# No auto-merge ever occurs from this order — it only ever closes a bead.
+
+[order]
+description = "Close con-voyage-ci-repair beads not authored by the operator, before a worker can act on them"
+trigger = "event"
+on = "bead.created"
+exec = "$PACK_DIR/assets/scripts/con-voyage-ci-repair-guard.sh"
+
+# Author-scope the guard explicitly. CV_PR_AUTHOR is the single GitHub login
+# whose PRs the con-voyage-ci-repair workflow may act on — the same knob as
+# con-voyage-pr-watch.toml and the con-voyage-ci-repair formula's
+# cv_pr_author default. Change this to the operator's own login if this pack
+# is cast for a different user.
+[order.env]
+CV_PR_AUTHOR = "kriscoleman"
