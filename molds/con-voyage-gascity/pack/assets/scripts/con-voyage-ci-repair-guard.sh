@@ -93,13 +93,25 @@ echo "con-voyage-ci-repair-guard: guarding con-voyage-ci-repair beads, author-sc
 # claims and acts on (the workflow root bead carries the formula name, but
 # the step bead is what `gc hook --claim` hands to a worker).
 #
+# Deliberately NOT filtered by gc.step_id or gc.step_ref. Empirically cooking
+# this formula in a scratch store shows gc.step_id is UNSET on the compiled
+# step bead for this flat, single-step v2 recipe — only gc.step_ref is set,
+# and only as `<formula-name>.<step-id>` for this shape (nested/looped v2
+# formulas, e.g. this very review workflow, render gc.step_ref with no
+# formula-name prefix at all). Neither key has a form stable enough to filter
+# a `bd list` query on, so this sweep instead casts the widest reliable net —
+# every OPEN bead compiled by any graph.v2 formula (gc.root_bead_id is set on
+# all of them) — and leaves ALL real gating to the per-root
+# `gc.formula_name == con-voyage-ci-repair` check below, which depends only
+# on the formula name string, not on compiler-internal step-id conventions.
+#
 # This is a full sweep on EVERY invocation, not scoped to whichever bead the
 # triggering bead.created event named — `bd list --json` always returns a
 # bare array (never a single bare object), so no per-item shape branch is
 # needed. --limit 0 is mandatory: bd list defaults to 50 results, and silently
 # dropping beads past the 50th would defeat the entire point of this guard.
 # ---------------------------------------------------------------------------
-steps_json=$("$GC" --city "$GC_CITY" bd list --status open --metadata-field "gc.step_id=ci-repair" --limit 0 --json 2>/dev/null) || {
+steps_json=$("$GC" --city "$GC_CITY" bd list --status open --has-metadata-key gc.root_bead_id --limit 0 --json 2>/dev/null) || {
   echo "con-voyage-ci-repair-guard: WARNING: bd list failed; skipping this sweep" >&2
   exit 0
 }
