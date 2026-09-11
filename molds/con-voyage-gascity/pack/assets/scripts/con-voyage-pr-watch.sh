@@ -307,6 +307,12 @@ echo "con-voyage-pr-watch: [PART B] scanning for human PR comments to route"
 # the pair. Handles monitor blocks where owner/repo appear many lines below
 # the header (no fixed-line-count limit). Handles multiple monitor blocks.
 #
+# PORTABILITY: use POSIX bracket classes ([[:space:]]) rather than the GNU
+# extension `\s`. Under BSD awk (macOS) `\s` matches a LITERAL 's', so a
+# `\s`-based parser silently matches ZERO owner/repo lines and PART B no-ops
+# ("no [[github.pr_monitor]] blocks found"). [[:space:]] works under BOTH BSD
+# awk and gawk, and matches both `owner = "x"` (spaced) and `owner="x"`.
+#
 # Output format: one "OWNER/REPO" per line.
 mapfile -t MONITOR_REPOS < <(awk '
   /^\[\[github\.pr_monitor\]\]/ {
@@ -329,16 +335,16 @@ mapfile -t MONITOR_REPOS < <(awk '
     }
     next
   }
-  in_block && /^\s*owner\s*=/ {
+  in_block && /^[[:space:]]*owner[[:space:]]*=/ {
     val = $0
-    sub(/.*=\s*"/, "", val)
+    sub(/.*=[[:space:]]*"/, "", val)
     sub(/".*/, "", val)
     owner = val
     next
   }
-  in_block && /^\s*repo\s*=/ {
+  in_block && /^[[:space:]]*repo[[:space:]]*=/ {
     val = $0
-    sub(/.*=\s*"/, "", val)
+    sub(/.*=[[:space:]]*"/, "", val)
     sub(/".*/, "", val)
     repo = val
     next
