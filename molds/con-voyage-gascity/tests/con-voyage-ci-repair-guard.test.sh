@@ -116,6 +116,19 @@ sub="${args[$i]:-}"
 sub2="${args[$((i+1))]:-}"
 
 if [ "$sub" = "bd" ] && [ "$sub2" = "list" ]; then
+  # Selector-sensitive: only serve the fixture when the real selector this
+  # guard depends on is present in argv. A future regression to a different
+  # (or missing) selector must zero the fixture and fail the case 2-5
+  # drop-count assertions below, not silently keep passing against stale data.
+  call_line=""
+  for a in "${args[@]}"; do call_line="${call_line}${a} "; done
+  case "$call_line" in
+    *"--status open"*"--has-metadata-key gc.root_bead_id"*) ;;
+    *)
+      printf '[]\n'
+      exit 0
+      ;;
+  esac
   case "${STUB_STEPLIST_MODE:-full}" in
     empty)
       printf '[]\n'
@@ -123,12 +136,12 @@ if [ "$sub" = "bd" ] && [ "$sub2" = "list" ]; then
     full)
       cat <<'JSON'
 [
-  {"id":"step-op","status":"open","metadata":{"gc.step_id":"ci-repair","gc.root_bead_id":"root-op"}},
-  {"id":"step-other","status":"open","metadata":{"gc.step_id":"ci-repair","gc.root_bead_id":"root-other"}},
-  {"id":"step-unresolved","status":"open","metadata":{"gc.step_id":"ci-repair","gc.root_bead_id":"root-unresolved"}},
-  {"id":"step-nearmatch","status":"open","metadata":{"gc.step_id":"ci-repair","gc.root_bead_id":"root-nearmatch"}},
-  {"id":"step-casevariant","status":"open","metadata":{"gc.step_id":"ci-repair","gc.root_bead_id":"root-casevariant"}},
-  {"id":"step-notformula","status":"open","metadata":{"gc.step_id":"ci-repair","gc.root_bead_id":"root-notformula"}}
+  {"id":"step-op","status":"open","metadata":{"gc.root_bead_id":"root-op"}},
+  {"id":"step-other","status":"open","metadata":{"gc.root_bead_id":"root-other"}},
+  {"id":"step-unresolved","status":"open","metadata":{"gc.root_bead_id":"root-unresolved"}},
+  {"id":"step-nearmatch","status":"open","metadata":{"gc.root_bead_id":"root-nearmatch"}},
+  {"id":"step-casevariant","status":"open","metadata":{"gc.root_bead_id":"root-casevariant"}},
+  {"id":"step-notformula","status":"open","metadata":{"gc.root_bead_id":"root-notformula"}}
 ]
 JSON
       ;;
@@ -257,6 +270,10 @@ assert_log_count "$GC_LOG" 'bd update step-other' 1 "non-operator bead #500 gets
 # The sweep must be unbounded: bd list defaults to 50 results, and silently
 # dropping beads past the 50th would defeat the whole point of this guard.
 assert_log_count "$GC_LOG" 'bd list .*--limit 0' 1 "bd list overrides the default 50-result limit"
+# Pin the exact selector so a future edit can't silently narrow it back to a
+# compiler-internal key (gc.step_id/gc.step_ref) that isn't guaranteed set —
+# see the empirical finding recorded above the bd list call in guard.sh.
+assert_log_count "$GC_LOG" 'bd list --status open --has-metadata-key gc\.root_bead_id --limit 0' 1 "bd list uses the prefix-independent gc.root_bead_id selector"
 # Zero external GitHub-mutating action anywhere, on any bead, in either log.
 assert_log_count "$GH_LOG" 'run rerun'   0 "guard never calls gh run rerun"
 assert_log_count "$GH_LOG" 'pr comment'  0 "guard never calls gh pr comment"

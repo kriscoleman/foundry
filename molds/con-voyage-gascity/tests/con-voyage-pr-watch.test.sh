@@ -334,6 +334,11 @@ assert_eq "0" "$RC" "script exits 0"
 # Exactly one CI-repair sling, and it is for PR #11.
 assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair' 1 "exactly one ci-repair sling"
 assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*pr=11' 1 "ci-repair sling is for pr=11"
+# The sling is the wire that carries PART A's resolved author into Step 0's
+# {{cv_pr_author}} — if this var were dropped, typo'd, or wrong, no other
+# assertion in this suite would catch it (con-voyage-ci-repair-guard.test.sh
+# covers the guard's own resolution, not this forwarding step).
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*pr=11.*cv_pr_author=kriscoleman' 1 "ci-repair sling forwards cv_pr_author"
 assert_log_count "$GC_LOG" 'sling .*pr=500' 0 "no sling for #500 (other human)"
 assert_log_count "$GC_LOG" 'sling .*pr=600' 0 "no sling for #600 (bot)"
 
@@ -401,6 +406,9 @@ else
   fail "expected author-scoped banner naming kriscoleman"
 fi
 assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*pr=11' 1 "ci-repair sling for #11 under default resolution"
+# Prove the *resolved* login (not just an explicitly-set CV_PR_AUTHOR, per
+# CASE 2 above) is what gets forwarded.
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*pr=11.*cv_pr_author=kriscoleman' 1 "ci-repair sling forwards the resolved cv_pr_author"
 assert_log_count "$GC_LOG" 'sling .*pr=500' 0 "no sling for #500 under default resolution"
 assert_log_count "$GH_LOG" 'pr list .*--author kriscoleman' 1 "PART B pr list scoped to resolved login"
 
