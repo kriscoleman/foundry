@@ -11,7 +11,12 @@
 # # manual mis-sling. This script is the BACKSTOP: it sweeps every OPEN      #
 # # con-voyage-ci-repair step bead, resolves the PR's real author, and       #
 # # closes any bead whose author != CV_PR_AUTHOR BEFORE a worker can claim   #
-# # it and take any GitHub action. It fails closed on any unresolved input.  #
+# # it and take any GitHub action. It fails closed on any unresolved         #
+# # AUTHOR. Infra failures (`bd list` / `bd show`) do NOT fail closed here:  #
+# # they skip this sweep and defer to Step 0's in-workflow re-gate, since a  #
+# # store lock or transient CLI error must not silently close a bead we      #
+# # could not even inspect. (`bd list` and the drop_bead close get a bounded #
+# # retry so a transient store lock does not turn a real drop into a no-op.) #
 # #                                                                          #
 # # A third, independent gate (Step 0 in {target}.ci-repair.md) re-verifies  #
 # # the same invariant inside the workflow itself, in case this sweep loses  #
@@ -75,11 +80,11 @@ fi
 # exactly: an unscoped guard would be unable to tell an operator bead from a
 # stranger's, so it must refuse to touch ANY bead rather than guess.
 # ---------------------------------------------------------------------------
-if [ -z "${CV_PR_AUTHOR// /}" ]; then
+if [[ "$CV_PR_AUTHOR" =~ ^[[:space:]]*$ ]]; then
   CV_PR_AUTHOR="$("$GH" api user --jq .login 2>/dev/null || true)"
 fi
 
-if [ -z "${CV_PR_AUTHOR// /}" ]; then
+if [[ "$CV_PR_AUTHOR" =~ ^[[:space:]]*$ ]]; then
   echo "con-voyage-ci-repair-guard: FATAL: CV_PR_AUTHOR is empty/unresolved." >&2
   echo "con-voyage-ci-repair-guard: author-scoping is mandatory — refusing to inspect any bead." >&2
   echo "con-voyage-ci-repair-guard: set CV_PR_AUTHOR explicitly (e.g. CV_PR_AUTHOR=kriscoleman)" >&2
@@ -87,6 +92,43 @@ if [ -z "${CV_PR_AUTHOR// /}" ]; then
   exit 1
 fi
 echo "con-voyage-ci-repair-guard: guarding con-voyage-ci-repair beads, author-scoped to '${CV_PR_AUTHOR}'"
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+# retry — run a command up to 3 times, short sleep between attempts, so a
+# transient store lock (Dolt) does not turn a fail-closed action into a silent
+# no-op. Returns the command's exit status from its last attempt. Honors
+# GUARD_RETRY_ATTEMPTS / GUARD_RETRY_SLEEP overrides (tests set these to 1/0 to
+# stay fast). The number of attempts a fake gc records is what proves the retry
+# actually fired.
+retry() {
+  local attempts="${GUARD_RETRY_ATTEMPTS:-3}"
+  local sleep_s="${GUARD_RETRY_SLEEP:-1}"
+  local n=1 rc=0
+  while :; do
+    # Run the command directly and capture ITS status immediately. (Do NOT wrap
+    # in `if "$@"; then`: a failed condition makes the `if` compound exit 0, so
+    # a following `rc=$?` would read 0, not the command's real failure.)
+    "$@"
+    rc=$?
+    [ "$rc" -eq 0 ] && return 0
+    [ "$n" -ge "$attempts" ] && return "$rc"
+    n=$((n + 1))
+    sleep "$sleep_s" 2>/dev/null || true
+  done
+}
+
+# drop_bead <step_id> <notes> — the single close path for a non-operator bead:
+# leave a forensic drop-note, then close with the fixed reason. Both writes get
+# a bounded retry so a transient store lock can't leave a stranger's control
+# bead open. The `|| true` keeps a still-failing note from aborting the sweep,
+# but the close is what actually enforces the gate — hence its own retry.
+drop_bead() {
+  local step_id="$1" notes="$2"
+  retry "$GC" --city "$GC_CITY" bd update "$step_id" --notes "$notes" >/dev/null 2>&1 || true
+  retry "$GC" --city "$GC_CITY" bd close  "$step_id" --reason "dropped: not authored by operator" >/dev/null 2>&1 || true
+}
 
 # ---------------------------------------------------------------------------
 # Find every OPEN con-voyage-ci-repair step bead — the bead a worker actually
@@ -111,7 +153,11 @@ echo "con-voyage-ci-repair-guard: guarding con-voyage-ci-repair beads, author-sc
 # needed. --limit 0 is mandatory: bd list defaults to 50 results, and silently
 # dropping beads past the 50th would defeat the entire point of this guard.
 # ---------------------------------------------------------------------------
-steps_json=$("$GC" --city "$GC_CITY" bd list --status open --has-metadata-key gc.root_bead_id --limit 0 --json 2>/dev/null) || {
+# Bounded retry on the fetch itself: a transient store lock here would
+# otherwise skip the whole sweep (fail-open on infra). This is still fail-open
+# after the retries are exhausted — we defer to Step 0 rather than close beads
+# we could not inspect — but we don't bail on the first hiccup.
+steps_json=$(retry "$GC" --city "$GC_CITY" bd list --status open --has-metadata-key gc.root_bead_id --limit 0 --json 2>/dev/null) || {
   echo "con-voyage-ci-repair-guard: WARNING: bd list failed; skipping this sweep" >&2
   exit 0
 }
@@ -126,7 +172,9 @@ for item in (data or []):
     sid = item.get('id', '') or ''
     root = (item.get('metadata') or {}).get('gc.root_bead_id', '') or ''
     if sid and root:
-        print(sid + '\t' + root)
+        # \x1f (unit separator) — a non-whitespace delimiter so empty fields
+        # survive the shell 'read' below instead of being collapsed (LOW-4).
+        print(sid + '\x1f' + root)
 " 2>/dev/null || true)
 
 if [ -z "$step_pairs" ]; then
@@ -138,7 +186,7 @@ fi
 # Inspect each candidate step bead via its workflow root (pr/repo formula
 # vars live on the root, not the step — see gc.var.pr / gc.var.repo).
 # ---------------------------------------------------------------------------
-while IFS="$(printf '\t')" read -r step_id root_id; do
+while IFS=$'\x1f' read -r step_id root_id; do
   [ -n "$step_id" ] || continue
   [ -n "$root_id" ] || continue
 
@@ -147,26 +195,31 @@ while IFS="$(printf '\t')" read -r step_id root_id; do
     root_json=""
   }
 
+  # \x1f (unit separator) delimits the three root fields — a non-whitespace
+  # separator so an empty middle field (e.g. pr set, repo missing) survives the
+  # shell 'read' below instead of being collapsed, which would misreport which
+  # field was actually empty in the fail-closed drop note (LOW-4).
   root_fields=$(printf '%s' "$root_json" | python3 -c "
 import sys, json
+SEP = '\x1f'
 try:
     data = json.load(sys.stdin)
 except Exception:
-    print('\t\t')
+    print(SEP + SEP)
     raise SystemExit(0)
 if isinstance(data, list):
     data = data[0] if data else {}
 if not isinstance(data, dict):
-    print('\t\t')
+    print(SEP + SEP)
     raise SystemExit(0)
 meta = data.get('metadata') or {}
 formula = meta.get('gc.formula_name', '') or ''
 pr = meta.get('gc.var.pr', '') or ''
 repo = meta.get('gc.var.repo', '') or ''
-print(formula + '\t' + pr + '\t' + repo)
-" 2>/dev/null || printf '\t\t')
+print(formula + SEP + pr + SEP + repo)
+" 2>/dev/null || printf '\x1f\x1f')
 
-  IFS="$(printf '\t')" read -r formula_name pr repo <<< "$root_fields"
+  IFS=$'\x1f' read -r formula_name pr repo <<< "$root_fields"
 
   # Defensive: only act on beads whose root really is a con-voyage-ci-repair
   # workflow. A step bead named "ci-repair" from an unrelated formula (if one
@@ -181,8 +234,7 @@ print(formula + '\t' + pr + '\t' + repo)
   # an unverifiable bead sitting open for a worker to claim.
   if [ -z "$pr" ] || [ -z "$repo" ]; then
     echo "con-voyage-ci-repair-guard: DROP ${step_id} (root ${root_id}) — pr/repo unresolved from root metadata (fail closed)" >&2
-    "$GC" --city "$GC_CITY" bd update "$step_id" --notes "dropped: not authored by operator (pr/repo metadata unresolved on root ${root_id})" >/dev/null 2>&1 || true
-    "$GC" --city "$GC_CITY" bd close "$step_id" --reason "dropped: not authored by operator" >/dev/null 2>&1 || true
+    drop_bead "$step_id" "dropped: not authored by operator (pr/repo metadata unresolved on root ${root_id})"
     continue
   fi
 
@@ -190,10 +242,9 @@ print(formula + '\t' + pr + '\t' + repo)
 
   # AUTHOR FILTER — exact, case-sensitive match only. Anything that is not
   # exactly CV_PR_AUTHOR (including an unresolved/empty author) is dropped.
-  if [ -z "${pr_author// /}" ] || [ "$pr_author" != "$CV_PR_AUTHOR" ]; then
+  if [[ "$pr_author" =~ ^[[:space:]]*$ ]] || [ "$pr_author" != "$CV_PR_AUTHOR" ]; then
     echo "con-voyage-ci-repair-guard: DROP ${step_id} (${repo}#${pr}, author='${pr_author:-<unresolved>}' != '${CV_PR_AUTHOR}') — closing before a worker can act"
-    "$GC" --city "$GC_CITY" bd update "$step_id" --notes "dropped: not authored by operator (pr_author='${pr_author:-<unresolved>}', CV_PR_AUTHOR='${CV_PR_AUTHOR}')" >/dev/null 2>&1 || true
-    "$GC" --city "$GC_CITY" bd close "$step_id" --reason "dropped: not authored by operator" >/dev/null 2>&1 || true
+    drop_bead "$step_id" "dropped: not authored by operator (pr_author='${pr_author:-<unresolved>}', CV_PR_AUTHOR='${CV_PR_AUTHOR}')"
   else
     echo "con-voyage-ci-repair-guard: KEEP ${step_id} (${repo}#${pr}, author='${pr_author}') — leaving for worker"
   fi
