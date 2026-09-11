@@ -17,9 +17,22 @@
 # the city is up, on a 10-minute cooldown interval.
 #
 # No auto-merge ever occurs from this order or from the native monitor.
+#
+# AUTHOR SCOPING: this monitor only ever acts on PRs authored by CV_PR_AUTHOR
+# (see the [order.env] block below and the HARD INVARIANT in the script header).
+# The native [[github.pr_monitor]] config cannot express an author filter, so
+# the scoping is enforced by the script — the sole runtime driver of the monitor.
 
 [order]
-description = "Drive GitHub PR monitoring: CI-failure repair beads + human-comment routing"
+description = "Drive GitHub PR monitoring: CI-failure repair beads + human-comment routing (author-scoped)"
 trigger = "cooldown"
 interval = "10m"
 exec = "$PACK_DIR/assets/scripts/con-voyage-pr-watch.sh"
+
+# Author-scope the monitor explicitly (belt-and-suspenders over the script's
+# gh-login default). CV_PR_AUTHOR is the single GitHub login whose PRs this
+# monitor may act on. It NEVER creates repair beads for, or routes comments
+# from, any other author's PRs. Change this to the operator's own login if this
+# pack is cast for a different user.
+[order.env]
+CV_PR_AUTHOR = "kriscoleman"

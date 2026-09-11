@@ -128,6 +128,15 @@ for CI results and merge-state problems but never to enqueue them for automatic
 merging. `repair_workflow = "con-voyage-ci-repair"` attaches the formula shipped in
 the pack to repair beads (instead of the default `mol-polecat-work`).
 
+> **Author scoping (important — read this).** The native `[[github.pr_monitor]]`
+> config **cannot express an author filter**, and `gc github pr backfill` has no
+> `--author` flag. On its own the native monitor would evaluate *every* open PR in
+> each configured repo — including PRs authored by other people. Author scoping is
+> therefore enforced by the **`con-voyage-pr-watch` order/script**, which is the
+> sole runtime driver of the monitor (the native `poll_interval` is inert without
+> it). The script only ever acts on PRs authored by `CV_PR_AUTHOR`. See
+> [Author scoping](#author-scoping) below.
+
 > **Reviewer model:** The 16 `cv-*` reviewer agents now ship with `provider = "opus"`
 > in their `agent.toml` files (inside the pack). No `[[patches.agent]]` blocks in
 > `city.toml` are needed — the pack already sets opus as the default model for all
@@ -166,8 +175,11 @@ The `con-voyage-pr-watch` order bridges this gap via best-effort polling.
 
 On each 10-minute tick the order script:
 
-1. Runs `gc github pr backfill --create-repair-beads` (Part A — CI repair).
-2. For each configured monitor's repo, lists open non-draft PRs and checks for
+1. Runs `gc github pr backfill --json` report-only, drops every PR not authored
+   by `CV_PR_AUTHOR`, and creates a repair bead only for each surviving
+   actionable PR (Part A — CI repair, author-scoped).
+2. For each configured monitor's repo, lists the configured author's open
+   non-draft PRs (`gh pr list --author "$CV_PR_AUTHOR"`) and checks for
    new human review comments and review feedback since the last run (Part B —
    comment routing). Comments prefixed with `[<rig>/<agent> — <lens>]`
    (con-voyage reviewer identity) and known bot logins are excluded. New human
@@ -185,6 +197,42 @@ On each 10-minute tick the order script:
 | Branch-protection block | Yes | Driven (Part A) |
 | Human review comments | No | Yes (best-effort, Part B) |
 | Auto-merge | Never | Never |
+
+### Author scoping
+
+**The monitor only ever touches PRs authored by a single configured user.**
+
+Both duties of the `con-voyage-pr-watch` order are scoped to the login in the
+`CV_PR_AUTHOR` environment variable:
+
+- **Part A (CI repair)** runs `gc github pr backfill --json` *report-only* (never
+  `--create-repair-beads`), then resolves each actionable PR's author via `gh` and
+  **drops every PR whose author is not `CV_PR_AUTHOR`** before creating any repair
+  bead. A PR whose author cannot be resolved is treated as "not ours" and skipped
+  (fail closed). The hard invariant: **zero repair beads are ever created for a PR
+  not authored by `CV_PR_AUTHOR`.**
+- **Part B (comment routing)** passes `--author "$CV_PR_AUTHOR"` to `gh pr list`,
+  so only the configured author's open PRs are ever polled or routed.
+
+`CV_PR_AUTHOR` resolution:
+
+1. `[order.env]` in `con-voyage-pr-watch.toml` sets it explicitly (default
+   `kriscoleman`; change it to your own login when casting for a different user).
+2. If unset there, the script defaults to the authenticated `gh` login
+   (`gh api user --jq .login`).
+3. If it still cannot be resolved, the script **fails closed** — it prints an
+   error and exits non-zero **before querying any repo**. It never runs unscoped.
+
+> **Why this is enforced in the script, not the native config.** The
+> `[[github.pr_monitor]]` blocks in `city.toml` have no author field and
+> `gc github pr backfill` has no `--author` flag, so author scoping cannot be
+> expressed natively. The `con-voyage-pr-watch` script is the sole runtime driver
+> of the monitor (the native `poll_interval` is inert without it), so scoping it
+> here covers every path by which the monitor can act on a PR.
+
+To change the allowed author, edit `[order.env] CV_PR_AUTHOR` in
+`con-voyage-pr-watch.toml` (or export `CV_PR_AUTHOR` in the controller
+environment).
 
 ### Nothing ever auto-merges
 
