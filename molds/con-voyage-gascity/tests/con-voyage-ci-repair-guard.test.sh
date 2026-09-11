@@ -116,6 +116,13 @@ sub="${args[$i]:-}"
 sub2="${args[$((i+1))]:-}"
 
 if [ "$sub" = "bd" ] && [ "$sub2" = "list" ]; then
+  # Infra-failure injection (LOW-1): simulate a transient store error on the
+  # sweep's fetch. The guard retries a bounded number of times, then WARNs and
+  # exits 0 (fail-open on infra, deferring to Step 0) — it must NOT proceed to
+  # close beads it could not enumerate.
+  if [ "${STUB_BDLIST_FAIL:-0}" = "1" ]; then
+    exit 1
+  fi
   # Selector-sensitive: only serve the fixture when the real selector this
   # guard depends on is present in argv. A future regression to a different
   # (or missing) selector must zero the fixture and fail the case 2-5
@@ -145,15 +152,46 @@ if [ "$sub" = "bd" ] && [ "$sub2" = "list" ]; then
 ]
 JSON
       ;;
+    noprrepo)
+      # A single con-voyage-ci-repair step whose root resolves but is MISSING
+      # gc.var.pr / gc.var.repo — exercises the :pr/repo-unresolved fail-CLOSED
+      # DROP (bd close, no gh pr view), distinct from the bd-show fail-open SKIP.
+      printf '[{"id":"step-noprrepo","status":"open","metadata":{"gc.root_bead_id":"root-noprrepo"}}]\n'
+      ;;
+    showfail)
+      # A single step whose root bd show FAILS (STUB_BDSHOW_FAIL) — exercises
+      # the fail-OPEN skip: no formula resolves, so the bead is left untouched.
+      printf '[{"id":"step-showfail","status":"open","metadata":{"gc.root_bead_id":"root-showfail"}}]\n'
+      ;;
+    retry)
+      # A single non-operator step used to prove drop_bead's bounded retry: the
+      # bd close for it is made to fail a fixed number of times before it takes.
+      printf '[{"id":"step-retry","status":"open","metadata":{"gc.root_bead_id":"root-retry"}}]\n'
+      ;;
   esac
   exit 0
 fi
 
 if [ "$sub" = "bd" ] && [ "$sub2" = "show" ]; then
   root_id="${args[$((i+2))]:-}"
+  # Infra-failure injection (LOW-1): a bd show failure means the root's formula
+  # cannot be resolved, so the guard SKIPS the bead (fail-open) — it must not
+  # close a bead it could not classify.
+  if [ "${STUB_BDSHOW_FAIL:-0}" = "1" ] && [ "$root_id" = "root-showfail" ]; then
+    exit 1
+  fi
   case "$root_id" in
     root-op)
       printf '[{"id":"root-op","metadata":{"gc.formula_name":"con-voyage-ci-repair","gc.var.pr":"11","gc.var.repo":"kriscoleman/foundry"}}]\n'
+      ;;
+    root-noprrepo)
+      # con-voyage-ci-repair root, but pr/repo vars absent — fail-closed DROP.
+      printf '[{"id":"root-noprrepo","metadata":{"gc.formula_name":"con-voyage-ci-repair"}}]\n'
+      ;;
+    root-retry)
+      # con-voyage-ci-repair root for a non-operator PR (#500) — will be dropped;
+      # its bd close is made to fail-then-succeed to prove the bounded retry.
+      printf '[{"id":"root-retry","metadata":{"gc.formula_name":"con-voyage-ci-repair","gc.var.pr":"500","gc.var.repo":"kriscoleman/foundry"}}]\n'
       ;;
     root-other)
       printf '[{"id":"root-other","metadata":{"gc.formula_name":"con-voyage-ci-repair","gc.var.pr":"500","gc.var.repo":"kriscoleman/foundry"}}]\n'
@@ -177,7 +215,23 @@ if [ "$sub" = "bd" ] && [ "$sub2" = "show" ]; then
   exit 0
 fi
 
-# Unknown call (bd update, bd close, sling, run, etc.) — record already done above; succeed quietly.
+if [ "$sub" = "bd" ] && [ "$sub2" = "close" ]; then
+  # Transient-close-failure injection (NEW LOW): if a fail-count file is set for
+  # this exact bead, fail the close while the counter is positive (decrementing
+  # each attempt), then succeed. Proves drop_bead retries a locked close instead
+  # of silently no-oping it under `|| true`.
+  close_target="${args[$((i+2))]:-}"
+  if [ -n "${STUB_BDCLOSE_FAIL_FILE:-}" ] && [ "${STUB_BDCLOSE_FAIL_TARGET:-}" = "$close_target" ]; then
+    remaining="$(cat "$STUB_BDCLOSE_FAIL_FILE" 2>/dev/null || echo 0)"
+    if [ "${remaining:-0}" -gt 0 ]; then
+      printf '%s' "$((remaining - 1))" > "$STUB_BDCLOSE_FAIL_FILE"
+      exit 1
+    fi
+  fi
+  exit 0
+fi
+
+# Unknown call (bd update, sling, run, etc.) — record already done above; succeed quietly.
 exit 0
 GC_STUB
 chmod +x "${STUBDIR}/gc"
@@ -233,6 +287,7 @@ run_script() {
       GC_CITY="$CITY_DIR" \
       STUB_GH_LOG="$GH_LOG" \
       STUB_GC_LOG="$GC_LOG" \
+      GUARD_RETRY_SLEEP=0 \
       "$@" \
       bash "$SCRIPT" 2>&1
   )"
@@ -254,6 +309,26 @@ if printf '%s' "$OUT" | grep -q 'FATAL: CV_PR_AUTHOR is empty'; then
 else
   fail "expected fail-closed FATAL message in output"
 fi
+
+# ===========================================================================
+# CASE 1b (LOW-2) — Guard's OWN default-author resolution SUCCESS path.
+#   CASE 1 only covers the failure half of the `gh api user` fallback; every
+#   other case sets CV_PR_AUTHOR explicitly. Here CV_PR_AUTHOR is empty and the
+#   stub `gh api user` resolves to kriscoleman, so the guard must resolve its
+#   own author and then produce the SAME keep/drop outcome as CASE 2 — proving
+#   this file's copy of the resolution logic (not just pr-watch.sh's) works.
+# ===========================================================================
+start_case "1b: guard resolves CV_PR_AUTHOR from gh api user (success path)"
+setup_case_env "1b"
+run_script CV_PR_AUTHOR="" STUB_GH_USER_LOGIN="kriscoleman"
+assert_eq "0" "$RC" "script exits 0 (author resolved via gh api user)"
+if printf '%s' "$OUT" | grep -q "author-scoped to 'kriscoleman'"; then
+  pass "logs author-scoped banner with the resolved login"
+else
+  fail "expected author-scoped banner naming kriscoleman"
+fi
+assert_log_count "$GC_LOG" 'bd close step-op'    0 "operator bead kept under default resolution"
+assert_log_count "$GC_LOG" 'bd close step-other' 1 "non-operator bead dropped under default resolution"
 
 # ===========================================================================
 # CASE 2 — Full sweep: operator bead kept, non-operator bead dropped, and
@@ -290,6 +365,10 @@ run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman"
 assert_eq "0" "$RC" "script exits 0"
 assert_log_count "$GC_LOG" 'bd close step-nearmatch'    1 "near-match author (kriscoleman2) is dropped"
 assert_log_count "$GC_LOG" 'bd close step-casevariant'  1 "case-variant author (KRISCOLEMAN) is dropped"
+# LOW-3: the paired drop-note (operator's forensic breadcrumb) must fire on
+# these drop paths too, not just the CASE 2 non-operator path.
+assert_log_count "$GC_LOG" 'bd update step-nearmatch'   1 "near-match drop leaves a drop-note"
+assert_log_count "$GC_LOG" 'bd update step-casevariant' 1 "case-variant drop leaves a drop-note"
 
 # ===========================================================================
 # CASE 4 — Unresolved PR author (#800): dropped, fail closed.
@@ -299,6 +378,8 @@ setup_case_env "4"
 run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman"
 assert_eq "0" "$RC" "script exits 0"
 assert_log_count "$GC_LOG" 'bd close step-unresolved' 1 "unresolved-author bead is dropped"
+# LOW-3: the unresolved-author drop must also leave the paired drop-note.
+assert_log_count "$GC_LOG" 'bd update step-unresolved' 1 "unresolved-author drop leaves a drop-note"
 if printf '%s' "$OUT" | grep -q 'DROP step-unresolved'; then
   pass "logs explicit DROP for step-unresolved"
 else
@@ -329,6 +410,77 @@ if printf '%s' "$OUT" | grep -q 'no open con-voyage-ci-repair beads found'; then
 else
   fail "expected empty-sweep message"
 fi
+
+# ===========================================================================
+# CASE 6a (LOW-1) — bd list infra failure: the sweep's fetch fails on every
+#   (bounded-retry) attempt. The guard must WARN, exit 0 (fail-OPEN on infra,
+#   deferring to Step 0), and make ZERO bd update / bd close / gh pr view calls
+#   — it must never close a bead it could not even enumerate.
+# ===========================================================================
+start_case "6a: bd list failure skips the sweep with zero writes (fail-open)"
+setup_case_env "6a"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_BDLIST_FAIL=1
+assert_eq "0" "$RC" "script exits 0 (infra failure defers, not fatal)"
+if printf '%s' "$OUT" | grep -q 'WARNING: bd list failed'; then
+  pass "logs the bd list WARNING"
+else
+  fail "expected 'WARNING: bd list failed' in output"
+fi
+assert_log_count "$GC_LOG" 'bd update' 0 "no bd update when the sweep can't enumerate"
+assert_log_count "$GC_LOG" 'bd close'  0 "no bd close when the sweep can't enumerate"
+assert_log_count "$GH_LOG" 'pr view'   0 "no gh pr view when the sweep can't enumerate"
+
+# ===========================================================================
+# CASE 6b (LOW-1) — two distinct root-inspection branches, pinned apart:
+#   (i) a con-voyage-ci-repair root that RESOLVES but has pr/repo ABSENT —
+#       fail-CLOSED DROP: bd close runs once, gh pr view is never called.
+#   (ii) a root whose bd show FAILS (STUB_BDSHOW_FAIL) — fail-OPEN SKIP: the
+#        formula can't be classified, so the bead is left untouched (no close).
+# ===========================================================================
+start_case "6b: pr/repo-absent root is dropped fail-closed (no gh pr view)"
+setup_case_env "6b"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_STEPLIST_MODE="noprrepo"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd close step-noprrepo'  1 "pr/repo-unresolved bead is dropped exactly once"
+assert_log_count "$GC_LOG" 'bd update step-noprrepo' 1 "pr/repo-unresolved drop leaves a drop-note"
+assert_log_count "$GH_LOG" 'pr view'                 0 "no gh pr view for a bead with no pr/repo"
+if printf '%s' "$OUT" | grep -q 'pr/repo unresolved'; then
+  pass "logs the fail-closed pr/repo-unresolved reason"
+else
+  fail "expected a 'pr/repo unresolved' DROP reason"
+fi
+
+start_case "6c: bd show failure skips the bead fail-open (no close)"
+setup_case_env "6c"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_STEPLIST_MODE="showfail" STUB_BDSHOW_FAIL=1
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd close step-showfail' 0 "bead whose root can't be shown is left open (fail-open)"
+assert_log_count "$GH_LOG" 'pr view'                0 "no gh pr view when the root can't be shown"
+if printf '%s' "$OUT" | grep -q 'WARNING: bd show failed'; then
+  pass "logs the bd show WARNING"
+else
+  fail "expected 'WARNING: bd show failed' in output"
+fi
+
+# ===========================================================================
+# CASE 6d (NEW LOW) — bounded-retry on a transient close failure. The bd close
+#   for a non-operator drop is made to FAIL its first 2 attempts (Dolt-lock
+#   sim) then succeed. drop_bead must retry rather than silently no-op under
+#   `|| true`, so the recorded close count for this bead is 3 (2 fails + 1 ok),
+#   proving the stranger's control bead really did get closed.
+# ===========================================================================
+start_case "6d: drop_bead retries a transient close failure (fail-closed intent kept)"
+setup_case_env "6d"
+CLOSE_FAIL_FILE="${SANDBOX}/close-fail-6d"
+printf '2' > "$CLOSE_FAIL_FILE"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_STEPLIST_MODE="retry" \
+  STUB_BDCLOSE_FAIL_FILE="$CLOSE_FAIL_FILE" \
+  STUB_BDCLOSE_FAIL_TARGET="step-retry"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd close step-retry' 3 "close is retried until it takes (2 fails + 1 success)"
+# And the counter file was fully drained — no fail budget left unused.
+assert_eq "0" "$(cat "$CLOSE_FAIL_FILE" 2>/dev/null || echo missing)" "all injected close failures were consumed"
 
 # ===========================================================================
 # CASE 7 (R1 content coverage) — {target}.ci-repair.md carries a Step 0
