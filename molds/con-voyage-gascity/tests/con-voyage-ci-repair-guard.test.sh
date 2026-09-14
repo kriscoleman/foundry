@@ -629,6 +629,14 @@ run_script CV_AUTHOR_GATE="disabled" CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOG
 assert_eq "0" "$RC" "script exits 0"
 assert_log_count "$GC_LOG" 'bd close' 0 "gate disabled: NOTHING is closed for authorship (work-all)"
 assert_log_count "$GC_LOG" 'bd update .*not authored by operator' 0 "gate disabled: no author drop-notes written"
+# Full "zero GitHub mutation" battery (mirrors CASE 2). A disabled gate is a
+# pure no-op: beyond not closing/dropping, it must never touch a PR or mint
+# follow-up work on the beads it keeps. Pins that a future regression which
+# starts commenting on / rerunning / re-slinging kept beads is caught here too.
+assert_log_count "$GH_LOG" 'run rerun'   0 "gate disabled: guard never calls gh run rerun"
+assert_log_count "$GH_LOG" 'pr comment'  0 "gate disabled: guard never calls gh pr comment"
+assert_log_count "$GH_LOG" 'pr review'   0 "gate disabled: guard never calls gh pr review"
+assert_log_count "$GC_LOG" 'sling'       0 "gate disabled: guard never calls gc sling"
 if printf '%s' "$OUT" | grep -qi 'author gate DISABLED'; then
   pass "logs that the author gate is disabled (work-all mode)"
 else
@@ -673,6 +681,51 @@ setup_case_env "R6g"
 run_script CV_AUTHOR_GATE="banana" CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman"
 assert_eq "0" "$RC" "script exits 0"
 assert_log_count "$GC_LOG" 'bd close step-other' 1 "garbage toggle value is gated (fail-closed), non-operator bead dropped"
+
+# ---------------------------------------------------------------------------
+# R6h (spec (e) MUTATION GUARD #3 — surrounding whitespace fails CLOSED).
+#   Incident-driven: a stray space in the TOML value (e.g. cv_author_gate =
+#   " disabled ") must NOT open the gate. The guard lowercases but does NOT
+#   trim, so " disabled " != "disabled" and the gate stays ENABLED (gated). We
+#   assert the full fail-closed battery — the non-operator bead is dropped and
+#   ZERO GitHub mutations happen — so a future edit that starts trimming the
+#   value (silently widening what counts as "disabled") trips this case.
+# ---------------------------------------------------------------------------
+start_case "R6h: whitespace-padded value ' disabled ' stays ENABLED (fail-safe)"
+setup_case_env "R6h"
+run_script CV_AUTHOR_GATE=" disabled " CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman"
+assert_eq "0" "$RC" "script exits 0 (gate treated as enabled, not disabled)"
+assert_log_count "$GC_LOG" 'bd close step-other' 1 "padded ' disabled ' is gated — non-operator bead dropped"
+assert_log_count "$GC_LOG" 'bd close step-op'    0 "padded ' disabled ' keeps the operator bead (still gated, not work-all)"
+# It must NOT have taken the disabled/no-op branch: an actual sweep ran.
+if printf '%s' "$OUT" | grep -qi 'author gate DISABLED'; then
+  fail "padded ' disabled ' must NOT trigger the disabled (work-all) branch"
+else
+  pass "padded ' disabled ' does not announce the gate as DISABLED"
+fi
+# Zero GitHub mutation on the gated path (same battery as CASE 2 / R6d).
+assert_log_count "$GH_LOG" 'run rerun'  0 "padded value: guard never calls gh run rerun"
+assert_log_count "$GH_LOG" 'pr comment' 0 "padded value: guard never calls gh pr comment"
+assert_log_count "$GH_LOG" 'pr review'  0 "padded value: guard never calls gh pr review"
+assert_log_count "$GC_LOG" 'sling'      0 "padded value: guard never calls gc sling"
+
+# ---------------------------------------------------------------------------
+# R6i (spec (e) — case-insensitivity is intentional). Mixed-case "Disabled"
+#   IS honored (the guard lowercases before comparing), so it opens the gate
+#   into work-all. Documents that the ONLY normalization applied is case —
+#   distinguishing it cleanly from R6h's untrimmed whitespace. If someone drops
+#   the tr-to-lower, "Disabled" would fall through to gated and this case FAILS.
+# ---------------------------------------------------------------------------
+start_case "R6i: mixed-case 'Disabled' is honored (case-insensitive) — works all"
+setup_case_env "R6i"
+run_script CV_AUTHOR_GATE="Disabled" CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd close' 0 "mixed-case 'Disabled' disables the gate (work-all: nothing closed)"
+if printf '%s' "$OUT" | grep -qi 'author gate DISABLED'; then
+  pass "mixed-case 'Disabled' announces the gate as DISABLED (work-all)"
+else
+  fail "expected mixed-case 'Disabled' to trigger the disabled (work-all) branch"
+fi
 
 # ===========================================================================
 # Summary
