@@ -271,6 +271,7 @@ for r in data.get('results', []):
         --var "repo=${a_full}" \
         --var "branch=${a_branch}" \
         --var "cv_pr_author=${CV_PR_AUTHOR}" \
+        --var "cv_author_gate=${CV_AUTHOR_GATE:-enabled}" \
         2>&1; then
         echo "con-voyage-pr-watch: [PART A] ${a_full}#${a_num}: repair bead created/attached and routed to ${a_route}"
       else

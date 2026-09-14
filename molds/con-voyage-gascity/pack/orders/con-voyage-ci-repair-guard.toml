@@ -30,9 +30,23 @@ on = "bead.created"
 exec = "$PACK_DIR/assets/scripts/con-voyage-ci-repair-guard.sh"
 
 # Author-scope the guard explicitly. CV_PR_AUTHOR is the single GitHub login
-# whose PRs the con-voyage-ci-repair workflow may act on — the same knob as
-# con-voyage-pr-watch.toml and the con-voyage-ci-repair formula's
+# whose PRs the con-voyage-ci-repair workflow may act on (the allow-list) — the
+# same knob as con-voyage-pr-watch.toml and the con-voyage-ci-repair formula's
 # cv_pr_author default. Change this to the operator's own login if this pack
 # is cast for a different user.
+#
+# CV_AUTHOR_GATE is the feature toggle over that allow-list:
+#   enabled  (DEFAULT) — fail-closed author scoping: drop every con-voyage-ci-
+#            repair bead whose PR is not authored by CV_PR_AUTHOR, and if
+#            CV_PR_AUTHOR is empty/unresolved drop EVERYTHING (never work-all).
+#   disabled — explicit opt-in: this guard becomes a no-op and every bead is
+#            left for a worker regardless of author (native [[github.pr_monitor]]
+#            "all PRs" parity). This is the ONLY value that yields work-all.
+# Default enabled deliberately diverges from the native monitor's all-PRs
+# default because an earlier unfiltered version got the operator removed from an
+# org. Only the literal "disabled" (case-insensitive) turns the gate off; any
+# other value stays enabled (fail closed on ambiguity). Keep in sync with
+# cv_author_gate in con-voyage-ci-repair.formula.toml if you flip it.
 [order.env]
 CV_PR_AUTHOR = "kriscoleman"
+CV_AUTHOR_GATE = "enabled"

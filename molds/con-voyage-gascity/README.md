@@ -206,6 +206,9 @@ hand. `con-voyage-ci-repair-guard` is the backstop for those other two paths:
 - Fails closed the same way as `con-voyage-pr-watch`: an unresolved
   `CV_PR_AUTHOR` or an unresolved PR author means the bead is dropped, never
   guessed into being kept.
+- Is behind the `CV_AUTHOR_GATE` toggle (default `enabled`). Setting
+  `CV_AUTHOR_GATE=disabled` makes this guard a no-op so every bead is worked
+  regardless of author — see [Author-gate toggle](#author-gate-toggle-cv_author_gate).
 
 ### Coverage table
 
@@ -268,6 +271,54 @@ To change the allowed author, edit `[order.env] CV_PR_AUTHOR` in
 export `CV_PR_AUTHOR` in the controller environment, which covers both
 orders).
 
+### Author-gate toggle (`CV_AUTHOR_GATE`)
+
+The `CV_PR_AUTHOR` allow-list above is itself gated by a feature toggle,
+`CV_AUTHOR_GATE`, so a city can run the ci-repair path **either** author-scoped
+(the default) **or** on **all PRs** (native `[[github.pr_monitor]]` parity):
+
+| `CV_AUTHOR_GATE` | ci-repair guard + Step 0 behavior |
+|---|---|
+| `enabled` (**default**) | Fail-closed author scoping — only PRs authored by `CV_PR_AUTHOR` are worked. An empty/unresolved `CV_PR_AUTHOR` drops **everything**. |
+| `disabled` | Explicit opt-in — every actionable PR is worked **regardless of author**. |
+| anything else | Treated as `enabled` (fail closed on ambiguity). |
+
+**Default is `enabled`, and it stays enabled in this city.** This is a
+**deliberate divergence** from the native monitor, whose default is "all PRs":
+an earlier *unfiltered* version of this path acted on 43 PRs it did not own
+across other people's repos and got the operator **removed from the org**. So we
+default gated, and "work all PRs" is an explicit, documented opt-in — never a
+silent fall-through.
+
+**The fail-closed invariant is preserved.** `CV_AUTHOR_GATE=enabled` with an
+empty/unresolved `CV_PR_AUTHOR` **drops every bead** (the guard exits non-zero
+before inspecting any bead; Step 0 drops the bead it was handed). "Work all PRs"
+requires the explicit `disabled` toggle — an empty allow-list is *never*
+interpreted as "work all". Only the literal `disabled` (case-insensitive)
+bypasses the gate.
+
+**Precedence.** `CV_AUTHOR_GATE` decides *whether* the gate runs; `CV_PR_AUTHOR`
+decides *which* author it allows once it does. `disabled` short-circuits before
+`CV_PR_AUTHOR` is even resolved, so the two are fully decoupled: the disable
+opt-in works even with no allow-list set, and never fails closed.
+
+To run the ci-repair path on all PRs, set `CV_AUTHOR_GATE = "disabled"` in
+`[order.env]` of `con-voyage-ci-repair-guard.toml` **and** set
+`[vars.cv_author_gate] default = "disabled"` in
+`con-voyage-ci-repair.formula.toml` (or export `CV_AUTHOR_GATE=disabled` in the
+controller environment, which the guard order and the pr-watch sling both read).
+Leaving `CV_AUTHOR_GATE` unset keeps the safe, enabled default.
+
+> **Future native-parity story (gc [#6280](https://github.com/gastownhall/gascity/pull/6280)).**
+> gc PR #6280 adds an `authors` allow-list to the native `[[github.pr_monitor]]`
+> itself (allow-list, with the native "all PRs" behavior when the list is
+> empty). Once that lands, `CV_PR_AUTHOR` maps onto the native `authors`
+> allow-list and `CV_AUTHOR_GATE` maps onto "list populated vs. empty" — letting
+> pack users run the monitor both ways natively. We keep our incident-driven
+> divergence regardless: **enabled + empty allow-list drops everything**, so an
+> operator who forgets to populate the list is never silently switched into
+> working every PR. This toggle is the pack-side bridge until #6280 ships.
+
 ### Nothing ever auto-merges
 
 `merge_queue = "observe"` is set in `[[github.pr_monitor]]`. The native monitor
@@ -321,6 +372,13 @@ content-checks layer 3 (the workflow's own Step 0 gate):
 - **Non-destructive retrigger content check** — the run-specific
   `gh run rerun <run-id> --failed --repo` path is present, and the
   close/reopen, empty-commit, and force-push prohibitions are still there.
+- **Author-gate toggle (`CV_AUTHOR_GATE`)** — `enabled` (and the default with no
+  toggle set) drops non-operator beads; `enabled` + empty allow-list drops
+  everything (exit 1, never work-all); `disabled` keeps every bead regardless of
+  author (work-all), even with an empty allow-list and without failing closed;
+  an unrecognized toggle value falls back to `enabled` (fail closed). The
+  disabled/default cases double as mutation guards: reverting the toggle logic
+  (or flipping the default to `disabled`) fails the suite.
 
 The `tests/` directory lives outside `pack/`, so it is never compiled into the
 shipped `packs/con-voyage` pack.

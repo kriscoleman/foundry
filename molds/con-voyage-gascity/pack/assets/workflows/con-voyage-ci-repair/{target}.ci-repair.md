@@ -15,8 +15,9 @@ The monitor re-evaluates the PR on the next backfill — you do not merge.
 | convoy_id | {{convoy_id}}      |
 | title     | {{title}}          |
 | cv_pr_author | {{cv_pr_author}} |
+| cv_author_gate | {{cv_author_gate}} |
 
-## Step 0 — Author gate (fail-closed, mandatory)
+## Step 0 — Author gate (fail-closed by default, toggle-able)
 
 Before touching anything else — before even reading the bead — verify this PR
 is actually owned by the operator. A `con-voyage-ci-repair` bead can be minted
@@ -25,6 +26,18 @@ filter), by `con-voyage-pr-watch.sh`, or by a manual mis-sling. This gate is
 what makes it safe for you to act on the bead at all; it re-checks the same
 invariant the `con-voyage-ci-repair-guard` order already swept for, in case
 that sweep lost a claim race with you.
+
+**Feature toggle — `cv_author_gate` (default `enabled`).** This gate is behind a
+toggle so the pack can also run in native `[[github.pr_monitor]]` "work all PRs"
+mode. The default is `enabled` (the fail-closed scoping below) and MUST stay the
+default in this city — a deliberate divergence from the native monitor, because
+an earlier unfiltered version acted on PRs it did not own and got the operator
+removed from an org. Set `cv_author_gate=disabled` to explicitly opt in to
+working every PR regardless of author. The bash block below reads this toggle
+first: when it is exactly `disabled` (case-insensitive) the gate is skipped and
+you continue straight to Step 1. `disabled` is the ONLY thing that bypasses the
+gate — an empty/unresolved `CV_PR_AUTHOR` under the enabled gate still DROPS,
+never "works all".
 
 The comparison rule (this is the *why* — the bash block below enforces it, do
 not re-derive it by hand): compare `pr_author` to `CV_PR_AUTHOR` using an EXACT,
@@ -43,30 +56,41 @@ Run this block VERBATIM. It resolves the identities, then makes the gate
 decision as a deterministic conditional (not a judgement call you re-derive):
 
 ```bash
-CV_PR_AUTHOR="{{cv_pr_author}}"
-if [[ "$CV_PR_AUTHOR" =~ ^[[:space:]]*$ ]]; then
-  CV_PR_AUTHOR="$(gh api user --jq .login 2>/dev/null || true)"
-fi
+# FEATURE TOGGLE — author gate on/off. Default enabled (fail-closed scoping).
+# Exact literal "disabled" (case-insensitive) is the ONLY value that turns the
+# gate off; anything else (including a typo or empty string) stays enabled so an
+# accidental value can never silently open the gate. When disabled, skip the
+# whole gate and fall through to Step 1 — work this PR regardless of author.
+CV_AUTHOR_GATE="{{cv_author_gate}}"
+gate_lc="$(printf '%s' "$CV_AUTHOR_GATE" | tr '[:upper:]' '[:lower:]')"
+if [ "$gate_lc" = "disabled" ]; then
+  echo "ci-repair Step 0: author gate DISABLED (cv_author_gate=disabled) — working this PR regardless of author (native-parity opt-in)"
+else
+  CV_PR_AUTHOR="{{cv_pr_author}}"
+  if [[ "$CV_PR_AUTHOR" =~ ^[[:space:]]*$ ]]; then
+    CV_PR_AUTHOR="$(gh api user --jq .login 2>/dev/null || true)"
+  fi
 
-# {{pr}} must be a GitHub PR number. Refuse to interpolate anything else into
-# the command substitution below — fail closed rather than run a shell with an
-# unexpected value.
-pr="{{pr}}"
-if [[ ! "$pr" =~ ^[0-9]+$ ]]; then
-  gc bd update "{{convoy_id}}" \
-    --notes "dropped: not authored by operator (invalid pr='${pr}', expected a numeric PR id)"
-  gc bd close "{{convoy_id}}" --reason "dropped: not authored by operator"
-  exit 0
-fi
+  # {{pr}} must be a GitHub PR number. Refuse to interpolate anything else into
+  # the command substitution below — fail closed rather than run a shell with an
+  # unexpected value.
+  pr="{{pr}}"
+  if [[ ! "$pr" =~ ^[0-9]+$ ]]; then
+    gc bd update "{{convoy_id}}" \
+      --notes "dropped: not authored by operator (invalid pr='${pr}', expected a numeric PR id)"
+    gc bd close "{{convoy_id}}" --reason "dropped: not authored by operator"
+    exit 0
+  fi
 
-pr_author="$(gh pr view "$pr" --repo "{{repo}}" --json author --jq '.author.login' 2>/dev/null || echo "")"
+  pr_author="$(gh pr view "$pr" --repo "{{repo}}" --json author --jq '.author.login' 2>/dev/null || echo "")"
 
-# EXACT, case-sensitive gate. Empty/whitespace on EITHER side is a mismatch.
-if [[ "$pr_author" =~ ^[[:space:]]*$ ]] || [[ "$CV_PR_AUTHOR" =~ ^[[:space:]]*$ ]] || [ "$pr_author" != "$CV_PR_AUTHOR" ]; then
-  gc bd update "{{convoy_id}}" \
-    --notes "dropped: not authored by operator (pr_author='${pr_author:-<unresolved>}', CV_PR_AUTHOR='${CV_PR_AUTHOR:-<unresolved>}')"
-  gc bd close "{{convoy_id}}" --reason "dropped: not authored by operator"
-  exit 0
+  # EXACT, case-sensitive gate. Empty/whitespace on EITHER side is a mismatch.
+  if [[ "$pr_author" =~ ^[[:space:]]*$ ]] || [[ "$CV_PR_AUTHOR" =~ ^[[:space:]]*$ ]] || [ "$pr_author" != "$CV_PR_AUTHOR" ]; then
+    gc bd update "{{convoy_id}}" \
+      --notes "dropped: not authored by operator (pr_author='${pr_author:-<unresolved>}', CV_PR_AUTHOR='${CV_PR_AUTHOR:-<unresolved>}')"
+    gc bd close "{{convoy_id}}" --reason "dropped: not authored by operator"
+    exit 0
+  fi
 fi
 ```
 
