@@ -306,8 +306,30 @@ To run the ci-repair path on all PRs, set `CV_AUTHOR_GATE = "disabled"` in
 `[order.env]` of `con-voyage-ci-repair-guard.toml` **and** set
 `[vars.cv_author_gate] default = "disabled"` in
 `con-voyage-ci-repair.formula.toml` (or export `CV_AUTHOR_GATE=disabled` in the
-controller environment, which the guard order and the pr-watch sling both read).
-Leaving `CV_AUTHOR_GATE` unset keeps the safe, enabled default.
+controller environment). Leaving `CV_AUTHOR_GATE` unset keeps the safe, enabled
+default.
+
+**What `disabled` does — and does not — reach.** The toggle governs the
+**ci-repair worker/guard** decision only:
+
+- The **guard order** (`con-voyage-ci-repair-guard.sh`) reads `CV_AUTHOR_GATE`
+  **directly** and short-circuits to a no-op when it is `disabled`, so it stops
+  closing non-operator repair beads — that is the switch that lets the ci-repair
+  path work all PRs.
+- Each **ci-repair bead** carries a `cv_author_gate` var, so its own Step 0
+  re-check honors the same toggle when a worker claims it.
+- The **`con-voyage-pr-watch` order does NOT read the toggle for its own author
+  filtering.** It only *forwards* the value onto each ci-repair bead it mints
+  (`--var cv_author_gate=...`); it still applies its own `CV_PR_AUTHOR` scoping
+  to decide *which* PRs get a bead in the first place. So `disabled` does **not**
+  make pr-watch mint repair beads (Part A) or route review comments (Part B) for
+  non-operator PRs — those paths stay `CV_PR_AUTHOR`-scoped, and pr-watch still
+  fails closed (exit 1) on an empty/unresolved `CV_PR_AUTHOR` regardless of the
+  toggle. Bringing pr-watch's own author gate to full toggle parity is tracked
+  separately (bead `fk-08o`).
+
+In short: `disabled` turns off the **guard/worker** author check for ci-repair
+beads that already exist; it does **not** widen which PRs pr-watch acts on.
 
 > **Future native-parity story (gc [#6280](https://github.com/gastownhall/gascity/pull/6280)).**
 > gc PR #6280 adds an `authors` allow-list to the native `[[github.pr_monitor]]`
