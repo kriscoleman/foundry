@@ -558,6 +558,123 @@ else
 fi
 
 # ===========================================================================
+# R6 — CONFIGURABLE AUTHOR GATE (CV_AUTHOR_GATE=enabled|disabled)
+#
+# PR #17 added a fail-closed author gate; R6 puts it behind a toggle. The
+# toggle's contract (this is the security-critical part):
+#   - CV_AUTHOR_GATE unset/enabled (DEFAULT) => today's fail-closed behavior:
+#     resolve CV_PR_AUTHOR, drop every non-operator bead, and if the allow-list
+#     is empty/unresolved DROP EVERYTHING (exit 1) — never a silent "work all".
+#   - CV_AUTHOR_GATE=disabled => explicit, documented opt-in to work ALL PRs
+#     regardless of author. This is the ONLY path that keeps a stranger's bead.
+#   - Any other value => treated as enabled (fail closed on ambiguity).
+#
+# CV_PR_AUTHOR stays the allow-list; CV_AUTHOR_GATE is the enable/disable switch
+# layered over it (mirrors gc #6280's authors allow-list + on/off concept, but
+# with our incident-driven divergence: empty allow-list + gate on = drop-all,
+# not work-all).
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# R6a (spec (a): enabled + author IN allow-list => WORK). Same outcome as
+#   CASE 2 but with the gate toggled ON *explicitly*, pinning that an explicit
+#   CV_AUTHOR_GATE=enabled is honored (not just the default).
+# ---------------------------------------------------------------------------
+start_case "R6a: enabled + author in allow-list keeps operator bead, drops others"
+setup_case_env "R6a"
+run_script CV_AUTHOR_GATE="enabled" CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd close step-op'    0 "operator bead kept when gate explicitly enabled"
+assert_log_count "$GC_LOG" 'bd close step-other' 1 "non-operator bead dropped when gate explicitly enabled"
+
+# ---------------------------------------------------------------------------
+# R6b (spec (b): enabled + author NOT in allow-list => DROP, fail closed).
+#   The operator allow-list is a DIFFERENT login than any fixture PR author, so
+#   EVERY resolvable bead is a non-match and must be dropped. Proves the gate
+#   isn't just "keep whoever authored it".
+# ---------------------------------------------------------------------------
+start_case "R6b: enabled + author not in allow-list drops the bead"
+setup_case_env "R6b"
+run_script CV_AUTHOR_GATE="enabled" CV_PR_AUTHOR="someone-else" STUB_GH_USER_LOGIN="someone-else"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd close step-op'    1 "operator's own bead is dropped when they aren't in the allow-list"
+assert_log_count "$GC_LOG" 'bd close step-other' 1 "other-author bead is dropped too"
+
+# ---------------------------------------------------------------------------
+# R6c (spec (c) — THE INVARIANT: enabled + EMPTY/unset allow-list => DROP ALL,
+#   never work-all). Gate is enabled (default) but CV_PR_AUTHOR is empty and the
+#   gh-login fallback also fails. The guard MUST fail closed (exit 1) BEFORE
+#   inspecting any bead — it must NOT silently treat an empty allow-list as
+#   "work every PR". This is the exact org-removal-incident invariant.
+# ---------------------------------------------------------------------------
+start_case "R6c: enabled + empty allow-list drops everything (exit 1), never work-all"
+setup_case_env "R6c"
+run_script CV_AUTHOR_GATE="enabled" CV_PR_AUTHOR="" STUB_GH_USER_LOGIN="" STUB_GH_USER_FAIL=1
+assert_eq "1" "$RC" "script exits 1 (fail closed on empty allow-list, gate enabled)"
+assert_log_count "$GC_LOG" 'bd list'  0 "zero 'bd list' — bails before enumerating any bead"
+assert_log_count "$GC_LOG" 'bd close' 0 "zero 'bd close' — empty allow-list is NOT interpreted as work-all"
+assert_log_count "$GH_LOG" 'pr view'  0 "zero 'gh pr view' — no PR is ever inspected"
+
+# ---------------------------------------------------------------------------
+# R6d (spec (d): DISABLED => WORK ALL PRs regardless of author). The explicit
+#   opt-in. Every bead — operator, other-human, near-match, case-variant,
+#   unresolved-author — is KEPT: ZERO bd close, zero drop-notes. This is the
+#   ONLY toggle state that yields "work all". A bead whose root is not a
+#   con-voyage-ci-repair formula is still left alone (that's formula scoping,
+#   not author gating).
+# ---------------------------------------------------------------------------
+start_case "R6d: disabled works ALL PRs (no bead is ever dropped for authorship)"
+setup_case_env "R6d"
+run_script CV_AUTHOR_GATE="disabled" CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd close' 0 "gate disabled: NOTHING is closed for authorship (work-all)"
+assert_log_count "$GC_LOG" 'bd update .*not authored by operator' 0 "gate disabled: no author drop-notes written"
+if printf '%s' "$OUT" | grep -qi 'author gate DISABLED'; then
+  pass "logs that the author gate is disabled (work-all mode)"
+else
+  fail "expected a log line announcing the author gate is DISABLED"
+fi
+
+# ---------------------------------------------------------------------------
+# R6e (spec (d) hardening): DISABLED must work-all even with an EMPTY
+#   CV_PR_AUTHOR — the disable opt-in does NOT require an allow-list and must
+#   NOT fail closed. Proves "work all" is driven purely by the toggle, never by
+#   an empty allow-list fall-through (the two are decoupled).
+# ---------------------------------------------------------------------------
+start_case "R6e: disabled + empty allow-list still works all (no fail-closed exit)"
+setup_case_env "R6e"
+run_script CV_AUTHOR_GATE="disabled" CV_PR_AUTHOR="" STUB_GH_USER_LOGIN="" STUB_GH_USER_FAIL=1
+assert_eq "0" "$RC" "script exits 0 (disabled never fails closed on an empty allow-list)"
+assert_log_count "$GC_LOG" 'bd close' 0 "disabled + empty allow-list keeps every bead (work-all)"
+
+# ---------------------------------------------------------------------------
+# R6f (spec (e) MUTATION GUARD #1 — default must stay ENABLED). No
+#   CV_AUTHOR_GATE at all: behavior MUST be the fail-closed default (drops the
+#   non-operator bead). If someone flips the default to "disabled", this case
+#   flips to keeping step-other and FAILS. This is the tripwire on the safe
+#   default (R6.2).
+# ---------------------------------------------------------------------------
+start_case "R6f: default (no toggle) is ENABLED — non-operator bead still dropped"
+setup_case_env "R6f"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd close step-other' 1 "default gate drops the non-operator bead (default == enabled)"
+assert_log_count "$GC_LOG" 'bd close step-op'    0 "default gate keeps the operator bead"
+
+# ---------------------------------------------------------------------------
+# R6g (spec (e) MUTATION GUARD #2 — unrecognized value fails CLOSED as enabled).
+#   A typo'd/garbage CV_AUTHOR_GATE must NOT be treated as "disabled/work-all";
+#   it must fall through to the enabled (gated) behavior. If the flag parse ever
+#   inverted to "anything != enabled => disabled", this case would keep the
+#   non-operator bead and FAIL.
+# ---------------------------------------------------------------------------
+start_case "R6g: unrecognized toggle value fails closed (treated as enabled)"
+setup_case_env "R6g"
+run_script CV_AUTHOR_GATE="banana" CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd close step-other' 1 "garbage toggle value is gated (fail-closed), non-operator bead dropped"
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 echo

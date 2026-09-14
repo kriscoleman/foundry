@@ -30,18 +30,26 @@ failing after the push, a new repair bead will be created for the next cycle.
 | branch           | PR head ref (the branch to check out and fix)    |
 | implementation_target | Route target for the implementor (default: gc.implementation-worker) |
 | escalation_target     | Mail recipient for blocked work (default: human)            |
-| cv_pr_author          | GitHub login the implementor's Step 0 gate must match against (default: kriscoleman) |
+| cv_pr_author          | GitHub login the implementor's Step 0 gate must match against — the allow-list (default: kriscoleman) |
+| cv_author_gate        | Author-gate toggle: `enabled` (default, fail-closed scoping) or `disabled` (work all PRs) |
 
 ## Author scoping (defense in depth)
 
-This formula's `ci-repair` step opens with a fail-closed Step 0 gate that
+This formula's `ci-repair` step opens with a Step 0 gate that, when enabled,
 re-verifies the PR's real author against `cv_pr_author` before taking any
-action — see the `{target}.ci-repair.md` prompt. `cv_pr_author` defaults to
-`kriscoleman` so the gate holds even when a bead is minted by a caller that
-does not pass the var explicitly (e.g. the native `[[github.pr_monitor]]`'s
-own `--create-repair-beads` path). `con-voyage-pr-watch.sh` and the
+action — see the `{target}.ci-repair.md` prompt. The gate is behind the
+`cv_author_gate` toggle (default `enabled`): `enabled` keeps the fail-closed
+scoping (drop any PR whose author is not `cv_pr_author`, and drop everything if
+the allow-list is empty); `disabled` is an explicit opt-in to work every PR
+regardless of author (native `[[github.pr_monitor]]` parity). Only the literal
+`disabled` bypasses the gate — an empty allow-list under the enabled gate still
+drops, never "works all". `cv_pr_author` defaults to `kriscoleman` so the gate
+holds even when a bead is minted by a caller that does not pass the var
+explicitly (e.g. the native `[[github.pr_monitor]]`'s own
+`--create-repair-beads` path). `con-voyage-pr-watch.sh` and the
 `con-voyage-ci-repair-guard` order pass their own resolved `CV_PR_AUTHOR`
-through explicitly — all three share the same knob.
+through explicitly — all three share the same allow-list knob, and the guard
+order shares the `CV_AUTHOR_GATE` toggle.
 """
 formula = "con-voyage-ci-repair"
 
@@ -66,11 +74,28 @@ default = "human"
 [vars.cv_pr_author]
 description = """
 GitHub login the implementor's Step 0 author gate must exactly match before
-acting on this repair bead. Change this to the operator's own login if this
+acting on this repair bead (the allow-list). Consulted only when
+`cv_author_gate` is `enabled`. Change this to the operator's own login if this
 pack is cast for a different user (keep it in sync with `CV_PR_AUTHOR` in
 con-voyage-pr-watch.toml and con-voyage-ci-repair-guard.toml).
 """
 default = "kriscoleman"
+
+[vars.cv_author_gate]
+description = """
+Feature toggle for the Step 0 author gate. `enabled` (default) keeps today's
+fail-closed author scoping — the implementor drops any PR whose author is not
+`cv_pr_author`, and an empty/unresolved allow-list drops everything. `disabled`
+is an explicit, documented opt-in to work EVERY PR regardless of author (native
+`[[github.pr_monitor]]` parity). Only the literal `disabled` (case-insensitive)
+bypasses the gate; any other value stays enabled (fail closed on ambiguity).
+
+Default `enabled` deliberately diverges from the native monitor's "all PRs"
+default: an earlier unfiltered version acted on PRs it did not own and got the
+operator removed from an org, so this city defaults gated. Keep this in sync
+with `CV_AUTHOR_GATE` in con-voyage-ci-repair-guard.toml if you flip it.
+"""
+default = "enabled"
 
 [[steps]]
 id = "ci-repair"

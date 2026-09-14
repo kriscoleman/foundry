@@ -34,15 +34,33 @@
 #   GC              Path to the gc binary (default: gc)
 #   GH              Path to the gh binary (default: gh)
 #   GC_CITY         City root passed to gc (default: current directory)
-#   CV_PR_AUTHOR    REQUIRED (author-scoping). Same knob as
-#                   con-voyage-pr-watch.sh and the con-voyage-ci-repair
-#                   formula's cv_pr_author var. Defaults to the authenticated
-#                   gh login. If it cannot be resolved, the script FAILS
-#                   CLOSED (exit 1) before inspecting any bead.
+#   CV_AUTHOR_GATE  Feature toggle for the whole author gate:
+#                     enabled   (DEFAULT) — fail-closed author scoping below.
+#                     disabled  — explicit opt-in to work ALL PRs regardless of
+#                                 author (native [[github.pr_monitor]] parity).
+#                                 This is the ONLY value that yields "work all";
+#                                 an empty CV_PR_AUTHOR never does (see below).
+#                   Any other/unrecognized value is treated as `enabled`
+#                   (fail closed on ambiguity). Default ENABLED deliberately
+#                   diverges from the native monitor's "all PRs" default — ours
+#                   defaults gated because of a prior org-removal incident.
+#   CV_PR_AUTHOR    The author allow-list, consulted only when CV_AUTHOR_GATE is
+#                   enabled. Same knob as con-voyage-pr-watch.sh and the
+#                   con-voyage-ci-repair formula's cv_pr_author var. Defaults to
+#                   the authenticated gh login. If the gate is ENABLED and this
+#                   cannot be resolved, the script FAILS CLOSED (exit 1) before
+#                   inspecting any bead — an empty allow-list DROPS everything,
+#                   it is NEVER interpreted as "work all" (that requires the
+#                   explicit CV_AUTHOR_GATE=disabled opt-in).
+#
+# Precedence: CV_AUTHOR_GATE decides IF the gate runs; CV_PR_AUTHOR decides
+# WHICH author it allows once it does. disabled short-circuits before
+# CV_PR_AUTHOR is even resolved, so the two are fully decoupled.
 #
 # Exit codes:
-#   0 — completed (zero, one, or more beads inspected/dropped)
-#   Non-zero — fatal setup error or unresolved CV_PR_AUTHOR (fail closed)
+#   0 — completed (zero, one, or more beads inspected/dropped), OR gate disabled
+#   Non-zero — fatal setup error, or (gate enabled) unresolved CV_PR_AUTHOR
+#              (fail closed)
 #
 # Requires: bash 4+, gh CLI (authenticated), gc CLI, python3.
 
@@ -55,6 +73,31 @@ GC="${GC:-gc}"
 GH="${GH:-gh}"
 GC_CITY="${GC_CITY:-.}"
 CV_PR_AUTHOR="${CV_PR_AUTHOR:-}"
+# Author-gate feature toggle. Default ENABLED (fail-closed author scoping).
+# Only the literal, case-insensitive value "disabled" turns the gate off;
+# EVERYTHING else — including a typo or an empty string — is treated as
+# "enabled" so an accidental/garbled value can never silently open the gate.
+CV_AUTHOR_GATE="${CV_AUTHOR_GATE:-enabled}"
+
+# ---------------------------------------------------------------------------
+# FEATURE TOGGLE — author gate on/off.
+#
+# When explicitly DISABLED, this guard becomes a complete no-op: it takes no
+# action, so every open con-voyage-ci-repair bead is left for a worker to claim
+# regardless of author (native [[github.pr_monitor]] "all PRs" parity). This is
+# the ONLY code path that yields "work all"; an empty/unset CV_PR_AUTHOR under
+# the enabled gate below does NOT — it fails closed and drops everything.
+#
+# Case-insensitive compare, exact literal "disabled" only. This runs before the
+# gc/gh/python3 preflight on purpose: a disabled gate does nothing, so it must
+# not hard-require those tools just to no-op.
+# ---------------------------------------------------------------------------
+gate_lc=$(printf '%s' "$CV_AUTHOR_GATE" | tr '[:upper:]' '[:lower:]')
+if [ "$gate_lc" = "disabled" ]; then
+  echo "con-voyage-ci-repair-guard: author gate DISABLED (CV_AUTHOR_GATE=disabled) — leaving ALL con-voyage-ci-repair beads for workers regardless of author (native-parity opt-in)"
+  echo "con-voyage-ci-repair-guard: done"
+  exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # Preflight checks
@@ -91,7 +134,7 @@ if [[ "$CV_PR_AUTHOR" =~ ^[[:space:]]*$ ]]; then
   echo "con-voyage-ci-repair-guard: or ensure 'gh api user --jq .login' resolves." >&2
   exit 1
 fi
-echo "con-voyage-ci-repair-guard: guarding con-voyage-ci-repair beads, author-scoped to '${CV_PR_AUTHOR}'"
+echo "con-voyage-ci-repair-guard: author gate ENABLED — guarding con-voyage-ci-repair beads, author-scoped to '${CV_PR_AUTHOR}'"
 
 # ---------------------------------------------------------------------------
 # Helpers
