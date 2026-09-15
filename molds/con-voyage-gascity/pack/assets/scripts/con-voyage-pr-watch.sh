@@ -75,6 +75,14 @@
 #                   this monitor is allowed to act on. Defaults to the
 #                   authenticated gh login. If it cannot be resolved, the script
 #                   FAILS CLOSED (exit 1) before touching any repo.
+#   CV_AUTHOR_GATE  Forwarded, NOT read, by this script (default: enabled). Every
+#                   repair bead this script mints carries this value via
+#                   --var cv_author_gate=..., so the con-voyage-ci-repair
+#                   worker's own Step 0 gate and the con-voyage-ci-repair-guard
+#                   order honor the same toggle. This script's OWN PART A/B
+#                   author filtering above is always CV_PR_AUTHOR-scoped
+#                   regardless of this value — see README.md's "Author-gate
+#                   toggle" section.
 #
 # Exit codes:
 #   0 — completed (some or all monitors may have had no actionable PRs)
@@ -245,19 +253,72 @@ for r in data.get('results', []):
     while IFS= read -r result_json; do
       [ -n "$result_json" ] || continue
 
-      a_owner=$(printf '%s' "$result_json" | python3 -c "import sys,json;print(json.load(sys.stdin).get('owner',''))" 2>/dev/null || echo "")
-      a_repo=$(printf '%s' "$result_json"  | python3 -c "import sys,json;print(json.load(sys.stdin).get('repo',''))"  2>/dev/null || echo "")
-      a_num=$(printf '%s' "$result_json"   | python3 -c "import sys,json;print(json.load(sys.stdin).get('number',''))" 2>/dev/null || echo "")
-      a_title=$(printf '%s' "$result_json" | python3 -c "import sys,json;print(json.load(sys.stdin).get('title',''))" 2>/dev/null || echo "")
-      a_branch=$(printf '%s' "$result_json" | python3 -c "import sys,json;print(json.load(sys.stdin).get('head_ref_name',''))" 2>/dev/null || echo "")
-      a_sha=$(printf '%s' "$result_json"   | python3 -c "import sys,json;print(json.load(sys.stdin).get('head_sha',''))" 2>/dev/null || echo "")
-      a_route=$(printf '%s' "$result_json" | python3 -c "import sys,json;print(json.load(sys.stdin).get('repair_route',''))" 2>/dev/null || echo "")
+      # Extract per-PR fields AND classify the canonical failure_kind in one
+      # python invocation (tab-separated output; classification stays in
+      # python so the shell doesn't need list-emptiness/state-precedence
+      # logic).
+      #
+      # REAL-SAMPLE FINDING (verify-gate, cv-b-fk-08o-design.md §1c decision
+      # 6): a live `gc github pr backfill --json` against this city's own
+      # configured monitors shows gc ALREADY computes and emits a
+      # `failure_kind` field on each result, using exactly this vocabulary
+      # (checks_failed/merge_conflict/blocked confirmed live; behind_base not
+      # observed live because no monitored PR was in that state at
+      # sample-time, but it is the same gc mechanism). It also shows `state`
+      # values that do NOT match the design doc's `strings`-recovered guess:
+      # real values seen were "conflicted" (not "dirty") and "failed" (not in
+      # the original guessed set at all) alongside the expected "blocked".
+      # So: TRUST gc's own failure_kind field when present — it is
+      # already correct — and only fall back to deriving one from
+      # state/failed_checks (first-match order below) when gc omits it
+      # (e.g. an older gc version).
+      # shellcheck disable=SC2016
+      _PY_CLASSIFY_PR='
+import sys, json
+
+d = json.load(sys.stdin)
+owner  = d.get("owner", "") or ""
+repo   = d.get("repo", "") or ""
+number = d.get("number", "")
+title  = d.get("title", "") or ""
+branch = d.get("head_ref_name", "") or ""
+sha    = d.get("head_sha", "") or ""
+route  = d.get("repair_route", "") or ""
+state  = d.get("state", "") or ""
+failed_checks = d.get("failed_checks") or []
+gc_failure_kind = d.get("failure_kind", "") or ""
+
+VALID_KINDS = {"checks_failed", "merge_conflict", "behind_base", "blocked"}
+
+if gc_failure_kind in VALID_KINDS:
+    failure_kind = gc_failure_kind
+elif failed_checks:
+    failure_kind = "checks_failed"
+elif state in ("dirty", "conflicted"):
+    failure_kind = "merge_conflict"
+elif state == "behind":
+    failure_kind = "behind_base"
+elif state == "blocked":
+    failure_kind = "blocked"
+else:
+    failure_kind = ""
+
+fields = [owner, repo, number, title, branch, sha, route, failure_kind]
+print("\t".join(str(f).replace("\t", " ").replace("\n", " ") for f in fields))
+'
+      pr_fields=$(printf '%s' "$result_json" | python3 -c "$_PY_CLASSIFY_PR" 2>/dev/null || echo "")
+      IFS=$'\t' read -r a_owner a_repo a_num a_title a_branch a_sha a_route a_failure_kind <<<"$pr_fields"
 
       if [ -z "$a_owner" ] || [ -z "$a_repo" ] || [ -z "$a_num" ]; then
         echo "con-voyage-pr-watch: [PART A] skipping malformed backfill result: ${result_json}" >&2
         continue
       fi
       a_full="${a_owner}/${a_repo}"
+
+      if [ -z "$a_failure_kind" ]; then
+        echo "con-voyage-pr-watch: [PART A] WARNING: ${a_full}#${a_num} is actionable but its state/failed_checks did not classify into a known failure_kind (checks_failed|merge_conflict|behind_base|blocked); skipping rather than minting an undifferentiated bead" >&2
+        continue
+      fi
 
       # Resolve the PR author. The report JSON has no author field, so ask gh.
       pr_author=$("$GH" pr view "$a_num" --repo "$a_full" --json author \
@@ -270,8 +331,10 @@ for r in data.get('results', []):
         continue
       fi
 
-      # Survivor: author matches. Create ONE deduped repair bead.
-      repair_title="Repair GitHub PR ${a_full}#${a_num} readiness: ${a_title}"
+      # Survivor: author matches. Create ONE deduped repair bead. The title is
+      # state-aware (names the classified failure_kind) so the bead is
+      # self-describing without opening it (R5.5).
+      repair_title="Repair GitHub PR ${a_full}#${a_num} (${a_failure_kind}): ${a_title}"
       dedup_key="cv-ci-repair-${a_owner}-${a_repo}-${a_num}-${a_sha}"
       dedup_marker="${CV_STATE_DIR}/${dedup_key}.minted"
 
@@ -338,6 +401,7 @@ for r in data.get('results', []):
         --var "pr=${a_num}" \
         --var "repo=${a_full}" \
         --var "branch=${a_branch}" \
+        --var "failure_kind=${a_failure_kind}" \
         --var "cv_pr_author=${CV_PR_AUTHOR}" \
         --var "cv_author_gate=${CV_AUTHOR_GATE:-enabled}" \
         2>&1; then
