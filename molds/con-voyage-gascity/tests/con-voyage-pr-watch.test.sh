@@ -155,7 +155,29 @@ cat > "${STUBDIR}/gc" <<'GC_STUB'
 # Recording gc stub. Appends full argv (one space-joined line per invocation)
 # to $STUB_GC_LOG, then emulates gc. Newlines within an arg are squashed to
 # spaces so each invocation stays on exactly one line (grep-friendly).
-{ line=""; for a in "$@"; do a="${a//$'\n'/ }"; line="${line}${a} "; done; printf '%s\n' "$line"; } >> "${STUB_GC_LOG}"
+#
+# STDIN CAPTURE: `gc sling ... --stdin` reads the bead title/body from stdin
+# (first line = title, rest = body). The recorded argv alone would only show
+# `sling <target> --stdin`, hiding the routed content, so when --stdin is present
+# we drain stdin and APPEND its (newline-squashed) content to the same log line.
+# This keeps content assertions (e.g. the "Human PR feedback on ..." title)
+# working after the PART B fix that switched off the (nonexistent) --body flag.
+stdin_capture=""
+for _a in "$@"; do
+  if [ "$_a" = "--stdin" ]; then
+    stdin_capture="$(cat)"
+    break
+  fi
+done
+{
+  line=""
+  for a in "$@"; do a="${a//$'\n'/ }"; line="${line}${a} "; done
+  if [ -n "$stdin_capture" ]; then
+    sc="${stdin_capture//$'\n'/ }"
+    line="${line}STDIN: ${sc} "
+  fi
+  printf '%s\n' "$line"
+} >> "${STUB_GC_LOG}"
 
 # gc is invoked as: gc --city <dir> <subcommand> ...
 # Strip the leading `--city <dir>` if present to find the real subcommand.
@@ -193,8 +215,89 @@ JSON
     fi
     exit 0
     ;;
+  bd)
+    # `gc [--city X] bd create "<title>" --priority N --silent`
+    # Faithful stub of the repair-bead pre-create step: --silent makes real gc
+    # print ONLY the new bead id on stdout. We mint a deterministic fake id so
+    # the sling step (below) has a real positional bead to attach the formula to.
+    #
+    # STUB_BD_CREATE_FAIL=1 simulates a failed pre-create (gc prints nothing and
+    # exits non-zero), so the script's empty-id guard is exercised: it must abort
+    # the mint before slinging and leave NO dedup marker (so the mint is retried).
+    if [ "${args[$((i+1))]:-}" = "create" ]; then
+      if [ "${STUB_BD_CREATE_FAIL:-0}" = "1" ]; then
+        exit 1
+      fi
+      printf '%s\n' "${STUB_BD_CREATE_ID:-fk-newbead}"
+      exit 0
+    fi
+    exit 0
+    ;;
   sling)
-    # Record only (already done above). Succeed.
+    # Faithful stub of `gc sling` v2-formula validation (gc 1.4.1).
+    #
+    # This is the crux of the bug the fix addresses. Real gc 1.4.1 REJECTS a
+    # v2 formula that references {{convoy_id}} (like con-voyage-ci-repair) when
+    # it is inline-created with `--on <formula>` and no positional bead — it errors
+    # with "inline text requires explicit target" and exits non-zero, so NO bead is
+    # ever minted. The correct form supplies a PRE-CREATED bead as the positional:
+    #     gc sling <target> <BEAD> --on <formula> --var ...
+    #
+    # We emulate exactly that acceptance rule so the tests go RED against the old
+    # (no-bead) invocation and GREEN against the fixed (bead-positional) one.
+    #
+    # Parse the args after the subcommand: sling <target> [<bead>] [flags...]
+    # (the leading `--city <dir>` is already accounted for by $i).
+    has_on=0
+    on_val=""
+    # sling positional target/bead are the non-flag args immediately after `sling`.
+    # Collect up to two leading positionals before the first flag.
+    positionals=()
+    j=$((i+1))
+    seen_flag=0
+    prev_flag=""
+    while [ "$j" -lt "${#args[@]}" ]; do
+      cur="${args[$j]}"
+      case "$cur" in
+        --on)
+          has_on=1
+          prev_flag="--on"
+          seen_flag=1
+          ;;
+        --*)
+          # A value-taking flag we care about: capture --on's value on next arg.
+          prev_flag="$cur"
+          seen_flag=1
+          ;;
+        *)
+          if [ "$prev_flag" = "--on" ]; then
+            on_val="$cur"
+            prev_flag=""
+          elif [ "$seen_flag" -eq 0 ]; then
+            # Leading positional (target or bead), before any flag.
+            positionals+=("$cur")
+          else
+            # value for some other flag; ignore
+            prev_flag=""
+          fi
+          ;;
+      esac
+      j=$((j+1))
+    done
+
+    if [ "$has_on" -eq 1 ]; then
+      # v2-formula attach path. Require a positional BEAD in addition to the
+      # target — i.e. at least two leading positionals (target + bead).
+      if [ "${#positionals[@]}" -lt 2 ]; then
+        # Mirror real gc 1.4.1's rejection.
+        echo "gc sling: inline text requires explicit target; usage: gc sling <target> <bead> --on <formula>" >&2
+        exit 1
+      fi
+      # target = positionals[0], bead = positionals[1]. Accept.
+      exit 0
+    fi
+
+    # Non-formula path (PART B). Accept plain text/stdin routes.
     exit 0
     ;;
 esac
@@ -342,6 +445,28 @@ assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*pr=11.*cv_pr_auth
 assert_log_count "$GC_LOG" 'sling .*pr=500' 0 "no sling for #500 (other human)"
 assert_log_count "$GC_LOG" 'sling .*pr=600' 0 "no sling for #600 (bot)"
 
+# --- WELL-FORMED v2-FORMULA MINT (regression guard for the fk-f7x bug) ---
+# The mint MUST be the gc 1.4.1 v2-formula shape:
+#   gc [--city X] sling <target> <BEAD> --on con-voyage-ci-repair --var ...
+# i.e. a PRE-CREATED bead positional BETWEEN the target and --on. The old broken
+# form was `sling <target> --on <formula> --title <text>` (no bead), which real
+# gc rejects with "inline text requires explicit target" and mints NOTHING.
+#
+# 1. A repair bead was pre-created for the KEPT PR (bd create ... --silent).
+assert_log_count "$GC_LOG" 'bd create .*--silent' 1 "PART A pre-creates a repair bead for the KEPT PR"
+# 2. The sling carries the real bead id (fk-newbead) as a positional BEFORE --on.
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker fk-newbead --on con-voyage-ci-repair' 1 "ci-repair sling passes the pre-created bead positional before --on"
+# 3. The mint MUST NOT use the old inline-create form (--title with --on and no bead).
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*--title' 0 "mint does not use the broken --on+--title inline form"
+# 4. All PR-context vars ride on the (correct) sling for #11.
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker fk-newbead --on con-voyage-ci-repair .*pr=11 .*repo=kriscoleman/foundry .*branch=fix/con-voyage-author-scope-pr-monitor' 1 "mint forwards pr/repo/branch vars on the bead-positional sling"
+# 5. The KEEP log names the minted bead id (operator-observable evidence).
+if printf '%s' "$OUT" | grep -q 'repair bead fk-newbead created/attached and routed'; then
+  pass "logs the minted repair bead id for #11"
+else
+  fail "expected a 'repair bead <id> created/attached and routed' log for #11"
+fi
+
 # ===========================================================================
 # CASE 3 — PART A exact, case-sensitive match: #700 (kriscoleman2) and
 #   #701 (KRISCOLEMAN) both dropped — no bypass via prefix or case.
@@ -380,10 +505,14 @@ assert_eq "0" "$RC" "script exits 0"
 # gh pr list must be called with --author kriscoleman.
 assert_log_count "$GH_LOG" 'pr list .*--author kriscoleman' 1 "gh pr list uses --author kriscoleman"
 # The stub returns only #11 for that author, so a comment-routing sling should
-# fire to the implementor for #11's human comment. PART B comment slings carry
-# a "Human PR feedback on ..." title (PART A repair slings carry --on
-# con-voyage-ci-repair instead), so match on that to isolate PART B.
-assert_log_count "$GC_LOG" 'sling gc.implementation-worker .*Human PR feedback on kriscoleman/foundry#11' 1 "one comment-route sling to implementor for #11"
+# fire to the implementor for #11's human comment. PART B routes via
+# `gc sling <target> --stdin` (gc 1.4.1 has NO --body flag); the stub captures
+# stdin and appends it to the log line, so the routed title ("Human PR feedback
+# on ...", the first stdin line) is grep-able here.
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 1 "PART B routes via gc sling --stdin (not the nonexistent --body flag)"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin STDIN: Human PR feedback on kriscoleman/foundry#11' 1 "one comment-route sling to implementor for #11"
+# PART B must NOT use the old --body flag (gc 1.4.1 rejects it: unknown flag).
+assert_log_count "$GC_LOG" 'sling .*--body' 0 "PART B does not use the unsupported --body flag"
 # And that comment route is NOT a ci-repair (PART A) sling.
 assert_log_count "$GC_LOG" 'sling .*Human PR feedback.*--on con-voyage-ci-repair' 0 "comment route is not a ci-repair sling"
 # Belt-and-suspenders: a comment fetch (pr view --json reviews,...) happened for
@@ -452,6 +581,78 @@ if printf '%s' "$OUT" | grep -q "DROP kriscoleman/foundry#999 (author='someone-e
   pass "logs defensive PART B DROP for leaked #999"
 else
   fail "expected defensive PART B DROP log for #999"
+fi
+
+# ===========================================================================
+# CASE 9 — PART A dedup across cycles: minting is idempotent per PR+head-sha.
+#   The fix pre-creates a bead every mint, so WITHOUT dedup a second cooldown
+#   tick would mint a DUPLICATE repair bead for the same #11 @ same head-sha.
+#   The per-key marker file under CV_STATE_DIR must suppress the second mint.
+#   We run the script TWICE against the SAME state dir and assert the second
+#   run creates NO new bead and issues NO new ci-repair sling for #11.
+# ===========================================================================
+start_case "9: PART A dedup — second cycle does not re-mint same PR+sha"
+setup_case_env "9"
+# --- Cycle 1 (first backfill tick): mints one repair bead for #11. ---
+GC_LOG_1="${SANDBOX}/gc-9a.log"; : > "$GC_LOG_1"
+OUT="$(
+  env GH="${STUBDIR}/gh" GC="${STUBDIR}/gc" GC_CITY="$CITY_DIR" \
+    CV_STATE_DIR="$STATE_DIR" STUB_GH_LOG="${SANDBOX}/gh-9a.log" \
+    STUB_GC_LOG="$GC_LOG_1" CV_PR_AUTHOR="kriscoleman" \
+    STUB_GH_USER_LOGIN="kriscoleman" \
+    bash "$SCRIPT" 2>&1
+)"; RC=$?
+assert_eq "0" "$RC" "cycle 1 exits 0"
+assert_log_count "$GC_LOG_1" 'bd create .*--silent' 1 "cycle 1 pre-creates exactly one repair bead"
+assert_log_count "$GC_LOG_1" 'sling gc.implementation-worker fk-newbead --on con-voyage-ci-repair' 1 "cycle 1 mints one ci-repair sling for #11"
+# The dedup marker must now exist on disk (keyed on repo+PR+head-sha aaa111).
+if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11-aaa111.minted" ]; then
+  pass "cycle 1 wrote the dedup marker for #11 @ aaa111"
+else
+  fail "expected dedup marker file after cycle 1"
+fi
+# --- Cycle 2 (next backfill tick, SAME state dir, SAME head-sha): no re-mint. ---
+GC_LOG_2="${SANDBOX}/gc-9b.log"; : > "$GC_LOG_2"
+OUT="$(
+  env GH="${STUBDIR}/gh" GC="${STUBDIR}/gc" GC_CITY="$CITY_DIR" \
+    CV_STATE_DIR="$STATE_DIR" STUB_GH_LOG="${SANDBOX}/gh-9b.log" \
+    STUB_GC_LOG="$GC_LOG_2" CV_PR_AUTHOR="kriscoleman" \
+    STUB_GH_USER_LOGIN="kriscoleman" \
+    bash "$SCRIPT" 2>&1
+)"; RC=$?
+assert_eq "0" "$RC" "cycle 2 exits 0"
+assert_log_count "$GC_LOG_2" 'bd create .*--silent' 0 "cycle 2 creates NO duplicate repair bead"
+assert_log_count "$GC_LOG_2" 'sling gc.implementation-worker fk-newbead --on con-voyage-ci-repair' 0 "cycle 2 issues NO duplicate ci-repair sling for #11"
+if printf '%s' "$OUT" | grep -q 'SKIP kriscoleman/foundry#11 @ aaa111 — repair bead already minted'; then
+  pass "cycle 2 logs the dedup SKIP for #11"
+else
+  fail "expected a dedup SKIP log for #11 in cycle 2"
+fi
+
+# ===========================================================================
+# CASE 10 — PART A mint failure is retried (no dedup marker on failure).
+#   If the sling fails, we must NOT write the dedup marker, so the next cycle
+#   retries the mint rather than silently suppressing it forever. We force a
+#   failed pre-create (STUB_BD_CREATE_FAIL=1 -> gc bd create prints nothing and
+#   exits non-zero); the script must abort the mint before slinging, leave no
+#   marker, and log the failure.
+# ===========================================================================
+start_case "10: PART A leaves no dedup marker when the mint cannot proceed"
+setup_case_env "10"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_BD_CREATE_FAIL=1
+assert_eq "0" "$RC" "script exits 0 (mint failure is non-fatal)"
+# bd create was attempted, but returned empty -> the script must NOT sling and
+# must NOT write a marker (so the next cycle retries).
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair' 0 "no ci-repair sling when bead pre-create yields no id"
+if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11-aaa111.minted" ]; then
+  fail "dedup marker written despite a failed mint (would suppress retries)"
+else
+  pass "no dedup marker written on failed mint (mint will be retried next cycle)"
+fi
+if printf '%s' "$OUT" | grep -q 'failed to create repair bead for kriscoleman/foundry#11'; then
+  pass "logs the bead-create failure for #11"
+else
+  fail "expected a bead-create failure log for #11"
 fi
 
 # ===========================================================================
