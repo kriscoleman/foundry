@@ -40,6 +40,7 @@ SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/cv-pr-watch-test.XXXXXX")"
 STUBDIR="${SANDBOX}/stubbin"
 mkdir -p "$STUBDIR"
 
+# shellcheck disable=SC2329  # invoked indirectly via the EXIT trap below
 cleanup() { rm -rf "$SANDBOX"; }
 trap cleanup EXIT
 
@@ -179,14 +180,45 @@ done
   printf '%s\n' "$line"
 } >> "${STUB_GC_LOG}"
 
-# gc is invoked as: gc --city <dir> <subcommand> ...
-# Strip the leading `--city <dir>` if present to find the real subcommand.
+# gc is invoked as: gc [--city <dir>] [--rig <rig>] <subcommand> ...
+# Both --city and --rig are TOP-LEVEL flags that precede the subcommand (the
+# script emits `--city <dir>` first, and — after the cross-rig fix — `--rig
+# <rig>` on the repair-bead `bd create`). Skip ALL leading `--city X`/`--rig X`
+# pairs (order-independent) to find the real subcommand, and capture the --rig
+# value so `bd create` can mint an id with the matching rig prefix.
 args=("$@")
 i=0
-if [ "${args[0]:-}" = "--city" ]; then
-  i=2
-fi
+rig_flag=""
+while :; do
+  case "${args[$i]:-}" in
+    --city)
+      i=$((i+2))
+      ;;
+    --rig)
+      rig_flag="${args[$((i+1))]:-}"
+      i=$((i+2))
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
 sub="${args[$i]:-}"
+
+# Map a rig NAME to its bead prefix (mirrors the city's real rig prefixes).
+# No --rig (city store) mints an "rc"-prefixed bead — exactly the mis-homed
+# prefix that triggers the real cross-rig routing failure this stub emulates.
+rig_prefix_for() {
+  case "$1" in
+    "")                rc_pfx="rc" ;;   # no rig => city store
+    vandoor)           rc_pfx="va" ;;
+    foundry|foundry-kc) rc_pfx="fk" ;;
+    embedded-cluster)  rc_pfx="emc" ;;
+    kurl)              rc_pfx="ku" ;;
+    *)                 rc_pfx="xx" ;;   # unknown rig => sentinel prefix
+  esac
+  printf '%s' "$rc_pfx"
+}
 
 case "$sub" in
   github)
@@ -206,15 +238,32 @@ case "$sub" in
           # (the head-sha is pinned into the dedup key in the script under test).
           # #11's line is emitted via printf (so the env var expands); the rest
           # stay in a single-quoted heredoc (byte-identical, no expansion).
+          # repair_route carries a real "<rig>/<agent>" prefix (vandoor/...). The
+          # script derives the mint rig ("vandoor") from the part before the
+          # first "/", so the bead is minted with the "va" prefix and routes
+          # same-rig. (Pre-fix fixtures used a bare "gc.implementation-worker"
+          # with no rig — which the fixed script now correctly SKIPS as
+          # underivable; real backfill routes always carry the rig.)
           printf '{"results":[\n'
-          printf '  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":11,"title":"author-scope pr monitor","head_ref_name":"fix/con-voyage-author-scope-pr-monitor","head_sha":"%s","repair_route":"gc.implementation-worker"},\n' "${STUB_HEAD_SHA:-aaa111}"
+          printf '  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":11,"title":"author-scope pr monitor","head_ref_name":"fix/con-voyage-author-scope-pr-monitor","head_sha":"%s","repair_route":"vandoor/gc.implementation-worker"},\n' "${STUB_HEAD_SHA:-aaa111}"
           cat <<'JSON'
-  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":500,"title":"someone elses pr","head_ref_name":"feature/x","head_sha":"bbb500","repair_route":"gc.implementation-worker"},
-  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":600,"title":"dep bump","head_ref_name":"deps/y","head_sha":"ccc600","repair_route":"gc.implementation-worker"},
-  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":700,"title":"near match author","head_ref_name":"feature/z","head_sha":"ddd700","repair_route":"gc.implementation-worker"},
-  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":701,"title":"case variant author","head_ref_name":"feature/w","head_sha":"eee701","repair_route":"gc.implementation-worker"},
-  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":800,"title":"unresolved author","head_ref_name":"feature/u","head_sha":"fff800","repair_route":"gc.implementation-worker"},
-  {"actionable":false,"owner":"kriscoleman","repo":"foundry","number":999,"title":"not actionable","head_ref_name":"feature/na","head_sha":"999999","repair_route":"gc.implementation-worker"}
+  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":500,"title":"someone elses pr","head_ref_name":"feature/x","head_sha":"bbb500","repair_route":"vandoor/gc.implementation-worker"},
+  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":600,"title":"dep bump","head_ref_name":"deps/y","head_sha":"ccc600","repair_route":"vandoor/gc.implementation-worker"},
+  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":700,"title":"near match author","head_ref_name":"feature/z","head_sha":"ddd700","repair_route":"vandoor/gc.implementation-worker"},
+  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":701,"title":"case variant author","head_ref_name":"feature/w","head_sha":"eee701","repair_route":"vandoor/gc.implementation-worker"},
+  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":800,"title":"unresolved author","head_ref_name":"feature/u","head_sha":"fff800","repair_route":"vandoor/gc.implementation-worker"},
+  {"actionable":false,"owner":"kriscoleman","repo":"foundry","number":999,"title":"not actionable","head_ref_name":"feature/na","head_sha":"999999","repair_route":"vandoor/gc.implementation-worker"}
+]}
+JSON
+          ;;
+        norig)
+          # A single actionable operator PR whose repair_route has NO "<rig>/"
+          # prefix, so the script cannot derive a target rig. Exercises the
+          # CROSS-RIG MINT GUARD: the script must SKIP with a WARNING and mint
+          # NOTHING (creating a bead would mis-home it and fail cross-rig routing).
+          cat <<'JSON'
+{"results":[
+  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":11,"title":"no rig in route","head_ref_name":"fix/con-voyage-author-scope-pr-monitor","head_sha":"aaa111","repair_route":"gc.implementation-worker"}
 ]}
 JSON
           ;;
@@ -224,10 +273,19 @@ JSON
     exit 0
     ;;
   bd)
-    # `gc [--city X] bd create "<title>" --priority N --silent`
+    # `gc [--city X] [--rig <rig>] bd create "<title>" --priority N --silent`
     # Faithful stub of the repair-bead pre-create step: --silent makes real gc
     # print ONLY the new bead id on stdout. We mint a deterministic fake id so
     # the sling step (below) has a real positional bead to attach the formula to.
+    #
+    # RIG-AWARE PREFIX (crux of the cross-rig fix): the minted id's PREFIX is
+    # derived from the top-level --rig value (captured above as $rig_flag) via
+    # rig_prefix_for. With --rig vandoor the id is "va-newbead"; with NO --rig it
+    # is "rc-newbead" (city store) — exactly the mis-homed prefix that makes the
+    # subsequent same-target sling fail the cross-rig gate below. This lets the
+    # test distinguish a correctly-homed mint (fix) from a city mint (old bug).
+    # STUB_BD_CREATE_ID still overrides the whole id verbatim when a test needs a
+    # fixed value regardless of rig.
     #
     # STUB_BD_CREATE_FAIL=1 simulates a failed pre-create (gc prints nothing and
     # exits non-zero), so the script's empty-id guard is exercised: it must abort
@@ -236,7 +294,11 @@ JSON
       if [ "${STUB_BD_CREATE_FAIL:-0}" = "1" ]; then
         exit 1
       fi
-      printf '%s\n' "${STUB_BD_CREATE_ID:-fk-newbead}"
+      if [ -n "${STUB_BD_CREATE_ID:-}" ]; then
+        printf '%s\n' "${STUB_BD_CREATE_ID}"
+      else
+        printf '%s-newbead\n' "$(rig_prefix_for "$rig_flag")"
+      fi
       exit 0
     fi
     exit 0
@@ -301,7 +363,26 @@ JSON
         echo "gc sling: inline text requires explicit target; usage: gc sling <target> <bead> --on <formula>" >&2
         exit 1
       fi
-      # target = positionals[0], bead = positionals[1]. Well-formed mint.
+      # target = positionals[0], bead = positionals[1].
+      sling_target="${positionals[0]}"
+      sling_bead="${positionals[1]}"
+
+      # CROSS-RIG ROUTING GATE (crux of the fk-974 fix, emulating REAL gc): gc
+      # refuses to route a bead to an agent in a DIFFERENT rig. The target's rig
+      # is the part BEFORE the first "/" (e.g. "vandoor" in
+      # "vandoor/gc.implementation-worker") -> its prefix via rig_prefix_for. The
+      # bead's rig is its id prefix (the part BEFORE the first "-", e.g. "rc" in
+      # "rc-newbead", "va" in "va-newbead"). If they differ, real gc prints the
+      # "cross-rig routing" error and exits non-zero WITHOUT routing — so no
+      # marker is written and the OLD (no --rig -> "rc" bead) form goes RED here.
+      target_rig="${sling_target%%/*}"
+      target_pfx="$(rig_prefix_for "$target_rig")"
+      bead_pfx="${sling_bead%%-*}"
+      if [ "$bead_pfx" != "$target_pfx" ]; then
+        echo "cross-rig routing — bead ${sling_bead} (prefix \"${bead_pfx}\") → agent ${sling_target} (rig prefix \"${target_pfx}\")" >&2
+        exit 1
+      fi
+      # Well-formed, same-rig mint.
       #
       # STUB_SLING_FAIL=1 makes ONLY this well-formed bead-positional formula
       # mint fail (routing to the ci-repair convoy fails after the bead was
@@ -351,8 +432,11 @@ log_count() {
   [ -f "$logfile" ] || { echo 0; return; }
   # grep -c prints the count and exits 1 when zero matches; capture the count
   # regardless of exit status (do NOT chain `|| echo 0`, which double-prints).
+  # `--` terminates option parsing so a pattern that STARTS with a dash (e.g.
+  # "--rig vandoor bd create ..." — asserting the top-level --rig on the mint) is
+  # treated as the pattern, not as grep flags. Portable on BSD (macOS) and GNU.
   local n
-  n="$(grep -E -c "$pattern" "$logfile")"
+  n="$(grep -E -c -- "$pattern" "$logfile")"
   printf '%s' "${n:-0}"
 }
 
@@ -476,14 +560,28 @@ assert_log_count "$GC_LOG" 'sling .*pr=600' 0 "no sling for #600 (bot)"
 #
 # 1. A repair bead was pre-created for the KEPT PR (bd create ... --silent).
 assert_log_count "$GC_LOG" 'bd create .*--silent' 1 "PART A pre-creates a repair bead for the KEPT PR"
-# 2. The sling carries the real bead id (fk-newbead) as a positional BEFORE --on.
-assert_log_count "$GC_LOG" 'sling gc.implementation-worker fk-newbead --on con-voyage-ci-repair' 1 "ci-repair sling passes the pre-created bead positional before --on"
+# 1a. CROSS-RIG FIX (fk-974): the bead MUST be minted in the target agent's rig,
+#     i.e. `bd create` carries the top-level `--rig vandoor` derived from the
+#     repair_route "vandoor/gc.implementation-worker". `--rig` is a global flag,
+#     so it precedes `bd create` on the argv. Without this, the bead would be
+#     minted in the city store ("rc" prefix) and the same-target sling would fail
+#     the cross-rig gate (see the tripwire in CASE 12).
+assert_log_count "$GC_LOG" '--rig vandoor bd create .*--silent' 1 "PART A mints the repair bead in the target rig (--rig vandoor before bd create)"
+# 1b. And the mint MUST NOT be a city (no-rig) create: the old-bug shape put
+#     `bd create` immediately after `--city <dir>` (no --rig in between). With the
+#     fix, `--rig vandoor` always sits between them, so this old shape is absent.
+assert_log_count "$GC_LOG" '--city [^ ]+ bd create' 0 "no city-store (no --rig) bd create for the repair bead"
+# 2. The sling carries the real bead id (va-newbead — minted in the target rig
+#    "vandoor", so it shares the target's "va" prefix) as a positional BEFORE --on.
+#    The "va" prefix on the bead == the target rig's prefix is what lets the
+#    cross-rig-aware stub ACCEPT the sling (RED on the old "rc" bead — CASE 12).
+assert_log_count "$GC_LOG" 'sling vandoor/gc.implementation-worker va-newbead --on con-voyage-ci-repair' 1 "ci-repair sling passes the pre-created bead positional before --on"
 # 3. The mint MUST NOT use the old inline-create form (--title with --on and no bead).
 assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*--title' 0 "mint does not use the broken --on+--title inline form"
 # 4. All PR-context vars ride on the (correct) sling for #11.
-assert_log_count "$GC_LOG" 'sling gc.implementation-worker fk-newbead --on con-voyage-ci-repair .*pr=11 .*repo=kriscoleman/foundry .*branch=fix/con-voyage-author-scope-pr-monitor' 1 "mint forwards pr/repo/branch vars on the bead-positional sling"
+assert_log_count "$GC_LOG" 'sling vandoor/gc.implementation-worker va-newbead --on con-voyage-ci-repair .*pr=11 .*repo=kriscoleman/foundry .*branch=fix/con-voyage-author-scope-pr-monitor' 1 "mint forwards pr/repo/branch vars on the bead-positional sling"
 # 5. The KEEP log names the minted bead id (operator-observable evidence).
-if printf '%s' "$OUT" | grep -q 'repair bead fk-newbead created/attached and routed'; then
+if printf '%s' "$OUT" | grep -q 'repair bead va-newbead created/attached and routed'; then
   pass "logs the minted repair bead id for #11"
 else
   fail "expected a 'repair bead <id> created/attached and routed' log for #11"
@@ -626,7 +724,7 @@ OUT="$(
 )"; RC=$?
 assert_eq "0" "$RC" "cycle 1 exits 0"
 assert_log_count "$GC_LOG_1" 'bd create .*--silent' 1 "cycle 1 pre-creates exactly one repair bead"
-assert_log_count "$GC_LOG_1" 'sling gc.implementation-worker fk-newbead --on con-voyage-ci-repair' 1 "cycle 1 mints one ci-repair sling for #11"
+assert_log_count "$GC_LOG_1" 'sling vandoor/gc.implementation-worker va-newbead --on con-voyage-ci-repair' 1 "cycle 1 mints one ci-repair sling for #11"
 # The dedup marker must now exist on disk (keyed on repo+PR+head-sha aaa111).
 if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11-aaa111.minted" ]; then
   pass "cycle 1 wrote the dedup marker for #11 @ aaa111"
@@ -644,7 +742,7 @@ OUT="$(
 )"; RC=$?
 assert_eq "0" "$RC" "cycle 2 exits 0"
 assert_log_count "$GC_LOG_2" 'bd create .*--silent' 0 "cycle 2 creates NO duplicate repair bead"
-assert_log_count "$GC_LOG_2" 'sling gc.implementation-worker fk-newbead --on con-voyage-ci-repair' 0 "cycle 2 issues NO duplicate ci-repair sling for #11"
+assert_log_count "$GC_LOG_2" 'sling vandoor/gc.implementation-worker va-newbead --on con-voyage-ci-repair' 0 "cycle 2 issues NO duplicate ci-repair sling for #11"
 if printf '%s' "$OUT" | grep -q 'SKIP kriscoleman/foundry#11 @ aaa111 — repair bead already minted'; then
   pass "cycle 2 logs the dedup SKIP for #11"
 else
@@ -671,10 +769,10 @@ OUT="$(
 )"; RC=$?
 assert_eq "0" "$RC" "cycle 3 exits 0"
 assert_log_count "$GC_LOG_3" 'bd create .*--silent' 1 "cycle 3 pre-creates a FRESH repair bead at the new head-sha"
-assert_log_count "$GC_LOG_3" 'sling gc.implementation-worker fk-newbead --on con-voyage-ci-repair' 1 "cycle 3 mints one well-formed ci-repair sling at the new head-sha"
+assert_log_count "$GC_LOG_3" 'sling vandoor/gc.implementation-worker va-newbead --on con-voyage-ci-repair' 1 "cycle 3 mints one well-formed ci-repair sling at the new head-sha"
 # All PR-context vars still ride on the re-mint sling (proves it's a real,
 # complete mint at the new sha — not a degenerate/partial sling).
-assert_log_count "$GC_LOG_3" 'sling gc.implementation-worker fk-newbead --on con-voyage-ci-repair .*pr=11 .*repo=kriscoleman/foundry .*branch=fix/con-voyage-author-scope-pr-monitor' 1 "cycle 3 re-mint forwards pr/repo/branch vars"
+assert_log_count "$GC_LOG_3" 'sling vandoor/gc.implementation-worker va-newbead --on con-voyage-ci-repair .*pr=11 .*repo=kriscoleman/foundry .*branch=fix/con-voyage-author-scope-pr-monitor' 1 "cycle 3 re-mint forwards pr/repo/branch vars"
 # A NEW marker keyed on the NEW head-sha must now exist...
 if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11-bcd222.minted" ]; then
   pass "cycle 3 wrote a NEW dedup marker for #11 @ bcd222"
@@ -745,7 +843,7 @@ assert_eq "0" "$RC" "script exits 0 (sling failure is non-fatal)"
 assert_log_count "$GC_LOG" 'bd create .*--silent' 1 "a repair bead was pre-created for #11"
 # ...and exactly one well-formed ci-repair sling was ATTEMPTED for that bead
 # (the stub rejects it via STUB_SLING_FAIL, mirroring a routing failure).
-assert_log_count "$GC_LOG" 'sling gc.implementation-worker fk-newbead --on con-voyage-ci-repair' 1 "one well-formed ci-repair sling was attempted for #11"
+assert_log_count "$GC_LOG" 'sling vandoor/gc.implementation-worker va-newbead --on con-voyage-ci-repair' 1 "one well-formed ci-repair sling was attempted for #11"
 # CRUX: because that sling failed, NO dedup marker may be written — otherwise the
 # mint would be suppressed forever and never retried.
 if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11-aaa111.minted" ]; then
@@ -760,7 +858,7 @@ else
   fail "expected a 'repair-bead sling failed ... will retry' WARNING for #11"
 fi
 # And the success log must be ABSENT (the mint did not complete).
-if printf '%s' "$OUT" | grep -q 'repair bead fk-newbead created/attached and routed'; then
+if printf '%s' "$OUT" | grep -q 'repair bead va-newbead created/attached and routed'; then
   fail "logged mint success despite a failed sling"
 else
   pass "no 'created/attached and routed' success log on failed sling"
@@ -774,6 +872,104 @@ if printf '%s' "$OUT" | grep -q 'kriscoleman/foundry#11: routed to gc.implementa
   pass "PART B still routes #11 comment despite PART A sling failure"
 else
   fail "expected PART B to still route #11 comment under STUB_SLING_FAIL"
+fi
+
+# ===========================================================================
+# CASE 12 — CROSS-RIG FIX end-to-end (GREEN): the repair bead is minted in the
+#   target agent's rig (--rig vandoor), so its "va" prefix matches the target
+#   "vandoor/gc.implementation-worker", the cross-rig-aware stub ACCEPTS the
+#   sling, and the dedup marker IS written. This is the positive proof that the
+#   full mint->route->marker chain works once the bead is correctly homed.
+#   (The stub's cross-rig gate is REAL: CASE 13 shows a mis-homed "rc" bead is
+#   rejected by the very same gate, so this GREEN is not a rubber stamp.)
+# ===========================================================================
+start_case "12: cross-rig fix — rig-homed bead routes and writes marker"
+setup_case_env "12"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman"
+assert_eq "0" "$RC" "script exits 0"
+# Minted in the target rig...
+assert_log_count "$GC_LOG" '--rig vandoor bd create .*--silent' 1 "bead minted in target rig (--rig vandoor)"
+# ...and the same-rig sling was ACCEPTED by the cross-rig-aware stub (well-formed).
+assert_log_count "$GC_LOG" 'sling vandoor/gc.implementation-worker va-newbead --on con-voyage-ci-repair' 1 "same-rig sling accepted (va bead -> vandoor target)"
+# The success log appears (route completed, not rejected cross-rig).
+if printf '%s' "$OUT" | grep -q 'repair bead va-newbead created/attached and routed to vandoor/gc.implementation-worker'; then
+  pass "logs a successful route to vandoor/gc.implementation-worker"
+else
+  fail "expected a successful route log to vandoor/gc.implementation-worker"
+fi
+# CRUX: the dedup marker IS written (mint+route succeeded), keyed on repo+PR+sha.
+if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11-aaa111.minted" ]; then
+  pass "dedup marker written after a successful same-rig mint+route"
+else
+  fail "expected a dedup marker after the successful same-rig mint+route"
+fi
+
+# ===========================================================================
+# CASE 13 — TRIPWIRE (RED on the OLD no-rig form): if the repair bead is minted
+#   in the CITY store (prefix "rc") — exactly what the pre-fix code did with no
+#   --rig — the SAME real sling to "vandoor/gc.implementation-worker" is REJECTED
+#   by the cross-rig-aware stub (bead "rc" != target "va"), so NO marker is
+#   written and the retry WARNING is logged.
+#
+#   We drive the old-bug mint shape by forcing the pre-create to return a
+#   city-prefixed id (STUB_BD_CREATE_ID="rc-oldbug"), i.e. a bead that was NOT
+#   homed to the target rig. Everything else (the real script's sling, the
+#   marker discipline) is unchanged. This is the guard that would go RED if the
+#   fix regressed to a no-rig `bd create`: the cross-rig gate rejects the sling
+#   and the marker is (correctly) never written.
+# ===========================================================================
+start_case "13: tripwire — city-minted (rc) bead is rejected cross-rig, no marker"
+setup_case_env "13"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_BD_CREATE_ID="rc-oldbug"
+assert_eq "0" "$RC" "script exits 0 (cross-rig sling failure is non-fatal)"
+# The (mis-homed) bead WAS pre-created and the sling was ATTEMPTED with it...
+assert_log_count "$GC_LOG" 'sling vandoor/gc.implementation-worker rc-oldbug --on con-voyage-ci-repair' 1 "sling attempted with the city-minted rc bead"
+# ...but the cross-rig-aware stub REJECTED it (bead prefix rc != target prefix va),
+# so the mint-success log must be ABSENT.
+if printf '%s' "$OUT" | grep -q 'repair bead rc-oldbug created/attached and routed'; then
+  fail "logged mint success despite a cross-rig REJECTED sling"
+else
+  pass "no success log — cross-rig sling was rejected (as real gc would)"
+fi
+# CRUX: because the sling was rejected, NO dedup marker may be written (so the
+# next cycle retries rather than suppressing a never-routed bead forever).
+if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11-aaa111.minted" ]; then
+  fail "dedup marker written despite a cross-rig REJECTED sling (old-bug regression)"
+else
+  pass "no dedup marker on the cross-rig-rejected (city-minted) sling"
+fi
+# And the retry WARNING is logged (operator-observable evidence of the retry path).
+if printf '%s' "$OUT" | grep -q 'repair-bead sling failed for kriscoleman/foundry#11'; then
+  pass "logs the 'repair-bead sling failed ... will retry' WARNING under cross-rig rejection"
+else
+  fail "expected a 'repair-bead sling failed ... will retry' WARNING under cross-rig rejection"
+fi
+
+# ===========================================================================
+# CASE 14 — CROSS-RIG MINT GUARD (underivable rig): an actionable operator PR
+#   whose repair_route has NO "<rig>/" prefix (bare "gc.implementation-worker")
+#   gives the script no rig to derive. It must SKIP with a WARNING and mint
+#   NOTHING (no `bd create`, no sling, no marker) — mirroring the empty-a_route
+#   guard — rather than mis-home a bead in the city store that could never route.
+# ===========================================================================
+start_case "14: cross-rig mint guard skips a route with no rig prefix"
+setup_case_env "14"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_BACKFILL_MODE="norig"
+assert_eq "0" "$RC" "script exits 0"
+# No bead created, no sling issued for the underivable route.
+assert_log_count "$GC_LOG" 'bd create' 0 "no repair bead created when the rig cannot be derived"
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair' 0 "no ci-repair sling when the rig cannot be derived"
+# No marker written.
+if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11-aaa111.minted" ]; then
+  fail "dedup marker written despite skipping an underivable-rig route"
+else
+  pass "no dedup marker written for the skipped underivable-rig route"
+fi
+# The skip WARNING names the offending route and the reason.
+if printf '%s' "$OUT" | grep -q "repair_route 'gc.implementation-worker' has no '<rig>/' prefix"; then
+  pass "logs the underivable-rig skip WARNING naming the route"
+else
+  fail "expected the underivable-rig skip WARNING naming the route"
 fi
 
 # ===========================================================================

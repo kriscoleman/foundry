@@ -187,8 +187,20 @@ mkdir -p "$CV_STATE_DIR"
 #      `con-voyage-ci-repair` v2-formula to it, then route it to the monitor's
 #      repair_route. Because that formula references {{convoy_id}} (the repair
 #      bead id), gc 1.4.1 requires a PRE-CREATED bead as the sling positional:
-#        gc bd create "<title>"            # -> repair_bead_id
+#        gc --rig <rig> bd create "<title>"   # -> repair_bead_id (in <rig>'s store)
 #        gc sling <repair_route> <repair_bead_id> --on con-voyage-ci-repair --var ...
+#      where <rig> is parsed from repair_route (the part BEFORE the first "/").
+#
+#      CROSS-RIG ROUTING (why --rig is mandatory): gc refuses to route a bead to
+#      an agent in a DIFFERENT rig ("cross-rig routing — bead <id> (prefix ...)
+#      → agent <rig>/<agent> (rig prefix ...)"), exiting non-zero so nothing is
+#      routed. A repair_route like "vandoor/gc.implementation-worker" targets the
+#      "vandoor" rig, so the bead MUST be minted in that rig (prefix "va") for the
+#      sling to be same-rig. `gc bd create` with NO --rig mints in the CITY store
+#      (prefix "rc"), which then FAILS the cross-rig gate at sling time. So we
+#      pass --rig "${a_route%%/*}" to mint the bead in the target agent's rig.
+#      (Neither `gc sling --dry-run` nor a hermetic stub caught this — it only
+#      surfaced against REAL gc — so the test below emulates the cross-rig gate.)
 #      matching the native title/dedup shape:
 #        title: "Repair GitHub PR <owner>/<repo>#<n> readiness: <title>"
 #        dedup: repo + PR number + head-sha  (idempotent across cooldown ticks;
@@ -268,6 +280,20 @@ for r in data.get('results', []):
         continue
       fi
 
+      # CROSS-RIG MINT GUARD: derive the target rig from the repair_route (the
+      # part BEFORE the first "/", e.g. "vandoor" from
+      # "vandoor/gc.implementation-worker"). The repair bead MUST be minted in
+      # THAT rig so its prefix matches the sling target; otherwise gc rejects the
+      # sling with a "cross-rig routing" error (see PART A header). A route with
+      # NO "/" gives us no rig to derive, so — mirroring the empty-a_route guard
+      # above — we SKIP with a WARNING rather than mint a mis-homed bead in the
+      # city store that could never route.
+      a_rig="${a_route%%/*}"
+      if [ "$a_rig" = "$a_route" ] || [ -z "$a_rig" ]; then
+        echo "con-voyage-pr-watch: [PART A] WARNING: ${a_full}#${a_num} repair_route '${a_route}' has no '<rig>/' prefix; cannot derive a target rig; skipping (would mis-home the repair bead and fail cross-rig routing)" >&2
+        continue
+      fi
+
       # DE-DUPLICATION (idempotent across cooldown ticks): keyed on
       # repo + PR number + head-sha. If we already minted a repair bead for this
       # exact PR at this exact head-sha in a previous cycle, do NOT mint another
@@ -291,7 +317,13 @@ for r in data.get('results', []):
       # where <BEAD> is a PRE-CREATED bead. So we create the repair bead first,
       # capture its id, then attach the formula to it and route it. {{convoy_id}}
       # then resolves to that bead id inside the ci-repair prompt.
-      repair_bead_id=$("$GC" --city "$GC_CITY" bd create "$repair_title" \
+      #
+      # --rig "$a_rig" is MANDATORY (see CROSS-RIG MINT GUARD above): it mints the
+      # bead in the target agent's rig so its prefix matches the sling target. With
+      # NO --rig the bead lands in the CITY store (prefix "rc") and the subsequent
+      # sling to a rig agent fails the cross-rig gate — the runtime bug this fixes.
+      # (--rig is a TOP-LEVEL gc flag; it must precede the `bd` subcommand.)
+      repair_bead_id=$("$GC" --city "$GC_CITY" --rig "$a_rig" bd create "$repair_title" \
         --priority 1 \
         --silent 2>/dev/null || true)
 
