@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/kriscoleman/foundry/compare/con-voyage-gastown-v0.2.1...con-voyage-gastown-v0.2.2) (2026-09-15)
+
+
+### Bug Fixes
+
+* **con-voyage-gastown:** bump con-voyage-personas to 0.1.1 ([b8aae63](https://github.com/kriscoleman/foundry/commit/b8aae63358b95d380117e0a3932620b2327237cc))
+
 ## 0.2.1
 
 - **Rename:** mold renamed from `con-voyage` to `con-voyage-gastown` to
