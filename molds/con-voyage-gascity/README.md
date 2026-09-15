@@ -221,6 +221,57 @@ hand. `con-voyage-ci-repair-guard` is the backstop for those other two paths:
 | Human review comments | No | Yes (best-effort, Part B) |
 | Auto-merge | Never | Never |
 
+### Per-state repair semantics (native-monitor parity)
+
+Part A trusts `gc github pr backfill`'s own `failure_kind` field when present
+— confirmed against a real, live backfill payload against this city's own
+configured monitors, `gc` already computes and emits exactly this vocabulary
+per result. Only when that field is absent does Part A fall back to deriving
+one from `state`/`failed_checks` itself. Either way, Part A classifies every
+actionable PR into one canonical `failure_kind` token
+— `checks_failed` | `merge_conflict` | `behind_base` | `blocked` — and threads
+it onto the repair bead (`--var failure_kind=...`), so the bead's title names
+the state (`Repair GitHub PR <owner>/<repo>#<n> (<failure_kind>): <title>`) and
+the `con-voyage-ci-repair` workflow's Step 4 is *told* the state instead of
+re-deriving it. Classification is first-match order: a non-empty
+`failed_checks[]` always wins (so a check-failure-blocked PR is
+`checks_failed`, not `blocked`), then `state == dirty`, then `behind`, then
+`blocked`.
+
+Each state has a distinct, safety-reviewed repair path:
+
+- **`checks_failed`** — unchanged: fix via TDD or `gh run rerun --failed` for a
+  flake. See the existing non-destructive retrigger discipline above.
+- **`merge_conflict` (DIRTY) — auto-resolves, with guardrails.** The
+  implementor still runs `git rebase` and resolves conflicts (this was a
+  deliberate, signed-off call to keep automating the common case rather than
+  always punting to a human), but now MUST also: surface a human-readable
+  summary of the resolution (which files conflicted, what the resolution did)
+  as both a machine-bannered PR comment and the bead close note, and push with
+  `--force-with-lease` (a rebase always creates new commit objects). Still
+  never merges, never approves, never submits to the merge queue.
+- **`behind_base` (BEHIND) — rebase + `git push --force-with-lease`.** Chosen
+  over a `gh pr update-branch` merge to keep a clean linear history on the
+  operator's own branch. This is a deliberate, explicit exception to the
+  "never force-push" rule elsewhere in this doc: that rule targets
+  force-pushing *to retrigger CI* on an unchanged commit (pure churn) — it
+  does not forbid a legitimate rebase-driven branch update, which inherently
+  requires a force-push. `--force-with-lease` (never a bare `--force`) is used
+  either way.
+- **`blocked` — a router, not a single action.** `blocked` is heterogeneous, so
+  the workflow reads `statusCheckRollup` / `mergeStateStatus` / `reviewDecision`
+  before acting: a genuinely failing required check is handled as
+  `checks_failed`; pending-only checks are a no-op wait (never rerun a running
+  check); a `BEHIND` merge state is handled as `behind_base`; and anything
+  gated on human review (`REVIEW_REQUIRED`, `CHANGES_REQUESTED`, CODEOWNERS, or
+  other branch protection) gets a machine-bannered annotation plus an escalation
+  mail — zero mutating action, and the implementor **never self-approves and
+  never bypasses branch protection**.
+
+All four states share the same bright lines as everything else in this
+pack: author-gated at the source (an unauthorized PR never reaches any of
+this), and never merge / never approve / never submit to the merge queue.
+
 ### Author scoping
 
 **The monitor only ever touches PRs authored by a single configured user.**
@@ -376,6 +427,20 @@ gc runtime. Each exits `0` when every case passes, non-zero otherwise.
 - **Default resolution** — an unset `CV_PR_AUTHOR` falls back to the
   authenticated `gh` login and then scopes to it.
 
+It also covers native-monitor parity (per-state classification, fk-08o):
+
+- **Operator PR in each state → correct `failure_kind`** — a `dirty` /
+  `behind` / `blocked` / failed-checks PR each mints a bead carrying the right
+  classified token, with `cv_pr_author` still forwarded on every one.
+- **Non-operator PR in each state → dropped before mint** — the author gate is
+  state-agnostic; exactly the operator's PRs mint, never the others.
+- **Classifier precedence** — a PR with `state=blocked` AND a non-empty
+  `failed_checks[]` classifies as `checks_failed`, never `blocked`.
+- **Non-actionable (clean) PRs never churn.**
+- **The minted title is state-aware**, naming the `failure_kind`.
+- **PART B surfaces the real `gh` error text** on a `gh pr view` failure
+  instead of a bare "skipping" message.
+
 `con-voyage-ci-repair-guard.test.sh` covers layer 2 (the backstop sweep) and
 content-checks layer 3 (the workflow's own Step 0 gate):
 
@@ -401,6 +466,16 @@ content-checks layer 3 (the workflow's own Step 0 gate):
   an unrecognized toggle value falls back to `enabled` (fail closed). The
   disabled/default cases double as mutation guards: reverting the toggle logic
   (or flipping the default to `disabled`) fails the suite.
+- **Per-state repair semantics content checks (fk-08o)** — pins the operator's
+  locked, signed-off decisions into `{target}.ci-repair.md` and the formula:
+  `merge_conflict` still auto-resolves (not surface-only) AND surfaces a
+  resolution summary; `behind_base` pushes with `--force-with-lease` (never
+  `gh pr update-branch`, never a bare `--force`) and carries the explicit
+  reconciliation note distinguishing it from the CI-retrigger force-push ban;
+  `blocked` stays a router with a never-self-approve bright line; Step 4
+  references `{{failure_kind}}` instead of guessing; the formula declares
+  `[vars.failure_kind]`. Reverting any of these to the design doc's original
+  (safer-looking but operator-rejected) recommendation fails the suite.
 
 The `tests/` directory lives outside `pack/`, so it is never compiled into the
 shipped `packs/con-voyage` pack.
