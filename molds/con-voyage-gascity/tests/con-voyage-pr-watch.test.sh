@@ -198,9 +198,17 @@ case "$sub" in
           ;;
         full)
           # Mixed authors + actionability. Exactly the cases the test needs.
+          #
+          # STUB_HEAD_SHA overrides ONLY PR #11's head_sha (defaults to the
+          # historical "aaa111" so every pre-existing case is unaffected). This
+          # lets a test advance #11's branch head between cycles to prove that a
+          # NEW head-sha yields a NEW dedup key and re-mints a fresh repair bead
+          # (the head-sha is pinned into the dedup key in the script under test).
+          # #11's line is emitted via printf (so the env var expands); the rest
+          # stay in a single-quoted heredoc (byte-identical, no expansion).
+          printf '{"results":[\n'
+          printf '  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":11,"title":"author-scope pr monitor","head_ref_name":"fix/con-voyage-author-scope-pr-monitor","head_sha":"%s","repair_route":"gc.implementation-worker"},\n' "${STUB_HEAD_SHA:-aaa111}"
           cat <<'JSON'
-{"results":[
-  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":11,"title":"author-scope pr monitor","head_ref_name":"fix/con-voyage-author-scope-pr-monitor","head_sha":"aaa111","repair_route":"gc.implementation-worker"},
   {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":500,"title":"someone elses pr","head_ref_name":"feature/x","head_sha":"bbb500","repair_route":"gc.implementation-worker"},
   {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":600,"title":"dep bump","head_ref_name":"deps/y","head_sha":"ccc600","repair_route":"gc.implementation-worker"},
   {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":700,"title":"near match author","head_ref_name":"feature/z","head_sha":"ddd700","repair_route":"gc.implementation-worker"},
@@ -293,7 +301,21 @@ JSON
         echo "gc sling: inline text requires explicit target; usage: gc sling <target> <bead> --on <formula>" >&2
         exit 1
       fi
-      # target = positionals[0], bead = positionals[1]. Accept.
+      # target = positionals[0], bead = positionals[1]. Well-formed mint.
+      #
+      # STUB_SLING_FAIL=1 makes ONLY this well-formed bead-positional formula
+      # mint fail (routing to the ci-repair convoy fails after the bead was
+      # already created). This is deliberately scoped to the --on formula path
+      # so PART B's plain `sling <target> --stdin` route (which never sets
+      # has_on) is unaffected — exactly like a transient routing error that hits
+      # the repair mint but not comment routing. Exercises the script's contract
+      # that the .minted dedup marker is written ONLY after a successful
+      # mint+route, so a failed sling is retried (no marker) next cycle.
+      if [ "${STUB_SLING_FAIL:-0}" = "1" ]; then
+        echo "gc sling: failed to route bead to con-voyage-ci-repair convoy (simulated)" >&2
+        exit 1
+      fi
+      # Accept.
       exit 0
     fi
 
@@ -628,6 +650,50 @@ if printf '%s' "$OUT" | grep -q 'SKIP kriscoleman/foundry#11 @ aaa111 — repair
 else
   fail "expected a dedup SKIP log for #11 in cycle 2"
 fi
+# --- Cycle 3 (branch ADVANCED: #11 now @ a NEW head-sha bcd222): RE-MINT. ---
+# This is the positive proof that the head-sha is pinned into the dedup key.
+# STUB_HEAD_SHA overrides #11's head_sha in the backfill JSON, so the dedup key
+# becomes cv-ci-repair-...-11-bcd222 — a DIFFERENT key than aaa111. The script
+# must therefore treat this as a fresh mint: pre-create a NEW bead, issue a NEW
+# well-formed ci-repair sling, and write a NEW marker under the new key.
+#
+# TRIPWIRE: if the script ever dropped the head-sha from the dedup key (keyed on
+# repo+PR only), cycle 3 would collide with the aaa111 marker from cycle 1 and
+# SKIP — so `bd create` would be 0 here and this case would go RED. Keeping this
+# green requires the sha to genuinely re-key the mint.
+GC_LOG_3="${SANDBOX}/gc-9c.log"; : > "$GC_LOG_3"
+OUT="$(
+  env GH="${STUBDIR}/gh" GC="${STUBDIR}/gc" GC_CITY="$CITY_DIR" \
+    CV_STATE_DIR="$STATE_DIR" STUB_GH_LOG="${SANDBOX}/gh-9c.log" \
+    STUB_GC_LOG="$GC_LOG_3" CV_PR_AUTHOR="kriscoleman" \
+    STUB_GH_USER_LOGIN="kriscoleman" STUB_HEAD_SHA="bcd222" \
+    bash "$SCRIPT" 2>&1
+)"; RC=$?
+assert_eq "0" "$RC" "cycle 3 exits 0"
+assert_log_count "$GC_LOG_3" 'bd create .*--silent' 1 "cycle 3 pre-creates a FRESH repair bead at the new head-sha"
+assert_log_count "$GC_LOG_3" 'sling gc.implementation-worker fk-newbead --on con-voyage-ci-repair' 1 "cycle 3 mints one well-formed ci-repair sling at the new head-sha"
+# All PR-context vars still ride on the re-mint sling (proves it's a real,
+# complete mint at the new sha — not a degenerate/partial sling).
+assert_log_count "$GC_LOG_3" 'sling gc.implementation-worker fk-newbead --on con-voyage-ci-repair .*pr=11 .*repo=kriscoleman/foundry .*branch=fix/con-voyage-author-scope-pr-monitor' 1 "cycle 3 re-mint forwards pr/repo/branch vars"
+# A NEW marker keyed on the NEW head-sha must now exist...
+if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11-bcd222.minted" ]; then
+  pass "cycle 3 wrote a NEW dedup marker for #11 @ bcd222"
+else
+  fail "expected a NEW dedup marker file (bcd222) after cycle 3 — head-sha not re-keyed?"
+fi
+# ...and the ORIGINAL marker (aaa111) must still be present (distinct keys, not
+# overwritten): the two head-shas map to two independent dedup entries.
+if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11-aaa111.minted" ]; then
+  pass "original aaa111 marker still present (per-sha keys are independent)"
+else
+  fail "original aaa111 marker vanished — dedup markers are not per-head-sha"
+fi
+# The KEEP log for cycle 3 names the new-sha dedup key (operator-observable).
+if printf '%s' "$OUT" | grep -q 'KEEP kriscoleman/foundry#11 .* (dedup: cv-ci-repair-kriscoleman-foundry-11-bcd222)'; then
+  pass "cycle 3 logs a KEEP naming the new-sha dedup key"
+else
+  fail "expected a KEEP log naming the bcd222 dedup key in cycle 3"
+fi
 
 # ===========================================================================
 # CASE 10 — PART A mint failure is retried (no dedup marker on failure).
@@ -653,6 +719,61 @@ if printf '%s' "$OUT" | grep -q 'failed to create repair bead for kriscoleman/fo
   pass "logs the bead-create failure for #11"
 else
   fail "expected a bead-create failure log for #11"
+fi
+
+# ===========================================================================
+# CASE 11 — PART A sling failure leaves NO dedup marker (dedicated GREEN test).
+#   CASE 10 covers the bd-create-fail path (mint aborts before slinging). This
+#   case covers the OTHER failure branch: the bead IS pre-created successfully,
+#   but the subsequent v2-formula `sling <target> <bead> --on con-voyage-ci-repair`
+#   fails (STUB_SLING_FAIL=1). The script must then:
+#     * still exit 0 (a failed sling is non-fatal — best effort, retried),
+#     * have actually pre-created the bead (bd create --silent == 1),
+#     * write NO .minted marker (the marker is recorded ONLY after a successful
+#       mint+route, so the next cycle retries rather than suppressing forever),
+#     * log the 'repair-bead sling failed ... will retry' WARNING.
+#   This pins the ordering invariant in the script under test: the marker write
+#   sits INSIDE the `if sling; then ...` success branch. If a refactor ever moved
+#   the marker write before/around the sling, this case would go RED (a marker
+#   would exist after a failed sling).
+# ===========================================================================
+start_case "11: PART A sling failure writes no dedup marker (retryable)"
+setup_case_env "11"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_SLING_FAIL=1
+assert_eq "0" "$RC" "script exits 0 (sling failure is non-fatal)"
+# The bead WAS pre-created (we got past pre-create and into the sling)...
+assert_log_count "$GC_LOG" 'bd create .*--silent' 1 "a repair bead was pre-created for #11"
+# ...and exactly one well-formed ci-repair sling was ATTEMPTED for that bead
+# (the stub rejects it via STUB_SLING_FAIL, mirroring a routing failure).
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker fk-newbead --on con-voyage-ci-repair' 1 "one well-formed ci-repair sling was attempted for #11"
+# CRUX: because that sling failed, NO dedup marker may be written — otherwise the
+# mint would be suppressed forever and never retried.
+if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11-aaa111.minted" ]; then
+  fail "dedup marker written despite a FAILED sling (would suppress retries)"
+else
+  pass "no dedup marker written on failed sling (mint will be retried next cycle)"
+fi
+# The retry WARNING must be logged (operator-observable evidence of the retry path).
+if printf '%s' "$OUT" | grep -q 'repair-bead sling failed for kriscoleman/foundry#11'; then
+  pass "logs the 'repair-bead sling failed ... will retry' WARNING for #11"
+else
+  fail "expected a 'repair-bead sling failed ... will retry' WARNING for #11"
+fi
+# And the success log must be ABSENT (the mint did not complete).
+if printf '%s' "$OUT" | grep -q 'repair bead fk-newbead created/attached and routed'; then
+  fail "logged mint success despite a failed sling"
+else
+  pass "no 'created/attached and routed' success log on failed sling"
+fi
+# FAITHFULNESS GUARD: STUB_SLING_FAIL is scoped to the --on formula MINT only; it
+# must NOT break PART B's plain `sling <target> --stdin` comment route. The stub
+# returns a human comment for #11, so PART B must still route it successfully
+# even while the PART A mint sling is failing.
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin STDIN: Human PR feedback on kriscoleman/foundry#11' 1 "PART B --stdin comment route still succeeds under STUB_SLING_FAIL"
+if printf '%s' "$OUT" | grep -q 'kriscoleman/foundry#11: routed to gc.implementation-worker'; then
+  pass "PART B still routes #11 comment despite PART A sling failure"
+else
+  fail "expected PART B to still route #11 comment under STUB_SLING_FAIL"
 fi
 
 # ===========================================================================
