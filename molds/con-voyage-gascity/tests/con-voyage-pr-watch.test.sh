@@ -122,7 +122,17 @@ JSON
         num="${3:-}"
         jsonfields="$(flagval --json "$@")"
         if printf '%s' "$jsonfields" | grep -q 'reviews'; then
-          # PART B comment fetch. Return one human comment for the operator's PR.
+          # PART B comment fetch.
+          #
+          # STUB_GH_VIEW_COMMENTS_FAIL=1 simulates a real gh failure (e.g. an
+          # unsupported --json field set, or a transient API error) so the PART B
+          # resilience fix can be proven: the script must surface this exact
+          # stderr text in its WARNING instead of a generic "skipping" message.
+          if [ "${STUB_GH_VIEW_COMMENTS_FAIL:-0}" = "1" ]; then
+            echo "${STUB_GH_VIEW_COMMENTS_ERR:-GraphQL: Field 'reviewThreads' does not exist on type 'PullRequest' (reviewThreads)}" >&2
+            exit 1
+          fi
+          # Return one human comment for the operator's PR.
           cat <<'JSON'
 {"reviews":[],"comments":[{"id":"IC_test_11","author":{"login":"a-human-reviewer"},"body":"please fix the null check"}],"reviewThreads":[]}
 JSON
@@ -1108,6 +1118,30 @@ run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_BACK
 assert_eq "0" "$RC" "script exits 0"
 assert_log_count "$GC_LOG" 'bd create Repair GitHub PR kriscoleman/foundry#12 \(merge_conflict\): dirty pr' 1 "title for #12 names (merge_conflict)"
 assert_log_count "$GC_LOG" 'bd create Repair GitHub PR kriscoleman/foundry#13 \(behind_base\): behind pr' 1 "title for #13 names (behind_base)"
+
+# ===========================================================================
+# CASE 20 — PART B resilience: a genuine `gh pr view` failure during comment
+#   fetch must surface the REAL gh error text in the WARNING (not just a bare
+#   "skipping"), so an operator reading logs can actually diagnose it. Must
+#   still be non-fatal (script exits 0, continues past this PR).
+# ===========================================================================
+start_case "20: PART B surfaces the real gh error text on a gh pr view failure"
+setup_case_env "20"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_GH_VIEW_COMMENTS_FAIL=1 \
+  STUB_GH_VIEW_COMMENTS_ERR="GraphQL: Field 'reviewThreads' does not exist on type 'PullRequest' (reviewThreads)"
+assert_eq "0" "$RC" "script exits 0 (a single PR's comment-fetch failure is non-fatal)"
+if printf '%s' "$OUT" | grep -qF "GraphQL: Field 'reviewThreads' does not exist on type 'PullRequest' (reviewThreads)"; then
+  pass "WARNING surfaces the real gh stderr text"
+else
+  fail "expected the real gh stderr text in the WARNING output"
+fi
+if printf '%s' "$OUT" | grep -q 'gh pr view failed for kriscoleman/foundry#11'; then
+  pass "WARNING still names the repo/PR"
+else
+  fail "expected the WARNING to still name kriscoleman/foundry#11"
+fi
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 0 "no PART B comment route when the fetch failed"
 
 # ===========================================================================
 # Summary

@@ -617,13 +617,22 @@ print((d.get('author') or {}).get('login', ''))" 2>/dev/null || echo "")
 
     # Fetch PR reviews, issue comments, and inline review thread comments.
     # Pass JSON via STDIN to python3 (avoids ARG_MAX limits on large PRs).
+    #
+    # Capture stderr to a file (rather than discarding it) so a failure's
+    # WARNING can surface gh's real error text — e.g. an unsupported --json
+    # field or a transient API error — instead of a bare "skipping" that gives
+    # an operator nothing to diagnose.
+    gh_view_err_file="$(mktemp "${TMPDIR:-/tmp}/cv-pr-watch-gh-view-err.XXXXXX")"
     pr_comments_json=$("$GH" pr view "$pr_number" \
       --repo "$full_repo" \
       --json reviews,comments,reviewThreads \
-      2>/dev/null) || {
-      echo "con-voyage-pr-watch: [PART B] WARNING: gh pr view failed for ${full_repo}#${pr_number}; skipping" >&2
+      2>"$gh_view_err_file") || {
+      gh_view_err="$(cat "$gh_view_err_file" 2>/dev/null)"
+      rm -f "$gh_view_err_file"
+      echo "con-voyage-pr-watch: [PART B] WARNING: gh pr view failed for ${full_repo}#${pr_number}: ${gh_view_err:-<no error output from gh>}; skipping" >&2
       continue
     }
+    rm -f "$gh_view_err_file"
 
     # Extract new human comments using python3.
     # Reads PR JSON from stdin (fd 0) and seen-IDs + config from argv.
