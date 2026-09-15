@@ -183,11 +183,17 @@ mkdir -p "$CV_STATE_DIR"
 #      creates NO beads.
 #   2. For each actionable result, resolve the PR's author login (via
 #      `gh pr view`) and DROP the PR unless its author == CV_PR_AUTHOR.
-#   3. For each surviving PR, create ONE deduped repair bead by attaching the
-#      `con-voyage-ci-repair` formula to the monitor's repair_route, matching
-#      the native title/dedup shape:
+#   3. For each surviving PR, create ONE deduped repair bead and attach the
+#      `con-voyage-ci-repair` v2-formula to it, then route it to the monitor's
+#      repair_route. Because that formula references {{convoy_id}} (the repair
+#      bead id), gc 1.4.1 requires a PRE-CREATED bead as the sling positional:
+#        gc bd create "<title>"            # -> repair_bead_id
+#        gc sling <repair_route> <repair_bead_id> --on con-voyage-ci-repair --var ...
+#      matching the native title/dedup shape:
 #        title: "Repair GitHub PR <owner>/<repo>#<n> readiness: <title>"
-#        dedup: repo + PR number + head-sha  (idempotent across cooldown ticks)
+#        dedup: repo + PR number + head-sha  (idempotent across cooldown ticks;
+#               a per-key marker file under CV_STATE_DIR records the minted bead
+#               id and gates re-mints until the branch head-sha advances)
 #
 # We deliberately AVOID `--create-repair-beads` because that native path has no
 # author filter and would create a bead for every actionable PR. The report +
@@ -255,17 +261,47 @@ for r in data.get('results', []):
       # Survivor: author matches. Create ONE deduped repair bead.
       repair_title="Repair GitHub PR ${a_full}#${a_num} readiness: ${a_title}"
       dedup_key="cv-ci-repair-${a_owner}-${a_repo}-${a_num}-${a_sha}"
+      dedup_marker="${CV_STATE_DIR}/${dedup_key}.minted"
 
       if [ -z "$a_route" ]; then
         echo "con-voyage-pr-watch: [PART A] WARNING: ${a_full}#${a_num} has no repair_route in backfill result; cannot create bead safely; skipping" >&2
         continue
       fi
 
+      # DE-DUPLICATION (idempotent across cooldown ticks): keyed on
+      # repo + PR number + head-sha. If we already minted a repair bead for this
+      # exact PR at this exact head-sha in a previous cycle, do NOT mint another
+      # — the existing repair bead is still valid until the branch advances (a
+      # new push changes head_sha, which yields a new dedup_key and a new bead).
+      # A per-key marker file records the bead id we minted; its presence is the
+      # dedup gate. This mirrors PART B's per-PR state-file discipline.
+      if [ -f "$dedup_marker" ]; then
+        echo "con-voyage-pr-watch: [PART A] SKIP ${a_full}#${a_num} @ ${a_sha} — repair bead already minted this cycle-set (dedup: ${dedup_key} -> $(cat "$dedup_marker" 2>/dev/null))"
+        continue
+      fi
+
       echo "con-voyage-pr-watch: [PART A] KEEP ${a_full}#${a_num} (author='${pr_author}') — creating repair bead (dedup: ${dedup_key})"
 
-      if "$GC" --city "$GC_CITY" sling "$a_route" \
+      # v2-formula mint (gc 1.4.1): con-voyage-ci-repair is a v2 workflow formula
+      # that references {{convoy_id}} (the repair bead id). Such a formula CANNOT
+      # be inline-created via `gc sling --on <formula> --title <text>` — gc rejects
+      # that with "inline text requires explicit target", because {{convoy_id}}
+      # has no bead to resolve against. The required form is:
+      #   gc sling <target> <BEAD> --on <formula> --var ...
+      # where <BEAD> is a PRE-CREATED bead. So we create the repair bead first,
+      # capture its id, then attach the formula to it and route it. {{convoy_id}}
+      # then resolves to that bead id inside the ci-repair prompt.
+      repair_bead_id=$("$GC" --city "$GC_CITY" bd create "$repair_title" \
+        --priority 1 \
+        --silent 2>/dev/null || true)
+
+      if [ -z "${repair_bead_id// /}" ]; then
+        echo "con-voyage-pr-watch: [PART A] WARNING: failed to create repair bead for ${a_full}#${a_num}; will retry next cycle" >&2
+        continue
+      fi
+
+      if "$GC" --city "$GC_CITY" sling "$a_route" "$repair_bead_id" \
         --on con-voyage-ci-repair \
-        --title "$repair_title" \
         --var "title=${a_title}" \
         --var "pr=${a_num}" \
         --var "repo=${a_full}" \
@@ -273,9 +309,12 @@ for r in data.get('results', []):
         --var "cv_pr_author=${CV_PR_AUTHOR}" \
         --var "cv_author_gate=${CV_AUTHOR_GATE:-enabled}" \
         2>&1; then
-        echo "con-voyage-pr-watch: [PART A] ${a_full}#${a_num}: repair bead created/attached and routed to ${a_route}"
+        # Record the dedup marker only AFTER a successful mint+route, so a failed
+        # sling is retried next cycle rather than being silently suppressed.
+        printf '%s\n' "$repair_bead_id" > "$dedup_marker"
+        echo "con-voyage-pr-watch: [PART A] ${a_full}#${a_num}: repair bead ${repair_bead_id} created/attached and routed to ${a_route}"
       else
-        echo "con-voyage-pr-watch: [PART A] WARNING: repair-bead sling failed for ${a_full}#${a_num}; will retry next cycle" >&2
+        echo "con-voyage-pr-watch: [PART A] WARNING: repair-bead sling failed for ${a_full}#${a_num} (bead ${repair_bead_id}); will retry next cycle" >&2
         # Non-fatal: continue to next PR / Part B.
       fi
     done <<< "$actionable_prs"
@@ -665,10 +704,13 @@ ${feedback_summary}
 
 Routing from con-voyage-pr-watch (idempotency: pr-comment-${full_repo//\//_}-${pr_number}-nodeids-${new_ids_for_key})"
 
-    if "$GC" --city "$GC_CITY" sling "$CV_IMPLEMENTOR" \
-      --title "$route_title" \
-      --body "$route_body" \
-      2>&1; then
+    # Route the feedback as a new task bead to the implementor. gc 1.4.1's
+    # `gc sling` has NO --body flag; the create-bead-from-text forms are inline
+    # positional text or --stdin (first line = title, remaining lines = body).
+    # We use --stdin so the multi-line body is passed cleanly (no ARG_MAX / quoting
+    # issues), with the title as the first line and a blank line before the body.
+    if printf '%s\n\n%s\n' "$route_title" "$route_body" \
+      | "$GC" --city "$GC_CITY" sling "$CV_IMPLEMENTOR" --stdin 2>&1; then
       echo "con-voyage-pr-watch: [PART B] ${full_repo}#${pr_number}: routed to ${CV_IMPLEMENTOR}"
       # Persist updated seen-IDs only on successful route
       if [ -n "$updated_seen_ids" ]; then
