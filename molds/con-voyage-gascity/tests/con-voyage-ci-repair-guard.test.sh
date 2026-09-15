@@ -35,6 +35,7 @@ TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOLD_DIR="$(cd "${TEST_DIR}/.." && pwd)"
 SCRIPT="${MOLD_DIR}/pack/assets/scripts/con-voyage-ci-repair-guard.sh"
 CI_REPAIR_MD="${MOLD_DIR}/pack/assets/workflows/con-voyage-ci-repair/{target}.ci-repair.md"
+CI_REPAIR_FORMULA="${MOLD_DIR}/pack/formulas/con-voyage-ci-repair.formula.toml"
 
 if [ ! -f "$SCRIPT" ]; then
   echo "FATAL: script under test not found at ${SCRIPT}" >&2
@@ -43,6 +44,11 @@ fi
 
 if [ ! -f "$CI_REPAIR_MD" ]; then
   echo "FATAL: prompt file under test not found at ${CI_REPAIR_MD}" >&2
+  exit 2
+fi
+
+if [ ! -f "$CI_REPAIR_FORMULA" ]; then
+  echo "FATAL: formula file under test not found at ${CI_REPAIR_FORMULA}" >&2
   exit 2
 fi
 
@@ -725,6 +731,113 @@ if printf '%s' "$OUT" | grep -qi 'author gate DISABLED'; then
   pass "mixed-case 'Disabled' announces the gate as DISABLED (work-all)"
 else
   fail "expected mixed-case 'Disabled' to trigger the disabled (work-all) branch"
+fi
+
+# ===========================================================================
+# R7 — CV-B PER-STATE REPAIR SEMANTICS (fk-08o) — content coverage
+#
+# Mutation guards pinning the operator's LOCKED build-spec decisions (which
+# deliberately override the design doc's original recommendations) into
+# {target}.ci-repair.md and con-voyage-ci-repair.formula.toml. Reverting any
+# of these to the design doc's original (safer-looking but operator-rejected)
+# recommendation must fail this suite.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# R7a — DIRTY (merge_conflict) still AUTO-RESOLVES (the design doc's original
+#   surface-only recommendation was explicitly overridden) AND surfaces a
+#   human-readable resolution summary + never-merge bright line.
+# ---------------------------------------------------------------------------
+start_case "R7a: merge_conflict auto-resolves (not surface-only) and surfaces a resolution summary"
+if grep -q 'git rebase --continue' "$CI_REPAIR_MD"; then
+  pass "merge_conflict path still auto-resolves via git rebase --continue"
+else
+  fail "expected merge_conflict to still auto-resolve (git rebase --continue) — did it regress to surface-only?"
+fi
+if grep -qi 'surface a human-readable summary of the resolution' "$CI_REPAIR_MD"; then
+  pass "merge_conflict path surfaces a human-readable resolution summary"
+else
+  fail "expected merge_conflict to surface a human-readable resolution summary (the operator's guardrail)"
+fi
+if grep -qi 'NEVER merge, NEVER approve, NEVER submit to the merge queue' "$CI_REPAIR_MD"; then
+  pass "merge_conflict path keeps the never-merge/never-approve bright line"
+else
+  fail "expected the never-merge/never-approve bright line on the merge_conflict path"
+fi
+
+# ---------------------------------------------------------------------------
+# R7b — BEHIND (behind_base) uses `git push --force-with-lease` (the operator
+#   overrode the design doc's `gh pr update-branch` merge recommendation).
+#   Bare `--force` (without `--with-lease`) must never appear.
+# ---------------------------------------------------------------------------
+start_case "R7b: behind_base uses --force-with-lease, not gh pr update-branch or bare --force"
+if grep -q 'git push --force-with-lease origin {{branch}}' "$CI_REPAIR_MD"; then
+  pass "behind_base path pushes with --force-with-lease"
+else
+  fail "expected behind_base to push with git push --force-with-lease origin {{branch}}"
+fi
+if grep -q 'gh pr update-branch' "$CI_REPAIR_MD"; then
+  fail "found gh pr update-branch — the operator overrode this design-doc recommendation in favor of rebase+force-with-lease"
+else
+  pass "does not use gh pr update-branch (operator's override is honored)"
+fi
+# Target actual COMMAND examples ("git push --force ..."), not the prose that
+# explicitly forbids bare --force (e.g. "never a bare `--force`") — that prose
+# is expected and correct. ERE leftmost-longest matching prefers the longer
+# "--force-with-lease" alternative when both fit at the same position, so this
+# only flags a command example that is genuinely the bare form.
+if grep -oE -- 'git push --force(-with-lease)?' "$CI_REPAIR_MD" | grep -qx -- 'git push --force'; then
+  fail "found a 'git push --force' command example (not --force-with-lease) in ci-repair.md"
+else
+  pass "no 'git push --force' command example appears (force-with-lease only)"
+fi
+if grep -qi 'Reconciling this with Step 2' "$CI_REPAIR_MD"; then
+  pass "carries the explicit CV-A reconciliation note (force-with-lease vs the CI-kick force-push ban)"
+else
+  fail "expected an explicit reconciliation note distinguishing behind_base's force-with-lease from Step 2's CI-kick force-push ban"
+fi
+
+# ---------------------------------------------------------------------------
+# R7c — BLOCKED is a router (check-failing -> 4a, pending -> wait, BEHIND ->
+#   4c, review/other -> annotate+escalate) and keeps a never-self-approve
+#   bright line — the operator's decision #3.
+# ---------------------------------------------------------------------------
+start_case "R7c: blocked is a router with a never-self-approve bright line"
+if grep -q 'mergeStateStatus,reviewDecision' "$CI_REPAIR_MD"; then
+  pass "blocked path reads real GitHub signals (statusCheckRollup/mergeStateStatus/reviewDecision) before acting"
+else
+  fail "expected the blocked path to read statusCheckRollup/mergeStateStatus/reviewDecision"
+fi
+if grep -qi 'wait, no-op this cycle' "$CI_REPAIR_MD"; then
+  pass "blocked path routes pending-only checks to wait/no-op"
+else
+  fail "expected a wait/no-op sub-path for pending-only checks under blocked"
+fi
+if grep -qi 'Never self-approve' "$CI_REPAIR_MD"; then
+  pass "blocked path keeps the never-self-approve bright line"
+else
+  fail "expected an explicit never-self-approve bright line on the blocked path"
+fi
+
+# ---------------------------------------------------------------------------
+# R7d — Step 4 is TOLD the state via {{failure_kind}} instead of guessing it
+#   from the failing-checks list (R3's labeling half).
+# ---------------------------------------------------------------------------
+start_case "R7d: Step 4 branches on {{failure_kind}} instead of guessing"
+if grep -q '{{failure_kind}}' "$CI_REPAIR_MD"; then
+  pass "ci-repair.md references {{failure_kind}}"
+else
+  fail "expected ci-repair.md to reference {{failure_kind}}"
+fi
+
+# ---------------------------------------------------------------------------
+# R7e — the formula declares the failure_kind var Step 4 depends on.
+# ---------------------------------------------------------------------------
+start_case "R7e: formula declares [vars.failure_kind]"
+if grep -q '\[vars.failure_kind\]' "$CI_REPAIR_FORMULA"; then
+  pass "con-voyage-ci-repair.formula.toml declares [vars.failure_kind]"
+else
+  fail "expected con-voyage-ci-repair.formula.toml to declare [vars.failure_kind]"
 fi
 
 # ===========================================================================

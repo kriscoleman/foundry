@@ -131,7 +131,14 @@ JSON
         # PART A author resolution. Map PR number -> canned author.
         case "$num" in
           11)  echo "kriscoleman" ;;      # operator — KEEP
+          12)  echo "kriscoleman" ;;      # operator (states: dirty) — KEEP
+          13)  echo "kriscoleman" ;;      # operator (states: behind) — KEEP
+          14)  echo "kriscoleman" ;;      # operator (states: blocked) — KEEP
+          15)  echo "kriscoleman" ;;      # operator (states: trust-gc precedence) — KEEP
           500) echo "evansmungai" ;;      # other human — DROP
+          501) echo "evansmungai" ;;      # other human (states: dirty) — DROP
+          502) echo "evansmungai" ;;      # other human (states: behind) — DROP
+          503) echo "evansmungai" ;;      # other human (states: blocked) — DROP
           600) echo "dependabot[bot]" ;;  # bot — DROP
           700) echo "kriscoleman2" ;;     # near-match — DROP (exact match only)
           701) echo "KRISCOLEMAN" ;;      # case variant — DROP (case-sensitive)
@@ -244,14 +251,21 @@ case "$sub" in
           # same-rig. (Pre-fix fixtures used a bare "gc.implementation-worker"
           # with no rig — which the fixed script now correctly SKIPS as
           # underivable; real backfill routes always carry the rig.)
+          #
+          # Every row also carries state/failed_checks/merge_state_status (real
+          # backfill always includes them — `state` is a required field per the
+          # gc schema). All of them classify as failure_kind=checks_failed here
+          # (non-empty failed_checks), since this fixture predates per-state
+          # classification (CV-B) and its cases are about AUTHOR SCOPING, not
+          # state variety — STUB_BACKFILL_MODE=states below covers state variety.
           printf '{"results":[\n'
-          printf '  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":11,"title":"author-scope pr monitor","head_ref_name":"fix/con-voyage-author-scope-pr-monitor","head_sha":"%s","repair_route":"vandoor/gc.implementation-worker"},\n' "${STUB_HEAD_SHA:-aaa111}"
+          printf '  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":11,"title":"author-scope pr monitor","head_ref_name":"fix/con-voyage-author-scope-pr-monitor","head_sha":"%s","repair_route":"vandoor/gc.implementation-worker","state":"blocked","failed_checks":["ci"],"merge_state_status":"UNSTABLE"},\n' "${STUB_HEAD_SHA:-aaa111}"
           cat <<'JSON'
-  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":500,"title":"someone elses pr","head_ref_name":"feature/x","head_sha":"bbb500","repair_route":"vandoor/gc.implementation-worker"},
-  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":600,"title":"dep bump","head_ref_name":"deps/y","head_sha":"ccc600","repair_route":"vandoor/gc.implementation-worker"},
-  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":700,"title":"near match author","head_ref_name":"feature/z","head_sha":"ddd700","repair_route":"vandoor/gc.implementation-worker"},
-  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":701,"title":"case variant author","head_ref_name":"feature/w","head_sha":"eee701","repair_route":"vandoor/gc.implementation-worker"},
-  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":800,"title":"unresolved author","head_ref_name":"feature/u","head_sha":"fff800","repair_route":"vandoor/gc.implementation-worker"},
+  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":500,"title":"someone elses pr","head_ref_name":"feature/x","head_sha":"bbb500","repair_route":"vandoor/gc.implementation-worker","state":"blocked","failed_checks":["ci"],"merge_state_status":"UNSTABLE"},
+  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":600,"title":"dep bump","head_ref_name":"deps/y","head_sha":"ccc600","repair_route":"vandoor/gc.implementation-worker","state":"blocked","failed_checks":["ci"],"merge_state_status":"UNSTABLE"},
+  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":700,"title":"near match author","head_ref_name":"feature/z","head_sha":"ddd700","repair_route":"vandoor/gc.implementation-worker","state":"blocked","failed_checks":["ci"],"merge_state_status":"UNSTABLE"},
+  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":701,"title":"case variant author","head_ref_name":"feature/w","head_sha":"eee701","repair_route":"vandoor/gc.implementation-worker","state":"blocked","failed_checks":["ci"],"merge_state_status":"UNSTABLE"},
+  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":800,"title":"unresolved author","head_ref_name":"feature/u","head_sha":"fff800","repair_route":"vandoor/gc.implementation-worker","state":"blocked","failed_checks":["ci"],"merge_state_status":"UNSTABLE"},
   {"actionable":false,"owner":"kriscoleman","repo":"foundry","number":999,"title":"not actionable","head_ref_name":"feature/na","head_sha":"999999","repair_route":"vandoor/gc.implementation-worker"}
 ]}
 JSON
@@ -263,7 +277,43 @@ JSON
           # NOTHING (creating a bead would mis-home it and fail cross-rig routing).
           cat <<'JSON'
 {"results":[
-  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":11,"title":"no rig in route","head_ref_name":"fix/con-voyage-author-scope-pr-monitor","head_sha":"aaa111","repair_route":"gc.implementation-worker"}
+  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":11,"title":"no rig in route","head_ref_name":"fix/con-voyage-author-scope-pr-monitor","head_sha":"aaa111","repair_route":"gc.implementation-worker","state":"blocked","failed_checks":["ci"],"merge_state_status":"UNSTABLE"}
+]}
+JSON
+          ;;
+        states)
+          # Native-monitor parity fixtures (R3/CV-B, fk-08o): one operator PR per
+          # state (failing-CI/DIRTY/BEHIND/BLOCKED) plus a matching non-operator
+          # PR per state, so R5.1/R5.2/R5.4/R5.5 can assert the classifier AND
+          # the author gate together.
+          #
+          # REAL-SAMPLE FINDING (verify-gate, design doc §1c decision 6): a live
+          # `gc github pr backfill --json` against this city's own configured
+          # monitors shows gc ALREADY emits `failure_kind` directly (exactly
+          # this vocabulary — checks_failed/merge_conflict/blocked confirmed
+          # live) and `state` values that do NOT match the design doc's
+          # strings-recovered guess (`failed`, not a bare `failed_checks[]`
+          # signal alone; `conflicted`, not `dirty`). These rows carry
+          # `failure_kind` directly, same as real gc, so they exercise the
+          # PRIMARY (trust-gc) classification path. `behind_base`/"behind" was
+          # not observed live (no monitored PR was in that state at
+          # sample-time) — same gc mechanism, just unconfirmed by a live
+          # sample; flagged in the implementation summary's Remaining Risks.
+          # #20 is actionable:false (clean) to prove no-churn (R5.4). All
+          # routes carry the "vandoor/" rig prefix so mint/sling behave like
+          # every other case here.
+          cat <<'JSON'
+{"results":[
+  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":11,"title":"failing checks pr","head_ref_name":"fix/cv-b-checks","head_sha":"s11","repair_route":"vandoor/gc.implementation-worker","state":"failed","failed_checks":["build"],"merge_state_status":"BLOCKED","failure_kind":"checks_failed"},
+  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":12,"title":"dirty pr","head_ref_name":"fix/cv-b-dirty","head_sha":"s12","repair_route":"vandoor/gc.implementation-worker","state":"conflicted","failed_checks":[],"merge_state_status":"DIRTY","failure_kind":"merge_conflict"},
+  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":13,"title":"behind pr","head_ref_name":"fix/cv-b-behind","head_sha":"s13","repair_route":"vandoor/gc.implementation-worker","state":"behind","failed_checks":[],"merge_state_status":"BEHIND","failure_kind":"behind_base"},
+  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":14,"title":"blocked pr","head_ref_name":"fix/cv-b-blocked","head_sha":"s14","repair_route":"vandoor/gc.implementation-worker","state":"blocked","failed_checks":[],"merge_state_status":"BLOCKED","failure_kind":"blocked"},
+  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":500,"title":"failing checks pr (not ours)","head_ref_name":"feature/x500","head_sha":"s500","repair_route":"vandoor/gc.implementation-worker","state":"failed","failed_checks":["build"],"merge_state_status":"BLOCKED","failure_kind":"checks_failed"},
+  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":501,"title":"dirty pr (not ours)","head_ref_name":"feature/x501","head_sha":"s501","repair_route":"vandoor/gc.implementation-worker","state":"conflicted","failed_checks":[],"merge_state_status":"DIRTY","failure_kind":"merge_conflict"},
+  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":502,"title":"behind pr (not ours)","head_ref_name":"feature/x502","head_sha":"s502","repair_route":"vandoor/gc.implementation-worker","state":"behind","failed_checks":[],"merge_state_status":"BEHIND","failure_kind":"behind_base"},
+  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":503,"title":"blocked pr (not ours)","head_ref_name":"feature/x503","head_sha":"s503","repair_route":"vandoor/gc.implementation-worker","state":"blocked","failed_checks":[],"merge_state_status":"BLOCKED","failure_kind":"blocked"},
+  {"actionable":false,"owner":"kriscoleman","repo":"foundry","number":20,"title":"clean pr","head_ref_name":"feature/clean","head_sha":"s20","repair_route":"vandoor/gc.implementation-worker","state":"clean","failed_checks":[],"merge_state_status":"CLEAN"},
+  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":15,"title":"trust-gc pr","head_ref_name":"fix/cv-b-trust-gc","head_sha":"s15","repair_route":"vandoor/gc.implementation-worker","state":"blocked","failed_checks":["build"],"merge_state_status":"BLOCKED","failure_kind":"blocked"}
 ]}
 JSON
           ;;
@@ -971,6 +1021,93 @@ if printf '%s' "$OUT" | grep -q "repair_route 'gc.implementation-worker' has no 
 else
   fail "expected the underivable-rig skip WARNING naming the route"
 fi
+
+# ===========================================================================
+# CASE 15 — R5.1 native-monitor parity: an operator PR in EACH state gets a
+#   repair bead carrying the CORRECT classified failure_kind, via the PRIMARY
+#   path (trusting gc's own `failure_kind` field directly — see the
+#   REAL-SAMPLE FINDING comment on the "states" fixture above). Also re-proves
+#   cv_pr_author is still forwarded on every one of these mints (regression on
+#   the CV-A wire, now exercised across all four states, not just checks_failed).
+# ===========================================================================
+start_case "15: R5.1 native-monitor parity — operator PR in each state gets correct failure_kind"
+setup_case_env "15"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_BACKFILL_MODE="states"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*pr=11.*failure_kind=checks_failed' 1 "pr=11 (gc's own failure_kind) classifies checks_failed"
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*pr=12.*failure_kind=merge_conflict' 1 "pr=12 (gc's own failure_kind) classifies merge_conflict"
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*pr=13.*failure_kind=behind_base' 1 "pr=13 (gc's own failure_kind) classifies behind_base"
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*pr=14.*failure_kind=blocked' 1 "pr=14 (gc's own failure_kind) classifies blocked"
+for n in 11 12 13 14; do
+  assert_log_count "$GC_LOG" "sling .*pr=${n}.*cv_pr_author=kriscoleman" 1 "pr=${n} still forwards cv_pr_author"
+done
+
+# ===========================================================================
+# CASE 15b — PRIMARY-over-FALLBACK precedence: PR #15 carries gc's own
+#   failure_kind=blocked directly, even though state=blocked WITH a non-empty
+#   failed_checks[] would derive checks_failed under the fallback order. gc's
+#   own field must win — it already has richer signal than we can re-derive
+#   from these two fields alone.
+# ===========================================================================
+start_case "15b: gc's own failure_kind takes precedence over local derivation"
+setup_case_env "15b"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_BACKFILL_MODE="states"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling .*pr=15.*failure_kind=blocked' 1 "pr=15 trusts gc's own failure_kind=blocked"
+assert_log_count "$GC_LOG" 'sling .*pr=15.*failure_kind=checks_failed' 0 "pr=15 does NOT re-derive checks_failed from failed_checks (gc's field wins)"
+
+# ===========================================================================
+# CASE 16 — R5.2 native-monitor parity: a non-operator PR in EACH state is
+#   dropped BEFORE any mint — the author gate is state-agnostic. Belt-and-
+#   suspenders total: exactly the 5 operator PRs mint (11-15), never the 4
+#   non-operator ones.
+# ===========================================================================
+start_case "16: R5.2 native-monitor parity — non-operator PR in each state is dropped before mint"
+setup_case_env "16"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_BACKFILL_MODE="states"
+assert_eq "0" "$RC" "script exits 0"
+for n in 500 501 502 503; do
+  assert_log_count "$GC_LOG" "sling .*pr=${n}" 0 "no sling for #${n} (non-operator, dropped before mint)"
+done
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair' 5 "exactly 5 ci-repair slings total (the 5 operator PRs only)"
+
+# ===========================================================================
+# CASE 17 — R5.3 classifier precedence (FALLBACK path): reuses CASE 2's
+#   "full" fixture, where PR #11 carries state=blocked AND a non-empty
+#   failed_checks[] but NO gc-provided failure_kind field — so this exercises
+#   the fallback derivation, not the primary trust-gc path (CASE 15b already
+#   covers the primary path). The first-match order must still classify it as
+#   checks_failed (routing to rerun/fix), never blocked (the review-escalation
+#   path) — a check-failure-blocked PR is failing-CI, not review-blocked.
+# ===========================================================================
+start_case "17: R5.3 classifier precedence (fallback derivation) — failed_checks wins over state=blocked"
+setup_case_env "17"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling .*pr=11.*failure_kind=checks_failed' 1 "pr=11 classifies checks_failed despite state=blocked (fallback derivation)"
+assert_log_count "$GC_LOG" 'sling .*pr=11.*failure_kind=blocked' 0 "pr=11 must NOT classify as blocked"
+
+# ===========================================================================
+# CASE 18 — R5.4 non-actionable (clean) PRs never churn: #20 is
+#   actionable:false, so it's filtered out before extraction and must never
+#   produce a bead, proving PART A still keys off `actionable` first.
+# ===========================================================================
+start_case "18: R5.4 non-actionable (clean) PR produces no bead"
+setup_case_env "18"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_BACKFILL_MODE="states"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling .*pr=20' 0 "no sling for #20 (actionable=false)"
+
+# ===========================================================================
+# CASE 19 — R5.5 the minted title is state-aware: it must name the
+#   failure_kind so the bead is self-describing without opening it.
+# ===========================================================================
+start_case "19: R5.5 minted title is state-aware (names the failure_kind)"
+setup_case_env "19"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_BACKFILL_MODE="states"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd create Repair GitHub PR kriscoleman/foundry#12 \(merge_conflict\): dirty pr' 1 "title for #12 names (merge_conflict)"
+assert_log_count "$GC_LOG" 'bd create Repair GitHub PR kriscoleman/foundry#13 \(behind_base\): behind pr' 1 "title for #13 names (behind_base)"
 
 # ===========================================================================
 # Summary

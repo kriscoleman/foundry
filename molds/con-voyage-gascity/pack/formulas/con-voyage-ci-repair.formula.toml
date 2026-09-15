@@ -28,6 +28,7 @@ failing after the push, a new repair bead will be created for the next cycle.
 | pr               | PR number (integer string)                       |
 | repo             | Repository in owner/repo form                    |
 | branch           | PR head ref (the branch to check out and fix)    |
+| failure_kind     | Canonical per-state classification threaded by `con-voyage-pr-watch.sh` (native-monitor parity, fk-08o): one of `checks_failed`, `merge_conflict`, `behind_base`, `blocked`. Step 4 branches on this instead of re-deriving the state. |
 | implementation_target | Route target for the implementor (default: gc.implementation-worker) |
 | escalation_target     | Mail recipient for blocked work (default: human)            |
 | cv_pr_author          | GitHub login the implementor's Step 0 gate must match against — the allow-list (default: kriscoleman) |
@@ -70,6 +71,20 @@ Mail recipient when the repair cannot be completed. Defaults to the reserved
 `human` alias. Cities that staff a work-health role can point this at it.
 """
 default = "human"
+
+[vars.failure_kind]
+description = """
+Canonical failure classification for this repair bead, threaded by
+con-voyage-pr-watch.sh's PART A classifier (native-monitor parity, fk-08o) so
+Step 4 is TOLD the state instead of re-deriving it. One of the locked
+vocabulary tokens: `checks_failed` | `merge_conflict` | `behind_base` |
+`blocked` — see cv-b-fk-08o-design.md §1c for the classification order.
+Defaults to `checks_failed` for beads minted before this var existed (e.g. by
+the native `[[github.pr_monitor]]`'s own `--create-repair-beads` path, which
+has no state threading), so Step 4 falls back to the original failing-CI
+repair path when this var is absent or empty.
+"""
+default = "checks_failed"
 
 [vars.cv_pr_author]
 description = """

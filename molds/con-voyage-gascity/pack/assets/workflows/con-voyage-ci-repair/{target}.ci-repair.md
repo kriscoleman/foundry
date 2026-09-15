@@ -209,7 +209,20 @@ git pull --rebase origin {{branch}}
 
 Do NOT create a new branch. Do NOT work on main or any other branch.
 
-## Step 4 — Fix using TDD
+## Step 4 — Fix based on `{{failure_kind}}`
+
+The bead's `{{failure_kind}}` var already carries PART A's classification —
+one of `checks_failed`, `merge_conflict`, `behind_base`, or `blocked`. Branch
+on it directly; do not re-derive it from the failing-checks list yourself
+(that was PART A's job, and re-guessing risks disagreeing with the bead you
+were handed). Resolve the PR's real base branch once, up front — every
+sub-path below that rebases uses it:
+
+```bash
+base_ref="$(gh pr view {{pr}} --repo {{repo}} --json baseRefName --jq .baseRefName)"
+```
+
+### 4a. `checks_failed` — fix or rerun (unchanged)
 
 For each failing check:
 
@@ -219,27 +232,108 @@ For each failing check:
 4. Run the test again and confirm it passes.
 5. Run the full test suite and any lint checks relevant to the failure.
 
-If the failure is a **merge conflict** (failure_kind=merge_conflict):
+Continue to **Step 5 (Verify locally)** and **Step 6 (Commit and push)**.
+
+### 4b. `merge_conflict` — auto-resolve, WITH guardrails
+
+**Scope note:** this only ever runs on an operator-authored, author-gated PR —
+Step 0 already verified that. Automated conflict resolution is normally
+dangerous (a silently-wrong merge can look clean, and even pass tests, while
+dropping or mismerging changes), so the guardrails below exist to make this
+auditable — they are not optional decoration.
 
 ```bash
 git fetch origin
-git rebase origin/main   # or origin/<base_branch>
+git rebase "origin/${base_ref}"
 # Resolve conflicts, then:
 git rebase --continue
 ```
 
-If the failure is **behind_base** (branch needs updating):
+After the rebase completes and conflicts are resolved:
+
+1. Run the full test suite and lint (the same commands as Step 5) before
+   pushing. Do not push if anything fails.
+2. Push the resolved branch. A rebase always creates new commit objects, so
+   this requires a force-push — use `--force-with-lease` (never a bare
+   `--force`), and only ever on this PR's own branch:
+   ```bash
+   git push --force-with-lease origin {{branch}}
+   ```
+3. **Surface a human-readable summary of the resolution** — which files
+   conflicted and what the resolution did — as BOTH a machine-bannered PR
+   comment (see the MANDATORY identity banner above) and the bead close note
+   in Step 7. This is not optional: it is what lets a human audit an
+   automated conflict resolution before trusting it.
+4. **NEVER merge, NEVER approve, NEVER submit to the merge queue.** Push to
+   the PR branch only — the same bright line as every other path here.
+
+Skip Step 6 (its plain-push form doesn't fit a rebase) and close the bead
+(Step 7) directly, using the resolution summary from point 3 as the close note.
+
+### 4c. `behind_base` — rebase + force-with-lease
 
 ```bash
 git fetch origin
-git rebase origin/main   # or origin/<base_branch>
+git rebase "origin/${base_ref}"
 ```
 
-If the failure is **blocked** (branch-protection rule violated), read the
-GitHub error from `gh pr view {{pr}} --repo {{repo}} --json statusCheckRollup`
-to understand which protection is triggered, then fix the underlying issue.
+Run the full test suite and lint (Step 5's commands) before pushing, then push
+with `--force-with-lease` — never a bare `--force`:
+
+```bash
+git push --force-with-lease origin {{branch}}
+```
+
+**Reconciling this with Step 2's forbidden tactics:** Step 2 forbids
+force-pushing to *retrigger CI* — that rule targets kicking a new run on an
+otherwise-unchanged commit, which is pure destructive churn. This is
+different: a `behind_base` rebase is a legitimate content change (replaying
+the branch onto a newer base) on the operator's own author-gated branch, and
+rebasing inherently rewrites history, so updating the remote requires a
+force-push. `--force-with-lease` (never bare `--force`) is permitted here — it
+is not the forbidden CI-kick tactic Step 2 describes.
+
+Skip Step 6 and close the bead (Step 7) directly.
+
+### 4d. `blocked` — router, not a single action
+
+`blocked` is heterogeneous — read the PR's actual signals before acting:
+
+```bash
+gh pr view {{pr}} --repo {{repo}} \
+  --json statusCheckRollup,mergeStateStatus,reviewDecision
+```
+
+- **A required check is actually failing** → this is really failing-CI.
+  Handle it as 4a (fix, or `gh run rerun --failed`). PART A's classifier
+  already prefers `checks_failed` when any check has failed, so you should
+  rarely land here for this reason — treat it as a defense-in-depth
+  re-check, not the expected case.
+- **Only pending checks, none failed** → **wait, no-op this cycle.** Do not
+  rerun a still-running check and do not mint any churn. Close the bead
+  (Step 7) noting it is waiting on pending checks — the next backfill cycle
+  re-evaluates the PR.
+- **`mergeStateStatus` is `BEHIND`** → handle as 4c (rebase +
+  `--force-with-lease`).
+- **`reviewDecision` is `REVIEW_REQUIRED` or `CHANGES_REQUESTED`, or any other
+  branch-protection rule (CODEOWNERS, required signatures, admin enforcement,
+  unresolved conversations)** → **take ZERO mutating action.** Post one
+  machine-bannered PR comment describing the block, and escalate:
+  ```bash
+  gc mail send {{escalation_target}} \
+    -s "CI repair blocked (branch protection): {{repo}}#{{pr}}" \
+    -m "Repair bead {{convoy_id}} is blocked by branch protection ({{repo}}#{{pr}}, branch {{branch}}) and needs a human decision. A machine cannot satisfy review or protection requirements."
+  ```
+  **Never self-approve. Never bypass branch protection. Never guess** at what
+  would satisfy the block.
+
+Whichever sub-path applies, close the bead (Step 7) as that sub-path directs.
+Only the reclassified-as-4a sub-path continues through Steps 5-6 normally.
 
 ## Step 5 — Verify locally
+
+Applies to the `checks_failed` (4a) path. (`merge_conflict` and `behind_base`
+already ran their own verify-before-push above.)
 
 Run the full test suite and linter:
 
@@ -261,6 +355,10 @@ make lint             # if a Makefile target exists
 Do not push if any test or lint check fails.
 
 ## Step 6 — Commit and push
+
+Applies to the `checks_failed` (4a) path only. `merge_conflict` and
+`behind_base` push directly from Step 4 — a rebase has no new work-in-progress
+change to stage as a fresh commit — and go straight to Step 7.
 
 Commit only the changes that fix the CI failure. Commit ONLY when there is a
 real code fix — never an empty/no-op commit and never a commit whose sole
