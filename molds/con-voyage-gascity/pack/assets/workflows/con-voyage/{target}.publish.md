@@ -9,6 +9,16 @@ city.toml monitor watches the PR for CI results and human feedback only. A
 human must land the PR.
 
 If push is true:
+- Before pushing, run the artifact-hygiene guard as a last line of defense —
+  it fails loud if a local tooling path (`.beads/`, `.gc/`, `.claude/`, dolt
+  data) is staged or tracked in what is about to go upstream:
+
+  ```bash
+  CV_GUARD="$(command -v cv-worktree-prep.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name cv-worktree-prep.sh 2>/dev/null | head -1)"
+  if [ -n "$CV_GUARD" ] && [ -x "$CV_GUARD" ]; then
+    "$CV_GUARD" guard "$(pwd)" || { echo "hygiene violation detected — fix it before pushing" >&2; exit 1; }
+  fi
+  ```
 - Push the work branch to origin using create-if-absent or lease-checked
   semantics. Fail closed if the remote cannot enforce atomic or lease-safe
   push.
@@ -19,6 +29,22 @@ If open_pr is true (requires push to have succeeded):
   conventional-commit title derived from the work bead. The body must include
   the review verdict (APPROVED), the active reviewer roster, the number of
   review cycles completed, and any LOW findings surfaced to the human.
+- The PR body is posted under the operator's GitHub PAT, exactly like every
+  other piece of text con-voyage writes to GitHub — it MUST lead with the
+  machine-identity banner. Do NOT run raw `gh pr create` with an unbannered
+  body. Assemble the body, then open the PR through `cv-pr-comment.sh create`
+  so the banner is guaranteed:
+
+  ```bash
+  CV_BIN="$(command -v cv-pr-comment.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name cv-pr-comment.sh 2>/dev/null | head -1)"
+  if [ -z "$CV_BIN" ] || [ ! -x "$CV_BIN" ]; then
+    echo "cv-pr-comment.sh not found — refusing to open the PR without the banner (do NOT fall back to raw gh pr create)" >&2
+    exit 1
+  fi
+  "$CV_BIN" create --repo <owner/repo> --title "<conventional-commit title>" \
+    --body-file <path to the assembled PR body> --base <base-branch> --head <work-branch> \
+    --formula con-voyage --agent "<rig>/gc.publisher"
+  ```
 - Do not auto-merge. The PR is opened in ready state for human review only.
 
 If push is false or open_pr is false, record a no-op publish outcome and

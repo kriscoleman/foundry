@@ -72,14 +72,33 @@ cat > "${STUBDIR}/gh" <<'GH_STUB'
 sub="${1:-}"
 case "$sub" in
   api)
-    # `gh api user --jq .login` — configurable login for default-resolution tests.
-    if [ "${STUB_GH_USER_FAIL:-0}" = "1" ]; then
-      exit 1
-    fi
-    if [ -n "${STUB_GH_USER_LOGIN:-}" ]; then
-      printf '%s\n' "${STUB_GH_USER_LOGIN}"
-    fi
-    exit 0
+    endpoint="${2:-}"
+    case "$endpoint" in
+      repos/*/issues/*/comments)
+        # `gh api repos/<owner>/<repo>/issues/<pr>/comments --paginate --jq
+        # '[.[] | {id,login,body}]'` — the stub emits the ALREADY-filtered
+        # [{id,login,body}] shape directly (mirroring how `gh pr view --jq
+        # .author.login` is stubbed above: the stub bypasses real jq and just
+        # returns what the real jq expression would have produced).
+        if [ "${STUB_COMMENTS_FAIL:-0}" = "1" ]; then
+          exit 1
+        fi
+        pr_num="$(printf '%s' "$endpoint" | sed -E 's#^repos/.*/issues/([0-9]+)/comments$#\1#')"
+        var_name="STUB_COMMENTS_${pr_num}"
+        printf '%s' "${!var_name:-[]}"
+        exit 0
+        ;;
+      *)
+        # `gh api user --jq .login` — configurable login for default-resolution tests.
+        if [ "${STUB_GH_USER_FAIL:-0}" = "1" ]; then
+          exit 1
+        fi
+        if [ -n "${STUB_GH_USER_LOGIN:-}" ]; then
+          printf '%s\n' "${STUB_GH_USER_LOGIN}"
+        fi
+        exit 0
+        ;;
+    esac
     ;;
   pr)
     prsub="${2:-}"
@@ -93,6 +112,7 @@ case "$sub" in
           700) echo "kriscoleman2" ;;     # near-match — DROP (exact match only)
           701) echo "KRISCOLEMAN" ;;      # case variant — DROP (case-sensitive)
           800) echo "" ;;                 # unresolved author — DROP (fail closed)
+          900) echo "kriscoleman" ;;      # operator — KEEP (banner-scan fixture)
           *)   echo "" ;;
         esac
         exit 0
@@ -174,6 +194,11 @@ JSON
       # bd close for it is made to fail a fixed number of times before it takes.
       printf '[{"id":"step-retry","status":"open","metadata":{"gc.root_bead_id":"root-retry"}}]\n'
       ;;
+    bannerscan)
+      # A single operator-authored (KEEP) step used to exercise the banner
+      # compliance scan in isolation, decoupled from the "full" fixture set.
+      printf '[{"id":"step-banner","status":"open","metadata":{"gc.root_bead_id":"root-banner"}}]\n'
+      ;;
   esac
   exit 0
 fi
@@ -213,6 +238,9 @@ if [ "$sub" = "bd" ] && [ "$sub2" = "show" ]; then
       ;;
     root-notformula)
       printf '[{"id":"root-notformula","metadata":{"gc.formula_name":"some-other-formula","gc.var.pr":"999","gc.var.repo":"someone/else"}}]\n'
+      ;;
+    root-banner)
+      printf '[{"id":"root-banner","metadata":{"gc.formula_name":"con-voyage-ci-repair","gc.var.pr":"900","gc.var.repo":"kriscoleman/foundry"}}]\n'
       ;;
     *)
       printf '[]\n'
@@ -935,6 +963,89 @@ if grep -q '\[vars.failure_kind\]' "$CI_REPAIR_FORMULA"; then
 else
   fail "expected con-voyage-ci-repair.formula.toml to declare [vars.failure_kind]"
 fi
+
+# ===========================================================================
+# BANNER COMPLIANCE SCAN (C4 backstop) — for every KEPT (operator-authored)
+# bead, the guard also scans that PR's comments and flags — fail-loud, on
+# stderr, never editing/deleting — any comment authored by CV_PR_AUTHOR that
+# does not lead with the mandatory identity banner. This is a READ-ONLY scan:
+# it can't tell a bot comment that skipped the banner apart from a real human
+# remark (same PAT-backed author), so a finding never changes this script's
+# own exit code (0 remains "sweep completed", regardless of scan findings).
+# ===========================================================================
+
+BANNER_OK='🤖 **Automated con-voyage agent** (con-voyage-ci-repair / foundry-kc/worker) — posted via @kriscoleman'"'"'s token, not by Kris personally.\n\nDiagnosed and pushed a fix.'
+
+# ---------------------------------------------------------------------------
+# CASE 9 — a banner-compliant operator-authored comment is silent: no ERROR
+#   line, and the scan never affects the bead's KEEP outcome or exit code.
+# ---------------------------------------------------------------------------
+start_case "9: banner-compliant operator comment is not flagged"
+setup_case_env "9"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_STEPLIST_MODE="bannerscan" \
+  STUB_COMMENTS_900="[{\"id\":501,\"login\":\"kriscoleman\",\"body\":\"${BANNER_OK}\"}]"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd close step-banner' 0 "operator's kept bead is never closed by the scan"
+if printf '%s' "$OUT" | grep -q 'banner-less operator-authored PR comment'; then
+  fail "banner-compliant comment #501 was incorrectly flagged"
+else
+  pass "banner-compliant comment #501 is not flagged"
+fi
+
+# ---------------------------------------------------------------------------
+# CASE 10 — a banner-LESS operator-authored comment IS flagged: an ERROR
+#   line naming the exact comment id, on stderr, with zero automated action
+#   (no bd update/close beyond the normal KEEP, no gh mutation).
+# ---------------------------------------------------------------------------
+start_case "10: banner-less operator-authored comment is flagged fail-loud"
+setup_case_env "10"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_STEPLIST_MODE="bannerscan" \
+  STUB_COMMENTS_900='[{"id":502,"login":"kriscoleman","body":"Just pushed a fix, should be green now."}]'
+assert_eq "0" "$RC" "script exits 0 (a scan finding never changes the exit code)"
+if printf '%s' "$OUT" | grep -q 'ERROR: banner-less operator-authored PR comment' && printf '%s' "$OUT" | grep -q 'comment id 502'; then
+  pass "flags comment #502 by id with an ERROR-level line"
+else
+  fail "expected an ERROR line naming comment id 502"
+fi
+assert_log_count "$GC_LOG" 'bd close step-banner' 0 "the scan takes no bead action — it only logs"
+assert_log_count "$GH_LOG" 'pr comment'  0 "the scan never posts a comment"
+assert_log_count "$GH_LOG" 'pr review'   0 "the scan never posts a review"
+
+# ---------------------------------------------------------------------------
+# CASE 11 — a banner-less comment from a DIFFERENT author (a real human
+#   collaborator, not CV_PR_AUTHOR) is NOT flagged — the scan is scoped to
+#   comments the operator's own PAT could have posted.
+# ---------------------------------------------------------------------------
+start_case "11: banner-less comment from a non-operator author is not flagged"
+setup_case_env "11"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_STEPLIST_MODE="bannerscan" \
+  STUB_COMMENTS_900='[{"id":503,"login":"someone-else","body":"looks good to me"}]'
+assert_eq "0" "$RC" "script exits 0"
+if printf '%s' "$OUT" | grep -q 'comment id 503'; then
+  fail "comment #503 from a non-operator author was incorrectly flagged"
+else
+  pass "comment #503 from a non-operator author is correctly left unflagged"
+fi
+
+# ---------------------------------------------------------------------------
+# CASE 12 — a `gh api` failure while fetching comments degrades to a WARNING
+#   (skip this PR's scan) rather than crashing the sweep or affecting the
+#   bead's KEEP outcome.
+# ---------------------------------------------------------------------------
+start_case "12: gh api failure during the banner scan warns and does not crash"
+setup_case_env "12"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_STEPLIST_MODE="bannerscan" STUB_COMMENTS_FAIL=1
+assert_eq "0" "$RC" "script exits 0 despite the comments-fetch failure"
+if printf '%s' "$OUT" | grep -q 'WARNING: could not fetch PR comments'; then
+  pass "logs a WARNING when the comments fetch fails"
+else
+  fail "expected a WARNING when the comments fetch fails"
+fi
+assert_log_count "$GC_LOG" 'bd close step-banner' 0 "the bead is still kept despite the scan warning"
 
 # ===========================================================================
 # Summary
