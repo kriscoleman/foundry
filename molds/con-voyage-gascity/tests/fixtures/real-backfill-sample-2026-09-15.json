@@ -1,0 +1,125 @@
+{
+  "_meta": {
+    "purpose": "LOW-2 real-sample gate (cv-b-fk-08o, decision 6 / fk-4xq): pins the classifier in con-voyage-pr-watch.sh to REAL `gc github pr backfill --json` enum values instead of strings-recovered guesses.",
+    "captured_via": "gc --city /Users/kris/repl-city github pr backfill --json  (REPORT-ONLY: no --create-repair-beads; zero beads created, zero mutation)",
+    "captured_at": "2026-09-15",
+    "raw_result_count": 18,
+    "raw_actionable_count": 18,
+    "sanitization": "title/head_ref_name/url/head_sha/number replaced with placeholders below (real PR content is not needed to pin the schema); owner/repo/rig/repair_route left as-is (already used as example data throughout this test suite) since only state/failure_kind/merge_state_status/actionable/failed_checks/pending_checks are load-bearing for the classifier.",
+    "distinct_combos_observed": 5,
+    "findings": [
+      "gc emits `failure_kind` directly on every result, using exactly the locked vocabulary: checks_failed | merge_conflict | blocked (confirmed live). behind_base was NOT observed live in this sample -- no monitored PR was in that state at capture time -- but it is produced by the same gc mechanism (same field, same vocabulary), just unconfirmed by a live sample.",
+      "`state` values observed do NOT match the design doc's strings-recovered guess: real values seen were `conflicted` (not `dirty`), `failed` (not a bare failed_checks[]-only signal), and `blocked` -- confirming the PRIMARY (trust-gc failure_kind) classification path is the one that matters live, with state/failed_checks as fallback only.",
+      "`checks_failed` results can carry pending_checks alongside failed_checks (a PR can be simultaneously failing one check and still running others) -- the classifier must not require pending_checks to be empty."
+    ]
+  },
+  "samples": [
+    {
+      "combo": "actionable=true, state=conflicted, failure_kind=merge_conflict, merge_state_status=DIRTY",
+      "result": {
+        "monitor": "foundry-kc-prs",
+        "owner": "kriscoleman",
+        "repo": "foundry",
+        "number": 90001,
+        "title": "<redacted PR title>",
+        "url": "<redacted>",
+        "base_ref_name": "main",
+        "head_ref_name": "<redacted-branch>",
+        "head_sha": "<redacted-sha>",
+        "merge_state_status": "DIRTY",
+        "state": "conflicted",
+        "failure_kind": "merge_conflict",
+        "actionable": true,
+        "rig": "foundry-kc",
+        "repair_route": "foundry-kc/gc.implementation-worker"
+      }
+    },
+    {
+      "combo": "actionable=true, state=blocked, failure_kind=blocked, merge_state_status=BLOCKED",
+      "result": {
+        "monitor": "vandoor-prs",
+        "owner": "replicatedhq",
+        "repo": "vandoor",
+        "number": 90002,
+        "title": "<redacted PR title>",
+        "url": "<redacted>",
+        "base_ref_name": "main",
+        "head_ref_name": "<redacted-branch>",
+        "head_sha": "<redacted-sha>",
+        "merge_state_status": "BLOCKED",
+        "state": "blocked",
+        "failure_kind": "blocked",
+        "actionable": true,
+        "rig": "vandoor",
+        "repair_route": "vandoor/gc.implementation-worker"
+      }
+    },
+    {
+      "combo": "actionable=true, state=failed, failure_kind=checks_failed, merge_state_status=DIRTY, failed_checks non-empty, pending_checks non-empty",
+      "result": {
+        "monitor": "vandoor-prs",
+        "owner": "replicatedhq",
+        "repo": "vandoor",
+        "number": 90003,
+        "title": "<redacted PR title>",
+        "url": "<redacted>",
+        "base_ref_name": "main",
+        "head_ref_name": "<redacted-branch>",
+        "head_sha": "<redacted-sha>",
+        "merge_state_status": "DIRTY",
+        "state": "failed",
+        "failure_kind": "checks_failed",
+        "actionable": true,
+        "failed_checks": ["<redacted-check-name>"],
+        "pending_checks": ["<redacted-check-name>", "<redacted-check-name>"],
+        "rig": "vandoor",
+        "repair_route": "vandoor/gc.implementation-worker"
+      }
+    },
+    {
+      "combo": "actionable=true, state=failed, failure_kind=checks_failed, merge_state_status=DIRTY, failed_checks non-empty, no pending_checks",
+      "result": {
+        "monitor": "vandoor-prs",
+        "owner": "replicatedhq",
+        "repo": "vandoor",
+        "number": 90004,
+        "title": "<redacted PR title>",
+        "url": "<redacted>",
+        "base_ref_name": "main",
+        "head_ref_name": "<redacted-branch>",
+        "head_sha": "<redacted-sha>",
+        "merge_state_status": "DIRTY",
+        "state": "failed",
+        "failure_kind": "checks_failed",
+        "actionable": true,
+        "failed_checks": ["<redacted-check-name>", "<redacted-check-name>"],
+        "rig": "vandoor",
+        "repair_route": "vandoor/gc.implementation-worker"
+      }
+    },
+    {
+      "combo": "actionable=true, state=failed, failure_kind=checks_failed, merge_state_status=BLOCKED, failed_checks non-empty, no pending_checks",
+      "result": {
+        "monitor": "vandoor-prs",
+        "owner": "replicatedhq",
+        "repo": "vandoor",
+        "number": 90005,
+        "title": "<redacted PR title>",
+        "url": "<redacted>",
+        "base_ref_name": "main",
+        "head_ref_name": "<redacted-branch>",
+        "head_sha": "<redacted-sha>",
+        "merge_state_status": "BLOCKED",
+        "state": "failed",
+        "failure_kind": "checks_failed",
+        "actionable": true,
+        "failed_checks": ["<redacted-check-name>", "<redacted-check-name>"],
+        "rig": "vandoor",
+        "repair_route": "vandoor/gc.implementation-worker"
+      }
+    }
+  ],
+  "not_observed_live": {
+    "behind_base": "No monitored PR was in the BEHIND state at capture time. Same gc mechanism (failure_kind field, same vocabulary) is expected to produce it, but this specific value is unconfirmed by a live sample as of this capture."
+  }
+}

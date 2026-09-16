@@ -27,9 +27,15 @@ set -uo pipefail
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOLD_DIR="$(cd "${TEST_DIR}/.." && pwd)"
 SCRIPT="${MOLD_DIR}/pack/assets/scripts/con-voyage-pr-watch.sh"
+REAL_SAMPLE_FIXTURE="${TEST_DIR}/fixtures/real-backfill-sample-2026-09-15.json"
 
 if [ ! -f "$SCRIPT" ]; then
   echo "FATAL: script under test not found at ${SCRIPT}" >&2
+  exit 2
+fi
+
+if [ ! -f "$REAL_SAMPLE_FIXTURE" ]; then
+  echo "FATAL: real-sample fixture not found at ${REAL_SAMPLE_FIXTURE}" >&2
   exit 2
 fi
 
@@ -145,6 +151,11 @@ JSON
           13)  echo "kriscoleman" ;;      # operator (states: behind) — KEEP
           14)  echo "kriscoleman" ;;      # operator (states: blocked) — KEEP
           15)  echo "kriscoleman" ;;      # operator (states: trust-gc precedence) — KEEP
+          16)  echo "kriscoleman" ;;      # operator (field-shift: empty title) — KEEP
+          17)  echo "kriscoleman" ;;      # operator (field-shift: empty head_sha) — KEEP
+          18)  echo "kriscoleman" ;;      # operator (fallback classifier: state=failed) — KEEP
+          90001|90002|90003|90004|90005)
+               echo "kriscoleman" ;;      # operator (LOW-2 real-sample gate fixture) — KEEP
           500) echo "evansmungai" ;;      # other human — DROP
           501) echo "evansmungai" ;;      # other human (states: dirty) — DROP
           502) echo "evansmungai" ;;      # other human (states: behind) — DROP
@@ -326,6 +337,57 @@ JSON
   {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":15,"title":"trust-gc pr","head_ref_name":"fix/cv-b-trust-gc","head_sha":"s15","repair_route":"vandoor/gc.implementation-worker","state":"blocked","failed_checks":["build"],"merge_state_status":"BLOCKED","failure_kind":"blocked"}
 ]}
 JSON
+          ;;
+        fieldshift)
+          # BLOCKING-1 regression fixtures (fk-4xq): gc's schema marks
+          # title/head_sha/repair_route OPTIONAL. The PART A python->bash
+          # field handoff previously joined fields with a TAB, and tab is
+          # "IFS whitespace" — bash's `read` COLLAPSES consecutive tabs and
+          # strips leading/trailing runs, so an EMPTY optional field shifts
+          # every LATER field left by one and failure_kind (the last field)
+          # silently lands empty, tripping the empty-failure_kind guard and
+          # DROPPING a PR we must repair (proven live on an operator DIRTY PR
+          # with an empty title). #16 has an EMPTY title; #17 has an EMPTY
+          # head_sha. Both are operator PRs and BOTH must still classify
+          # correctly and mint a bead — the fix (a non-whitespace \x1f
+          # delimiter) must preserve empty fields regardless of position.
+          cat <<'JSON'
+{"results":[
+  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":16,"title":"","head_ref_name":"fix/cv-b-empty-title","head_sha":"s16","repair_route":"vandoor/gc.implementation-worker","state":"failed","failed_checks":["build"],"merge_state_status":"BLOCKED","failure_kind":"checks_failed"},
+  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":17,"title":"empty sha pr","head_ref_name":"fix/cv-b-empty-sha","head_sha":"","repair_route":"vandoor/gc.implementation-worker","state":"conflicted","failed_checks":[],"merge_state_status":"DIRTY","failure_kind":"merge_conflict"}
+]}
+JSON
+          ;;
+        failedstate)
+          # LOW-1 regression fixture (fk-4xq): state=="failed" with EMPTY
+          # failed_checks[] and NO gc-provided failure_kind field. The
+          # fallback derivation must still classify this as checks_failed
+          # (matching the documented vocabulary) instead of falling through
+          # to the empty/undifferentiated case.
+          cat <<'JSON'
+{"results":[
+  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":18,"title":"failed state, no failed_checks list","head_ref_name":"fix/cv-b-failed-state","head_sha":"s18","repair_route":"vandoor/gc.implementation-worker","state":"failed","failed_checks":[],"merge_state_status":"BLOCKED"}
+]}
+JSON
+          ;;
+        realsample)
+          # LOW-2 real-sample gate (cv-b-fk-08o decision 6 / fk-4xq): emits the
+          # SANITIZED, REAL-captured backfill sample from
+          # tests/fixtures/real-backfill-sample-2026-09-15.json (built by the
+          # test setup below via STUB_REALSAMPLE_JSON), so the classifier is
+          # exercised against actual observed gc output shapes, not just
+          # hand-authored fixtures.
+          #
+          # NOTE: intentionally NOT `${STUB_REALSAMPLE_JSON:-{...}}` — a
+          # default word containing unescaped braces confuses bash's
+          # parameter-expansion brace-matching (it closes the expansion at
+          # the FIRST unescaped '}' inside the default word, leaking a stray
+          # trailing '}' into the output). A plain conditional sidesteps it.
+          if [ -n "${STUB_REALSAMPLE_JSON:-}" ]; then
+            printf '%s' "$STUB_REALSAMPLE_JSON"
+          else
+            printf '{"results":[]}'
+          fi
           ;;
       esac
       exit 0
@@ -608,6 +670,10 @@ assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*pr=11' 1 "ci-repa
 # assertion in this suite would catch it (con-voyage-ci-repair-guard.test.sh
 # covers the guard's own resolution, not this forwarding step).
 assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*pr=11.*cv_pr_author=kriscoleman' 1 "ci-repair sling forwards cv_pr_author"
+# BLOCKING-2 (fk-4xq): the operator's TOP REQUIREMENT is rebase-only, linear
+# history by DEFAULT. cv_conflict_strategy must default to "rebase" on every
+# mint when CV_CONFLICT_STRATEGY is not set in the environment.
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*pr=11.*cv_conflict_strategy=rebase' 1 "ci-repair sling forwards cv_conflict_strategy=rebase by default"
 assert_log_count "$GC_LOG" 'sling .*pr=500' 0 "no sling for #500 (other human)"
 assert_log_count "$GC_LOG" 'sling .*pr=600' 0 "no sling for #600 (bot)"
 
@@ -1142,6 +1208,97 @@ else
   fail "expected the WARNING to still name kriscoleman/foundry#11"
 fi
 assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 0 "no PART B comment route when the fetch failed"
+
+# ===========================================================================
+# CASE 21 — BLOCKING-1 regression: FIELD-SHIFT from empty optional fields
+#   (fk-4xq). gc's schema marks title/head_sha/repair_route OPTIONAL. Tab is
+#   IFS-whitespace, so bash's `read` collapses consecutive tabs and strips
+#   leading/trailing runs — an EMPTY optional field before failure_kind used
+#   to shift every later field left by one, landing failure_kind empty and
+#   tripping the "did not classify" guard, which SILENTLY DROPPED a PR we must
+#   repair (proven live on an operator DIRTY PR with an empty title). #16 has
+#   an EMPTY title; #17 has an EMPTY head_sha. Both must still classify
+#   correctly and mint a bead — neither may be silently dropped.
+# ===========================================================================
+start_case "21: BLOCKING-1 field-shift regression — empty title/head_sha do not shift failure_kind"
+setup_case_env "21"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_BACKFILL_MODE="fieldshift"
+assert_eq "0" "$RC" "script exits 0"
+# #16 (empty title): failure_kind must still be checks_failed and a bead must mint.
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*pr=16.*failure_kind=checks_failed' 1 "pr=16 (empty title) still classifies checks_failed"
+assert_log_count "$GC_LOG" 'bd create Repair GitHub PR kriscoleman/foundry#16' 1 "pr=16 mints a repair bead despite empty title"
+if printf '%s' "$OUT" | grep -q 'kriscoleman/foundry#16 is actionable but its state/failed_checks did not classify'; then
+  fail "pr=16 (empty title) was incorrectly skipped as unclassifiable (field-shift regression)"
+else
+  pass "pr=16 (empty title) was not skipped as unclassifiable"
+fi
+# #17 (empty head_sha): failure_kind must still be merge_conflict and a bead must mint.
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*pr=17.*failure_kind=merge_conflict' 1 "pr=17 (empty head_sha) still classifies merge_conflict"
+assert_log_count "$GC_LOG" 'bd create Repair GitHub PR kriscoleman/foundry#17' 1 "pr=17 mints a repair bead despite empty head_sha"
+if printf '%s' "$OUT" | grep -q 'kriscoleman/foundry#17 is actionable but its state/failed_checks did not classify'; then
+  fail "pr=17 (empty head_sha) was incorrectly skipped as unclassifiable (field-shift regression)"
+else
+  pass "pr=17 (empty head_sha) was not skipped as unclassifiable"
+fi
+
+# ===========================================================================
+# CASE 22 — LOW-1 fallback classifier: state=="failed" with NO failed_checks
+#   signal must still classify as checks_failed (matches the documented
+#   vocabulary), not fall through to the empty/undifferentiated case.
+# ===========================================================================
+start_case "22: LOW-1 fallback classifier — state=failed with empty failed_checks still classifies checks_failed"
+setup_case_env "22"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_BACKFILL_MODE="failedstate"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*pr=18.*failure_kind=checks_failed' 1 "pr=18 (state=failed, no failed_checks) falls back to checks_failed"
+if printf '%s' "$OUT" | grep -q 'kriscoleman/foundry#18 is actionable but its state/failed_checks did not classify'; then
+  fail "pr=18 (state=failed) was incorrectly left unclassified"
+else
+  pass "pr=18 (state=failed) was not left unclassified"
+fi
+
+# ===========================================================================
+# CASE 23 — BLOCKING-2: cv_conflict_strategy is a rig-level config knob (set
+#   via CV_CONFLICT_STRATEGY in con-voyage-pr-watch.toml's [order.env]), not a
+#   per-invocation flag. When CV_CONFLICT_STRATEGY=merge is set in the
+#   environment, PART A must forward cv_conflict_strategy=merge on the
+#   ci-repair sling instead of the rebase default (CASE 2 already proves the
+#   rebase default).
+# ===========================================================================
+start_case "23: BLOCKING-2 cv_conflict_strategy=merge override is forwarded on the sling"
+setup_case_env "23"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" CV_CONFLICT_STRATEGY="merge"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*pr=11.*cv_conflict_strategy=merge' 1 "ci-repair sling forwards the overridden cv_conflict_strategy=merge"
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*pr=11.*cv_conflict_strategy=rebase' 0 "does not also forward the default rebase value when overridden"
+
+# ===========================================================================
+# CASE 24 — LOW-2 real-sample gate (cv-b-fk-08o decision 6 / fk-4xq): the
+#   classifier must correctly handle the SANITIZED, REAL-captured backfill
+#   payload in tests/fixtures/real-backfill-sample-2026-09-15.json (captured
+#   via a REPORT-ONLY `gc github pr backfill --json` against this city's own
+#   configured monitors), not just hand-authored fixtures. Every sample must
+#   mint with the recorded failure_kind and NOT be dropped as unclassifiable
+#   — proving the pipeline tolerates real-world extra fields (pending_checks,
+#   monitor, base_ref_name, etc.) that this fixture set didn't previously
+#   exercise.
+# ===========================================================================
+start_case "24: LOW-2 real-sample gate — classifier handles the real captured payload"
+setup_case_env "24"
+REAL_SAMPLE_JSON="$(python3 -c "
+import json
+with open('${REAL_SAMPLE_FIXTURE}') as f:
+    data = json.load(f)
+print(json.dumps({'results': [s['result'] for s in data['samples']]}))
+")"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_BACKFILL_MODE="realsample" STUB_REALSAMPLE_JSON="$REAL_SAMPLE_JSON"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*pr=90001.*failure_kind=merge_conflict' 1 "real sample #1 (conflicted/DIRTY) classifies merge_conflict"
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*pr=90002.*failure_kind=blocked' 1 "real sample #2 (blocked/BLOCKED) classifies blocked"
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*pr=90003.*failure_kind=checks_failed' 1 "real sample #3 (failed+pending/DIRTY) classifies checks_failed"
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*pr=90004.*failure_kind=checks_failed' 1 "real sample #4 (failed/DIRTY) classifies checks_failed"
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*pr=90005.*failure_kind=checks_failed' 1 "real sample #5 (failed/BLOCKED) classifies checks_failed"
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair' 5 "all 5 real samples mint a repair bead (none silently dropped)"
 
 # ===========================================================================
 # Summary

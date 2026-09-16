@@ -766,20 +766,59 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# R7b — BEHIND (behind_base) uses `git push --force-with-lease` (the operator
-#   overrode the design doc's `gh pr update-branch` merge recommendation).
-#   Bare `--force` (without `--with-lease`) must never appear.
+# R7b — BEHIND (behind_base) DEFAULTS to `git push --force-with-lease` (the
+#   operator's rebase-only override). BLOCKING-2 (fk-4xq) added an explicit
+#   `merge` opt-in (cv_conflict_strategy=merge) that DOES use `gh pr
+#   update-branch` — so this is no longer a blanket "never appears anywhere"
+#   check. Instead: `gh pr update-branch` may appear ONLY inside the `merge`
+#   (opt-in) sub-section, strictly AFTER the `rebase` (DEFAULT) sub-section
+#   heading — never before it, never unconditionally. Bare `--force` (without
+#   `--with-lease`) must still never appear anywhere.
 # ---------------------------------------------------------------------------
-start_case "R7b: behind_base uses --force-with-lease, not gh pr update-branch or bare --force"
+start_case "R7b: behind_base defaults to --force-with-lease; gh pr update-branch is opt-in only"
 if grep -q 'git push --force-with-lease origin {{branch}}' "$CI_REPAIR_MD"; then
-  pass "behind_base path pushes with --force-with-lease"
+  pass "behind_base default path pushes with --force-with-lease"
 else
-  fail "expected behind_base to push with git push --force-with-lease origin {{branch}}"
+  fail "expected behind_base default path to push with git push --force-with-lease origin {{branch}}"
 fi
-if grep -q 'gh pr update-branch' "$CI_REPAIR_MD"; then
-  fail "found gh pr update-branch — the operator overrode this design-doc recommendation in favor of rebase+force-with-lease"
+# shellcheck disable=SC2016  # backticks below are literal markdown, not command substitution
+c_rebase_line=$(grep -n '^#### 4c Strategy: `rebase` (DEFAULT' "$CI_REPAIR_MD" | head -1 | cut -d: -f1)
+# shellcheck disable=SC2016  # backticks below are literal markdown, not command substitution
+c_merge_line=$(grep -n '^#### 4c Strategy: `merge` (EXPLICIT OPT-IN' "$CI_REPAIR_MD" | head -1 | cut -d: -f1)
+# Target the actual COMMAND example ("gh pr update-branch {{pr}} --repo
+# {{repo}}"), not the rebase sub-section's prose that explicitly FORBIDS it
+# ("`gh pr update-branch` ... are FORBIDDEN") — that prose mention is expected
+# and correct, and a bare substring match on "gh pr update-branch" would wrongly
+# flag it as a command usage.
+update_branch_cmd_line=$(grep -n 'gh pr update-branch {{pr}} --repo {{repo}}' "$CI_REPAIR_MD" | head -1 | cut -d: -f1)
+if [ -n "$c_rebase_line" ] && [ -n "$c_merge_line" ] && [ "$c_rebase_line" -lt "$c_merge_line" ]; then
+  pass "4c's rebase (DEFAULT) heading precedes its merge (opt-in) heading"
 else
-  pass "does not use gh pr update-branch (operator's override is honored)"
+  fail "4c rebase-default heading does not precede merge-opt-in heading (rebase=${c_rebase_line:-missing}, merge=${c_merge_line:-missing})"
+fi
+if [ -n "$c_merge_line" ] && [ -n "$update_branch_cmd_line" ] && [ "$c_merge_line" -lt "$update_branch_cmd_line" ]; then
+  pass "gh pr update-branch command usage appears only after the 4c merge (opt-in) heading"
+else
+  fail "gh pr update-branch command usage does not appear strictly after the 4c merge-opt-in heading (merge=${c_merge_line:-missing}, update-branch=${update_branch_cmd_line:-missing})"
+fi
+# It must NOT appear before the rebase-default heading (i.e. not hoisted
+# above the default path as if it were unconditional).
+if [ -n "$c_rebase_line" ] && [ -n "$update_branch_cmd_line" ] && [ "$update_branch_cmd_line" -lt "$c_rebase_line" ]; then
+  fail "gh pr update-branch command usage appears BEFORE the rebase-default heading — looks unconditional, not opt-in"
+else
+  pass "gh pr update-branch command usage does not appear before the rebase-default heading"
+fi
+# The rebase (DEFAULT) sub-section must still explicitly name gh pr
+# update-branch as FORBIDDEN (defense-in-depth prose, distinct from the
+# command-usage check above). Scoped to the [rebase-heading, merge-heading)
+# line range and checked as two separate substrings (not one same-line
+# pattern) since the prose wraps across lines.
+if [ -n "$c_rebase_line" ] && [ -n "$c_merge_line" ] \
+  && sed -n "${c_rebase_line},${c_merge_line}p" "$CI_REPAIR_MD" | grep -q 'gh pr update-branch' \
+  && sed -n "${c_rebase_line},${c_merge_line}p" "$CI_REPAIR_MD" | grep -qi 'FORBIDDEN'; then
+  pass "rebase (DEFAULT) sub-section explicitly forbids gh pr update-branch"
+else
+  fail "expected the rebase (DEFAULT) sub-section to explicitly forbid gh pr update-branch"
 fi
 # Target actual COMMAND examples ("git push --force ..."), not the prose that
 # explicitly forbids bare --force (e.g. "never a bare `--force`") — that prose
@@ -795,6 +834,63 @@ if grep -qi 'Reconciling this with Step 2' "$CI_REPAIR_MD"; then
   pass "carries the explicit CV-A reconciliation note (force-with-lease vs the CI-kick force-push ban)"
 else
   fail "expected an explicit reconciliation note distinguishing behind_base's force-with-lease from Step 2's CI-kick force-push ban"
+fi
+
+# ---------------------------------------------------------------------------
+# R7f (BLOCKING-2, fk-4xq) — the formula declares cv_conflict_strategy with
+#   the operator's mandated default (rebase — linear history, never a merge
+#   commit).
+# ---------------------------------------------------------------------------
+start_case "R7f: formula declares [vars.cv_conflict_strategy] default=rebase"
+if grep -q '\[vars.cv_conflict_strategy\]' "$CI_REPAIR_FORMULA"; then
+  pass "con-voyage-ci-repair.formula.toml declares [vars.cv_conflict_strategy]"
+else
+  fail "expected con-voyage-ci-repair.formula.toml to declare [vars.cv_conflict_strategy]"
+fi
+if awk '/^\[vars\.cv_conflict_strategy\]/{f=1; next} /^\[/{f=0} f && /^default[[:space:]]*=[[:space:]]*"rebase"/{found=1} END{exit !found}' "$CI_REPAIR_FORMULA"; then
+  pass "cv_conflict_strategy defaults to \"rebase\" (the operator's mandated default)"
+else
+  fail "expected [vars.cv_conflict_strategy] default = \"rebase\""
+fi
+
+# ---------------------------------------------------------------------------
+# R7g (BLOCKING-2, fk-4xq) — DIRTY (4b): the `rebase` (DEFAULT) sub-path
+#   heading precedes the `merge` (opt-in) sub-path heading, and the actual
+#   `git merge "origin/${base_ref}"` conflict-resolution command appears ONLY
+#   after the opt-in heading — never unconditional, never before the default.
+# ---------------------------------------------------------------------------
+start_case "R7g: merge_conflict (4b) rebase is DEFAULT, git merge is opt-in only"
+# shellcheck disable=SC2016  # backticks below are literal markdown, not command substitution
+b_rebase_line=$(grep -n '^#### 4b Strategy: `rebase` (DEFAULT' "$CI_REPAIR_MD" | head -1 | cut -d: -f1)
+# shellcheck disable=SC2016  # backticks below are literal markdown, not command substitution
+b_merge_line=$(grep -n '^#### 4b Strategy: `merge` (EXPLICIT OPT-IN' "$CI_REPAIR_MD" | head -1 | cut -d: -f1)
+# shellcheck disable=SC2016  # ${base_ref} below is literal markdown text being grepped, not an expansion
+git_merge_line=$(grep -n 'git merge "origin/\${base_ref}"' "$CI_REPAIR_MD" | head -1 | cut -d: -f1)
+if [ -n "$b_rebase_line" ] && [ -n "$b_merge_line" ] && [ "$b_rebase_line" -lt "$b_merge_line" ]; then
+  pass "4b's rebase (DEFAULT) heading precedes its merge (opt-in) heading"
+else
+  fail "4b rebase-default heading does not precede merge-opt-in heading (rebase=${b_rebase_line:-missing}, merge=${b_merge_line:-missing})"
+fi
+if [ -n "$b_merge_line" ] && [ -n "$git_merge_line" ] && [ "$b_merge_line" -lt "$git_merge_line" ]; then
+  pass "git merge (conflict resolution) command appears only after the 4b merge (opt-in) heading"
+else
+  fail "git merge command does not appear strictly after the 4b merge-opt-in heading (merge=${b_merge_line:-missing}, gitmerge=${git_merge_line:-missing})"
+fi
+if [ -n "$b_rebase_line" ] && [ -n "$git_merge_line" ] && [ "$git_merge_line" -lt "$b_rebase_line" ]; then
+  fail "git merge command appears BEFORE the 4b rebase-default heading — looks unconditional, not opt-in"
+else
+  pass "git merge command does not appear before the 4b rebase-default heading"
+fi
+
+# ---------------------------------------------------------------------------
+# R7h (BLOCKING-2, fk-4xq) — Step 4 (4b/4c) is TOLD the conflict strategy via
+#   {{cv_conflict_strategy}} instead of guessing or hardcoding one.
+# ---------------------------------------------------------------------------
+start_case "R7h: 4b/4c reference {{cv_conflict_strategy}} instead of guessing"
+if grep -q '{{cv_conflict_strategy}}' "$CI_REPAIR_MD"; then
+  pass "ci-repair.md references {{cv_conflict_strategy}}"
+else
+  fail "expected ci-repair.md to reference {{cv_conflict_strategy}}"
 fi
 
 # ---------------------------------------------------------------------------

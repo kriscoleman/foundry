@@ -34,5 +34,14 @@ exec = "$PACK_DIR/assets/scripts/con-voyage-pr-watch.sh"
 # monitor may act on. It NEVER creates repair beads for, or routes comments
 # from, any other author's PRs. Change this to the operator's own login if this
 # pack is cast for a different user.
+#
+# CV_CONFLICT_STRATEGY is the rig-level default for the DIRTY/BEHIND
+# conflict-resolution strategy threaded into every repair bead's
+# cv_conflict_strategy var. "rebase" (default) is the operator's TOP
+# REQUIREMENT: linear history, never a merge commit. "merge" is an explicit
+# opt-in for other targets and must never become the default here. This lives
+# here (rig-level config) rather than as a per-invocation flag so it
+# propagates to every backfill cycle uniformly.
 [order.env]
 CV_PR_AUTHOR = "kriscoleman"
+CV_CONFLICT_STRATEGY = "rebase"
