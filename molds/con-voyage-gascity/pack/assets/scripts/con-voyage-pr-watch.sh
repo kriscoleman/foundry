@@ -25,10 +25,13 @@
 #   PART A: CI-failure repair (AUTHOR-SCOPED)
 #     Runs `gc github pr backfill --json` (REPORT-ONLY, no --create-repair-beads)
 #     against all configured [[github.pr_monitor]] blocks, then DROPS every PR
-#     not authored by CV_PR_AUTHOR, and creates a deduped repair bead only for
-#     each surviving actionable PR. This script is what actually invokes the
-#     backfill on a recurring basis — without it the native monitor never fires
-#     (poll_interval is inert at runtime).
+#     not authored by CV_PR_AUTHOR, SKIPS a PR that is only awaiting human
+#     review (all CI green, mergeable, up to date, blocked solely on
+#     reviewDecision=REVIEW_REQUIRED — con-voyage PRs never auto-merge, so
+#     every one of them would otherwise end there forever), and creates a
+#     deduped repair bead only for each remaining actionable PR. This script
+#     is what actually invokes the backfill on a recurring basis — without it
+#     the native monitor never fires (poll_interval is inert at runtime).
 #
 #     NOTE: we deliberately do NOT use `gc github pr backfill
 #     --create-repair-beads`, because that native path creates a repair bead
@@ -200,9 +203,12 @@ mkdir -p "$CV_STATE_DIR"
 #      This evaluates all [[github.pr_monitor]] blocks and reports every
 #      actionable PR (failed checks, DIRTY, BEHIND, BLOCKED) as JSON — but
 #      creates NO beads.
-#   2. For each actionable result, resolve the PR's author login (via
-#      `gh pr view`) and DROP the PR unless its author == CV_PR_AUTHOR.
-#   3. For each surviving PR, create ONE deduped repair bead and attach the
+#   2. For each actionable result, resolve the PR's author login AND its
+#      review/mergeability signals (via ONE `gh pr view`) and DROP the PR
+#      unless its author == CV_PR_AUTHOR. Then SKIP it (no bead, no comment)
+#      if it is only awaiting human review — see the ACTIONABLE FILTER (C6)
+#      comment below.
+#   3. For each remaining PR, create ONE deduped repair bead and attach the
 #      `con-voyage-ci-repair` v2-formula to it, then route it to the monitor's
 #      repair_route. Because that formula references {{convoy_id}} (the repair
 #      bead id), gc 1.4.1 requires a PRE-CREATED bead as the sling positional:
@@ -220,11 +226,17 @@ mkdir -p "$CV_STATE_DIR"
 #      pass --rig "${a_route%%/*}" to mint the bead in the target agent's rig.
 #      (Neither `gc sling --dry-run` nor a hermetic stub caught this — it only
 #      surfaced against REAL gc — so the test below emulates the cross-rig gate.)
-#      matching the native title/dedup shape:
-#        title: "Repair GitHub PR <owner>/<repo>#<n> readiness: <title>"
-#        dedup: repo + PR number + head-sha  (idempotent across cooldown ticks;
-#               a per-key marker file under CV_STATE_DIR records the minted bead
-#               id and gates re-mints until the branch head-sha advances)
+#      matching the native title shape (the title also names the classified
+#      failure_kind — see R5.5):
+#        title: "Repair GitHub PR <owner>/<repo>#<n> (<failure_kind>): <title>"
+#        dedup: repo + PR number ONLY (not head-sha) — a per-PR marker file
+#               under CV_STATE_DIR tracks at most one repair bead per PR. A new
+#               head-sha does NOT by itself block a fresh mint (a head-sha-keyed
+#               dedup let a stale marker or a reset-to-an-old-head block needed
+#               re-mints and let orphaned beads pile up). The tracked bead
+#               blocks a re-mint ONLY while it is genuinely in-flight (open + a
+#               live assignee); otherwise it is superseded (closed) and a fresh
+#               bead is minted, so a new head always re-arms the mint.
 #
 # We deliberately AVOID `--create-repair-beads` because that native path has no
 # author filter and would create a bead for every actionable PR. The report +
@@ -341,9 +353,52 @@ print("\x1f".join(str(f).replace("\x1f", " ").replace("\n", " ") for f in fields
         continue
       fi
 
-      # Resolve the PR author. The report JSON has no author field, so ask gh.
-      pr_author=$("$GH" pr view "$a_num" --repo "$a_full" --json author \
-        --jq '.author.login' 2>/dev/null || echo "")
+      # Resolve the PR author AND the review/mergeability signals needed for
+      # the ACTIONABLE FILTER (C6) below, in ONE gh call. The report JSON has
+      # none of these fields, so we always ask gh directly.
+      pr_view_json=$("$GH" pr view "$a_num" --repo "$a_full" \
+        --json author,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup 2>/dev/null || echo "")
+
+      # shellcheck disable=SC2016
+      _PY_REVIEW_GATE='
+import sys, json
+
+SEP = "\x1f"
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = {}
+if not isinstance(d, dict):
+    d = {}
+
+author = (d.get("author") or {}).get("login", "") or ""
+review_decision = d.get("reviewDecision", "") or ""
+mergeable = d.get("mergeable", "") or ""
+merge_state_status = d.get("mergeStateStatus", "") or ""
+checks = d.get("statusCheckRollup") or []
+
+def is_green(c):
+    conclusion = c.get("conclusion")
+    if conclusion is not None:
+        return str(conclusion).upper() in ("SUCCESS", "NEUTRAL", "SKIPPED")
+    state = c.get("state")
+    if state is not None:
+        return str(state).upper() == "SUCCESS"
+    return False
+
+checks_green = all(is_green(c) for c in checks)
+
+skip_awaiting_human = (
+    review_decision == "REVIEW_REQUIRED"
+    and mergeable == "MERGEABLE"
+    and merge_state_status != "BEHIND"
+    and checks_green
+)
+
+print(author + SEP + ("1" if skip_awaiting_human else "0"))
+'
+      pr_view_fields=$(printf '%s' "$pr_view_json" | python3 -c "$_PY_REVIEW_GATE" 2>/dev/null || printf '\x1f0')
+      IFS=$'\x1f' read -r pr_author skip_awaiting_human <<< "$pr_view_fields"
 
       # AUTHOR FILTER — the airtight gate. Anything that is not exactly
       # CV_PR_AUTHOR (including an unresolved/empty author) is dropped.
@@ -352,11 +407,26 @@ print("\x1f".join(str(f).replace("\x1f", " ").replace("\n", " ") for f in fields
         continue
       fi
 
-      # Survivor: author matches. Create ONE deduped repair bead. The title is
+      # ACTIONABLE FILTER (C6): con-voyage PRs never auto-merge, so once every
+      # real defect is resolved (CI green, mergeable, branch up to date) a PR
+      # ends in reviewDecision=REVIEW_REQUIRED forever — that is a human-review
+      # wait state, not something a machine can fix (live incident: #10494, 48
+      # green checks + MERGEABLE, blocked solely on REVIEW_REQUIRED). Gate on
+      # failure_kind == "blocked" only: checks_failed/merge_conflict/
+      # behind_base already mean a real defect exists and must still be
+      # repaired regardless of review state (review state alone must never
+      # suppress a real defect).
+      if [ "$a_failure_kind" = "blocked" ] && [ "$skip_awaiting_human" = "1" ]; then
+        echo "con-voyage-pr-watch: [PART A] SKIP ${a_full}#${a_num} — awaiting human review only (CI green, MERGEABLE, branch up to date, reviewDecision=REVIEW_REQUIRED); not a repair"
+        continue
+      fi
+
+      # Survivor: author matches and there is a real defect to repair. Create
+      # ONE deduped repair bead. The title is
       # state-aware (names the classified failure_kind) so the bead is
       # self-describing without opening it (R5.5).
       repair_title="Repair GitHub PR ${a_full}#${a_num} (${a_failure_kind}): ${a_title}"
-      dedup_key="cv-ci-repair-${a_owner}-${a_repo}-${a_num}-${a_sha}"
+      dedup_key="cv-ci-repair-${a_owner}-${a_repo}-${a_num}"
       dedup_marker="${CV_STATE_DIR}/${dedup_key}.minted"
 
       if [ -z "$a_route" ]; then
@@ -378,17 +448,77 @@ print("\x1f".join(str(f).replace("\x1f", " ").replace("\n", " ") for f in fields
         continue
       fi
 
-      # DE-DUPLICATION (idempotent across cooldown ticks): keyed on
-      # repo + PR number + head-sha. If we already minted a repair bead for this
-      # exact PR at this exact head-sha in a previous cycle, do NOT mint another
-      # — the existing repair bead is still valid until the branch advances (a
-      # new push changes head_sha, which yields a new dedup_key and a new bead).
-      # A per-key marker file records the bead id we minted; its presence is the
-      # dedup gate. This mirrors PART B's per-PR state-file discipline.
+      # DE-DUPLICATION (PR-number keyed, NOT head-sha): a stale marker or a
+      # reset-to-an-old-head must never block a needed repair, and a head
+      # advance must never leave the prior head's bead as an unclosed orphan.
+      # So dedup tracks at most ONE bead per PR, and a re-mint is blocked ONLY
+      # while that tracked bead is genuinely in-flight — still open (status !=
+      # closed) AND claimed by a live worker (non-empty assignee). Anything
+      # else (closed, or open/unassigned == orphaned) is stale: it gets
+      # superseded below and a fresh bead is minted, so a new head always
+      # re-arms the mint once the prior attempt is no longer live.
+      prior_bead_id=""
       if [ -f "$dedup_marker" ]; then
-        echo "con-voyage-pr-watch: [PART A] SKIP ${a_full}#${a_num} @ ${a_sha} — repair bead already minted this cycle-set (dedup: ${dedup_key} -> $(cat "$dedup_marker" 2>/dev/null))"
+        prior_bead_id="$(cat "$dedup_marker" 2>/dev/null || true)"
+      fi
+
+      prior_status=""
+      prior_assignee=""
+      if [ -n "${prior_bead_id// /}" ]; then
+        prior_json=$("$GC" --city "$GC_CITY" bd show "$prior_bead_id" --json 2>/dev/null) || prior_json=""
+        if [ -n "$prior_json" ]; then
+          prior_fields=$(printf '%s' "$prior_json" | python3 -c "
+import sys, json
+SEP = '\x1f'
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print(SEP)
+    raise SystemExit(0)
+if isinstance(data, list):
+    data = data[0] if data else {}
+if not isinstance(data, dict):
+    print(SEP)
+    raise SystemExit(0)
+print((data.get('status') or '') + SEP + (data.get('assignee') or ''))
+" 2>/dev/null || printf '\x1f')
+          IFS=$'\x1f' read -r prior_status prior_assignee <<< "$prior_fields"
+        fi
+      fi
+
+      if [ -n "$prior_status" ] && [ "$prior_status" != "closed" ] && [ -n "${prior_assignee// /}" ]; then
+        echo "con-voyage-pr-watch: [PART A] SKIP ${a_full}#${a_num} @ ${a_sha} — repair genuinely in-flight (dedup: ${dedup_key} -> bead ${prior_bead_id}, status=${prior_status}, assignee=${prior_assignee})"
         continue
       fi
+
+      # Not genuinely in-flight: supersede the tracked bead (if any) plus any
+      # leftover markers from the old per-head-sha scheme for this same PR
+      # (glob is dash-delimited so e.g. PR 1's marker never matches PR 11's),
+      # so orphans never pile up across head changes or the dedup-scheme
+      # upgrade from the old per-head-sha keying.
+      for stale_marker in "$dedup_marker" "${dedup_marker%.minted}-"*.minted; do
+        [ -f "$stale_marker" ] || continue
+        stale_bead_id="$(cat "$stale_marker" 2>/dev/null || true)"
+        if [ -n "${stale_bead_id// /}" ]; then
+          stale_json=$("$GC" --city "$GC_CITY" bd show "$stale_bead_id" --json 2>/dev/null) || stale_json=""
+          stale_status=$(printf '%s' "$stale_json" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print('')
+    raise SystemExit(0)
+if isinstance(data, list):
+    data = data[0] if data else {}
+print((data or {}).get('status', '') if isinstance(data, dict) else '')
+" 2>/dev/null || echo "")
+          if [ -n "$stale_status" ] && [ "$stale_status" != "closed" ]; then
+            "$GC" --city "$GC_CITY" bd close "$stale_bead_id" --reason "superseded: re-armed by a fresh PR-scoped repair mint for ${a_full}#${a_num}" >/dev/null 2>&1 || true
+            echo "con-voyage-pr-watch: [PART A] SUPERSEDE ${a_full}#${a_num}: closed prior open repair bead ${stale_bead_id} (was status=${stale_status})"
+          fi
+        fi
+        rm -f "$stale_marker"
+      done
 
       echo "con-voyage-pr-watch: [PART A] KEEP ${a_full}#${a_num} (author='${pr_author}') — creating repair bead (dedup: ${dedup_key})"
 
