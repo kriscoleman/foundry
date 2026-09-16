@@ -482,6 +482,100 @@ shipped `packs/con-voyage` pack.
 
 ---
 
+## Machine identity & artifact hygiene
+
+Two more defense-in-depth mechanisms, independent of the GitHub monitoring
+above: making the machine-identity banner structural (impossible to forget),
+and keeping this toolchain's own local scratch state out of every clone's
+history.
+
+### `cv-pr-comment.sh` — structural identity banner (no more prose-only rule)
+
+con-voyage runs under the operator's GitHub PAT, so every `gh pr comment` /
+`gh pr review` / `gh pr create` it issues shows up as posted by the **human**
+(@kriscoleman), not a bot. Text posted without a machine banner is an
+impersonation risk. This used to be a prose rule inside
+`{target}.ci-repair.md` ("every comment MUST lead with this banner") — and a
+worker skipped it in production (a real @kriscoleman-attributed comment with
+no machine banner).
+
+`pack/assets/scripts/cv-pr-comment.sh` makes the banner **structural**: it is
+the only supported way this pack posts to a PR or issue, and it unconditionally
+prepends the banner — there is no passthrough mode.
+
+```bash
+cv-pr-comment.sh comment <pr> --repo <owner/repo> --body-file <path> [--formula <name>] [--agent <rig/agent>]
+cv-pr-comment.sh review <pr> --repo <owner/repo> (--comment|--approve|--request-changes) --body-file <path> [--formula <name>] [--agent <rig/agent>]
+cv-pr-comment.sh create --repo <owner/repo> --title <title> --body-file <path> [--base <branch>] [--head <branch>] [--draft] [--formula <name>] [--agent <rig/agent>]
+```
+
+Every posted body leads with:
+
+```
+🤖 **Automated con-voyage agent** (<formula> / <rig>/<agent>) — posted via @kriscoleman's token, not by Kris personally.
+```
+
+`{target}.ci-repair.md` and `{target}.publish.md` route every `gh pr comment`
+/ `gh pr review` / `gh pr create` through this script and explicitly forbid the
+raw `gh` equivalents in the worker path. As a read-only backstop, the
+`con-voyage-ci-repair-guard` order (see above) also scans every operator PR's
+comments and flags — fail-loud, never auto-edited — any comment authored by
+`CV_PR_AUTHOR` that does not lead with the banner. The scan can't tell a bot
+comment that skipped the banner apart from a genuine remark the human typed
+(same PAT-backed author), so it only logs; a human reviews the flagged
+comment.
+
+### `cv-worktree-prep.sh` — external-rig / worktree artifact hygiene
+
+con-voyage (and the ci-repair path) works inside a git worktree or clone —
+sometimes of an external target rig, not this operator's own dev environment.
+That working copy sits alongside local, operator-specific scratch directories
+this toolchain writes as it works: `.beads/`, `.gc/`, `.claude/`, and Dolt's
+on-disk data dir (`.dolt/`). None of these belong in the clone's history or
+its upstream remote.
+
+```bash
+cv-worktree-prep.sh exclude <dir>   # write hygiene patterns into <dir>'s LOCAL
+                                     # .git/info/exclude — resolved via `git
+                                     # rev-parse --git-path info/exclude`, so
+                                     # it works from inside a linked worktree
+                                     # too. Never touches the tracked
+                                     # .gitignore.
+cv-worktree-prep.sh guard <dir>     # commit-step backstop: detect any hygiene
+                                     # path staged or already tracked. A
+                                     # staged-only offender is unstaged
+                                     # (DROPPED); one already committed to
+                                     # HEAD is BLOCKED — this script never
+                                     # rewrites history.
+```
+
+`{target}.ci-repair.md` runs `exclude` right after checking out the PR branch
+and `guard` right before committing. `{target}.publish.md` runs `guard` again
+immediately before pushing, as a last line of defense.
+
+### Testing machine identity & artifact hygiene
+
+```
+bash molds/con-voyage-gascity/tests/cv-pr-comment.test.sh
+bash molds/con-voyage-gascity/tests/cv-worktree-prep.test.sh
+```
+
+`cv-pr-comment.test.sh` is hermetic/offline via a recording stub `gh`; it
+asserts the banner is always the first line of whatever gets posted, that
+required args are validated before `gh` is ever invoked, and that there is no
+raw-passthrough subcommand. `cv-worktree-prep.test.sh` uses real, local,
+throwaway git repos (git itself is fully offline) to prove `exclude` is
+idempotent, never touches a tracked `.gitignore`, and resolves the correct
+shared exclude file from inside a linked worktree; and that `guard` unstages a
+staged-only offender but only ever BLOCKS (never rewrites history for) one
+that is already committed. `con-voyage-ci-repair-guard.test.sh` (see above)
+additionally covers the banner-scan backstop: a compliant comment is silent, a
+banner-less operator-authored comment is flagged by id, a banner-less comment
+from a different author is left alone, and a comments-fetch failure degrades
+to a warning rather than a crash.
+
+---
+
 ## Usage
 
 ### Via the `/con-voyage` skill (Claude Code or mayor)

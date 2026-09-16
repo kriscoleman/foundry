@@ -20,4 +20,10 @@ human facilitator. Never silently accept LOWs.
 Close with gc.outcome=pass, code_review.synthesis_path=<synthesis path>, and
 code_review.output_path=<synthesis path>.
 
+This synthesis is the source content the facilitator later posts to the PR as
+a reviewer-verdict comment. Do not post anything to GitHub from this step
+yourself — but write the synthesis knowing any downstream consumer that posts
+it to the PR MUST do so via `cv-pr-comment.sh`, never a raw `gh pr comment` /
+`gh pr review`, so the machine-identity banner always leads the posted text.
+
 Do not invoke provider-native subagents. Synthesis happens in this Gas City fan-in lane.

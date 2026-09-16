@@ -164,32 +164,59 @@ open/close churn. If `gh run rerun` is not available or you lack permission,
 escalate (see Failure / escalation) rather than resorting to any forbidden
 tactic.
 
-## MANDATORY — machine identity on every PR comment/review
+## MANDATORY — machine identity on every PR comment/review (STRUCTURAL)
 
 You run under the operator's GitHub PAT. Any comment or review you post shows
 up as **@kriscoleman** (the human) — so anything you write WITHOUT a machine
 banner is an impersonation of Kris. This is a trust/security problem and it is
 NOT allowed.
 
-**Rule (mandatory, no exceptions):** every `gh pr comment`, `gh pr review`,
-`gh pr review --comment/--approve/--request-changes` body — any text you post
-to a PR or issue — MUST lead with this identity banner as the FIRST line of the
-body:
+**Rule (mandatory, no exceptions, structurally enforced):** this is no longer
+prose you have to remember — it is enforced by a script. The ONLY supported
+way to post any text to this PR or issue is `cv-pr-comment.sh`. It
+unconditionally prepends the identity banner as the first line of whatever you
+post, so the banner can no longer be forgotten:
 
 ```
 🤖 **Automated con-voyage agent** (con-voyage-ci-repair / <rig>/<agent>) — posted via @kriscoleman's token, not by Kris personally.
 ```
 
+### FORBIDDEN commenting tactics — never do these
+
+- **Do NOT run raw `gh pr comment`** for any reason, in this workflow.
+- **Do NOT run raw `gh pr review`** (`--comment`, `--approve`, or
+  `--request-changes`) for any reason, in this workflow.
+- **Do NOT hand-assemble the banner string yourself and pass it via
+  `gh ... --body`.** Always go through `cv-pr-comment.sh` so the banner is
+  guaranteed by the script, not typed from memory.
+
+Locate and use the script:
+
+```bash
+CV_BIN="$(command -v cv-pr-comment.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name cv-pr-comment.sh 2>/dev/null | head -1)"
+if [ -z "$CV_BIN" ] || [ ! -x "$CV_BIN" ]; then
+  echo "cv-pr-comment.sh not found — refusing to post without the banner (do NOT fall back to raw gh pr comment/review)" >&2
+  exit 1
+fi
+printf '%s\n' "<your comment text>" > /tmp/cv-comment-body.md
+"$CV_BIN" comment {{pr}} --repo {{repo}} --body-file /tmp/cv-comment-body.md \
+  --formula con-voyage-ci-repair --agent "<rig>/<agent>"
+# For a review instead of a plain comment, swap the subcommand:
+"$CV_BIN" review {{pr}} --repo {{repo}} --comment --body-file /tmp/cv-comment-body.md \
+  --formula con-voyage-ci-repair --agent "<rig>/<agent>"
+```
+
 Substitute your actual rig and agent handle for `<rig>/<agent>` (the same
 identity the con-voyage reviewers use in their `[<rig>/<agent> — <lens>]`
-prefix). If you cannot resolve them, still post the banner with a clear
-`con-voyage-ci-repair` self-identification. Never post a bare comment as if a
-human wrote it.
+prefix). If you cannot resolve them, omit `--agent` — the script still posts,
+with a clear self-identification fallback. Never post a bare comment as if a
+human wrote it, and never find a way around the script to do so.
 
 Note: this repair pass is normally SILENT on the PR — it pushes a code fix and
 lets the monitor re-evaluate. You generally do NOT need to comment. But IF you
-ever post a diagnosis comment, a review, or any other PR/issue text, the banner
-above is required. When in doubt, do not comment; push the fix.
+ever post a diagnosis comment, a review, or any other PR/issue text, it MUST go
+through `cv-pr-comment.sh` as shown above. When in doubt, do not comment; push
+the fix.
 
 ## Step 3 — Check out the PR branch
 
@@ -216,6 +243,21 @@ git pull --rebase origin {{branch}}
 ```
 
 Do NOT create a new branch. Do NOT work on main or any other branch.
+
+### Artifact hygiene — prep this working copy before editing anything
+
+This working copy must never commit con-voyage's own local tooling state
+upstream. Before touching any files, write the hygiene excludes:
+
+```bash
+CV_PREP="$(command -v cv-worktree-prep.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name cv-worktree-prep.sh 2>/dev/null | head -1)"
+[ -n "$CV_PREP" ] && [ -x "$CV_PREP" ] && "$CV_PREP" exclude "$(pwd)"
+```
+
+This writes `.beads/`, `.gc/`, `.claude/`, and dolt data paths into this
+clone's LOCAL `.git/info/exclude` (never the tracked `.gitignore`) so a
+routine `git add` can never scoop them up. Local only — nothing is ever
+committed upstream because of this step.
 
 ## Step 4 — Fix based on `{{failure_kind}}`
 
@@ -447,6 +489,21 @@ purpose is to retrigger CI (for that, use `gh run rerun` from Step 2):
 
 ```bash
 git add -p   # stage only relevant changes
+```
+
+Run the artifact-hygiene guard before committing. It fails loud (non-zero
+exit) and unstages anything it safely can if a hygiene path (`.beads/`,
+`.gc/`, `.claude/`, dolt data) ever ends up staged — do not commit until it
+reports clean:
+
+```bash
+CV_GUARD="$(command -v cv-worktree-prep.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name cv-worktree-prep.sh 2>/dev/null | head -1)"
+if [ -n "$CV_GUARD" ] && [ -x "$CV_GUARD" ]; then
+  "$CV_GUARD" guard "$(pwd)" || { echo "fix the reported hygiene violation, re-stage, and re-run the guard before committing" >&2; exit 1; }
+fi
+```
+
+```bash
 git commit -m "fix: <brief description of CI fix> (repair {{convoy_id}})"
 ```
 
