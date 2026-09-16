@@ -83,6 +83,14 @@
 #                   author filtering above is always CV_PR_AUTHOR-scoped
 #                   regardless of this value — see README.md's "Author-gate
 #                   toggle" section.
+#   CV_CONFLICT_STRATEGY  Forwarded, NOT read for branching, by this script
+#                   (default: rebase). Every repair bead this script mints
+#                   carries this value via --var cv_conflict_strategy=..., so
+#                   the con-voyage-ci-repair worker's DIRTY (4b) and BEHIND
+#                   (4c) steps know whether to rebase (linear history, the
+#                   operator's default) or merge (explicit opt-in only). This
+#                   is a rig-level config knob — set it once in
+#                   con-voyage-pr-watch.toml's [order.env], not per invocation.
 #
 # Exit codes:
 #   0 — completed (some or all monitors may have had no actionable PRs)
@@ -294,6 +302,8 @@ if gc_failure_kind in VALID_KINDS:
     failure_kind = gc_failure_kind
 elif failed_checks:
     failure_kind = "checks_failed"
+elif state == "failed":
+    failure_kind = "checks_failed"
 elif state in ("dirty", "conflicted"):
     failure_kind = "merge_conflict"
 elif state == "behind":
@@ -303,11 +313,19 @@ elif state == "blocked":
 else:
     failure_kind = ""
 
+# Field delimiter: the ASCII Unit Separator (0x1f), NOT a tab. Tab is
+# "IFS whitespace" in bash, so a tab-delimited read COLLAPSES consecutive
+# tabs and strips leading/trailing runs. The schema marks title/head_sha/
+# repair_route as OPTIONAL -- when any of them is empty, tab-collapse shifts
+# every later field left by one, silently landing failure_kind (the last
+# field) empty and tripping the empty-failure_kind guard below, which then
+# drops a PR that needs repair. 0x1f is never treated as whitespace, so bash
+# preserves empty fields exactly regardless of position.
 fields = [owner, repo, number, title, branch, sha, route, failure_kind]
-print("\t".join(str(f).replace("\t", " ").replace("\n", " ") for f in fields))
+print("\x1f".join(str(f).replace("\x1f", " ").replace("\n", " ") for f in fields))
 '
       pr_fields=$(printf '%s' "$result_json" | python3 -c "$_PY_CLASSIFY_PR" 2>/dev/null || echo "")
-      IFS=$'\t' read -r a_owner a_repo a_num a_title a_branch a_sha a_route a_failure_kind <<<"$pr_fields"
+      IFS=$'\x1f' read -r a_owner a_repo a_num a_title a_branch a_sha a_route a_failure_kind <<<"$pr_fields"
 
       if [ -z "$a_owner" ] || [ -z "$a_repo" ] || [ -z "$a_num" ]; then
         echo "con-voyage-pr-watch: [PART A] skipping malformed backfill result: ${result_json}" >&2
@@ -404,6 +422,7 @@ print("\t".join(str(f).replace("\t", " ").replace("\n", " ") for f in fields))
         --var "failure_kind=${a_failure_kind}" \
         --var "cv_pr_author=${CV_PR_AUTHOR}" \
         --var "cv_author_gate=${CV_AUTHOR_GATE:-enabled}" \
+        --var "cv_conflict_strategy=${CV_CONFLICT_STRATEGY:-rebase}" \
         2>&1; then
         # Record the dedup marker only AFTER a successful mint+route, so a failed
         # sling is retried next cycle rather than being silently suppressed.

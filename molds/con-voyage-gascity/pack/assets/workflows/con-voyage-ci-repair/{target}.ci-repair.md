@@ -16,6 +16,7 @@ The monitor re-evaluates the PR on the next backfill — you do not merge.
 | title     | {{title}}          |
 | cv_pr_author | {{cv_pr_author}} |
 | cv_author_gate | {{cv_author_gate}} |
+| cv_conflict_strategy | {{cv_conflict_strategy}} |
 
 ## Step 0 — Author gate (fail-closed by default, toggle-able)
 
@@ -194,6 +195,13 @@ above is required. When in doubt, do not comment; push the fix.
 
 Work in the rig root. Fetch the branch and create a local tracking ref:
 
+<!-- FOLLOW-UP (noted, not fixed — out of scope for fk-4xq): every {{branch}}
+     interpolation in this file (here and in Steps 4/6/7 below) is unquoted in
+     its shell command example. GitHub branch names can't contain spaces, but
+     can contain other shell-meaningful characters; quoting "{{branch}}"
+     everywhere would be the safer default. Left as-is per fk-4xq's scope
+     (BLOCKING-1/2 + LOW-1/2 only) — file separately if this needs hardening. -->
+
 ```bash
 git fetch origin {{branch}}
 git checkout {{branch}}
@@ -215,8 +223,10 @@ The bead's `{{failure_kind}}` var already carries PART A's classification —
 one of `checks_failed`, `merge_conflict`, `behind_base`, or `blocked`. Branch
 on it directly; do not re-derive it from the failing-checks list yourself
 (that was PART A's job, and re-guessing risks disagreeing with the bead you
-were handed). Resolve the PR's real base branch once, up front — every
-sub-path below that rebases uses it:
+were handed). The `merge_conflict` (4b) and `behind_base` (4c) paths ALSO
+depend on `{{cv_conflict_strategy}}` (default `rebase`) — read that section's
+own instructions for how to branch on it. Resolve the PR's real base branch
+once, up front — every sub-path below that rebases uses it:
 
 ```bash
 base_ref="$(gh pr view {{pr}} --repo {{repo}} --json baseRefName --jq .baseRefName)"
@@ -241,6 +251,17 @@ Step 0 already verified that. Automated conflict resolution is normally
 dangerous (a silently-wrong merge can look clean, and even pass tests, while
 dropping or mismerging changes), so the guardrails below exist to make this
 auditable — they are not optional decoration.
+
+**Conflict/branch-update strategy — `{{cv_conflict_strategy}}`.** This bead's
+`cv_conflict_strategy` var selects one of the two sub-paths below. Read it
+before doing anything else in this section — do not guess or default to
+whichever sub-path seems more familiar.
+
+#### 4b Strategy: `rebase` (DEFAULT — linear history, never a merge commit)
+
+Use this sub-path when `{{cv_conflict_strategy}}` is `rebase` or is
+unset/empty. This is the operator's TOP REQUIREMENT: linear history, always —
+never a merge commit.
 
 ```bash
 git fetch origin
@@ -267,10 +288,53 @@ After the rebase completes and conflicts are resolved:
 4. **NEVER merge, NEVER approve, NEVER submit to the merge queue.** Push to
    the PR branch only — the same bright line as every other path here.
 
-Skip Step 6 (its plain-push form doesn't fit a rebase) and close the bead
-(Step 7) directly, using the resolution summary from point 3 as the close note.
+Under this (default) strategy, `git merge origin/<base>` and `gh pr
+update-branch` are FORBIDDEN for this repair — either would create a merge
+commit and break the linear-history requirement.
 
-### 4c. `behind_base` — rebase + force-with-lease
+#### 4b Strategy: `merge` (EXPLICIT OPT-IN ONLY — never the default)
+
+Use this sub-path ONLY when `{{cv_conflict_strategy}}` is EXACTLY `merge`.
+This is for other targets that prefer merge commits over rebase; it is not the
+default anywhere in this city.
+
+```bash
+git fetch origin
+git merge "origin/${base_ref}"
+# Resolve conflicts, then:
+git add <resolved files>
+git commit
+```
+
+After the merge completes and conflicts are resolved:
+
+1. Run the full test suite and lint (the same commands as Step 5) before
+   pushing. Do not push if anything fails.
+2. Push the branch. The merge commit fast-forwards from the branch's own
+   prior head, so a plain push suffices — no force-push is needed:
+   ```bash
+   git push origin {{branch}}
+   ```
+3. **Surface a human-readable summary of the resolution** — same requirement
+   as the rebase sub-path above: a machine-bannered PR comment and the bead
+   close note in Step 7.
+4. **Never submit this PR to the merge queue, never approve it, and never
+   close it as merged.** Creating a merge commit ON THE BRANCH to reconcile
+   with base is not the same as merging the PR itself — the PR always stays
+   open for a human to land.
+
+Skip Step 6 (its plain-push form doesn't fit either sub-path above) and close
+the bead (Step 7) directly, using the resolution summary as the close note.
+
+### 4c. `behind_base` — branch update per `{{cv_conflict_strategy}}`
+
+**Conflict/branch-update strategy — `{{cv_conflict_strategy}}`.** Same knob as
+4b, same rule: read it before doing anything else in this section.
+
+#### 4c Strategy: `rebase` (DEFAULT — linear history, never a merge commit)
+
+Use this sub-path when `{{cv_conflict_strategy}}` is `rebase` or is
+unset/empty.
 
 ```bash
 git fetch origin
@@ -293,7 +357,24 @@ rebasing inherently rewrites history, so updating the remote requires a
 force-push. `--force-with-lease` (never bare `--force`) is permitted here — it
 is not the forbidden CI-kick tactic Step 2 describes.
 
-Skip Step 6 and close the bead (Step 7) directly.
+Under this (default) strategy, `gh pr update-branch` and a manual `git merge`
+are FORBIDDEN for this repair — either would create a merge commit and break
+the linear-history requirement.
+
+#### 4c Strategy: `merge` (EXPLICIT OPT-IN ONLY — never the default)
+
+Use this sub-path ONLY when `{{cv_conflict_strategy}}` is EXACTLY `merge`.
+
+```bash
+gh pr update-branch {{pr}} --repo {{repo}}
+```
+
+This is GitHub's native "Update branch" action: it merges the base branch
+into the PR branch and pushes the result automatically — no manual `git
+merge`, no force-push. If it is unavailable or fails, escalate (see Failure /
+escalation) rather than reaching for a manual force-push.
+
+Skip Step 6 and close the bead (Step 7) directly (either sub-path above).
 
 ### 4d. `blocked` — router, not a single action
 

@@ -33,6 +33,7 @@ failing after the push, a new repair bead will be created for the next cycle.
 | escalation_target     | Mail recipient for blocked work (default: human)            |
 | cv_pr_author          | GitHub login the implementor's Step 0 gate must match against — the allow-list (default: kriscoleman) |
 | cv_author_gate        | Author-gate toggle: `enabled` (default, fail-closed scoping) or `disabled` (work all PRs) |
+| cv_conflict_strategy  | Conflict/branch-update strategy for Steps 4b/4c: `rebase` (default, linear history) or `merge` (explicit opt-in) |
 
 ## Author scoping (defense in depth)
 
@@ -85,6 +86,21 @@ has no state threading), so Step 4 falls back to the original failing-CI
 repair path when this var is absent or empty.
 """
 default = "checks_failed"
+
+[vars.cv_conflict_strategy]
+description = """
+Conflict/branch-update strategy for the merge_conflict (Step 4b) and
+behind_base (Step 4c) repair paths, threaded by con-voyage-pr-watch.sh (a
+rig-level default from con-voyage-pr-watch.toml's [order.env], not a
+per-invocation flag). `rebase` (default) is the operator's TOP REQUIREMENT:
+DIRTY and BEHIND repairs rebase onto the base branch and push with
+`--force-with-lease`, producing linear history with NEVER a merge commit.
+`git merge origin/<base>` and `gh pr update-branch` are FORBIDDEN under this
+default. `merge` is available only as an explicit opt-in for other targets
+that prefer merge commits over rebase, and must never become the default.
+Keep in sync with CV_CONFLICT_STRATEGY in con-voyage-pr-watch.toml.
+"""
+default = "rebase"
 
 [vars.cv_pr_author]
 description = """
