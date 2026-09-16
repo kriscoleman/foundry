@@ -98,6 +98,88 @@ fi
 Only continue to Step 1 when the block above did NOT exit — i.e. `pr_author`
 exactly matches `CV_PR_AUTHOR`.
 
+## Step 0b — Review-required self-gate (defense in depth)
+
+The monitor (`con-voyage-pr-watch.sh`) already refuses to mint a repair bead
+for a PR that is only awaiting human review — its ACTIONABLE FILTER treats a
+PR as non-actionable when all CI checks are green/neutral, the PR is
+`MERGEABLE`, the branch is up to date with base, and the only outstanding
+blocker is `reviewDecision=REVIEW_REQUIRED`. This step re-verifies that same
+condition independently, in case this bead reached you through a path the
+monitor does not control — the native `[[github.pr_monitor]]`
+`--create-repair-beads` (which has no such filter), a manual sling, or a bead
+minted before this gate existed.
+
+con-voyage PRs never auto-merge, so a PR with every real defect already
+resolved ends in `reviewDecision=REVIEW_REQUIRED` forever — that is a human
+already in the loop, not something a machine can fix. The correct action is
+to close quietly and take no GitHub action at all: no `gh run rerun`, no
+commit/push, and — unlike every other escalation path in this workflow — **no
+PR comment and no escalation mail**. Commenting or mailing here would just be
+recurring noise on a PR that is working exactly as intended (the live
+incident this gate exists to prevent: a repair bead escalated repeatedly on
+kriscoleman/foundry#10494 — 48/48 checks green, MERGEABLE, blocked solely on
+REVIEW_REQUIRED — for something no machine could ever satisfy).
+
+Only relevant when `{{failure_kind}}` is `blocked` — `checks_failed`,
+`merge_conflict`, and `behind_base` already mean a real defect exists, and
+review state must never suppress a real defect.
+
+Run this block VERBATIM. It resolves the live review/mergeability signals,
+then makes the gate decision as a deterministic conditional (not a judgement
+call you re-derive):
+
+```bash
+FAILURE_KIND="{{failure_kind}}"
+if [ "$FAILURE_KIND" = "blocked" ]; then
+  gate_json="$(gh pr view {{pr}} --repo {{repo}} \
+    --json reviewDecision,mergeable,mergeStateStatus,statusCheckRollup 2>/dev/null || echo "")"
+  skip_awaiting_human="$(printf '%s' "$gate_json" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = {}
+if not isinstance(d, dict):
+    d = {}
+review_decision = d.get('reviewDecision', '') or ''
+mergeable = d.get('mergeable', '') or ''
+merge_state_status = d.get('mergeStateStatus', '') or ''
+checks = d.get('statusCheckRollup') or []
+def is_green(c):
+    conclusion = c.get('conclusion')
+    if conclusion is not None:
+        return str(conclusion).upper() in ('SUCCESS', 'NEUTRAL', 'SKIPPED')
+    state = c.get('state')
+    if state is not None:
+        return str(state).upper() == 'SUCCESS'
+    return False
+checks_green = all(is_green(c) for c in checks)
+skip = (
+    review_decision == 'REVIEW_REQUIRED'
+    and mergeable == 'MERGEABLE'
+    and merge_state_status != 'BEHIND'
+    and checks_green
+)
+print('1' if skip else '0')
+" 2>/dev/null || echo "0")"
+
+  if [ "$skip_awaiting_human" = "1" ]; then
+    gc bd update "{{convoy_id}}" \
+      --notes "not actionable: awaiting human review only (CI green, MERGEABLE, branch up to date, reviewDecision=REVIEW_REQUIRED) — no machine action taken, no PR comment posted"
+    gc bd close "{{convoy_id}}"
+    exit 0
+  fi
+fi
+```
+
+Only continue to Step 1 when the block above did NOT exit. Do NOT post a PR
+comment or send an escalation mail for this specific case — there is nothing
+wrong to report, and a human is already in the loop by definition. This is the
+ONE case in this workflow where you close silently; every other
+failure/escalation path elsewhere in this file still comments or mails as
+documented there.
+
 ## Step 1 — Read the repair bead
 
 ```bash

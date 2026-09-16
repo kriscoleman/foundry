@@ -123,7 +123,7 @@ JSON
         ;;
       view)
         # Two shapes:
-        #   gh pr view <n> --repo R --json author --jq .author.login   (PART A)
+        #   gh pr view <n> --repo R --json author,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup (PART A)
         #   gh pr view <n> --repo R --json reviews,comments,reviewThreads (PART B)
         num="${3:-}"
         jsonfields="$(flagval --json "$@")"
@@ -144,28 +144,105 @@ JSON
 JSON
           exit 0
         fi
-        # PART A author resolution. Map PR number -> canned author.
+        # PART A author + review-gate resolution (C6 actionable filter). Maps
+        # PR number -> author login (unchanged mapping), PLUS — for the C6
+        # fixture PRs (900-906) only — canned reviewDecision/mergeable/
+        # mergeStateStatus/statusCheckRollup signals. Every pre-existing PR
+        # number keeps the SAFE DEFAULT reviewDecision="" (can never satisfy
+        # the C6 skip condition, which requires reviewDecision exactly
+        # "REVIEW_REQUIRED"), so none of the pre-existing cases are affected.
+        review_decision=""
+        mergeable_val="MERGEABLE"
+        merge_state_status_val="CLEAN"
+        checks_rollup_json="[]"
         case "$num" in
-          11)  echo "kriscoleman" ;;      # operator — KEEP
-          12)  echo "kriscoleman" ;;      # operator (states: dirty) — KEEP
-          13)  echo "kriscoleman" ;;      # operator (states: behind) — KEEP
-          14)  echo "kriscoleman" ;;      # operator (states: blocked) — KEEP
-          15)  echo "kriscoleman" ;;      # operator (states: trust-gc precedence) — KEEP
-          16)  echo "kriscoleman" ;;      # operator (field-shift: empty title) — KEEP
-          17)  echo "kriscoleman" ;;      # operator (field-shift: empty head_sha) — KEEP
-          18)  echo "kriscoleman" ;;      # operator (fallback classifier: state=failed) — KEEP
+          11)  pr_author_val="kriscoleman" ;;   # operator — KEEP
+          12)  pr_author_val="kriscoleman" ;;   # operator (states: dirty) — KEEP
+          13)  pr_author_val="kriscoleman" ;;   # operator (states: behind) — KEEP
+          14)  pr_author_val="kriscoleman" ;;   # operator (states: blocked) — KEEP
+          15)  pr_author_val="kriscoleman" ;;   # operator (states: trust-gc precedence) — KEEP
+          16)  pr_author_val="kriscoleman" ;;   # operator (field-shift: empty title) — KEEP
+          17)  pr_author_val="kriscoleman" ;;   # operator (field-shift: empty head_sha) — KEEP
+          18)  pr_author_val="kriscoleman" ;;   # operator (fallback classifier: state=failed) — KEEP
           90001|90002|90003|90004|90005)
-               echo "kriscoleman" ;;      # operator (LOW-2 real-sample gate fixture) — KEEP
-          500) echo "evansmungai" ;;      # other human — DROP
-          501) echo "evansmungai" ;;      # other human (states: dirty) — DROP
-          502) echo "evansmungai" ;;      # other human (states: behind) — DROP
-          503) echo "evansmungai" ;;      # other human (states: blocked) — DROP
-          600) echo "dependabot[bot]" ;;  # bot — DROP
-          700) echo "kriscoleman2" ;;     # near-match — DROP (exact match only)
-          701) echo "KRISCOLEMAN" ;;      # case variant — DROP (case-sensitive)
-          800) echo "" ;;                 # unresolved author — DROP (fail closed)
-          *)   echo "" ;;
+               pr_author_val="kriscoleman" ;;   # operator (LOW-2 real-sample gate fixture) — KEEP
+          500) pr_author_val="evansmungai" ;;   # other human — DROP
+          501) pr_author_val="evansmungai" ;;   # other human (states: dirty) — DROP
+          502) pr_author_val="evansmungai" ;;   # other human (states: behind) — DROP
+          503) pr_author_val="evansmungai" ;;   # other human (states: blocked) — DROP
+          600) pr_author_val="dependabot[bot]" ;; # bot — DROP
+          700) pr_author_val="kriscoleman2" ;;  # near-match — DROP (exact match only)
+          701) pr_author_val="KRISCOLEMAN" ;;   # case variant — DROP (case-sensitive)
+          800) pr_author_val="" ;;              # unresolved author — DROP (fail closed)
+          900)
+               # C6: all-green + MERGEABLE + REVIEW_REQUIRED + up to date -> SKIP.
+               pr_author_val="kriscoleman"
+               review_decision="REVIEW_REQUIRED"
+               mergeable_val="MERGEABLE"
+               merge_state_status_val="BLOCKED"
+               checks_rollup_json='[{"conclusion":"SUCCESS"},{"conclusion":"NEUTRAL"}]'
+               ;;
+          901)
+               # C6 clause 3 (no regression): classified checks_failed (a real
+               # failing check exists) despite REVIEW_REQUIRED -> gate never
+               # runs (only applies to failure_kind=blocked) -> must mint.
+               pr_author_val="kriscoleman"
+               review_decision="REVIEW_REQUIRED"
+               mergeable_val="MERGEABLE"
+               merge_state_status_val="BLOCKED"
+               checks_rollup_json='[{"conclusion":"SUCCESS"}]'
+               ;;
+          902)
+               # blocked + REVIEW_REQUIRED + MERGEABLE but a check is actually
+               # FAILING live -> not all green -> must still mint.
+               pr_author_val="kriscoleman"
+               review_decision="REVIEW_REQUIRED"
+               mergeable_val="MERGEABLE"
+               merge_state_status_val="BLOCKED"
+               checks_rollup_json='[{"conclusion":"SUCCESS"},{"conclusion":"FAILURE"}]'
+               ;;
+          903)
+               # blocked + REVIEW_REQUIRED + MERGEABLE + all green but BEHIND
+               # base live -> not up to date -> must still mint.
+               pr_author_val="kriscoleman"
+               review_decision="REVIEW_REQUIRED"
+               mergeable_val="MERGEABLE"
+               merge_state_status_val="BEHIND"
+               checks_rollup_json='[{"conclusion":"SUCCESS"}]'
+               ;;
+          904)
+               # blocked + CHANGES_REQUESTED (NOT REVIEW_REQUIRED) + otherwise
+               # clean -> the AC scopes the skip to REVIEW_REQUIRED only ->
+               # must still mint.
+               pr_author_val="kriscoleman"
+               review_decision="CHANGES_REQUESTED"
+               mergeable_val="MERGEABLE"
+               merge_state_status_val="BLOCKED"
+               checks_rollup_json='[{"conclusion":"SUCCESS"}]'
+               ;;
+          905)
+               # blocked + REVIEW_REQUIRED + all green but NOT mergeable
+               # (CONFLICTING) -> must still mint.
+               pr_author_val="kriscoleman"
+               review_decision="REVIEW_REQUIRED"
+               mergeable_val="CONFLICTING"
+               merge_state_status_val="DIRTY"
+               checks_rollup_json='[{"conclusion":"SUCCESS"}]'
+               ;;
+          906)
+               # Same green/mergeable/REVIEW_REQUIRED signals as #900, but
+               # authored by a NON-operator -> the author gate must DROP it
+               # before the C6 gate ever runs (no "awaiting-human" SKIP log).
+               pr_author_val="evansmungai"
+               review_decision="REVIEW_REQUIRED"
+               mergeable_val="MERGEABLE"
+               merge_state_status_val="BLOCKED"
+               checks_rollup_json='[{"conclusion":"SUCCESS"}]'
+               ;;
+          *)   pr_author_val="" ;;
         esac
+        printf '{"author":{"login":"%s"},"reviewDecision":"%s","mergeable":"%s","mergeStateStatus":"%s","statusCheckRollup":%s}\n' \
+          "$pr_author_val" "$review_decision" "$mergeable_val" "$merge_state_status_val" "$checks_rollup_json"
         exit 0
         ;;
     esac
@@ -261,9 +338,10 @@ case "$sub" in
           #
           # STUB_HEAD_SHA overrides ONLY PR #11's head_sha (defaults to the
           # historical "aaa111" so every pre-existing case is unaffected). This
-          # lets a test advance #11's branch head between cycles to prove that a
-          # NEW head-sha yields a NEW dedup key and re-mints a fresh repair bead
-          # (the head-sha is pinned into the dedup key in the script under test).
+          # lets a test advance #11's branch head between cycles. Dedup is keyed
+          # on repo+PR NUMBER only (not head-sha) — see CASE 9 — so a new head
+          # alone never re-keys the mint; it only re-mints once the previously
+          # tracked bead is no longer genuinely in-flight.
           # #11's line is emitted via printf (so the env var expands); the rest
           # stay in a single-quoted heredoc (byte-identical, no expansion).
           # repair_route carries a real "<rig>/<agent>" prefix (vandoor/...). The
@@ -335,6 +413,30 @@ JSON
   {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":503,"title":"blocked pr (not ours)","head_ref_name":"feature/x503","head_sha":"s503","repair_route":"vandoor/gc.implementation-worker","state":"blocked","failed_checks":[],"merge_state_status":"BLOCKED","failure_kind":"blocked"},
   {"actionable":false,"owner":"kriscoleman","repo":"foundry","number":20,"title":"clean pr","head_ref_name":"feature/clean","head_sha":"s20","repair_route":"vandoor/gc.implementation-worker","state":"clean","failed_checks":[],"merge_state_status":"CLEAN"},
   {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":15,"title":"trust-gc pr","head_ref_name":"fix/cv-b-trust-gc","head_sha":"s15","repair_route":"vandoor/gc.implementation-worker","state":"blocked","failed_checks":["build"],"merge_state_status":"BLOCKED","failure_kind":"blocked"}
+]}
+JSON
+          ;;
+        reviewgate)
+          # C6 actionable-filter fixtures (fk-t9f/fk-0dl): every row here is
+          # gc-classified failure_kind=blocked (the ambiguous catch-all) EXCEPT
+          # #901 (checks_failed) — the gh stub (see the `view` case above)
+          # layers the reviewDecision/mergeable/mergeStateStatus/
+          # statusCheckRollup signals that make each one either a genuine
+          # awaiting-human no-op (#900) or a real defect that must still mint
+          # (#901-#906, one violated precondition each — see the gh stub
+          # comments for which). None of these are BEHIND/DIRTY at the gc
+          # backfill classification layer itself (that's a separate, already-
+          # covered case in "states"); the live-vs-backfill BEHIND distinction
+          # for #903 is deliberately only visible in the gh stub's live view.
+          cat <<'JSON'
+{"results":[
+  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":900,"title":"awaiting human review","head_ref_name":"fix/cv-c6-900","head_sha":"s900","repair_route":"vandoor/gc.implementation-worker","state":"blocked","failed_checks":[],"merge_state_status":"BLOCKED","failure_kind":"blocked"},
+  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":901,"title":"review required but failing check","head_ref_name":"fix/cv-c6-901","head_sha":"s901","repair_route":"vandoor/gc.implementation-worker","state":"failed","failed_checks":["build"],"merge_state_status":"DIRTY","failure_kind":"checks_failed"},
+  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":902,"title":"review required but a check is actually failing","head_ref_name":"fix/cv-c6-902","head_sha":"s902","repair_route":"vandoor/gc.implementation-worker","state":"blocked","failed_checks":[],"merge_state_status":"BLOCKED","failure_kind":"blocked"},
+  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":903,"title":"review required but branch behind base","head_ref_name":"fix/cv-c6-903","head_sha":"s903","repair_route":"vandoor/gc.implementation-worker","state":"blocked","failed_checks":[],"merge_state_status":"BLOCKED","failure_kind":"blocked"},
+  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":904,"title":"changes requested, not review required","head_ref_name":"fix/cv-c6-904","head_sha":"s904","repair_route":"vandoor/gc.implementation-worker","state":"blocked","failed_checks":[],"merge_state_status":"BLOCKED","failure_kind":"blocked"},
+  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":905,"title":"review required but not mergeable","head_ref_name":"fix/cv-c6-905","head_sha":"s905","repair_route":"vandoor/gc.implementation-worker","state":"blocked","failed_checks":[],"merge_state_status":"BLOCKED","failure_kind":"blocked"},
+  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":906,"title":"non-operator, otherwise identical to 900","head_ref_name":"fix/cv-c6-906","head_sha":"s906","repair_route":"vandoor/gc.implementation-worker","state":"blocked","failed_checks":[],"merge_state_status":"BLOCKED","failure_kind":"blocked"}
 ]}
 JSON
           ;;
@@ -420,6 +522,30 @@ JSON
         printf '%s\n' "${STUB_BD_CREATE_ID}"
       else
         printf '%s-newbead\n' "$(rig_prefix_for "$rig_flag")"
+      fi
+      exit 0
+    fi
+    # `gc [--city X] bd show <id> --json` — faithful stub of the PR-scoped
+    # dedup in-flight check (C5). STUB_BDSHOW_MAP is a newline-delimited
+    # lookup table of "<id>|<status>|<assignee>" entries (pipe-separated so
+    # ids/statuses never collide with the delimiter). A bead id with no
+    # matching entry returns an empty JSON object (unknown/never-minted bead).
+    # `bd close`/`bd update` are deliberately NOT special-cased — they fall
+    # through to the generic `exit 0` below, which is all the script under
+    # test requires; the argv is still recorded in $STUB_GC_LOG by the
+    # universal logging above, so close/update calls remain assertable.
+    if [ "${args[$((i+1))]:-}" = "show" ]; then
+      show_id="${args[$((i+2))]:-}"
+      match=""
+      if [ -n "${STUB_BDSHOW_MAP:-}" ]; then
+        match="$(printf '%s\n' "$STUB_BDSHOW_MAP" | awk -F'|' -v id="$show_id" '$1==id{print; exit}')"
+      fi
+      if [ -n "$match" ]; then
+        show_status="$(printf '%s' "$match" | awk -F'|' '{print $2}')"
+        show_assignee="$(printf '%s' "$match" | awk -F'|' '{print $3}')"
+        printf '{"id":"%s","status":"%s","assignee":"%s"}\n' "$show_id" "$show_status" "$show_assignee"
+      else
+        printf '{}\n'
       fi
       exit 0
     fi
@@ -830,93 +956,165 @@ else
 fi
 
 # ===========================================================================
-# CASE 9 — PART A dedup across cycles: minting is idempotent per PR+head-sha.
-#   The fix pre-creates a bead every mint, so WITHOUT dedup a second cooldown
-#   tick would mint a DUPLICATE repair bead for the same #11 @ same head-sha.
-#   The per-key marker file under CV_STATE_DIR must suppress the second mint.
-#   We run the script TWICE against the SAME state dir and assert the second
-#   run creates NO new bead and issues NO new ci-repair sling for #11.
+# CASE 9 — PART A dedup is PR-NUMBER keyed (not head-sha): a single marker
+#   tracks at most one repair bead per PR across cycles. A re-mint is blocked
+#   ONLY while the tracked bead is genuinely in-flight (open + a live
+#   assignee); a closed or orphaned (open, unassigned) tracked bead never
+#   blocks a fresh mint, and gets superseded when one occurs. We drive four
+#   consecutive cycles against the SAME state dir, using STUB_BDSHOW_MAP to
+#   control what `bd show` reports for the previously-minted bead:
+#     cycle 1: no prior marker                       -> fresh mint (baseline)
+#     cycle 2: prior bead OPEN + assignee (in-flight) -> SKIP (AC: no dup mint)
+#     cycle 3: prior bead CLOSED, head ADVANCED       -> fresh mint (AC: a
+#                                                        stale marker/closed
+#                                                        bead never false-skips)
+#     cycle 4: prior bead OPEN, unassigned (orphan)   -> fresh mint AND the
+#                                                        orphan is superseded
+#                                                        (AC: no orphan pileup)
 # ===========================================================================
-start_case "9: PART A dedup — second cycle does not re-mint same PR+sha"
+start_case "9: PART A dedup is PR-number keyed with in-flight/supersede semantics"
 setup_case_env "9"
-# --- Cycle 1 (first backfill tick): mints one repair bead for #11. ---
+
+# --- Cycle 1: no prior marker -> fresh mint. ---
 GC_LOG_1="${SANDBOX}/gc-9a.log"; : > "$GC_LOG_1"
 OUT="$(
   env GH="${STUBDIR}/gh" GC="${STUBDIR}/gc" GC_CITY="$CITY_DIR" \
     CV_STATE_DIR="$STATE_DIR" STUB_GH_LOG="${SANDBOX}/gh-9a.log" \
     STUB_GC_LOG="$GC_LOG_1" CV_PR_AUTHOR="kriscoleman" \
-    STUB_GH_USER_LOGIN="kriscoleman" \
+    STUB_GH_USER_LOGIN="kriscoleman" STUB_HEAD_SHA="aaa111" \
+    STUB_BD_CREATE_ID="va-bead1" \
     bash "$SCRIPT" 2>&1
 )"; RC=$?
 assert_eq "0" "$RC" "cycle 1 exits 0"
 assert_log_count "$GC_LOG_1" 'bd create .*--silent' 1 "cycle 1 pre-creates exactly one repair bead"
-assert_log_count "$GC_LOG_1" 'sling vandoor/gc.implementation-worker va-newbead --on con-voyage-ci-repair' 1 "cycle 1 mints one ci-repair sling for #11"
-# The dedup marker must now exist on disk (keyed on repo+PR+head-sha aaa111).
-if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11-aaa111.minted" ]; then
-  pass "cycle 1 wrote the dedup marker for #11 @ aaa111"
+assert_log_count "$GC_LOG_1" 'sling vandoor/gc.implementation-worker va-bead1 --on con-voyage-ci-repair' 1 "cycle 1 mints one ci-repair sling for #11"
+# The PR-scoped dedup marker (no head-sha in the filename) must now exist and
+# track the minted bead id.
+if [ "$(cat "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.minted" 2>/dev/null)" = "va-bead1" ]; then
+  pass "cycle 1 wrote the PR-scoped dedup marker tracking va-bead1"
 else
-  fail "expected dedup marker file after cycle 1"
+  fail "expected the PR-scoped dedup marker to track va-bead1 after cycle 1"
 fi
-# --- Cycle 2 (next backfill tick, SAME state dir, SAME head-sha): no re-mint. ---
+
+# --- Cycle 2: SAME head-sha, tracked bead reported OPEN + a live assignee ->
+#     genuinely in-flight -> SKIP, no duplicate mint. ---
 GC_LOG_2="${SANDBOX}/gc-9b.log"; : > "$GC_LOG_2"
 OUT="$(
   env GH="${STUBDIR}/gh" GC="${STUBDIR}/gc" GC_CITY="$CITY_DIR" \
     CV_STATE_DIR="$STATE_DIR" STUB_GH_LOG="${SANDBOX}/gh-9b.log" \
     STUB_GC_LOG="$GC_LOG_2" CV_PR_AUTHOR="kriscoleman" \
-    STUB_GH_USER_LOGIN="kriscoleman" \
+    STUB_GH_USER_LOGIN="kriscoleman" STUB_HEAD_SHA="aaa111" \
+    STUB_BDSHOW_MAP="va-bead1|open|gc__implementation-worker-rc-1" \
     bash "$SCRIPT" 2>&1
 )"; RC=$?
 assert_eq "0" "$RC" "cycle 2 exits 0"
 assert_log_count "$GC_LOG_2" 'bd create .*--silent' 0 "cycle 2 creates NO duplicate repair bead"
-assert_log_count "$GC_LOG_2" 'sling vandoor/gc.implementation-worker va-newbead --on con-voyage-ci-repair' 0 "cycle 2 issues NO duplicate ci-repair sling for #11"
-if printf '%s' "$OUT" | grep -q 'SKIP kriscoleman/foundry#11 @ aaa111 — repair bead already minted'; then
-  pass "cycle 2 logs the dedup SKIP for #11"
+assert_log_count "$GC_LOG_2" 'sling .*--on con-voyage-ci-repair' 0 "cycle 2 issues NO duplicate ci-repair sling for #11"
+assert_log_count "$GC_LOG_2" 'bd close va-bead1' 0 "cycle 2 does not touch the in-flight bead"
+if printf '%s' "$OUT" | grep -q 'SKIP kriscoleman/foundry#11 @ aaa111 — repair genuinely in-flight'; then
+  pass "cycle 2 logs the in-flight SKIP for #11"
 else
-  fail "expected a dedup SKIP log for #11 in cycle 2"
+  fail "expected an in-flight SKIP log for #11 in cycle 2"
 fi
-# --- Cycle 3 (branch ADVANCED: #11 now @ a NEW head-sha bcd222): RE-MINT. ---
-# This is the positive proof that the head-sha is pinned into the dedup key.
-# STUB_HEAD_SHA overrides #11's head_sha in the backfill JSON, so the dedup key
-# becomes cv-ci-repair-...-11-bcd222 — a DIFFERENT key than aaa111. The script
-# must therefore treat this as a fresh mint: pre-create a NEW bead, issue a NEW
-# well-formed ci-repair sling, and write a NEW marker under the new key.
-#
-# TRIPWIRE: if the script ever dropped the head-sha from the dedup key (keyed on
-# repo+PR only), cycle 3 would collide with the aaa111 marker from cycle 1 and
-# SKIP — so `bd create` would be 0 here and this case would go RED. Keeping this
-# green requires the sha to genuinely re-key the mint.
+if [ "$(cat "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.minted" 2>/dev/null)" = "va-bead1" ]; then
+  pass "marker still tracks va-bead1 after the in-flight skip"
+else
+  fail "marker was mutated despite an in-flight skip"
+fi
+
+# --- Cycle 3: head ADVANCED to bcd222, tracked bead va-bead1 now CLOSED ->
+#     not in-flight -> fresh mint despite the stale marker (no false skip). ---
 GC_LOG_3="${SANDBOX}/gc-9c.log"; : > "$GC_LOG_3"
 OUT="$(
   env GH="${STUBDIR}/gh" GC="${STUBDIR}/gc" GC_CITY="$CITY_DIR" \
     CV_STATE_DIR="$STATE_DIR" STUB_GH_LOG="${SANDBOX}/gh-9c.log" \
     STUB_GC_LOG="$GC_LOG_3" CV_PR_AUTHOR="kriscoleman" \
     STUB_GH_USER_LOGIN="kriscoleman" STUB_HEAD_SHA="bcd222" \
+    STUB_BDSHOW_MAP="va-bead1|closed|" STUB_BD_CREATE_ID="va-bead2" \
     bash "$SCRIPT" 2>&1
 )"; RC=$?
 assert_eq "0" "$RC" "cycle 3 exits 0"
-assert_log_count "$GC_LOG_3" 'bd create .*--silent' 1 "cycle 3 pre-creates a FRESH repair bead at the new head-sha"
-assert_log_count "$GC_LOG_3" 'sling vandoor/gc.implementation-worker va-newbead --on con-voyage-ci-repair' 1 "cycle 3 mints one well-formed ci-repair sling at the new head-sha"
-# All PR-context vars still ride on the re-mint sling (proves it's a real,
-# complete mint at the new sha — not a degenerate/partial sling).
-assert_log_count "$GC_LOG_3" 'sling vandoor/gc.implementation-worker va-newbead --on con-voyage-ci-repair .*pr=11 .*repo=kriscoleman/foundry .*branch=fix/con-voyage-author-scope-pr-monitor' 1 "cycle 3 re-mint forwards pr/repo/branch vars"
-# A NEW marker keyed on the NEW head-sha must now exist...
-if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11-bcd222.minted" ]; then
-  pass "cycle 3 wrote a NEW dedup marker for #11 @ bcd222"
+assert_log_count "$GC_LOG_3" 'bd create .*--silent' 1 "cycle 3 pre-creates a FRESH repair bead despite the stale marker"
+assert_log_count "$GC_LOG_3" 'sling vandoor/gc.implementation-worker va-bead2 --on con-voyage-ci-repair' 1 "cycle 3 mints one well-formed ci-repair sling at the new head"
+assert_log_count "$GC_LOG_3" 'sling vandoor/gc.implementation-worker va-bead2 --on con-voyage-ci-repair .*pr=11 .*repo=kriscoleman/foundry .*branch=fix/con-voyage-author-scope-pr-monitor' 1 "cycle 3 re-mint forwards pr/repo/branch vars"
+# The already-closed bead needs no supersede close call — closing it again
+# would be redundant, not incorrect, but we pin the leaner behavior here.
+assert_log_count "$GC_LOG_3" 'bd close va-bead1' 0 "cycle 3 does not re-close the already-closed bead"
+if printf '%s' "$OUT" | grep -q 'KEEP kriscoleman/foundry#11 .* (dedup: cv-ci-repair-kriscoleman-foundry-11)'; then
+  pass "cycle 3 logs a KEEP naming the PR-scoped dedup key (no sha)"
 else
-  fail "expected a NEW dedup marker file (bcd222) after cycle 3 — head-sha not re-keyed?"
+  fail "expected a KEEP log naming the PR-scoped dedup key in cycle 3"
 fi
-# ...and the ORIGINAL marker (aaa111) must still be present (distinct keys, not
-# overwritten): the two head-shas map to two independent dedup entries.
-if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11-aaa111.minted" ]; then
-  pass "original aaa111 marker still present (per-sha keys are independent)"
+if [ "$(cat "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.minted" 2>/dev/null)" = "va-bead2" ]; then
+  pass "marker now tracks the freshly-minted va-bead2"
 else
-  fail "original aaa111 marker vanished — dedup markers are not per-head-sha"
+  fail "expected the marker to track va-bead2 after cycle 3's fresh mint"
 fi
-# The KEEP log for cycle 3 names the new-sha dedup key (operator-observable).
-if printf '%s' "$OUT" | grep -q 'KEEP kriscoleman/foundry#11 .* (dedup: cv-ci-repair-kriscoleman-foundry-11-bcd222)'; then
-  pass "cycle 3 logs a KEEP naming the new-sha dedup key"
+
+# --- Cycle 4: head ADVANCED to ccc333, tracked bead va-bead2 now OPEN but
+#     UNASSIGNED (orphaned, no live worker) -> not in-flight -> fresh mint,
+#     AND the orphan is superseded (closed) so it never piles up. ---
+GC_LOG_4="${SANDBOX}/gc-9d.log"; : > "$GC_LOG_4"
+OUT="$(
+  env GH="${STUBDIR}/gh" GC="${STUBDIR}/gc" GC_CITY="$CITY_DIR" \
+    CV_STATE_DIR="$STATE_DIR" STUB_GH_LOG="${SANDBOX}/gh-9d.log" \
+    STUB_GC_LOG="$GC_LOG_4" CV_PR_AUTHOR="kriscoleman" \
+    STUB_GH_USER_LOGIN="kriscoleman" STUB_HEAD_SHA="ccc333" \
+    STUB_BDSHOW_MAP="va-bead2|open|" STUB_BD_CREATE_ID="va-bead3" \
+    bash "$SCRIPT" 2>&1
+)"; RC=$?
+assert_eq "0" "$RC" "cycle 4 exits 0"
+assert_log_count "$GC_LOG_4" 'bd close va-bead1 .*superseded' 0 "cycle 4 does not touch the unrelated already-closed va-bead1"
+assert_log_count "$GC_LOG_4" 'bd close va-bead2 .*superseded' 1 "cycle 4 supersedes (closes) the orphaned va-bead2"
+assert_log_count "$GC_LOG_4" 'bd create .*--silent' 1 "cycle 4 pre-creates a fresh repair bead alongside the supersede"
+assert_log_count "$GC_LOG_4" 'sling vandoor/gc.implementation-worker va-bead3 --on con-voyage-ci-repair' 1 "cycle 4 mints one well-formed ci-repair sling for the new bead"
+if printf '%s' "$OUT" | grep -q 'SUPERSEDE kriscoleman/foundry#11: closed prior open repair bead va-bead2'; then
+  pass "cycle 4 logs the SUPERSEDE for the orphaned va-bead2"
 else
-  fail "expected a KEEP log naming the bcd222 dedup key in cycle 3"
+  fail "expected a SUPERSEDE log for va-bead2 in cycle 4"
+fi
+if [ "$(cat "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.minted" 2>/dev/null)" = "va-bead3" ]; then
+  pass "marker now tracks the freshly-minted va-bead3 after superseding the orphan"
+else
+  fail "expected the marker to track va-bead3 after cycle 4"
+fi
+
+# ===========================================================================
+# CASE 9b — legacy per-head-sha marker files (from the OLD dedup scheme) are
+#   swept up the first time this PR mints under the NEW PR-scoped scheme: any
+#   leftover "<dedup_key>-<old-sha>.minted" files are superseded (closed if
+#   still open) and removed, so upgrading never leaves old orphans behind.
+#   A differently-numbered PR sharing a numeric prefix (#1 vs #11) must NOT be
+#   touched by #11's sweep (dash-delimited glob boundary).
+# ===========================================================================
+start_case "9b: legacy per-head-sha markers are superseded and swept on upgrade"
+setup_case_env "9b"
+LEGACY_MARKER_OLD="${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11-legacy111.minted"
+printf 'va-legacy\n' > "$LEGACY_MARKER_OLD"
+# A decoy for a DIFFERENT PR (#1) whose id is a numeric prefix of #11 — must
+# survive #11's sweep untouched (proves the glob is dash-delimited, not a bare
+# prefix match).
+DECOY_MARKER="${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-1-decoy.minted"
+printf 'va-decoy\n' > "$DECOY_MARKER"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_BDSHOW_MAP="va-legacy|open|" STUB_BD_CREATE_ID="va-bead-fresh"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd close va-legacy .*superseded' 1 "legacy per-sha bead is superseded (closed)"
+if [ -f "$LEGACY_MARKER_OLD" ]; then
+  fail "legacy per-sha marker file was not removed"
+else
+  pass "legacy per-sha marker file was swept up"
+fi
+if [ -f "$DECOY_MARKER" ]; then
+  pass "unrelated PR #1's decoy marker is untouched (dash-delimited glob boundary)"
+else
+  fail "PR #11's sweep incorrectly removed PR #1's decoy marker"
+fi
+assert_log_count "$GC_LOG" 'bd close va-decoy' 0 "PR #1's decoy bead is never closed by PR #11's sweep"
+if [ "$(cat "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.minted" 2>/dev/null)" = "va-bead-fresh" ]; then
+  pass "fresh PR-scoped marker created after sweeping the legacy marker"
+else
+  fail "expected a fresh PR-scoped marker tracking va-bead-fresh"
 fi
 
 # ===========================================================================
@@ -934,7 +1132,7 @@ assert_eq "0" "$RC" "script exits 0 (mint failure is non-fatal)"
 # bd create was attempted, but returned empty -> the script must NOT sling and
 # must NOT write a marker (so the next cycle retries).
 assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair' 0 "no ci-repair sling when bead pre-create yields no id"
-if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11-aaa111.minted" ]; then
+if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.minted" ]; then
   fail "dedup marker written despite a failed mint (would suppress retries)"
 else
   pass "no dedup marker written on failed mint (mint will be retried next cycle)"
@@ -972,7 +1170,7 @@ assert_log_count "$GC_LOG" 'bd create .*--silent' 1 "a repair bead was pre-creat
 assert_log_count "$GC_LOG" 'sling vandoor/gc.implementation-worker va-newbead --on con-voyage-ci-repair' 1 "one well-formed ci-repair sling was attempted for #11"
 # CRUX: because that sling failed, NO dedup marker may be written — otherwise the
 # mint would be suppressed forever and never retried.
-if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11-aaa111.minted" ]; then
+if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.minted" ]; then
   fail "dedup marker written despite a FAILED sling (would suppress retries)"
 else
   pass "no dedup marker written on failed sling (mint will be retried next cycle)"
@@ -1023,8 +1221,8 @@ if printf '%s' "$OUT" | grep -q 'repair bead va-newbead created/attached and rou
 else
   fail "expected a successful route log to vandoor/gc.implementation-worker"
 fi
-# CRUX: the dedup marker IS written (mint+route succeeded), keyed on repo+PR+sha.
-if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11-aaa111.minted" ]; then
+# CRUX: the dedup marker IS written (mint+route succeeded), keyed on repo+PR.
+if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.minted" ]; then
   pass "dedup marker written after a successful same-rig mint+route"
 else
   fail "expected a dedup marker after the successful same-rig mint+route"
@@ -1059,7 +1257,7 @@ else
 fi
 # CRUX: because the sling was rejected, NO dedup marker may be written (so the
 # next cycle retries rather than suppressing a never-routed bead forever).
-if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11-aaa111.minted" ]; then
+if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.minted" ]; then
   fail "dedup marker written despite a cross-rig REJECTED sling (old-bug regression)"
 else
   pass "no dedup marker on the cross-rig-rejected (city-minted) sling"
@@ -1086,7 +1284,7 @@ assert_eq "0" "$RC" "script exits 0"
 assert_log_count "$GC_LOG" 'bd create' 0 "no repair bead created when the rig cannot be derived"
 assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair' 0 "no ci-repair sling when the rig cannot be derived"
 # No marker written.
-if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11-aaa111.minted" ]; then
+if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.minted" ]; then
   fail "dedup marker written despite skipping an underivable-rig route"
 else
   pass "no dedup marker written for the skipped underivable-rig route"
@@ -1299,6 +1497,77 @@ assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*pr=90003.*failure
 assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*pr=90004.*failure_kind=checks_failed' 1 "real sample #4 (failed/DIRTY) classifies checks_failed"
 assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*pr=90005.*failure_kind=checks_failed' 1 "real sample #5 (failed/BLOCKED) classifies checks_failed"
 assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair' 5 "all 5 real samples mint a repair bead (none silently dropped)"
+
+# ===========================================================================
+# CASE 25 — C6 actionable filter (fk-t9f/fk-0dl): a PR that is classified
+#   `blocked` (gc's ambiguous catch-all) but is ACTUALLY just awaiting human
+#   review — all CI green/neutral, MERGEABLE, branch up to date, and the only
+#   outstanding blocker is reviewDecision=REVIEW_REQUIRED — must be skipped as
+#   a no-op: no repair bead, no comment, no dedup marker. con-voyage PRs never
+#   auto-merge, so every one of them would otherwise end in REVIEW_REQUIRED
+#   forever and spuriously mint a repair on every single cycle (the live
+#   incident: #10494, 48/48 checks green + MERGEABLE, blocked solely on
+#   REVIEW_REQUIRED).
+# ===========================================================================
+start_case "25: R6.1 C6 actionable filter — pure REVIEW_REQUIRED (green+mergeable+up-to-date) is skipped, no bead, no marker"
+setup_case_env "25"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_BACKFILL_MODE="reviewgate"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd create Repair GitHub PR kriscoleman/foundry#900' 0 "no repair bead created for #900 (awaiting human only)"
+assert_log_count "$GC_LOG" 'sling .*pr=900' 0 "no ci-repair sling for #900"
+if printf '%s' "$OUT" | grep -q 'SKIP kriscoleman/foundry#900 — awaiting human review only'; then
+  pass "logs the awaiting-human SKIP for #900"
+else
+  fail "expected an awaiting-human SKIP log for #900"
+fi
+if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-900.minted" ]; then
+  fail "dedup marker written for a PR that was never minted (awaiting-human skip)"
+else
+  pass "no dedup marker written for the awaiting-human skip"
+fi
+
+# ===========================================================================
+# CASE 26 — C6 no-regression: reviewDecision/mergeable/CI-state alone must
+#   NEVER suppress a real defect. Reuses the "reviewgate" fixture's #901-#905,
+#   each violating exactly ONE precondition of the awaiting-human skip (see
+#   the gh stub's per-number comments above) — every one of them must still
+#   mint, proving the C6 filter is narrowly scoped to the one true awaiting-
+#   human combination proven skipped in CASE 25.
+# ===========================================================================
+start_case "26: R6.2 C6 filter does not regress real defects (failing check / bad check / behind / changes-requested / not-mergeable)"
+setup_case_env "26"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_BACKFILL_MODE="reviewgate"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*pr=901' 1 "pr=901 mints despite REVIEW_REQUIRED (a real failing check drives repair — AC clause 3)"
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*pr=902' 1 "pr=902 mints despite REVIEW_REQUIRED (a check is actually FAILING live — not all green)"
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*pr=903' 1 "pr=903 mints despite REVIEW_REQUIRED (branch is BEHIND live — not up to date)"
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*pr=904' 1 "pr=904 mints — CHANGES_REQUESTED is not REVIEW_REQUIRED (AC scopes the skip narrowly)"
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*pr=905' 1 "pr=905 mints despite REVIEW_REQUIRED (mergeable=CONFLICTING, not MERGEABLE)"
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair' 5 "exactly 5 ci-repair slings (only #900 was skipped)"
+
+# ===========================================================================
+# CASE 27 — C6 never bypasses the author gate: a non-operator PR (#906) that
+#   otherwise carries the EXACT same awaiting-human signals as #900 must still
+#   be DROPPED for authorship first — never reach the C6 "awaiting-human" SKIP
+#   path. This pins the gate ORDER (author before actionable-filter) so C6
+#   can never become a side-channel that treats a stranger's PR as ours.
+# ===========================================================================
+start_case "27: C6 gate runs strictly after the author gate — a non-operator PR is DROPPED, not SKIPPED"
+setup_case_env "27"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_BACKFILL_MODE="reviewgate"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling .*pr=906' 0 "no sling for #906 (non-operator)"
+assert_log_count "$GC_LOG" 'bd create Repair GitHub PR kriscoleman/foundry#906' 0 "no repair bead for #906 (non-operator)"
+if printf '%s' "$OUT" | grep -q "DROP kriscoleman/foundry#906 (author='evansmungai' != 'kriscoleman')"; then
+  pass "logs the author DROP for #906 (not an awaiting-human SKIP)"
+else
+  fail "expected an author DROP log for #906"
+fi
+if printf '%s' "$OUT" | grep -q 'SKIP kriscoleman/foundry#906 — awaiting human review only'; then
+  fail "logged an awaiting-human SKIP for #906 — the C6 gate ran before the author gate"
+else
+  pass "no awaiting-human SKIP log for #906 (author gate ran first)"
+fi
 
 # ===========================================================================
 # Summary

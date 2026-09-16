@@ -263,10 +263,56 @@ Each state has a distinct, safety-reviewed repair path:
   before acting: a genuinely failing required check is handled as
   `checks_failed`; pending-only checks are a no-op wait (never rerun a running
   check); a `BEHIND` merge state is handled as `behind_base`; and anything
-  gated on human review (`REVIEW_REQUIRED`, `CHANGES_REQUESTED`, CODEOWNERS, or
-  other branch protection) gets a machine-bannered annotation plus an escalation
-  mail — zero mutating action, and the implementor **never self-approves and
-  never bypasses branch protection**.
+  gated on human review (`CHANGES_REQUESTED`, CODEOWNERS, or other branch
+  protection) gets a machine-bannered annotation plus an escalation mail — zero
+  mutating action, and the implementor **never self-approves and never
+  bypasses branch protection**. The one exception is a PR that is *purely*
+  awaiting review — see **Awaiting-human filter** below; that case never
+  reaches this router at all, and closes silently rather than annotating.
+
+#### Awaiting-human filter (`REVIEW_REQUIRED`-only PRs are not a repair)
+
+con-voyage PRs never auto-merge, so once every real defect is resolved (CI
+green, mergeable, branch up to date) a PR ends in
+`reviewDecision=REVIEW_REQUIRED` **forever** — that is a human already in the
+loop, not something a machine can fix. Without a filter, every such PR would
+be classified `blocked` and re-mint a repair bead (and, before this filter
+existed, escalation mail) on every single 10-minute tick, forever.
+
+Two layers apply the identical check — all `statusCheckRollup` entries
+green/neutral, `mergeable == MERGEABLE`, `mergeStateStatus != BEHIND`, and
+`reviewDecision == REVIEW_REQUIRED` — and both take zero action (no bead, no
+comment, no mail) when it holds:
+
+1. **Part A (creation-time), `con-voyage-pr-watch.sh`.** Only ever consulted
+   when `failure_kind == blocked`; `checks_failed`/`merge_conflict`/
+   `behind_base` already mean a real defect exists, so review state can never
+   suppress those. A match is logged and skipped — no repair bead is created.
+2. **`con-voyage-ci-repair` Step 0b (defense in depth).** Re-checks the same
+   condition inside the workflow itself, in case a bead reached a worker via a
+   path Part A does not control (native `--create-repair-beads`, a manual
+   sling, or a bead minted before this filter existed). On a match, the bead is
+   closed immediately with a `not actionable: awaiting human review only` note
+   — no PR comment, no escalation mail, and Steps 1 onward never run.
+
+Any PR with a genuinely failing check, a real merge conflict, a behind branch,
+or a review state *other than* `REVIEW_REQUIRED` (`CHANGES_REQUESTED`,
+CODEOWNERS, etc.) still mints and repairs exactly as before — this filter is
+narrowly scoped to the one true "nothing left to do but wait" combination.
+
+### Repair-bead dedup (PR-scoped, not head-sha-scoped)
+
+`con-voyage-pr-watch.sh` tracks at most **one** open repair bead per PR (keyed
+on repo + PR number only) via a marker file under `CV_STATE_DIR`. A re-mint is
+blocked *only* while the tracked bead is genuinely in-flight — open **and**
+claimed by a live assignee. A closed bead, or an open-but-unassigned
+(orphaned) bead, never blocks a fresh mint: it is superseded (closed, with a
+note) and a new bead is minted in its place. This means a new push (new
+head-sha) always re-arms the mint once the prior attempt is no longer live,
+and a stale marker can never permanently suppress a needed repair. An earlier
+head-sha-scoped key had both failure modes: a stale marker or a reset to an
+old head could block a needed re-mint, and a head advance could leave the
+prior head's bead open forever as an orphan.
 
 All four states share the same bright lines as everything else in this
 pack: author-gated at the source (an unauthorized PR never reaches any of

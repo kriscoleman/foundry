@@ -937,6 +937,78 @@ else
 fi
 
 # ===========================================================================
+# CASE R8 (C6 content coverage, fk-t9f/fk-0dl) — {target}.ci-repair.md carries
+#   a "Step 0b" review-required self-gate, positioned after Step 0 (author
+#   gate) and before Step 1, that re-checks the SAME signals as the monitor's
+#   ACTIONABLE FILTER (reviewDecision/mergeable/mergeStateStatus/
+#   statusCheckRollup) and — unlike every other close/escalation path in this
+#   file — closes WITHOUT posting a PR comment or sending mail. This is
+#   defense-in-depth for a bead that reaches a worker via a path the monitor
+#   does not control (native --create-repair-beads, a manual sling, or a bead
+#   minted before this gate existed). Asserted by relative ORDER (Step 0b
+#   before Step 1), not fixed line numbers, so the check survives future edits
+#   above these sections.
+# ===========================================================================
+start_case "R8: ci-repair.md has a Step 0b review-required self-gate before Step 1, and it closes silently"
+step0b_line=$(grep -n '^## Step 0b' "$CI_REPAIR_MD" | head -1 | cut -d: -f1)
+step0_line=$(grep -n '^## Step 0 ' "$CI_REPAIR_MD" | head -1 | cut -d: -f1)
+step1_line=$(grep -n '^## Step 1' "$CI_REPAIR_MD" | head -1 | cut -d: -f1)
+
+if [ -n "$step0b_line" ]; then
+  pass "found a '## Step 0b' section"
+else
+  fail "no '## Step 0b' section found in ci-repair.md"
+fi
+
+if [ -n "$step0_line" ] && [ -n "$step0b_line" ] && [ "$step0_line" -lt "$step0b_line" ]; then
+  pass "Step 0 (line ${step0_line:-?}) precedes Step 0b (line ${step0b_line:-?})"
+else
+  fail "Step 0 does not precede Step 0b (step0=${step0_line:-missing}, step0b=${step0b_line:-missing})"
+fi
+
+if [ -n "$step0b_line" ] && [ -n "$step1_line" ] && [ "$step0b_line" -lt "$step1_line" ]; then
+  pass "Step 0b (line ${step0b_line:-?}) precedes Step 1 (line ${step1_line:-?})"
+else
+  fail "Step 0b does not precede Step 1 (step0b=${step0b_line:-missing}, step1=${step1_line:-missing})"
+fi
+
+if [ -n "$step0b_line" ] && [ -n "$step1_line" ]; then
+  step0b_body="$(sed -n "${step0b_line},${step1_line}p" "$CI_REPAIR_MD")"
+
+  if printf '%s' "$step0b_body" | grep -q 'mergeStateStatus,statusCheckRollup'; then
+    pass "Step 0b reads the same live signals as the monitor's C6 filter (reviewDecision/mergeable/mergeStateStatus/statusCheckRollup)"
+  else
+    fail "expected Step 0b to read reviewDecision/mergeable/mergeStateStatus/statusCheckRollup"
+  fi
+
+  if printf '%s' "$step0b_body" | grep -q 'REVIEW_REQUIRED'; then
+    pass "Step 0b gates on REVIEW_REQUIRED"
+  else
+    fail "expected Step 0b to gate on REVIEW_REQUIRED"
+  fi
+
+  if printf '%s' "$step0b_body" | grep -q '{{failure_kind}}'; then
+    pass "Step 0b scopes itself to {{failure_kind}} (never suppresses a real defect)"
+  else
+    fail "expected Step 0b to gate on {{failure_kind}}"
+  fi
+
+  if printf '%s' "$step0b_body" | grep -q 'gc bd close "{{convoy_id}}"'; then
+    pass "Step 0b closes the bead on the awaiting-human path"
+  else
+    fail "expected Step 0b to close \"{{convoy_id}}\" on the awaiting-human path"
+  fi
+
+  if printf '%s' "$step0b_body" | grep -qE 'gh pr comment|gh pr review|gc mail send'; then
+    fail "Step 0b must close SILENTLY — found a PR comment/review/mail command in its body"
+  else
+    pass "Step 0b closes silently — no PR comment, review, or escalation mail"
+  fi
+else
+  fail "cannot slice Step 0b's body — missing Step 0b and/or Step 1 markers"
+fi
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 echo
