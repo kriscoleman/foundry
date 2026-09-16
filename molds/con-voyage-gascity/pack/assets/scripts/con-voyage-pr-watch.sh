@@ -767,17 +767,28 @@ print((d.get('author') or {}).get('login', ''))" 2>/dev/null || echo "")
     # Load seen IDs into a temp file so we can pass to python3 via stdin
     seen_ids_content=$(load_seen_ids "$state_file")
 
-    # Fetch PR reviews, issue comments, and inline review thread comments.
-    # Pass JSON via STDIN to python3 (avoids ARG_MAX limits on large PRs).
+    # Fetch PR reviews, issue comments, and inline review-thread comments, then
+    # merge them into a single {reviews, comments, reviewThreads} object for the
+    # parser below (which walks all three).
     #
-    # Capture stderr to a file (rather than discarding it) so a failure's
-    # WARNING can surface gh's real error text — e.g. an unsupported --json
-    # field or a transient API error — instead of a bare "skipping" that gives
-    # an operator nothing to diagnose.
+    # WHY TWO CALLS: `gh pr view --json` does NOT support a `reviewThreads`
+    # field (its field set has no such key — the whole call errors "Unknown
+    # JSON field: reviewThreads" and exits non-zero, taking reviews/comments
+    # down with it). reviewThreads (inline review-thread comments) is only
+    # exposed via the GraphQL API. So we fetch:
+    #   1. reviews + comments via `gh pr view --json reviews,comments` (the
+    #      only valid fields here) — the PRIMARY fetch, which MUST succeed to
+    #      route anything. Capture stderr to a file (rather than discarding it)
+    #      so a failure's WARNING can surface gh's real error text instead of a
+    #      bare "skipping" that gives an operator nothing to diagnose.
+    #   2. reviewThreads via `gh api graphql` — BEST-EFFORT; a failure here is
+    #      non-fatal (logged as a NOTE) and defaults to an empty threads list,
+    #      so reviews+comments still route rather than losing all feedback.
+    # Pass JSON via STDIN to python3 (avoids ARG_MAX limits on large PRs).
     gh_view_err_file="$(mktemp "${TMPDIR:-/tmp}/cv-pr-watch-gh-view-err.XXXXXX")"
-    pr_comments_json=$("$GH" pr view "$pr_number" \
+    pr_view_json=$("$GH" pr view "$pr_number" \
       --repo "$full_repo" \
-      --json reviews,comments,reviewThreads \
+      --json reviews,comments \
       2>"$gh_view_err_file") || {
       gh_view_err="$(cat "$gh_view_err_file" 2>/dev/null)"
       rm -f "$gh_view_err_file"
@@ -785,6 +796,53 @@ print((d.get('author') or {}).get('login', ''))" 2>/dev/null || echo "")
       continue
     }
     rm -f "$gh_view_err_file"
+
+    # Best-effort inline review-thread comments via GraphQL. Caps at the first
+    # 100 threads / 100 comments-per-thread, which comfortably covers a
+    # con-voyage PR's inline feedback for a single cycle. A failure here is
+    # non-fatal: log a NOTE and fall back to an empty threads set so
+    # reviews+comments still route.
+    # shellcheck disable=SC2016
+    _GQL_REVIEW_THREADS='query($owner:String!,$repo:String!,$num:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$num){reviewThreads(first:100){nodes{comments(first:100){nodes{id author{login} body}}}}}}}'
+    review_threads_json=$("$GH" api graphql \
+      -f query="$_GQL_REVIEW_THREADS" \
+      -F owner="$owner" \
+      -F repo="$repo" \
+      -F num="$pr_number" \
+      2>/dev/null) || {
+      echo "con-voyage-pr-watch: [PART B] NOTE: reviewThreads GraphQL fetch failed for ${full_repo}#${pr_number}; routing reviews+comments only (inline thread comments skipped this cycle)" >&2
+      review_threads_json=""
+    }
+
+    # Merge the two payloads into one {reviews, comments, reviewThreads} object.
+    # reviewThreads is lifted out of the GraphQL envelope
+    # (data.repository.pullRequest.reviewThreads.nodes) into a top-level
+    # "reviewThreads" list, matching the scanner's expected shape below. If the
+    # GraphQL fetch failed/was empty, reviewThreads defaults to [] (fail-soft).
+    # shellcheck disable=SC2016
+    _PY_MERGE_PR_JSON='
+import sys, json
+view = json.loads(sys.argv[1] or "{}")
+raw  = sys.argv[2]
+threads = []
+if raw.strip():
+    try:
+        gq = json.loads(raw)
+        pr = ((gq.get("data") or {}).get("repository") or {}).get("pullRequest") or {}
+        threads = ((pr.get("reviewThreads") or {}).get("nodes")) or []
+    except (ValueError, AttributeError):
+        threads = []
+out = {
+    "reviews":       view.get("reviews", []) or [],
+    "comments":      view.get("comments", []) or [],
+    "reviewThreads": threads,
+}
+print(json.dumps(out))
+'
+    pr_comments_json=$(python3 -c "$_PY_MERGE_PR_JSON" "$pr_view_json" "$review_threads_json" 2>/dev/null) || {
+      echo "con-voyage-pr-watch: [PART B] WARNING: failed to merge PR comment payloads for ${full_repo}#${pr_number}; skipping" >&2
+      continue
+    }
 
     # Extract new human comments using python3.
     # Reads PR JSON from stdin (fd 0) and seen-IDs + config from argv.

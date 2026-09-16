@@ -79,6 +79,26 @@ case "$sub" in
     exit 0
     ;;
   api)
+    apisub="${2:-}"
+    if [ "$apisub" = "graphql" ]; then
+      # `gh api graphql -f query=... -F owner=O -F repo=R -F num=N` — PART B's
+      # best-effort inline review-thread (reviewThreads) fetch. Returns the
+      # GraphQL envelope shape the script's merge step unwraps
+      # (data.repository.pullRequest.reviewThreads.nodes). Returns one inline
+      # thread comment from a human so the merged payload exercises the
+      # reviewThreads path end-to-end.
+      #
+      # STUB_GQL_THREADS_FAIL=1 simulates a GraphQL failure so the fix's
+      # best-effort fallback is exercised: the script must degrade to
+      # reviews+comments only (empty threads) and STILL route, never aborting.
+      if [ "${STUB_GQL_THREADS_FAIL:-0}" = "1" ]; then
+        exit 1
+      fi
+      cat <<'JSON'
+{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"comments":{"nodes":[{"id":"PRRC_test_11","author":{"login":"a-human-reviewer"},"body":"inline: rename this var"}]}}]}}}}}
+JSON
+      exit 0
+    fi
     # `gh api user --jq .login` — configurable login for default-resolution tests.
     # STUB_GH_USER_LOGIN unset/empty => emit nothing (simulates unresolvable).
     # STUB_GH_USER_FAIL=1 => exit non-zero.
@@ -124,11 +144,24 @@ JSON
       view)
         # Two shapes:
         #   gh pr view <n> --repo R --json author,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup (PART A)
-        #   gh pr view <n> --repo R --json reviews,comments,reviewThreads (PART B)
+        #   gh pr view <n> --repo R --json reviews,comments            (PART B)
         num="${3:-}"
         jsonfields="$(flagval --json "$@")"
+        if printf '%s' "$jsonfields" | grep -q 'reviewThreads'; then
+          # TRIPWIRE (regression guard): FAITHFUL to real gh 2.89, `gh pr view
+          # --json` validates every requested field and REJECTS any it does not
+          # know. `reviewThreads` is NOT a valid `gh pr view --json` field (it
+          # only exists via the GraphQL API) — real gh errors 'Unknown JSON
+          # field: "reviewThreads"' and exits non-zero, taking reviews/comments
+          # down with it. The fixed script must never request reviewThreads here
+          # (it fetches reviewThreads separately via `gh api graphql` below), so
+          # this branch firing at all means the fix regressed.
+          echo 'Unknown JSON field: "reviewThreads"' >&2
+          exit 1
+        fi
         if printf '%s' "$jsonfields" | grep -q 'reviews'; then
-          # PART B comment fetch.
+          # PART B comment fetch (PRIMARY: reviews,comments only — the only
+          # valid fields; reviewThreads comes from the graphql stub below).
           #
           # STUB_GH_VIEW_COMMENTS_FAIL=1 simulates a real gh failure (e.g. an
           # unsupported --json field set, or a transient API error) so the PART B
@@ -142,8 +175,10 @@ JSON
           # comment authored by the operator's own login (kriscoleman) — exactly
           # what cv-pr-comment.sh posts under the PAT. This proves PART B does
           # not re-route the bot's own automated replies as new human feedback.
+          # reviewThreads is supplied separately by the `gh api graphql` stub
+          # below.
           cat <<'JSON'
-{"reviews":[],"comments":[{"id":"IC_test_11","author":{"login":"a-human-reviewer"},"body":"please fix the null check"},{"id":"IC_test_bot","author":{"login":"kriscoleman"},"body":"🤖 **Automated con-voyage agent** (con-voyage-ci-repair / foundry-kc/worker)\n\nFixed a thing."}],"reviewThreads":[]}
+{"reviews":[],"comments":[{"id":"IC_test_11","author":{"login":"a-human-reviewer"},"body":"please fix the null check"},{"id":"IC_test_bot","author":{"login":"kriscoleman"},"body":"🤖 **Automated con-voyage agent** (con-voyage-ci-repair / foundry-kc/worker)\n\nFixed a thing."}]}
 JSON
           exit 0
         fi
@@ -903,6 +938,23 @@ assert_log_count "$GH_LOG" 'pr view 500 .*reviews' 0 "no comment fetch for #500"
 assert_log_count "$GC_LOG" 'Automated con-voyage agent' 0 "the bot's own bannered comment (IC_test_bot) is excluded from routed feedback"
 assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 1 "still exactly one comment-route sling (the bot comment adds no extra route)"
 
+# --- CORRECTED PART B FETCH INVOCATION (regression guard for the reviewThreads bug) ---
+# The bug: PART B fetched comments with `gh pr view <n> --json reviews,comments,reviewThreads`.
+# `reviewThreads` is NOT a valid `gh pr view --json` field, so real gh (2.89)
+# errors 'Unknown JSON field: "reviewThreads"' and exits non-zero on EVERY cycle —
+# routing never worked. The fix requests ONLY the valid fields here (reviews,comments)
+# and fetches reviewThreads separately via `gh api graphql`.
+#
+# TRIPWIRE: the pr-view fetch for #11 MUST NOT ask gh for reviewThreads. The stub
+# faithfully REJECTS `reviewThreads` in `gh pr view --json` (like real gh), so the
+# old invocation goes RED (fetch fails -> no route). This assertion pins the
+# corrected field set explicitly, independent of the routing assertions above.
+assert_log_count "$GH_LOG" 'pr view 11 .*--json reviews,comments,reviewThreads' 0 "PART B pr view does NOT request reviewThreads (invalid gh pr view field)"
+assert_log_count "$GH_LOG" 'pr view 11 --repo kriscoleman/foundry --json reviews,comments ' 1 "PART B pr view requests exactly the valid reviews,comments field set"
+# reviewThreads (inline review-thread comments) is fetched via GraphQL instead.
+assert_log_count "$GH_LOG" 'api graphql .*reviewThreads' 1 "PART B fetches reviewThreads via gh api graphql"
+assert_log_count "$GH_LOG" 'api graphql .*num=11' 1 "the graphql reviewThreads fetch targets PR #11"
+
 # ===========================================================================
 # CASE 6 — Happy-path default: CV_PR_AUTHOR unset, gh api user => kriscoleman.
 #   Script proceeds (exit 0), logs the author-scoped banner, and behaves like
@@ -1578,6 +1630,42 @@ if printf '%s' "$OUT" | grep -q 'SKIP kriscoleman/foundry#906 — awaiting human
   fail "logged an awaiting-human SKIP for #906 — the C6 gate ran before the author gate"
 else
   pass "no awaiting-human SKIP log for #906 (author gate ran first)"
+fi
+
+# ===========================================================================
+# CASE 28 — PART B graceful degradation: the reviewThreads GraphQL fetch fails,
+#   but comment routing MUST still succeed from reviews+comments alone. The fix
+#   makes the inline-thread (reviewThreads) fetch BEST-EFFORT: a GraphQL failure
+#   is logged as a NOTE and reviewThreads defaults to [] — reviews+comments still
+#   route. Without this fail-soft, a transient GraphQL error would silently drop
+#   ALL human feedback for the PR that cycle. STUB_GQL_THREADS_FAIL=1 makes only
+#   the graphql call exit non-zero; `gh pr view --json reviews,comments` (which
+#   returns a human issue comment for #11) still succeeds.
+#   (Numbered 28, not 15 or 25: this suite's CASE 15/15b cover native-monitor-
+#   parity, and CASE 25-27 (added on main in parallel) cover the C6 actionable
+#   filter — 28 is the next free number after rebase.)
+# ===========================================================================
+start_case "28: PART B routes reviews+comments even when reviewThreads GraphQL fails"
+setup_case_env "28"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_GQL_THREADS_FAIL=1
+assert_eq "0" "$RC" "script exits 0 (best-effort reviewThreads failure is non-fatal)"
+# The valid pr-view fetch still ran (reviews,comments)...
+assert_log_count "$GH_LOG" 'pr view 11 --repo kriscoleman/foundry --json reviews,comments ' 1 "pr view reviews,comments fetch still runs"
+# ...the graphql fetch was ATTEMPTED (and failed, per the stub)...
+assert_log_count "$GH_LOG" 'api graphql .*num=11' 1 "reviewThreads graphql fetch was attempted"
+# ...and the human issue comment from reviews+comments STILL routed to the implementor.
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin STDIN: Human PR feedback on kriscoleman/foundry#11' 1 "reviews+comments feedback still routes despite the graphql failure"
+# The fail-soft NOTE is logged (operator-observable evidence of the degradation).
+if printf '%s' "$OUT" | grep -q 'reviewThreads GraphQL fetch failed for kriscoleman/foundry#11'; then
+  pass "logs the best-effort reviewThreads NOTE on graphql failure"
+else
+  fail "expected a best-effort reviewThreads NOTE on graphql failure"
+fi
+# CRUX: the PR was NOT skipped — no 'gh pr view failed ... skipping' for #11.
+if printf '%s' "$OUT" | grep -q 'gh pr view failed for kriscoleman/foundry#11; skipping'; then
+  fail "PART B skipped #11 on a graphql failure (should degrade, not skip)"
+else
+  pass "PART B did not skip #11 on the graphql failure (degraded gracefully)"
 fi
 
 # ===========================================================================
