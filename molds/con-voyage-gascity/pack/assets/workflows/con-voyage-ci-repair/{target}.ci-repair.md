@@ -178,7 +178,7 @@ unconditionally prepends the identity banner as the first line of whatever you
 post, so the banner can no longer be forgotten:
 
 ```
-🤖 **Automated con-voyage agent** (con-voyage-ci-repair / <rig>/<agent>) — posted via @kriscoleman's token, not by Kris personally.
+🤖 **Automated con-voyage agent** (con-voyage-ci-repair / <rig>/<agent>)
 ```
 
 ### FORBIDDEN commenting tactics — never do these

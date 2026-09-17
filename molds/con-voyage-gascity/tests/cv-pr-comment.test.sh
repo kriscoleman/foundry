@@ -163,9 +163,9 @@ else
   fail "banner missing formula/agent identification"
 fi
 if grep -q "posted via @kriscoleman's token, not by Kris personally" "$BODY_LOG"; then
-  pass "banner carries the impersonation disclaimer"
+  fail "banner still carries the impersonation disclaimer (dropped per PR #27 feedback)"
 else
-  fail "banner missing the impersonation disclaimer"
+  pass "banner does not carry the impersonation disclaimer"
 fi
 if grep -q 'Diagnosed the flake' "$BODY_LOG"; then
   pass "original body content is preserved in the posted body"

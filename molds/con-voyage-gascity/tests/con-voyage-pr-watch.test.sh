@@ -143,7 +143,7 @@ JSON
           # what cv-pr-comment.sh posts under the PAT. This proves PART B does
           # not re-route the bot's own automated replies as new human feedback.
           cat <<'JSON'
-{"reviews":[],"comments":[{"id":"IC_test_11","author":{"login":"a-human-reviewer"},"body":"please fix the null check"},{"id":"IC_test_bot","author":{"login":"kriscoleman"},"body":"🤖 **Automated con-voyage agent** (con-voyage-ci-repair / foundry-kc/worker) — posted via @kriscoleman's token, not by Kris personally.\n\nFixed a thing."}],"reviewThreads":[]}
+{"reviews":[],"comments":[{"id":"IC_test_11","author":{"login":"a-human-reviewer"},"body":"please fix the null check"},{"id":"IC_test_bot","author":{"login":"kriscoleman"},"body":"🤖 **Automated con-voyage agent** (con-voyage-ci-repair / foundry-kc/worker)\n\nFixed a thing."}],"reviewThreads":[]}
 JSON
           exit 0
         fi

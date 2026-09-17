@@ -512,7 +512,7 @@ cv-pr-comment.sh create --repo <owner/repo> --title <title> --body-file <path> [
 Every posted body leads with:
 
 ```
-🤖 **Automated con-voyage agent** (<formula> / <rig>/<agent>) — posted via @kriscoleman's token, not by Kris personally.
+🤖 **Automated con-voyage agent** (<formula> / <rig>/<agent>)
 ```
 
 `{target}.ci-repair.md` and `{target}.publish.md` route every `gh pr comment`
