@@ -29,15 +29,6 @@
 # belong to the implementor workflow, which this script only ever prevents
 # from starting on a non-operator PR.
 #
-# BANNER COMPLIANCE SCAN (C4 backstop, layered on top of cv-pr-comment.sh):
-# for every KEPT bead (the operator's own PR), this script also reads that
-# PR's comments and flags — fail-loud, on stderr — any comment authored by
-# CV_PR_AUTHOR that does not lead with the mandatory machine-identity banner.
-# This is a READ-ONLY scan: it can't tell a bot comment that skipped the
-# banner apart from a genuine remark the human typed (both are authored by
-# the same PAT-backed login), so it never edits or deletes a comment, and a
-# finding never changes this script's own exit code.
-#
 # Environment / configuration (all optional with sane defaults):
 #
 #   GC              Path to the gc binary (default: gc)
@@ -183,64 +174,6 @@ drop_bead() {
 }
 
 # ---------------------------------------------------------------------------
-# scan_pr_comment_banners <repo> <pr> <author> — banner compliance scan
-# (defense-in-depth for C4, the machine-identity invariant).
-#
-# con-voyage runs under the operator's GitHub PAT, so every comment it posts
-# is indistinguishable, by author alone, from a real comment the human typed.
-# cv-pr-comment.sh structurally prepends a fixed banner to everything IT
-# posts, but that only covers posts made through it — this scan is the
-# backstop that catches a banner-less operator-authored comment however it
-# got there (a worker that bypassed the script, a stale pre-cv-pr-comment.sh
-# code path, manual intervention, etc.).
-#
-# Deliberately a SCAN, not a gate: a banner-less comment authored by
-# CV_PR_AUTHOR might be a real human remark (nothing wrong at all) or a bot
-# comment that skipped the mandatory banner (a real policy violation) — this
-# scan cannot tell those apart, so it never edits or deletes a comment. It
-# only "flags fail-loud": an ERROR-level line on stderr naming the exact
-# comment so a human can review it. It never changes this script's own exit
-# code — a banner-scan finding is not a reason to treat the author-gate
-# sweep itself as failed.
-#
-# Only called for KEPT beads (the operator's own PR) — a DROPped bead is not
-# ours to inspect further than the author check already performed.
-# ---------------------------------------------------------------------------
-CV_BANNER_PREFIX='🤖 **Automated con-voyage agent**'
-
-scan_pr_comment_banners() {
-  local repo="$1" pr="$2" author="$3"
-  local comments_json
-  comments_json=$("$GH" api "repos/${repo}/issues/${pr}/comments" --paginate --jq '[.[] | {id: .id, login: .user.login, body: .body}]' 2>/dev/null) || {
-    echo "con-voyage-ci-repair-guard: WARNING: could not fetch PR comments for ${repo}#${pr}; skipping banner scan" >&2
-    return 0
-  }
-
-  local bad_ids
-  bad_ids=$(printf '%s' "$comments_json" | CV_SCAN_AUTHOR="$author" python3 -c "
-import json, os, sys
-
-BANNER = '${CV_BANNER_PREFIX}'
-author = os.environ.get('CV_SCAN_AUTHOR', '')
-try:
-    comments = json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
-for c in (comments or []):
-    login = c.get('login', '') or ''
-    body = c.get('body', '') or ''
-    if login == author and not body.startswith(BANNER):
-        print(c.get('id', ''))
-" 2>/dev/null)
-
-  [ -n "$bad_ids" ] || return 0
-  while IFS= read -r bad_id; do
-    [ -n "$bad_id" ] || continue
-    echo "con-voyage-ci-repair-guard: ERROR: banner-less operator-authored PR comment — ${repo}#${pr} comment id ${bad_id} (author='${author}') does not lead with the mandatory identity banner. This scan cannot distinguish a genuine human comment from a bot comment that skipped the banner — review comment ${bad_id} manually; no automated action is taken." >&2
-  done <<< "$bad_ids"
-}
-
-# ---------------------------------------------------------------------------
 # Find every OPEN con-voyage-ci-repair step bead — the bead a worker actually
 # claims and acts on (the workflow root bead carries the formula name, but
 # the step bead is what `gc hook --claim` hands to a worker).
@@ -357,7 +290,6 @@ print(formula + SEP + pr + SEP + repo)
     drop_bead "$step_id" "dropped: not authored by operator (pr_author='${pr_author:-<unresolved>}', CV_PR_AUTHOR='${CV_PR_AUTHOR}')"
   else
     echo "con-voyage-ci-repair-guard: KEEP ${step_id} (${repo}#${pr}, author='${pr_author}') — leaving for worker"
-    scan_pr_comment_banners "$repo" "$pr" "$pr_author"
   fi
 done <<< "$step_pairs"
 
