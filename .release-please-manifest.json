@@ -1,7 +1,7 @@
 {
   "molds/api-platform-contract": "0.1.0",
   "molds/compliance-privacy": "0.1.0",
-  "molds/con-voyage-gascity": "0.4.0",
+  "molds/con-voyage-gascity": "0.4.1",
   "molds/con-voyage-gastown": "0.2.1",
   "molds/con-voyage-personas": "0.1.1",
   "molds/data-db-engineer": "0.1.0",
