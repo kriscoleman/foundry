@@ -149,7 +149,7 @@ AGENT_DISPLAY="${AGENT:-unknown/unknown}"
 # con-voyage-pr-watch.sh's CV_AGENT_PREFIX_PATTERN, which excludes the bot's
 # own posts from "new human feedback" detection. Changing this prefix without
 # updating that pattern reintroduces a self-feedback routing loop.
-BANNER="🤖 **Automated con-voyage agent** (${FORMULA_DISPLAY} / ${AGENT_DISPLAY}) — posted via @kriscoleman's token, not by Kris personally."
+BANNER="🤖 **Automated con-voyage agent** (${FORMULA_DISPLAY} / ${AGENT_DISPLAY})"
 
 POSTED_BODY_FILE="$(mktemp "${TMPDIR:-/tmp}/cv-pr-comment-body.XXXXXX")"
 cleanup() { rm -f "$POSTED_BODY_FILE"; }
