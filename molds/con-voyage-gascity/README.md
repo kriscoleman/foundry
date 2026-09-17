@@ -517,13 +517,12 @@ Every posted body leads with:
 
 `{target}.ci-repair.md` and `{target}.publish.md` route every `gh pr comment`
 / `gh pr review` / `gh pr create` through this script and explicitly forbid the
-raw `gh` equivalents in the worker path. As a read-only backstop, the
-`con-voyage-ci-repair-guard` order (see above) also scans every operator PR's
-comments and flags — fail-loud, never auto-edited — any comment authored by
-`CV_PR_AUTHOR` that does not lead with the banner. The scan can't tell a bot
-comment that skipped the banner apart from a genuine remark the human typed
-(same PAT-backed author), so it only logs; a human reviews the flagged
-comment.
+raw `gh` equivalents in the worker path. Enforcement is deliberately structural
+rather than a PR-comment scan: a scan of the operator's own comments can't
+distinguish a skipped-banner bot post from a genuine human remark (same
+PAT-backed author), so it would only ever flag noise — routing every post
+through `cv-pr-comment.sh` makes the banner impossible to omit in the first
+place.
 
 ### `cv-worktree-prep.sh` — external-rig / worktree artifact hygiene
 
@@ -569,10 +568,8 @@ idempotent, never touches a tracked `.gitignore`, and resolves the correct
 shared exclude file from inside a linked worktree; and that `guard` unstages a
 staged-only offender but only ever BLOCKS (never rewrites history for) one
 that is already committed. `con-voyage-ci-repair-guard.test.sh` (see above)
-additionally covers the banner-scan backstop: a compliant comment is silent, a
-banner-less operator-authored comment is flagged by id, a banner-less comment
-from a different author is left alone, and a comments-fetch failure degrades
-to a warning rather than a crash.
+also asserts the guard never fetches PR comments at all — banner enforcement
+is structural (`cv-pr-comment.sh`), not a scan.
 
 ---
 
