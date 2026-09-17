@@ -145,6 +145,10 @@ command -v "$GH" >/dev/null 2>&1 || die "gh CLI not found at '${GH}'. Install gi
 FORMULA_DISPLAY="${FORMULA:-con-voyage}"
 AGENT_DISPLAY="${AGENT:-unknown/unknown}"
 
+# The literal prefix "🤖 **Automated con-voyage agent**" is also matched by
+# con-voyage-pr-watch.sh's CV_AGENT_PREFIX_PATTERN, which excludes the bot's
+# own posts from "new human feedback" detection. Changing this prefix without
+# updating that pattern reintroduces a self-feedback routing loop.
 BANNER="🤖 **Automated con-voyage agent** (${FORMULA_DISPLAY} / ${AGENT_DISPLAY}) — posted via @kriscoleman's token, not by Kris personally."
 
 POSTED_BODY_FILE="$(mktemp "${TMPDIR:-/tmp}/cv-pr-comment-body.XXXXXX")"

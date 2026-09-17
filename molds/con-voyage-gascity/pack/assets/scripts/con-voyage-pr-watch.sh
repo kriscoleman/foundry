@@ -123,11 +123,14 @@ CV_IMPLEMENTOR="${CV_IMPLEMENTOR:-gc.implementation-worker}"
 # to exist. Here we only accept an explicit CV_PR_AUTHOR from the environment.
 CV_PR_AUTHOR="${CV_PR_AUTHOR:-}"
 
-# Con-voyage reviewer identity prefix — comments starting with this pattern
-# are agent review comments, not human comments. The prefix format is:
-#   [<rig>/<agent> — <lens>]
-# We match on the opening bracket + slash to avoid false positives.
-CV_AGENT_PREFIX_PATTERN='^\[.*/cv-'
+# Con-voyage machine-identity banner prefix — comments starting with this
+# pattern are the bot's OWN posts (via cv-pr-comment.sh), not human feedback.
+# Without this exclusion, PART B would treat every automated reply as new
+# human feedback and re-route it forever (both are authored by the operator's
+# PAT-backed login, so author alone can't tell them apart). Must stay in sync
+# with the BANNER prefix cv-pr-comment.sh actually emits — see that script's
+# own copy of this same literal string.
+CV_AGENT_PREFIX_PATTERN='^🤖 \*\*Automated con-voyage agent\*\*'
 
 # ---------------------------------------------------------------------------
 # Preflight checks

@@ -138,9 +138,12 @@ JSON
             echo "${STUB_GH_VIEW_COMMENTS_ERR:-GraphQL: Field 'reviewThreads' does not exist on type 'PullRequest' (reviewThreads)}" >&2
             exit 1
           fi
-          # Return one human comment for the operator's PR.
+          # Return one human comment for the operator's PR, PLUS one bot-banner
+          # comment authored by the operator's own login (kriscoleman) — exactly
+          # what cv-pr-comment.sh posts under the PAT. This proves PART B does
+          # not re-route the bot's own automated replies as new human feedback.
           cat <<'JSON'
-{"reviews":[],"comments":[{"id":"IC_test_11","author":{"login":"a-human-reviewer"},"body":"please fix the null check"}],"reviewThreads":[]}
+{"reviews":[],"comments":[{"id":"IC_test_11","author":{"login":"a-human-reviewer"},"body":"please fix the null check"},{"id":"IC_test_bot","author":{"login":"kriscoleman"},"body":"🤖 **Automated con-voyage agent** (con-voyage-ci-repair / foundry-kc/worker) — posted via @kriscoleman's token, not by Kris personally.\n\nFixed a thing."}],"reviewThreads":[]}
 JSON
           exit 0
         fi
@@ -765,6 +768,14 @@ assert_log_count "$GC_LOG" 'sling .*Human PR feedback.*--on con-voyage-ci-repair
 # #11 and for no other PR number in PART B.
 assert_log_count "$GH_LOG" 'pr view 11 .*reviews' 1 "comment fetch for #11 only"
 assert_log_count "$GH_LOG" 'pr view 500 .*reviews' 0 "no comment fetch for #500"
+# The #11 fixture also carries a bot-banner comment (IC_test_bot, authored by
+# kriscoleman via the PAT, same as a genuine human comment would be) — it must
+# never surface in the routed feedback (captured in GC_LOG via the --stdin
+# body, not in $OUT). Without the CV_AGENT_PREFIX_PATTERN exclusion, this is
+# exactly how a bot's own automated reply gets mistaken for new human feedback
+# and re-routed forever.
+assert_log_count "$GC_LOG" 'Automated con-voyage agent' 0 "the bot's own bannered comment (IC_test_bot) is excluded from routed feedback"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 1 "still exactly one comment-route sling (the bot comment adds no extra route)"
 
 # ===========================================================================
 # CASE 6 — Happy-path default: CV_PR_AUTHOR unset, gh api user => kriscoleman.
