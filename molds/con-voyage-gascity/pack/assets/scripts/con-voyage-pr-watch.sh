@@ -602,22 +602,31 @@ echo "con-voyage-pr-watch: [PART B] scanning for human PR comments to route"
 # ("no [[github.pr_monitor]] blocks found"). [[:space:]] works under BOTH BSD
 # awk and gawk, and matches both `owner = "x"` (spaced) and `owner="x"`.
 #
-# Output format: one "OWNER/REPO" per line.
+# Output format: one "OWNER/REPO|RIG" per line (RIG may be empty).
 mapfile -t MONITOR_REPOS < <(awk '
   /^\[\[github\.pr_monitor\]\]/ {
+    # A new block starts. Emit the pair for the PRIOR block first — consecutive
+    # pr_monitor blocks (only comments between them) would otherwise be dropped,
+    # because this rule preempts the emit rule below via next; without it only
+    # the last monitor block (via END) is ever polled.
+    if (in_block && owner != "" && repo != "") {
+      print owner "/" repo "|" rig
+    }
     in_block = 1
     owner = ""
     repo  = ""
+    rig   = ""
     next
   }
   in_block && /^\[/ {
     # Next top-level header — emit pair if complete, then reset
     if (owner != "" && repo != "") {
-      print owner "/" repo
+      print owner "/" repo "|" rig
     }
     in_block = 0
     owner = ""
     repo  = ""
+    rig   = ""
     # Check if this new header is itself a pr_monitor block
     if (/^\[\[github\.pr_monitor\]\]/) {
       in_block = 1
@@ -638,10 +647,17 @@ mapfile -t MONITOR_REPOS < <(awk '
     repo = val
     next
   }
+  in_block && /^[[:space:]]*rig[[:space:]]*=/ {
+    val = $0
+    sub(/.*=[[:space:]]*"/, "", val)
+    sub(/".*/, "", val)
+    rig = val
+    next
+  }
   END {
     # Emit last block if file ends without another header
     if (in_block && owner != "" && repo != "") {
-      print owner "/" repo
+      print owner "/" repo "|" rig
     }
   }
 ' "$CITY_TOML")
@@ -674,9 +690,18 @@ save_seen_ids() {
 
 # Process each monitor's repo
 for monitor_repo in "${MONITOR_REPOS[@]}"; do
-  # Split "owner/repo" — use parameter expansion, not IFS tricks
-  owner="${monitor_repo%%/*}"
-  repo="${monitor_repo#*/}"
+  # Split "owner/repo|rig" — use parameter expansion, not IFS tricks
+  monitor_rig="${monitor_repo#*|}"
+  owner_repo="${monitor_repo%%|*}"
+  owner="${owner_repo%%/*}"
+  repo="${owner_repo#*/}"
+  # Route human feedback to THIS repo's rig worker. A bare "gc.implementation-worker"
+  # is not a valid sling target — it must be rig-scoped (mirrors PART A's repair_route).
+  if [ -n "$monitor_rig" ] && [ "$monitor_rig" != "$monitor_repo" ]; then
+    route_target="${monitor_rig}/${CV_IMPLEMENTOR}"
+  else
+    route_target="${CV_IMPLEMENTOR}"
+  fi
   if [ -z "$owner" ] || [ -z "$repo" ]; then
     echo "con-voyage-pr-watch: [PART B] skipping malformed entry '${monitor_repo}'" >&2
     continue
@@ -979,7 +1004,7 @@ print("SEEN_IDS:" + "\n".join(sorted(all_ids)))
       continue
     fi
 
-    echo "con-voyage-pr-watch: [PART B] ${full_repo}#${pr_number}: new human feedback found — routing to ${CV_IMPLEMENTOR}"
+    echo "con-voyage-pr-watch: [PART B] ${full_repo}#${pr_number}: new human feedback found — routing to ${route_target}"
 
     # Build a routing message summarizing the new feedback.
     # Pass JSON via stdin to avoid ARG_MAX issues.
@@ -1025,7 +1050,7 @@ Routing from con-voyage-pr-watch (idempotency: pr-comment-${full_repo//\//_}-${p
     # We use --stdin so the multi-line body is passed cleanly (no ARG_MAX / quoting
     # issues), with the title as the first line and a blank line before the body.
     if printf '%s\n\n%s\n' "$route_title" "$route_body" \
-      | "$GC" --city "$GC_CITY" sling "$CV_IMPLEMENTOR" --stdin 2>&1; then
+      | "$GC" --city "$GC_CITY" sling "$route_target" --stdin 2>&1; then
       echo "con-voyage-pr-watch: [PART B] ${full_repo}#${pr_number}: routed to ${CV_IMPLEMENTOR}"
       # Persist updated seen-IDs only on successful route
       if [ -n "$updated_seen_ids" ]; then
