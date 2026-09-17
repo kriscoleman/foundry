@@ -1669,6 +1669,62 @@ else
 fi
 
 # ===========================================================================
+# CASE 29 — C8 regression: EVERY [[github.pr_monitor]] block must be polled.
+#   Pre-fix, the repo-parse emitted a block only when the NEXT top-level header
+#   appeared, but the pr_monitor Rule fired first and `next`d — so with multiple
+#   consecutive blocks (comments between), every block but the LAST (via END) was
+#   dropped and only one repo was ever polled by PART B.
+# ===========================================================================
+start_case "29: C8 — every [[github.pr_monitor]] block is polled (not just the last)"
+setup_case_env "29"
+cat > "${CITY_DIR}/city.toml" <<'TOML'
+[[github.pr_monitor]]
+owner = "kriscoleman"
+repo = "foundry"
+rig = "foundry-kc"
+base_branches = ["main"]
+
+# a comment line between blocks, as in the real city.toml
+[[github.pr_monitor]]
+owner = "replicatedhq"
+repo = "vandoor"
+rig = "vandoor"
+base_branches = ["main"]
+
+[[github.pr_monitor]]
+owner = "replicatedhq"
+repo = "kots"
+rig = "kots"
+base_branches = ["main"]
+TOML
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman"
+assert_eq "0" "$RC" "script exits 0"
+if printf '%s' "$OUT" | grep -q 'PART B\] checking kriscoleman/foundry for human comments'; then pass "polls foundry (1st block)"; else fail "did NOT poll foundry (C8: only-last-block regression)"; fi
+if printf '%s' "$OUT" | grep -q 'PART B\] checking replicatedhq/vandoor for human comments'; then pass "polls vandoor (middle block)"; else fail "did NOT poll vandoor (C8 regression)"; fi
+if printf '%s' "$OUT" | grep -q 'PART B\] checking replicatedhq/kots for human comments'; then pass "polls kots (last block)"; else fail "did NOT poll kots"; fi
+
+# ===========================================================================
+# CASE 30 — C9 regression: PART B routes human feedback to the repo's OWN rig
+#   worker (<rig>/gc.implementation-worker), derived from the block's `rig` — not
+#   a bare `gc.implementation-worker`, which is not a valid sling target
+#   ("agent not found"). (CASE 28's fixture has NO rig, so it exercises the
+#   empty-rig fall-back to a bare target; this one proves the rig-scoped path.)
+# ===========================================================================
+start_case "30: C9 — human feedback routes to the rig-scoped worker, not a bare agent"
+setup_case_env "30"
+cat > "${CITY_DIR}/city.toml" <<'TOML'
+[[github.pr_monitor]]
+owner = "kriscoleman"
+repo = "foundry"
+rig = "foundry-kc"
+base_branches = ["main"]
+TOML
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling foundry-kc/gc.implementation-worker --stdin STDIN: Human PR feedback on kriscoleman/foundry#11' 1 "routes to the RIG-scoped worker foundry-kc/gc.implementation-worker"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 0 "does NOT route to a bare gc.implementation-worker"
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 echo
