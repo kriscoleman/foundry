@@ -176,8 +176,13 @@ The `con-voyage-pr-watch` order bridges this gap via best-effort polling.
 On each 10-minute tick the order script:
 
 1. Runs `gc github pr backfill --json` report-only, drops every PR not authored
-   by `CV_PR_AUTHOR`, and creates a repair bead only for each surviving
-   actionable PR (Part A — CI repair, author-scoped).
+   by `CV_PR_AUTHOR`, and dispatches rework for each surviving actionable PR
+   (Part A — CI repair, author-scoped). Every open con-voyage PR has exactly
+   one implementor responsible for it: while that implementor is alive, the
+   rework is mailed + notified directly to it (no new bead); a repair bead is
+   created and routed to the pool `con-voyage-ci-repair` formula only as a
+   fallback, when no implementor is known or the known one is gone — see
+   "Repair routing and dedup" below.
 2. For each configured monitor's repo, lists the configured author's open
    non-draft PRs (`gh pr list --author "$CV_PR_AUTHOR"`) and checks for
    new human review comments and review feedback since the last run (Part B —
@@ -300,23 +305,51 @@ or a review state *other than* `REVIEW_REQUIRED` (`CHANGES_REQUESTED`,
 CODEOWNERS, etc.) still mints and repairs exactly as before — this filter is
 narrowly scoped to the one true "nothing left to do but wait" combination.
 
-### Repair-bead dedup (PR-scoped, not head-sha-scoped)
+### Repair routing and dedup (PR-scoped, not head-sha-scoped)
 
-`con-voyage-pr-watch.sh` tracks at most **one** open repair bead per PR (keyed
-on repo + PR number only) via a marker file under `CV_STATE_DIR`. A re-mint is
-blocked *only* while the tracked bead is genuinely in-flight — open **and**
-claimed by a live assignee. A closed bead, or an open-but-unassigned
-(orphaned) bead, never blocks a fresh mint: it is superseded (closed, with a
-note) and a new bead is minted in its place. This means a new push (new
-head-sha) always re-arms the mint once the prior attempt is no longer live,
-and a stale marker can never permanently suppress a needed repair. An earlier
-head-sha-scoped key had both failure modes: a stale marker or a reset to an
-old head could block a needed re-mint, and a head advance could leave the
-prior head's bead open forever as an orphan.
+**Every open con-voyage PR has exactly one live implementor responsible for
+it, from escort until land.** `con-voyage-pr-watch.sh` tracks this per PR
+(keyed on repo + PR number only, never head-sha) in a state record under
+`CV_STATE_DIR`: `implementor_session`, `inflight_rework` (a tracked bead id,
+when the last dispatch used the pool fallback), and `last_handled_state` (the
+failure_kind — or `clean` — this monitor last reacted to).
 
-All four states share the same bright lines as everything else in this
-pack: author-gated at the source (an unauthorized PR never reaches any of
-this), and never merge / never approve / never submit to the merge queue.
+**Dispatch.** While the recorded implementor is alive, rework is mailed +
+notified directly to it (`gc mail send ... --notify` — durable and self-waking,
+the same path con-voyage already uses for review/CI feedback) and **no new
+pool workflow is created**. Only when no implementor is known, or the known
+one is no longer a live session, does the monitor fall back to creating a
+repair bead and routing it to the pool `con-voyage-ci-repair` formula — same
+as before. Once a pool worker claims that fallback bead, it becomes the PR's
+implementor for future cycles.
+
+**Dedup.** A re-dispatch is blocked *only* while the SAME defect
+(`last_handled_state` equals the just-classified failure_kind) is genuinely
+in-flight — a tracked fallback bead, if any, is still open (**status alone**,
+not assignee — a pool-slung bead sits unclaimed with an empty assignee for an
+unbounded time before a worker picks it up, so requiring a live assignee here
+was the historical over-mint bug: a repair that was still legitimately
+pending got treated as abandoned and re-minted every cycle). A closed tracked
+bead never blocks a fresh dispatch: it is superseded (closed, with a note)
+and a new one is minted in its place.
+
+**Re-detection.** Any state *change* — a different failure_kind, or the PR
+going dirty again after a prior `clean` observation — always supersedes the
+old record and dispatches exactly one fresh rework, so a stale record can
+never permanently suppress a real, newly-observed defect. A PR that is
+already clean is left alone; its record is refreshed to `last_handled_state=
+clean` (and any still-open tracked bead is closed) purely so a *later*
+re-conflict has a real prior state to compare against.
+
+**Back-compat.** A pre-upgrade `<dedup_key>.minted` marker (bead-id only) is
+read as `inflight_rework=<that id>`, no known implementor, `last_handled_state
+=unknown` — "unknown" never matches a real observed state, so the first
+post-upgrade cycle re-evaluates the PR fresh rather than trusting stale
+pre-upgrade bookkeeping.
+
+All states share the same bright lines as everything else in this pack:
+author-gated at the source (an unauthorized PR never reaches any of this),
+and never merge / never approve / never submit to the merge queue.
 
 ### Author scoping
 
