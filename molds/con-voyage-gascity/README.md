@@ -215,16 +215,79 @@ hand. `con-voyage-ci-repair-guard` is the backstop for those other two paths:
   `CV_AUTHOR_GATE=disabled` makes this guard a no-op so every bead is worked
   regardless of author — see [Author-gate toggle](#author-gate-toggle-cv_author_gate).
 
+### `con-voyage-repair-watchdog` order (self-heal dead/stalled rework)
+
+`con-voyage-pr-watch` gets "every open PR has exactly one live implementor"
+right **at dispatch time**, but nothing re-checks that between its own
+10-minute cycles — a reused implementor can die mid-rework, or a rework
+(mailed or a fallback pool bead) can simply stop making progress. Fixes 1's
+own state record (`implementor_session`/`inflight_rework`/`last_handled_state`
+— see "Repair routing and dedup" above) already carries everything needed to
+notice this drift; `con-voyage-repair-watchdog` reads those SAME state
+records on its own, faster, 5-minute cooldown and self-heals:
+
+- **Implementor known but dead** → supersedes the tracked bead and dispatches
+  a fresh fallback worker (the exact mechanism `con-voyage-pr-watch` itself
+  uses when no implementor is known). No staleness threshold gates this — a
+  confirmed-dead session is unambiguous on its own.
+- **No implementor known yet, and the fallback bead has sat unclaimed past
+  `CV_STALL_SECONDS`** (default 900s / 15m) → same fallback re-dispatch. A
+  freshly-minted, still-unclaimed bead within that window is left alone.
+- **Implementor known and alive, but the tracked bead's `updated_at` hasn't
+  advanced past `CV_STALL_SECONDS`** → re-notifies the *same* implementor
+  directly (`gc mail send ... --notify`, no new bead — mirrors
+  `con-voyage-pr-watch`'s own reuse path) and keeps watching the *same*
+  bead; its `updated_at` is the progress signal the next cycle checks.
+- **Implementor alive and progressing, or no in-flight rework at all** → no
+  action.
+- **After `CV_MAX_ATTEMPTS` (default 3) consecutive re-dispatches with still
+  no progress** → escalates to `CV_ESCALATE_TARGET` (default the reserved
+  `human` alias, same convention as `escalation_target` in
+  `con-voyage-ci-repair.formula.toml`) via `gc mail` and stops re-dispatching
+  that PR. Escalation only lifts once `con-voyage-pr-watch` records a
+  genuinely fresh dispatch for it (a real state change — see below), never by
+  the watchdog trying again on its own.
+
+**State schema extension.** The watchdog needs a few fields
+`con-voyage-pr-watch`'s original 3-field record didn't carry, so that record
+now also includes `pr_author`, `repair_route`, `repo_full`, `pr_number`,
+`branch` (everything needed to defensively re-verify author scope and mint a
+fallback bead without any `gh` call), plus `attempt_count` and `escalated`
+(the watchdog's own bookkeeping). `con-voyage-pr-watch` populates the first
+five and resets `attempt_count`/`escalated` to `0` on every fresh dispatch,
+preserves all seven unchanged on an in-flight-refresh skip cycle, and resets
+them again once the PR goes clean; the watchdog only ever increments
+`attempt_count` and sets `escalated` on its own writes. A closed/unknown
+tracked bead, or a record missing the redispatch-context fields (e.g. one
+`con-voyage-pr-watch` hasn't rewritten since this extension shipped), is left
+untouched rather than guessed at — the next `con-voyage-pr-watch` cycle owns
+re-evaluating those from scratch.
+
+**No GitHub calls.** Unlike the other two orders, this script makes no `gh`
+calls in its core logic at all — it only ever iterates local
+`CV_STATE_DIR/*.state` files and calls `gc`. `gh` is consulted only for the
+optional `CV_PR_AUTHOR` auto-resolve fallback, same as the other two scripts,
+and is skipped entirely when `CV_PR_AUTHOR` is set explicitly (as it always is
+in the shipped `[order.env]`).
+
+**Rebuild note.** An earlier, unshipped build (commit `13d403a`) added this
+same self-heal idea as an *inline* staleness check inside
+`con-voyage-pr-watch.sh`'s own PART A loop, predating the implementor-reuse
+state schema. This order is a ground-up rebuild against the current schema, as
+a standalone periodic order — the inline version was not reused.
+
 ### Coverage table
 
-| Signal | Native monitor | pr-watch order |
-|---|---|---|
-| Failed CI check-runs | Yes | Driven (Part A) |
-| Merge conflict (DIRTY) | Yes | Driven (Part A) |
-| Branch behind base | Yes | Driven (Part A) |
-| Branch-protection block | Yes | Driven (Part A) |
-| Human review comments | No | Yes (best-effort, Part B) |
-| Auto-merge | Never | Never |
+| Signal | Native monitor | pr-watch order | repair-watchdog order |
+|---|---|---|---|
+| Failed CI check-runs | Yes | Driven (Part A) | — |
+| Merge conflict (DIRTY) | Yes | Driven (Part A) | — |
+| Branch behind base | Yes | Driven (Part A) | — |
+| Branch-protection block | Yes | Driven (Part A) | — |
+| Human review comments | No | Yes (best-effort, Part B) | — |
+| Dead implementor mid-rework | No | No | Yes (reassigns) |
+| Stalled rework (no progress) | No | No | Yes (re-dispatches, then escalates) |
+| Auto-merge | Never | Never | Never |
 
 ### Per-state repair semantics (native-monitor parity)
 
@@ -354,7 +417,7 @@ and never merge / never approve / never submit to the merge queue.
 ### Author scoping
 
 **The monitor only ever touches PRs authored by a single configured user.**
-This is enforced by three independent, defense-in-depth layers, so that no
+This is enforced by four independent, defense-in-depth layers, so that no
 single path — script, order, or workflow prompt — is the sole thing standing
 between a stranger's PR and an automated GitHub action:
 
@@ -378,28 +441,34 @@ between a stranger's PR and an automated GitHub action:
    implementor's own first instruction re-verifies `pr_author == CV_PR_AUTHOR`
    and takes zero action on a mismatch, in case the guard sweep loses a claim
    race. See `pack/assets/workflows/con-voyage-ci-repair/{target}.ci-repair.md`.
+4. **`con-voyage-repair-watchdog` order (state-record re-check).** Before
+   acting on any per-PR state record, re-verifies its recorded `pr_author`
+   against its own `CV_PR_AUTHOR` and skips (no bead read, no mail, no
+   dispatch) on a mismatch or an empty/unresolved value — see
+   "`con-voyage-repair-watchdog` order" above.
 
-All three layers resolve the same author the same way:
+All four layers resolve the same author the same way:
 
-1. An explicit `CV_PR_AUTHOR` (in `[order.env]` for the two orders, or the
-   `cv_pr_author` formula var — default `kriscoleman` in all three places).
+1. An explicit `CV_PR_AUTHOR` (in `[order.env]` for the three orders, or the
+   `cv_pr_author` formula var — default `kriscoleman` in all four places).
 2. If unset, fall back to the authenticated `gh` login (`gh api user --jq
    .login`).
 3. If it still cannot be resolved, **fail closed** — refuse to act rather than
-   guess. The two scripts exit non-zero before querying any repo; Step 0
-   drops the bead it was handed.
+   guess. The three scripts exit non-zero before querying any repo (or, for
+   the watchdog, before reading any state record); Step 0 drops the bead it
+   was handed.
 
 > **Why this is enforced here, not in the native config.** The
 > `[[github.pr_monitor]]` blocks in `city.toml` have no author field and
 > `gc github pr backfill` has no `--author` flag, so author scoping cannot be
-> expressed natively. Layering all three of the above covers every path by
-> which a `con-voyage-ci-repair` bead can come into existence.
+> expressed natively. Layering all four of the above covers every path by
+> which a `con-voyage-ci-repair` bead can come into existence or be acted on.
 
 To change the allowed author, edit `[order.env] CV_PR_AUTHOR` in
-`con-voyage-pr-watch.toml` **and** `con-voyage-ci-repair-guard.toml`, and
-`[vars.cv_pr_author] default` in `con-voyage-ci-repair.formula.toml` (or
-export `CV_PR_AUTHOR` in the controller environment, which covers both
-orders).
+`con-voyage-pr-watch.toml`, `con-voyage-ci-repair-guard.toml`, **and**
+`con-voyage-repair-watchdog.toml`, and `[vars.cv_pr_author] default` in
+`con-voyage-ci-repair.formula.toml` (or export `CV_PR_AUTHOR` in the
+controller environment, which covers all three orders).
 
 ### Author-gate toggle (`CV_AUTHOR_GATE`)
 
@@ -487,12 +556,14 @@ dedicated regression tests — one per defense-in-depth layer:
 ```
 bash molds/con-voyage-gascity/tests/con-voyage-pr-watch.test.sh
 bash molds/con-voyage-gascity/tests/con-voyage-ci-repair-guard.test.sh
+bash molds/con-voyage-gascity/tests/con-voyage-repair-watchdog.test.sh
 ```
 
-Both are fully hermetic and offline — they build recording stub `gh` and `gc`
-executables in a temp dir, point the script under test at them via `GH=`/`GC=`,
-and assert on the recorded call-logs. Neither touches the network or the real
-gc runtime. Each exits `0` when every case passes, non-zero otherwise.
+All three are fully hermetic and offline — they build recording stub `gh`
+and/or `gc` executables in a temp dir, point the script under test at them via
+`GH=`/`GC=`, and assert on the recorded call-logs. None touches the network or
+the real gc runtime. Each exits `0` when every case passes, non-zero
+otherwise.
 
 `con-voyage-pr-watch.test.sh` covers layer 1 (creation-time gate):
 
@@ -555,6 +626,37 @@ content-checks layer 3 (the workflow's own Step 0 gate):
   references `{{failure_kind}}` instead of guessing; the formula declares
   `[vars.failure_kind]`. Reverting any of these to the design doc's original
   (safer-looking but operator-rejected) recommendation fails the suite.
+
+`con-voyage-repair-watchdog.test.sh` covers layer 4 (the state-record
+re-check) plus the watchdog's own self-heal/escalation behavior:
+
+- **Fail-closed** — no resolvable `CV_PR_AUTHOR` ⇒ exit 1 before reading any
+  state record.
+- **Author-scope skip** — a record whose `pr_author` doesn't match (or is
+  empty/unresolved) is skipped defensively: no `bd show`, no mail, no sling.
+- **No in-flight rework / already escalated** — both are left strictly alone,
+  including no repeated escalation mail once `escalated=1` is already set.
+- **Closed/unknown tracked bead** — deferred to `con-voyage-pr-watch`'s own
+  next cycle rather than guessed at.
+- **Dead implementor** — the stale bead is superseded and a fresh fallback
+  bead is minted and slung with the recorded `pr`/`repo`/`branch`/
+  `failure_kind`, `attempt_count` advances to 1.
+- **Stalled but alive** — the SAME implementor is re-notified by mail, no new
+  bead, the SAME tracked bead keeps being watched.
+- **Never-claimed fallback bead** — treated as stalled once past the
+  threshold (same fallback remedy as dead); left alone within the grace
+  period.
+- **Attempt cap → escalation** — an end-to-end, multi-cycle run drives
+  `attempt_count` from 1 to 3 across three consecutive stalled cycles, then
+  proves the 4th detection escalates (mail to `CV_ESCALATE_TARGET`, including
+  a custom target) instead of re-dispatching a 4th time, sets `escalated=1`,
+  and confirms a 5th cycle sends no mail of any kind (no escalation spam).
+- **Failed escalation mail never sets `escalated=1`** — a transient mail
+  outage is retried next cycle rather than silently and permanently
+  suppressing re-dispatch.
+- **Missing redispatch context** — a record without `repair_route`/
+  `repo_full`/`pr_number` (e.g. pre-dating this extension) logs a WARNING and
+  leaves `attempt_count` untouched rather than guessing.
 
 The `tests/` directory lives outside `pack/`, so it is never compiled into the
 shipped `packs/con-voyage` pack.

@@ -194,23 +194,49 @@ echo "con-voyage-pr-watch: author-scoped to PRs authored by '${CV_PR_AUTHOR}' (a
 mkdir -p "$CV_STATE_DIR"
 
 # ---------------------------------------------------------------------------
-# Per-PR repair state record (fk-4o74 Fix 1). Replaces the old bead-id-only
-# "<dedup_key>.minted" marker with a 3-field record so dedup/routing can key
-# on the implementor's real liveness/in-flight signal instead of `assignee`
-# (a pool-slung bead sits with an EMPTY assignee for an unbounded time before
-# a worker claims it — confirmed live, see the design doc / Task 0 findings —
-# so gating on assignee is what made the monitor over-mint).
+# Per-PR repair state record (fk-4o74 Fix 1; extended by Fix 2's watchdog).
+# Replaces the old bead-id-only "<dedup_key>.minted" marker with a record so
+# dedup/routing can key on the implementor's real liveness/in-flight signal
+# instead of `assignee` (a pool-slung bead sits with an EMPTY assignee for an
+# unbounded time before a worker claims it — confirmed live, see the design
+# doc / Task 0 findings — so gating on assignee is what made the monitor
+# over-mint).
 #
 # File: "<CV_STATE_DIR>/<dedup_key>.state", plain key=value lines:
 #   implementor_session=<value, or empty if unknown>
 #   inflight_rework=<tracked bead id, or empty>
 #   last_handled_state=<failure_kind | clean | unknown>
+#   pr_author=<the resolved PR author login at dispatch time, or empty>
+#   repair_route=<the "<rig>/<agent>" pool route for this PR, or empty>
+#   repo_full=<owner/repo, or empty>
+#   pr_number=<PR number, or empty>
+#   branch=<PR head ref, or empty>
+#   attempt_count=<watchdog re-dispatch attempts against the CURRENT
+#     inflight_rework cycle, default 0 — owned by con-voyage-repair-watchdog.sh,
+#     this script only ever resets it (fresh dispatch / clean) or preserves it
+#     (in-flight refresh)>
+#   escalated=<1 once the watchdog has escalated this PR's stalled rework to
+#     the operator and stopped re-dispatching it, default 0 — owned by the
+#     watchdog, this script only ever clears it (fresh dispatch / clean) or
+#     preserves it (in-flight refresh)>
+#
+# pr_author/repair_route/repo_full/pr_number/branch exist so the watchdog can
+# (a) defensively re-verify author scope from local state alone, with no gh
+# call, before acting on a record, and (b) re-dispatch fallback work (mint a
+# fresh pool bead) without re-deriving PR context. They are populated ONLY on
+# a fresh dispatch (the only place this script has them all resolved) and are
+# irrelevant whenever inflight_rework is empty (clean / never-dispatched), so
+# the clean-branch write below always writes them empty.
 #
 # Back-compat: a pre-existing "<dedup_key>.minted" file (the OLD format — a
 # bare bead id) with no ".state" file yet is read as inflight_rework=<that
 # id>, implementor_session=<empty>, last_handled_state=unknown — "unknown"
 # never matches a real observed state, so the first post-upgrade cycle
 # re-evaluates the PR fresh instead of trusting stale pre-upgrade bookkeeping.
+# A pre-Fix-2 3-field ".state" file (no pr_author/repair_route/etc.) reads
+# those new fields as empty and attempt_count/escalated as 0 — the watchdog
+# treats an empty pr_author as "not verifiably ours" and skips it (fail
+# closed) until this script's next cycle repopulates it via a fresh dispatch.
 # ---------------------------------------------------------------------------
 state_read() {
   local dedup_key="$1"
@@ -219,6 +245,13 @@ state_read() {
   ST_IMPLEMENTOR=""
   ST_INFLIGHT=""
   ST_LAST_STATE="unknown"
+  ST_PR_AUTHOR=""
+  ST_REPAIR_ROUTE=""
+  ST_REPO_FULL=""
+  ST_PR_NUMBER=""
+  ST_BRANCH=""
+  ST_ATTEMPT_COUNT="0"
+  ST_ESCALATED="0"
   if [ -f "$state_file" ]; then
     local k v
     while IFS='=' read -r k v || [ -n "$k" ]; do
@@ -226,6 +259,13 @@ state_read() {
         implementor_session) ST_IMPLEMENTOR="$v" ;;
         inflight_rework) ST_INFLIGHT="$v" ;;
         last_handled_state) [ -n "$v" ] && ST_LAST_STATE="$v" ;;
+        pr_author) ST_PR_AUTHOR="$v" ;;
+        repair_route) ST_REPAIR_ROUTE="$v" ;;
+        repo_full) ST_REPO_FULL="$v" ;;
+        pr_number) ST_PR_NUMBER="$v" ;;
+        branch) ST_BRANCH="$v" ;;
+        attempt_count) [ -n "$v" ] && ST_ATTEMPT_COUNT="$v" ;;
+        escalated) [ -n "$v" ] && ST_ESCALATED="$v" ;;
       esac
     done < "$state_file"
   elif [ -f "$legacy_file" ]; then
@@ -233,13 +273,29 @@ state_read() {
   fi
 }
 
+# state_write DEDUP_KEY IMPLEMENTOR INFLIGHT LAST_STATE [PR_AUTHOR] [REPAIR_ROUTE]
+#             [REPO_FULL] [PR_NUMBER] [BRANCH] [ATTEMPT_COUNT] [ESCALATED]
+# The 7 extended fields are optional (default empty / 0) so every pre-Fix-2
+# call site keeps working unmodified; every call site in THIS script now
+# passes them explicitly (either fresh values or the prior ones read back via
+# state_read, per call site — see the comment above each call) so the choice
+# to reset vs. preserve is visible at the call site, not hidden in here.
 state_write() {
   local dedup_key="$1" implementor="$2" inflight="$3" last_state="$4"
+  local pr_author="${5:-}" repair_route="${6:-}" repo_full="${7:-}"
+  local pr_number="${8:-}" branch="${9:-}" attempt_count="${10:-0}" escalated="${11:-0}"
   local state_file="${CV_STATE_DIR}/${dedup_key}.state"
   {
     printf 'implementor_session=%s\n' "$implementor"
     printf 'inflight_rework=%s\n' "$inflight"
     printf 'last_handled_state=%s\n' "$last_state"
+    printf 'pr_author=%s\n' "$pr_author"
+    printf 'repair_route=%s\n' "$repair_route"
+    printf 'repo_full=%s\n' "$repo_full"
+    printf 'pr_number=%s\n' "$pr_number"
+    printf 'branch=%s\n' "$branch"
+    printf 'attempt_count=%s\n' "${attempt_count:-0}"
+    printf 'escalated=%s\n' "${escalated:-0}"
   } > "$state_file"
   rm -f "${CV_STATE_DIR}/${dedup_key}.minted"
 }
@@ -503,7 +559,13 @@ print("\x1f".join(str(f).replace("\x1f", " ").replace("\n", " ") for f in fields
             fi
             close_if_open "$ST_INFLIGHT" "superseded: ${a_full}#${a_num} is now clean" "${a_full}#${a_num} is now clean"
           fi
-          state_write "$a_dedup_key" "$clean_implementor" "" "clean"
+          # Clean means no in-flight rework, so the redispatch-context fields
+          # (repair_route/repo_full/pr_number/branch) and the watchdog's own
+          # attempt_count/escalated bookkeeping are irrelevant — reset them
+          # rather than carrying stale values forward. pr_author is left
+          # empty too: this branch never resolves it (no `gh pr view` call),
+          # and it is meaningless without an in-flight rework to guard.
+          state_write "$a_dedup_key" "$clean_implementor" "" "clean" "" "" "" "" "" "0" "0"
         fi
         continue
       fi
@@ -637,8 +699,14 @@ print(author + SEP + ("1" if skip_awaiting_human else "0"))
       if [ "$st_last_state" = "$a_failure_kind" ] && [ "$tracked_open" -eq 1 ]; then
         echo "con-voyage-pr-watch: [PART A] SKIP ${a_full}#${a_num} @ ${a_sha} — repair genuinely in-flight (dedup: ${dedup_key}, last_handled_state=${st_last_state})"
         # Persist the write-back (if any) even on a skip cycle, so a known
-        # implementor is not silently lost/re-derived every cycle.
-        state_write "$dedup_key" "$st_implementor" "$st_inflight" "$st_last_state"
+        # implementor is not silently lost/re-derived every cycle. Nothing
+        # changed from THIS script's perspective, so the extended fields
+        # (pr_author/repair_route/repo_full/pr_number/branch) and the
+        # watchdog's own attempt_count/escalated bookkeeping are carried
+        # forward unchanged from the state_read above — never reset here.
+        state_write "$dedup_key" "$st_implementor" "$st_inflight" "$st_last_state" \
+          "$ST_PR_AUTHOR" "$ST_REPAIR_ROUTE" "$ST_REPO_FULL" "$ST_PR_NUMBER" "$ST_BRANCH" \
+          "$ST_ATTEMPT_COUNT" "$ST_ESCALATED"
         continue
       fi
 
@@ -745,8 +813,15 @@ print(author + SEP + ("1" if skip_awaiting_human else "0"))
 
       # Record the state ONLY after a successful dispatch, so a failed
       # mail/sling is retried next cycle rather than being silently suppressed.
+      # This is a FRESH problem cycle (a state change or a superseded prior
+      # attempt), so the watchdog's own bookkeeping resets: attempt_count=0,
+      # escalated=0. pr_author/a_route/a_full/a_num/a_branch are all resolved
+      # in THIS iteration (the only place this script has them), so this is
+      # also the only call site that ever populates the redispatch-context
+      # fields with real values.
       if [ "$dispatched" -eq 1 ]; then
-        state_write "$dedup_key" "$new_implementor" "$new_inflight" "$a_failure_kind"
+        state_write "$dedup_key" "$new_implementor" "$new_inflight" "$a_failure_kind" \
+          "$pr_author" "$a_route" "$a_full" "$a_num" "$a_branch" "0" "0"
       fi
     done <<< "$all_prs"
   fi

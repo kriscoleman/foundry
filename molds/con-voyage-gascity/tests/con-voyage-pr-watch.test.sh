@@ -1114,6 +1114,25 @@ assert_log_count "$GC_LOG_1" 'sling vandoor/gc.implementation-worker va-bead1 --
 assert_eq "va-bead1" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "inflight_rework")" "cycle 1 wrote the PR-scoped state record tracking va-bead1"
 assert_eq "" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "implementor_session")" "cycle 1 has no known implementor yet (fallback mint, unclaimed)"
 assert_eq "checks_failed" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "last_handled_state")" "cycle 1 records last_handled_state=checks_failed"
+# fk-wgqp Fix 2 (watchdog) extension: a fresh dispatch also records the
+# redispatch-context fields the watchdog needs to act without any gh call
+# (pr_author for its defensive author-scope re-check; repair_route/repo_full/
+# pr_number/branch for a fallback re-mint), and starts its own bookkeeping at
+# attempt_count=0 / escalated=0.
+assert_eq "kriscoleman" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "pr_author")" "cycle 1 records the resolved pr_author"
+assert_eq "vandoor/gc.implementation-worker" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "repair_route")" "cycle 1 records repair_route"
+assert_eq "kriscoleman/foundry" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "repo_full")" "cycle 1 records repo_full"
+assert_eq "11" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "pr_number")" "cycle 1 records pr_number"
+assert_eq "fix/con-voyage-author-scope-pr-monitor" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "branch")" "cycle 1 records branch"
+assert_eq "0" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "attempt_count")" "cycle 1 starts the watchdog attempt_count at 0"
+assert_eq "0" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "escalated")" "cycle 1 starts not escalated"
+
+# Simulate the watchdog having already made one re-dispatch attempt against
+# this SAME in-flight cycle (it runs on its own faster cooldown, interleaved
+# with this monitor). This script must never see/touch attempt_count except
+# via preserve-on-skip / reset-on-fresh-dispatch, so we poke it directly
+# rather than driving the watchdog script from this suite.
+sed -i.bak 's/^attempt_count=.*/attempt_count=1/' "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.state" && rm -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.state.bak"
 
 # --- Cycle 2: SAME head-sha, tracked bead reported OPEN + a live assignee ->
 #     genuinely in-flight -> SKIP, no duplicate mint. The assignee is also
@@ -1140,6 +1159,18 @@ else
 fi
 assert_eq "va-bead1" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "inflight_rework")" "state still tracks va-bead1 after the in-flight skip"
 assert_eq "gc__implementation-worker-rc-1" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "implementor_session")" "the claimant is adopted as the PR's implementor even on a skip cycle"
+# fk-wgqp Fix 2: an in-flight skip cycle is a no-op from THIS script's point of
+# view — it must carry the watchdog's attempt_count forward untouched (NOT
+# reset to 0), alongside the other redispatch-context fields.
+assert_eq "1" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "attempt_count")" "the watchdog's attempt_count survives an in-flight skip cycle unmodified"
+assert_eq "kriscoleman" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "pr_author")" "pr_author survives an in-flight skip cycle unmodified"
+
+# Simulate the watchdog having escalated this PR (3 failed attempts) before
+# main advances again and re-conflicts it. Re-detection (req 4) must win over
+# a stale escalation: a NEW problem is not the same problem the operator was
+# already told about, so it deserves a fresh attempt budget.
+sed -i.bak -e 's/^attempt_count=.*/attempt_count=3/' -e 's/^escalated=.*/escalated=1/' \
+  "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.state" && rm -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.state.bak"
 
 # --- Cycle 3: head ADVANCED to bcd222, tracked bead va-bead1 now CLOSED ->
 #     not in-flight -> fresh mint despite the stale record (no false skip).
@@ -1167,6 +1198,12 @@ else
   fail "expected a KEEP log naming the PR-scoped dedup key in cycle 3"
 fi
 assert_eq "va-bead2" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "inflight_rework")" "state now tracks the freshly-minted va-bead2"
+# fk-wgqp Fix 2: the fresh re-mint is a NEW problem cycle — it must reset the
+# watchdog's attempt_count/escalated bookkeeping back to 0, clearing the
+# simulated prior escalation, rather than carrying it across an unrelated new
+# dispatch.
+assert_eq "0" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "attempt_count")" "a fresh re-mint resets attempt_count to 0, clearing the prior escalation"
+assert_eq "0" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "escalated")" "a fresh re-mint clears the escalated flag"
 
 # --- Cycle 4: head ADVANCED to ccc333, tracked bead va-bead2 now OPEN but
 #     UNASSIGNED. This is the CONFIRMED LIVE BUG SCENARIO (design doc: "the
@@ -1945,12 +1982,19 @@ assert_eq "checks_failed" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-
 # ===========================================================================
 start_case "37: Task 5 clean transition supersedes a stale open tracked bead"
 setup_case_env "37"
-printf 'implementor_session=\ninflight_rework=va-oldbead\nlast_handled_state=merge_conflict\n' \
+# attempt_count=2/escalated=1 simulate the watchdog having already worked this
+# PR's now-resolved rework before it went clean (fk-wgqp Fix 2).
+printf 'implementor_session=\ninflight_rework=va-oldbead\nlast_handled_state=merge_conflict\nattempt_count=2\nescalated=1\n' \
   > "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-20.state"
 run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_BACKFILL_MODE="states" \
   STUB_BDSHOW_MAP="va-oldbead|open|"
 assert_eq "0" "$RC" "script exits 0"
 assert_log_count "$GC_LOG" 'bd close va-oldbead .*now clean' 1 "the stale open bead is closed now that PR #20 is clean"
+# fk-wgqp Fix 2: going clean resolves the problem, so the watchdog's
+# attempt_count/escalated bookkeeping must reset — a LATER re-conflict must
+# not inherit a stale escalation from a rework that already landed.
+assert_eq "0" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-20" "attempt_count")" "going clean resets attempt_count to 0"
+assert_eq "0" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-20" "escalated")" "going clean clears the escalated flag"
 assert_eq "clean" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-20" "last_handled_state")" "state advances to clean"
 assert_eq "" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-20" "inflight_rework")" "no bead is tracked once the PR is clean"
 
