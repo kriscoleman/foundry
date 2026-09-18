@@ -1407,6 +1407,28 @@ else
 fi
 
 # ===========================================================================
+# CASE 14b — fk-4o74 Fix-1 round 1, finding #1: the CROSS-RIG MINT GUARD must
+#   NOT block the reuse-dispatch path. Pre-seed a state record with a known,
+#   ALIVE implementor (mirrors CASE 32) for the SAME rig-less route as CASE 14
+#   ("norig" fixture). The reuse path (mail+notify) never mints a bead, so it
+#   never needs a rig — it must still fire even though the route itself has no
+#   "<rig>/" prefix. Only a fallback mint (no live implementor) would need the
+#   rig, and this case never reaches that branch.
+# ===========================================================================
+start_case "14b: cross-rig mint guard does not block reuse-dispatch on a rig-less route"
+setup_case_env "14b"
+printf 'implementor_session=gc__implementation-worker-rc-9\ninflight_rework=\nlast_handled_state=behind_base\n' \
+  > "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.state"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_BACKFILL_MODE="norig" \
+  STUB_SESSION_LIST_JSON='{"sessions":[{"id":"gc__implementation-worker-rc-9","state":"active"}]}'
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'mail send gc__implementation-worker-rc-9' 1 "the alive implementor is still mailed despite the rig-less route"
+assert_log_count "$GC_LOG" 'bd create' 0 "no repair bead created — the reuse path never mints"
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair' 0 "zero ci-repair sling — the rig-derivation guard is never reached"
+assert_eq "gc__implementation-worker-rc-9" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "implementor_session")" "the known implementor is retained after a reuse dispatch"
+assert_eq "checks_failed" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "last_handled_state")" "last_handled_state advances despite the rig-less route"
+
+# ===========================================================================
 # CASE 15 — R5.1 native-monitor parity: an operator PR in EACH state gets a
 #   repair bead carrying the CORRECT classified failure_kind, via the PRIMARY
 #   path (trusting gc's own `failure_kind` field directly — see the
