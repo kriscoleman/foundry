@@ -1,0 +1,45 @@
+# con-voyage-repair-watchdog — repair-worker watchdog order (fk-wgqp, Fix 2)
+#
+# con-voyage-pr-watch.sh (Fix 1, 0.5.1) gets the "one live implementor per
+# open PR" invariant right AT DISPATCH TIME, but nothing re-checks it between
+# its own 10-minute cycles. This order runs con-voyage-repair-watchdog.sh on a
+# faster, independent cooldown to self-heal drift AFTER dispatch:
+#
+#   - the recorded implementor has died mid-rework -> reassign a new one
+#   - a rework (mailed or a fallback pool bead) has stalled with no progress
+#     past a threshold -> re-dispatch (same implementor if alive, else new)
+#   - after a bounded number of failed re-dispatch attempts for the same PR
+#     -> escalate to a human and stop re-dispatching that one
+#
+# It reads the SAME per-PR state records con-voyage-pr-watch.sh writes under
+# CV_STATE_DIR (must match that order's CV_STATE_DIR — both default to
+# .gc/cv-pr-watch, so leave that alone unless you also change it there) and
+# never queries GitHub directly. See assets/scripts/con-voyage-repair-
+# watchdog.sh for the full design/rationale and Task 0 spike findings.
+#
+# No auto-merge ever occurs from this order — it only ever supersedes/mints
+# repair beads and sends mail, exactly like con-voyage-pr-watch.sh's own
+# fallback/reuse dispatch paths.
+#
+# AUTHOR SCOPING: this watchdog only ever acts on state records whose
+# recorded pr_author is CV_PR_AUTHOR (see the [order.env] block below and the
+# HARD INVARIANT in the script header). Those records already came from
+# con-voyage-pr-watch.sh's own author-scoped dispatch; this is defense in
+# depth, not the primary gate.
+
+[order]
+description = "Self-heal dead/stalled con-voyage repair rework: reassign a dead implementor, re-dispatch a stalled one, escalate after repeated failures"
+trigger = "cooldown"
+interval = "5m"
+exec = "$PACK_DIR/assets/scripts/con-voyage-repair-watchdog.sh"
+
+# Author-scope the watchdog explicitly (belt-and-suspenders over the script's
+# gh-login default — see con-voyage-pr-watch.toml for the same convention).
+# CV_STALL_SECONDS/CV_MAX_ATTEMPTS/CV_ESCALATE_TARGET are the tunable policy
+# knobs from the design doc's proposed defaults (check ~5m via the order
+# interval above; stalled = no progress ~15m; escalate after 3 attempts).
+[order.env]
+CV_PR_AUTHOR = "kriscoleman"
+CV_STALL_SECONDS = "900"
+CV_MAX_ATTEMPTS = "3"
+CV_ESCALATE_TARGET = "human"
