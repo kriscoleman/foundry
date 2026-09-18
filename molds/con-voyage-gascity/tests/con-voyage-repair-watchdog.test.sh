@@ -204,7 +204,7 @@ state_field() {
   awk -F= -v k="$field" '$1==k{ sub(/^[^=]*=/, ""); print; exit }' "$f"
 }
 
-# write_state DIR DEDUP_KEY implementor inflight last_state pr_author route repo_full pr_number branch attempt_count escalated
+# write_state DIR DEDUP_KEY implementor inflight last_state pr_author route repo_full pr_number branch attempt_count escalated [last_dispatch_at]
 write_state() {
   local dir="$1" key="$2"
   {
@@ -218,6 +218,7 @@ write_state() {
     printf 'branch=%s\n' "${10}"
     printf 'attempt_count=%s\n' "${11}"
     printf 'escalated=%s\n' "${12}"
+    printf 'last_dispatch_at=%s\n' "${13:-}"
   } > "${dir}/${key}.state"
 }
 
@@ -590,6 +591,130 @@ run_script "${DEFAULT_ENV[@]}" STUB_BDSHOW_MAP="wd-bead160|open|${STALE_TS}" \
   STUB_SESSION_LIST_JSON='{"sessions":[{"id":"gc__impl-rc-1","state":"active"}]}'
 assert_eq "0" "$RC" "cycle 5 exits 0"
 assert_log_count "$GC_LOG" 'mail send' 0 "cycle 5 sends no mail of any kind — escalation already happened, no repeated spam"
+
+# ===========================================================================
+# CASE 17 — fk-lfan B2 (security): a tampered attempt_count in a state file
+#   must never reach bash arithmetic unvalidated. Bash arithmetic (both
+#   `$((X + 1))` and the `-ge`/`-lt`/etc test operators) recursively expands
+#   anything that LOOKS like an array subscript inside the expression, so a
+#   state file with attempt_count=dedup_key[$(evil command)] executes that
+#   command the moment the watchdog evaluates it — `dedup_key` is not an
+#   arbitrary name, it is THIS watchdog's own already-bound loop variable
+#   (the record's dedup key, always set before state_read runs), which is
+#   exactly what makes the injection fire instead of tripping `set -u`'s
+#   unbound-variable guard first. Proven live against the pre-fix code (see
+#   the sibling command substitution below: it touches a marker file inside
+#   THIS test's own sandbox, never a shared path, so the assertion is
+#   hermetic and self-cleaning via the EXIT trap). The state file is
+#   untrusted input (both con-voyage-pr-watch.sh and this watchdog write it,
+#   under a predictable path), so it must be coerced to a validated base-10
+#   integer at read time, defaulting to 0 rather than ever reaching
+#   arithmetic context unvalidated.
+# ===========================================================================
+start_case "17: B2 — a malicious attempt_count is neutralized, not evaluated"
+setup_case_env "17"
+PWNED_MARKER="${SANDBOX}/pwned-b2-marker"
+rm -f "$PWNED_MARKER"
+write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-170" \
+  "gc__impl-rc-dead" "wd-bead170" "merge_conflict" "kriscoleman" "vandoor/gc.implementation-worker" \
+  "kriscoleman/foundry" "170" "fix/thing" "dedup_key[\$(touch ${PWNED_MARKER})]" "0"
+run_script "${DEFAULT_ENV[@]}" STUB_BDSHOW_MAP="wd-bead170|open|$(iso_ago 30)" \
+  STUB_SESSION_LIST_JSON='{"sessions":[]}' STUB_BD_CREATE_ID="wd-bead170b"
+assert_eq "0" "$RC" "script exits 0 (a malformed attempt_count does not crash the whole pass)"
+if [ -f "$PWNED_MARKER" ]; then
+  fail "SECURITY: malicious attempt_count was evaluated as bash arithmetic (marker file was created)"
+else
+  pass "malicious attempt_count was never evaluated as arithmetic (no marker file created)"
+fi
+assert_log_count "$GC_LOG" 'bd close wd-bead170 .*superseded' 1 "the dead implementor's stale bead is still superseded normally"
+assert_eq "1" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-170" "attempt_count")" "a non-numeric attempt_count is treated as 0 and increments to 1, not aborted"
+
+# A malicious `escalated` value must be neutralized the same way — it gates
+# the `[ "$ST_ESCALATED" = "1" ]` string-equality skip (not arithmetic), but
+# it is written back through state_write on every subsequent cycle, so it
+# must still normalize to "0"/"1" rather than propagating attacker-controlled
+# bytes into the state file indefinitely.
+start_case "17b: B2 — a malicious escalated value normalizes to 0, not propagated"
+setup_case_env "17b"
+write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-171" \
+  "gc__impl-rc-dead" "wd-bead171" "merge_conflict" "kriscoleman" "vandoor/gc.implementation-worker" \
+  "kriscoleman/foundry" "171" "fix/thing" "0" "1[\$(true)]"
+run_script "${DEFAULT_ENV[@]}" STUB_BDSHOW_MAP="wd-bead171|open|$(iso_ago 30)" \
+  STUB_SESSION_LIST_JSON='{"sessions":[]}' STUB_BD_CREATE_ID="wd-bead171b"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd close wd-bead171 .*superseded' 1 "a garbled (non-'1') escalated value is NOT treated as already-escalated — the dead implementor is still reassigned"
+assert_eq "0" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-171" "escalated")" "escalated normalizes to 0 on write-back, not the garbled input"
+
+# ===========================================================================
+# CASE 18 — fk-lfan B1, hermetic case (a): implementor set + inflight_rework
+#   EMPTY (Fix-1's PRIMARY dispatch path — a mail-only reuse dispatch, see
+#   con-voyage-pr-watch.sh:739,747,823) + session dead -> fallback reassign,
+#   exactly like the tracked-bead DEAD case (CASE 8), but with no tracked bead
+#   to supersede (close_if_open on an empty id is a no-op) and no `bd show`
+#   call at all, since there is nothing to look up.
+# ===========================================================================
+start_case "18: B1 case (a) — bead-less reuse, implementor dead -> fallback reassign"
+setup_case_env "18"
+write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-180" \
+  "gc__impl-rc-dead" "" "checks_failed" "kriscoleman" "vandoor/gc.implementation-worker" \
+  "kriscoleman/foundry" "180" "fix/thing" "0" "0" "$(iso_ago 30)"
+run_script "${DEFAULT_ENV[@]}" STUB_SESSION_LIST_JSON='{"sessions":[]}' STUB_BD_CREATE_ID="wd-bead180b"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd show' 0 "no bd show — there is no tracked bead for a bead-less record"
+assert_log_count "$GC_LOG" 'bd close' 0 "nothing to close — there was no tracked bead to supersede"
+assert_log_count "$GC_LOG" '\-\-rig vandoor bd create' 1 "a fresh fallback bead is minted for the dead bead-less reuse"
+assert_log_count "$GC_LOG" 'sling vandoor/gc.implementation-worker wd-bead180b --on con-voyage-ci-repair' 1 "the fresh bead is routed via the con-voyage-ci-repair formula"
+assert_log_count "$GC_LOG" 'mail send' 0 "the dead-implementor path never mails a dead session"
+assert_eq "wd-bead180b" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-180" "inflight_rework")" "state now tracks the freshly-minted fallback bead (no longer bead-less)"
+assert_eq "" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-180" "implementor_session")" "the new fallback bead has no known implementor yet"
+assert_eq "1" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-180" "attempt_count")" "attempt_count increments to 1 on the first re-dispatch"
+
+# ===========================================================================
+# CASE 19 — fk-lfan B1, hermetic case (b): implementor set + inflight_rework
+#   EMPTY + implementor ALIVE + last_dispatch_at STALE (past CV_STALL_SECONDS)
+#   -> re-notify the same implementor and increment attempt_count, exactly
+#   like the tracked-bead STALLED-alive case (CASE 9), but staleness is keyed
+#   off last_dispatch_at (there is no tracked bead's updated_at to check).
+# ===========================================================================
+start_case "19: B1 case (b) — bead-less reuse, implementor alive + last_dispatch_at stale -> re-notify"
+setup_case_env "19"
+write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-190" \
+  "gc__impl-rc-1" "" "checks_failed" "kriscoleman" "vandoor/gc.implementation-worker" \
+  "kriscoleman/foundry" "190" "fix/thing" "0" "0" "$(iso_ago 1800)"
+run_script "${DEFAULT_ENV[@]}" STUB_SESSION_LIST_JSON='{"sessions":[{"id":"gc__impl-rc-1","state":"active"}]}'
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd show' 0 "no bd show — there is no tracked bead for a bead-less record"
+assert_log_count "$GC_LOG" 'bd create' 0 "no new bead is minted — the live implementor is reused"
+assert_log_count "$GC_LOG" 'sling' 0 "no sling — reuse is mail-based"
+assert_log_count "$GC_LOG" 'mail send gc__impl-rc-1' 1 "the SAME implementor is re-notified"
+assert_eq "" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-190" "inflight_rework")" "still bead-less after the re-notify"
+assert_eq "gc__impl-rc-1" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-190" "implementor_session")" "implementor is unchanged (reuse, not reassignment)"
+assert_eq "1" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-190" "attempt_count")" "attempt counter increments"
+new_last_dispatch_19="$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-190" "last_dispatch_at")"
+if [ -n "$new_last_dispatch_19" ] && [ "$new_last_dispatch_19" != "$(iso_ago 1800)" ]; then
+  pass "last_dispatch_at is refreshed to a new timestamp on re-notify"
+else
+  fail "expected last_dispatch_at to be refreshed after the re-notify (got '${new_last_dispatch_19}')"
+fi
+
+# ===========================================================================
+# CASE 20 — fk-lfan B1, hermetic case (c): implementor set + inflight_rework
+#   EMPTY + implementor ALIVE + last_dispatch_at FRESH (within
+#   CV_STALL_SECONDS) -> no action. A live implementor working a mail-only
+#   reuse dispatch must be left alone exactly like a live implementor
+#   progressing on a tracked bead (CASE 7).
+# ===========================================================================
+start_case "20: B1 case (c) — bead-less reuse, implementor alive + last_dispatch_at fresh -> no action"
+setup_case_env "20"
+write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-200" \
+  "gc__impl-rc-1" "" "checks_failed" "kriscoleman" "vandoor/gc.implementation-worker" \
+  "kriscoleman/foundry" "200" "fix/thing" "0" "0" "$(iso_ago 30)"
+run_script "${DEFAULT_ENV[@]}" STUB_SESSION_LIST_JSON='{"sessions":[{"id":"gc__impl-rc-1","state":"active"}]}'
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'mail send' 0 "no mail — the implementor is alive and last_dispatch_at is fresh"
+assert_log_count "$GC_LOG" 'bd create' 0 "no fallback bead"
+assert_log_count "$GC_LOG" 'sling' 0 "no sling"
+assert_eq "0" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-200" "attempt_count")" "attempt_count stays at 0 when nothing needed re-dispatch"
 
 # ===========================================================================
 # Summary

@@ -154,6 +154,26 @@ CV_PR_AUTHOR="${CV_PR_AUTHOR:-}"
 CV_STALL_SECONDS="${CV_STALL_SECONDS:-900}"
 CV_MAX_ATTEMPTS="${CV_MAX_ATTEMPTS:-3}"
 CV_ESCALATE_TARGET="${CV_ESCALATE_TARGET:-human}"
+# Forwarded, NOT read, by this script (see header) — declared here with the
+# other tunables rather than left as an inline ${..:-default} at each use
+# site, so every configuration knob resolves in one place.
+CV_AUTHOR_GATE="${CV_AUTHOR_GATE:-enabled}"
+CV_CONFLICT_STRATEGY="${CV_CONFLICT_STRATEGY:-rebase}"
+
+# A malformed CV_STALL_SECONDS/CV_MAX_ATTEMPTS override must never silently
+# break the staleness/escalation checks that gate this watchdog's core
+# behavior (is_stale already fails safe on a bad threshold via its own
+# float() guard, but the CV_MAX_ATTEMPTS `-ge` comparison has no such guard —
+# a non-numeric value would make the escalation cap never trip, re-dispatching
+# forever). Coerce both to their documented defaults when not a valid
+# non-negative base-10 integer, same fail-safe posture as every other
+# malformed-field guard in this pack.
+case "$CV_STALL_SECONDS" in
+  *[!0-9]*|'') CV_STALL_SECONDS="900" ;;
+esac
+case "$CV_MAX_ATTEMPTS" in
+  *[!0-9]*|'') CV_MAX_ATTEMPTS="3" ;;
+esac
 
 # ---------------------------------------------------------------------------
 # Preflight checks
@@ -191,87 +211,13 @@ fi
 echo "con-voyage-repair-watchdog: author-scoped to '${CV_PR_AUTHOR}'; stall=${CV_STALL_SECONDS}s max_attempts=${CV_MAX_ATTEMPTS} escalate_target=${CV_ESCALATE_TARGET}"
 
 # ---------------------------------------------------------------------------
-# Per-PR repair state record — SAME format con-voyage-pr-watch.sh reads and
-# writes (see that script for the authoritative field-by-field doc comment).
-# This copy must stay field-for-field compatible; it is duplicated rather
-# than shared because this mold ships each script as a standalone,
-# independently-executable file (no shared bash library), matching every
-# other script in this pack.
+# Shared per-PR state/dispatch helpers (state_read, state_write, now_iso8601,
+# bead_status, implementor_alive, close_if_open) — see con-voyage-lib.sh for
+# the authoritative field-by-field state-record doc comment. Shared with
+# con-voyage-pr-watch.sh, which writes and reads the SAME state records.
 # ---------------------------------------------------------------------------
-state_read() {
-  local dedup_key="$1"
-  local state_file="${CV_STATE_DIR}/${dedup_key}.state"
-  ST_IMPLEMENTOR=""
-  ST_INFLIGHT=""
-  ST_LAST_STATE="unknown"
-  ST_PR_AUTHOR=""
-  ST_REPAIR_ROUTE=""
-  ST_REPO_FULL=""
-  ST_PR_NUMBER=""
-  ST_BRANCH=""
-  ST_ATTEMPT_COUNT="0"
-  ST_ESCALATED="0"
-  [ -f "$state_file" ] || return 0
-  local k v
-  while IFS='=' read -r k v || [ -n "$k" ]; do
-    case "$k" in
-      implementor_session) ST_IMPLEMENTOR="$v" ;;
-      inflight_rework) ST_INFLIGHT="$v" ;;
-      last_handled_state) [ -n "$v" ] && ST_LAST_STATE="$v" ;;
-      pr_author) ST_PR_AUTHOR="$v" ;;
-      repair_route) ST_REPAIR_ROUTE="$v" ;;
-      repo_full) ST_REPO_FULL="$v" ;;
-      pr_number) ST_PR_NUMBER="$v" ;;
-      branch) ST_BRANCH="$v" ;;
-      attempt_count) [ -n "$v" ] && ST_ATTEMPT_COUNT="$v" ;;
-      escalated) [ -n "$v" ] && ST_ESCALATED="$v" ;;
-    esac
-  done < "$state_file"
-}
-
-state_write() {
-  local dedup_key="$1" implementor="$2" inflight="$3" last_state="$4"
-  local pr_author="${5:-}" repair_route="${6:-}" repo_full="${7:-}"
-  local pr_number="${8:-}" branch="${9:-}" attempt_count="${10:-0}" escalated="${11:-0}"
-  local state_file="${CV_STATE_DIR}/${dedup_key}.state"
-  {
-    printf 'implementor_session=%s\n' "$implementor"
-    printf 'inflight_rework=%s\n' "$inflight"
-    printf 'last_handled_state=%s\n' "$last_state"
-    printf 'pr_author=%s\n' "$pr_author"
-    printf 'repair_route=%s\n' "$repair_route"
-    printf 'repo_full=%s\n' "$repo_full"
-    printf 'pr_number=%s\n' "$pr_number"
-    printf 'branch=%s\n' "$branch"
-    printf 'attempt_count=%s\n' "${attempt_count:-0}"
-    printf 'escalated=%s\n' "${escalated:-0}"
-  } > "$state_file"
-}
-
-# bead_status_updated BEAD_ID — prints "<status><0x1f><updated_at>".
-bead_status_updated() {
-  local bead_id="$1"
-  local SEP=$'\x1f'
-  [ -n "${bead_id// /}" ] || { printf '%s' "$SEP"; return 0; }
-  local json
-  json=$("$GC" --city "$GC_CITY" bd show "$bead_id" --json 2>/dev/null) || json=""
-  if [ -z "$json" ]; then printf '%s' "$SEP"; return 0; fi
-  printf '%s' "$json" | python3 -c "
-import sys, json
-SEP = '\x1f'
-try:
-    data = json.load(sys.stdin)
-except Exception:
-    print(SEP)
-    raise SystemExit(0)
-if isinstance(data, list):
-    data = data[0] if data else {}
-if not isinstance(data, dict):
-    print(SEP)
-    raise SystemExit(0)
-print((data.get('status') or '') + SEP + (data.get('updated_at') or ''))
-" 2>/dev/null || printf '%s' "$SEP"
-}
+# shellcheck source=con-voyage-lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/con-voyage-lib.sh"
 
 # is_stale UPDATED_AT THRESHOLD_SECONDS — exit 0 if UPDATED_AT is more than
 # THRESHOLD_SECONDS in the past. A missing/unparseable UPDATED_AT fails SAFE
@@ -303,49 +249,6 @@ sys.exit(0 if age > threshold_s else 1)
 " "$updated_at" "$threshold"
 }
 
-# implementor_alive SESSION_IDENT — exit 0 if a session matching this
-# identifier exists and is not closed. Identical to con-voyage-pr-watch.sh's
-# helper of the same name/contract.
-implementor_alive() {
-  local ident="$1"
-  [ -n "${ident// /}" ] || return 1
-  local json
-  json=$("$GC" --city "$GC_CITY" session list --json 2>/dev/null) || json=""
-  [ -n "$json" ] || return 1
-  printf '%s' "$json" | python3 -c "
-import sys, json
-ident = sys.argv[1]
-try:
-    data = json.load(sys.stdin)
-except Exception:
-    sys.exit(1)
-sessions = data.get('sessions') if isinstance(data, dict) else data
-if not isinstance(sessions, list):
-    sys.exit(1)
-for s in sessions:
-    if not isinstance(s, dict):
-        continue
-    idents = {s.get('id'), s.get('alias'), s.get('name'), s.get('session_name')}
-    if ident in idents and (s.get('state') or '') != 'closed':
-        sys.exit(0)
-sys.exit(1)
-" "$ident"
-}
-
-# close_if_open BEAD_ID REASON — closes BEAD_ID if it is currently open.
-# No-op if BEAD_ID is empty or already closed/unknown. Identical contract to
-# con-voyage-pr-watch.sh's helper of the same name (dropped the PR_LABEL arg
-# here — this script logs its own labeled lines around each call instead).
-close_if_open() {
-  local bead_id="$1" reason="$2"
-  [ -n "${bead_id// /}" ] || return 0
-  local fields status
-  fields="$(bead_status_updated "$bead_id")"
-  IFS=$'\x1f' read -r status _ <<< "$fields"
-  [ -n "$status" ] && [ "$status" != "closed" ] || return 0
-  "$GC" --city "$GC_CITY" bd close "$bead_id" --reason "$reason" >/dev/null 2>&1 || true
-}
-
 # ---------------------------------------------------------------------------
 # Main loop: iterate every per-PR state record under CV_STATE_DIR. Glob-safe
 # against an empty/missing directory (mirrors con-voyage-pr-watch.sh's own
@@ -364,9 +267,15 @@ for state_file in "${CV_STATE_DIR}"/*.state; do
     label="${ST_REPO_FULL}#${ST_PR_NUMBER}"
   fi
 
-  # Acceptance: "PR clean / no in-flight rework -> no action."
-  if [ -z "${ST_INFLIGHT// /}" ]; then
-    echo "con-voyage-repair-watchdog: SKIP ${dedup_key} — no in-flight rework"
+  # Acceptance: "PR clean / no in-flight rework -> no action." Extended for
+  # fk-lfan B1: skip only when BOTH inflight_rework AND implementor_session
+  # are empty — nothing at all to monitor. A mail-only reuse dispatch (Fix
+  # 1's PRIMARY dispatch path, con-voyage-pr-watch.sh:739,747,823) writes
+  # inflight_rework empty but implementor_session set — that case IS
+  # monitorable (see the bead-less branch below), so it must not be skipped
+  # here just because there is no tracked bead.
+  if [ -z "${ST_INFLIGHT// /}" ] && [ -z "${ST_IMPLEMENTOR// /}" ]; then
+    echo "con-voyage-repair-watchdog: SKIP ${dedup_key} — no in-flight rework and no known implementor"
     continue
   fi
 
@@ -388,19 +297,6 @@ for state_file in "${CV_STATE_DIR}"/*.state; do
     continue
   fi
 
-  tracked_fields="$(bead_status_updated "$ST_INFLIGHT")"
-  IFS=$'\x1f' read -r tracked_status tracked_updated_at <<< "$tracked_fields"
-
-  # A closed/unknown tracked bead is not this watchdog's problem to fix: the
-  # rework either finished (con-voyage-pr-watch.sh's own next cycle will see
-  # the PR's real current state and re-evaluate with full context) or the
-  # bead was deleted out of band. Guessing here risks racing that script's
-  # own supersede/re-mint logic. Leave the record untouched.
-  if [ -z "$tracked_status" ] || [ "$tracked_status" = "closed" ]; then
-    echo "con-voyage-repair-watchdog: SKIP ${label} — tracked bead ${ST_INFLIGHT} is closed/unknown; deferring to the monitor's next cycle"
-    continue
-  fi
-
   implementor_known=0
   [ -n "${ST_IMPLEMENTOR// /}" ] && implementor_known=1
 
@@ -412,35 +308,75 @@ for state_file in "${CV_STATE_DIR}"/*.state; do
   use_fallback=0
   needs_action=0
   action_desc=""
+  # Declared up front (not just inside the tracked-bead branch below) so the
+  # "OK ... no action" log line can always reference them under `set -u` —
+  # they stay empty for a bead-less record (fk-lfan B1).
+  tracked_status=""
+  tracked_updated_at=""
 
-  if [ "$implementor_known" -eq 1 ] && [ "$alive" -eq 0 ]; then
-    # Acceptance: "Implementor dead + in-flight rework -> assigns a new
-    # implementor (re-dispatch)." No staleness threshold gates this case —
-    # a confirmed-dead session is an unambiguous signal on its own.
-    needs_action=1
-    use_fallback=1
-    action_desc="DEAD"
-  elif is_stale "$tracked_updated_at" "$CV_STALL_SECONDS"; then
-    needs_action=1
-    if [ "$implementor_known" -eq 1 ]; then
-      # Acceptance: "Rework stalled past threshold, implementor alive ->
-      # supersede + re-dispatch to same implementor."
-      use_fallback=0
-      action_desc="STALLED (implementor alive)"
-    else
-      # No implementor was ever known and the fallback bead has sat unclaimed
-      # past the threshold — nobody ever picked it up. Same remedy as a dead
-      # implementor: a fresh fallback dispatch.
+  if [ -z "${ST_INFLIGHT// /}" ]; then
+    # fk-lfan B1: bead-less mail-only reuse dispatch (Fix 1's PRIMARY
+    # dispatch path — con-voyage-pr-watch.sh:739,747,823) — implementor_known
+    # is guaranteed 1 here (the combined skip above already dropped the
+    # truly-empty case), but there is no tracked bead to check, so staleness
+    # is keyed off last_dispatch_at (written by con-voyage-pr-watch.sh at
+    # dispatch time and by this watchdog at each re-notify below) instead of
+    # a bead's updated_at.
+    if [ "$alive" -eq 0 ]; then
+      # Hermetic case (a): implementor set + inflight empty + session dead.
+      needs_action=1
       use_fallback=1
-      action_desc="STALLED (never claimed)"
+      action_desc="DEAD (bead-less reuse)"
+    elif is_stale "$ST_LAST_DISPATCH_AT" "$CV_STALL_SECONDS"; then
+      # Hermetic case (b): same + alive + last_dispatch_at stale.
+      needs_action=1
+      use_fallback=0
+      action_desc="STALLED (bead-less reuse, implementor alive)"
+    fi
+    # Hermetic case (c): same + fresh -> needs_action stays 0, "no action" below.
+  else
+    tracked_fields="$(bead_status "$ST_INFLIGHT" updated_at)"
+    IFS=$'\x1f' read -r tracked_status tracked_updated_at <<< "$tracked_fields"
+
+    # A closed/unknown tracked bead is not this watchdog's problem to fix: the
+    # rework either finished (con-voyage-pr-watch.sh's own next cycle will see
+    # the PR's real current state and re-evaluate with full context) or the
+    # bead was deleted out of band. Guessing here risks racing that script's
+    # own supersede/re-mint logic. Leave the record untouched.
+    if [ -z "$tracked_status" ] || [ "$tracked_status" = "closed" ]; then
+      echo "con-voyage-repair-watchdog: SKIP ${label} — tracked bead ${ST_INFLIGHT} is closed/unknown; deferring to the monitor's next cycle"
+      continue
+    fi
+
+    if [ "$implementor_known" -eq 1 ] && [ "$alive" -eq 0 ]; then
+      # Acceptance: "Implementor dead + in-flight rework -> assigns a new
+      # implementor (re-dispatch)." No staleness threshold gates this case —
+      # a confirmed-dead session is an unambiguous signal on its own.
+      needs_action=1
+      use_fallback=1
+      action_desc="DEAD"
+    elif is_stale "$tracked_updated_at" "$CV_STALL_SECONDS"; then
+      needs_action=1
+      if [ "$implementor_known" -eq 1 ]; then
+        # Acceptance: "Rework stalled past threshold, implementor alive ->
+        # supersede + re-dispatch to same implementor."
+        use_fallback=0
+        action_desc="STALLED (implementor alive)"
+      else
+        # No implementor was ever known and the fallback bead has sat unclaimed
+        # past the threshold — nobody ever picked it up. Same remedy as a dead
+        # implementor: a fresh fallback dispatch.
+        use_fallback=1
+        action_desc="STALLED (never claimed)"
+      fi
     fi
   fi
 
   if [ "$needs_action" -eq 0 ]; then
     # Acceptance: "Implementor alive + rework progressing -> no action" (and
     # symmetrically, an unclaimed-but-still-fresh fallback bead within its
-    # grace period).
-    echo "con-voyage-repair-watchdog: OK ${label} — no action (implementor_known=${implementor_known} alive=${alive} updated_at=${tracked_updated_at})"
+    # grace period, or a bead-less reuse whose last_dispatch_at is fresh).
+    echo "con-voyage-repair-watchdog: OK ${label} — no action (implementor_known=${implementor_known} alive=${alive} updated_at=${tracked_updated_at} last_dispatch_at=${ST_LAST_DISPATCH_AT})"
     continue
   fi
 
@@ -456,7 +392,7 @@ for state_file in "${CV_STATE_DIR}"/*.state; do
       2>&1; then
       state_write "$dedup_key" "$ST_IMPLEMENTOR" "$ST_INFLIGHT" "$ST_LAST_STATE" \
         "$ST_PR_AUTHOR" "$ST_REPAIR_ROUTE" "$ST_REPO_FULL" "$ST_PR_NUMBER" "$ST_BRANCH" \
-        "$ST_ATTEMPT_COUNT" "1"
+        "$ST_ATTEMPT_COUNT" "1" "$ST_LAST_DISPATCH_AT"
     else
       echo "con-voyage-repair-watchdog: WARNING: escalation mail to ${CV_ESCALATE_TARGET} failed for ${label}; will retry next cycle" >&2
     fi
@@ -480,7 +416,12 @@ for state_file in "${CV_STATE_DIR}"/*.state; do
     fi
 
     echo "con-voyage-repair-watchdog: ${action_desc} ${label} — reassigning to a new implementor (attempt ${new_attempt_count}/${CV_MAX_ATTEMPTS})"
-    close_if_open "$ST_INFLIGHT" "superseded: watchdog reassigning ${label} (${action_desc})"
+    # tracked_status is already known here for the tracked-bead branch (it was
+    # fetched above to decide DEAD/STALLED) — pass it through to skip a
+    # redundant second `bd show` for the same bead. Empty for the bead-less
+    # branch, where close_if_open no-ops immediately on the empty bead id
+    # anyway (no lookup is ever made either way).
+    close_if_open "$ST_INFLIGHT" "superseded: watchdog reassigning ${label} (${action_desc})" "" "$tracked_status"
 
     new_bead_id=$("$GC" --city "$GC_CITY" --rig "$rig" bd create \
       "Watchdog re-dispatch: GitHub PR ${label} (${ST_LAST_STATE})" \
@@ -499,12 +440,12 @@ for state_file in "${CV_STATE_DIR}"/*.state; do
       --var "branch=${ST_BRANCH}" \
       --var "failure_kind=${ST_LAST_STATE}" \
       --var "cv_pr_author=${CV_PR_AUTHOR}" \
-      --var "cv_author_gate=${CV_AUTHOR_GATE:-enabled}" \
-      --var "cv_conflict_strategy=${CV_CONFLICT_STRATEGY:-rebase}" \
+      --var "cv_author_gate=${CV_AUTHOR_GATE}" \
+      --var "cv_conflict_strategy=${CV_CONFLICT_STRATEGY}" \
       2>&1; then
       state_write "$dedup_key" "" "$new_bead_id" "$ST_LAST_STATE" \
         "$ST_PR_AUTHOR" "$ST_REPAIR_ROUTE" "$ST_REPO_FULL" "$ST_PR_NUMBER" "$ST_BRANCH" \
-        "$new_attempt_count" "0"
+        "$new_attempt_count" "0" "$(now_iso8601)"
     else
       echo "con-voyage-repair-watchdog: WARNING: fallback sling failed for ${label} (bead ${new_bead_id}); will retry next cycle" >&2
     fi
@@ -520,7 +461,7 @@ for state_file in "${CV_STATE_DIR}"/*.state; do
       --notify 2>&1; then
       state_write "$dedup_key" "$ST_IMPLEMENTOR" "$ST_INFLIGHT" "$ST_LAST_STATE" \
         "$ST_PR_AUTHOR" "$ST_REPAIR_ROUTE" "$ST_REPO_FULL" "$ST_PR_NUMBER" "$ST_BRANCH" \
-        "$new_attempt_count" "0"
+        "$new_attempt_count" "0" "$(now_iso8601)"
     else
       echo "con-voyage-repair-watchdog: WARNING: mail to implementor ${ST_IMPLEMENTOR} failed for ${label}; will retry next cycle" >&2
     fi
