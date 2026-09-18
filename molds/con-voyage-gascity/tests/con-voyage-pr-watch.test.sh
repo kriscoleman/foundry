@@ -696,6 +696,38 @@ JSON
     # Non-formula path (PART B). Accept plain text/stdin routes.
     exit 0
     ;;
+  session)
+    sessub="${args[$((i+1))]:-}"
+    if [ "$sessub" = "list" ]; then
+      # `gc session list --json` — implementor_alive resolution (Task 2,
+      # fk-4o74 Fix 1). STUB_SESSION_LIST_JSON lets a test supply the exact
+      # sessions array (real shape: {"sessions":[{"id":...,"alias":...,
+      # "name":...,"session_name":...,"state":"active|suspended|closed"}]});
+      # default is an empty list (no sessions => nobody is alive).
+      if [ -n "${STUB_SESSION_LIST_JSON:-}" ]; then
+        printf '%s' "$STUB_SESSION_LIST_JSON"
+      else
+        printf '{"ok":true,"sessions":[]}'
+      fi
+      exit 0
+    fi
+    exit 0
+    ;;
+  mail)
+    mailsub="${args[$((i+1))]:-}"
+    if [ "$mailsub" = "send" ]; then
+      # `gc mail send <target> -s ... -m ... --notify` — Task 3 reuse-dispatch
+      # (fk-4o74 Fix 1). STUB_MAIL_SEND_FAIL=1 simulates a delivery failure
+      # (e.g. the target address no longer resolves), mirroring the existing
+      # STUB_SLING_FAIL pattern for the fallback path.
+      if [ "${STUB_MAIL_SEND_FAIL:-0}" = "1" ]; then
+        echo "gc mail send: failed to deliver (simulated)" >&2
+        exit 1
+      fi
+      exit 0
+    fi
+    exit 0
+    ;;
 esac
 exit 0
 GC_STUB
@@ -737,6 +769,15 @@ log_count() {
 assert_log_count() {
   local n; n="$(log_count "$1" "$2")"
   assert_eq "$3" "$n" "$4"
+}
+
+# state_field STATE_DIR DEDUP_KEY FIELD — reads one key=value field out of the
+# new per-PR state record (Task 1, fk-4o74: replaces the old bead-id-only
+# "<dedup_key>.minted" marker). Empty output if the file or field is absent.
+state_field() {
+  local f="${1}/${2}.state" field="$3"
+  [ -f "$f" ] || return 0
+  awk -F= -v k="$field" '$1==k{ sub(/^[^=]*=/, ""); print; exit }' "$f"
 }
 
 # Fresh per-case environment. Sets up city dir, state dir, empty logs.
@@ -1026,26 +1067,35 @@ else
 fi
 
 # ===========================================================================
-# CASE 9 — PART A dedup is PR-NUMBER keyed (not head-sha): a single marker
-#   tracks at most one repair bead per PR across cycles. A re-mint is blocked
-#   ONLY while the tracked bead is genuinely in-flight (open + a live
-#   assignee); a closed or orphaned (open, unassigned) tracked bead never
-#   blocks a fresh mint, and gets superseded when one occurs. We drive four
-#   consecutive cycles against the SAME state dir, using STUB_BDSHOW_MAP to
-#   control what `bd show` reports for the previously-minted bead:
-#     cycle 1: no prior marker                       -> fresh mint (baseline)
-#     cycle 2: prior bead OPEN + assignee (in-flight) -> SKIP (AC: no dup mint)
-#     cycle 3: prior bead CLOSED, head ADVANCED       -> fresh mint (AC: a
-#                                                        stale marker/closed
-#                                                        bead never false-skips)
-#     cycle 4: prior bead OPEN, unassigned (orphan)   -> fresh mint AND the
-#                                                        orphan is superseded
-#                                                        (AC: no orphan pileup)
+# CASE 9 — PART A dedup is PR-NUMBER keyed (not head-sha): a per-PR STATE
+#   RECORD (fk-4o74 Fix 1, replaces the old bead-id-only ".minted" marker —
+#   see state_field helper) tracks at most one repair bead per PR across
+#   cycles. A re-mint is blocked ONLY while the tracked bead is genuinely
+#   in-flight — status != closed, REGARDLESS of assignee. This is the crux of
+#   the over-mint fix: pool-routed work sits with an EMPTY assignee for an
+#   unbounded time before a worker claims it (confirmed live, vandoor #10494 —
+#   see design doc), so the OLD gate (open AND assignee) was never true for a
+#   freshly-slung, not-yet-claimed repair and re-minted it every cycle. The
+#   NEW gate trusts "open" alone. Only a CLOSED tracked bead is treated as
+#   free to supersede. We drive four consecutive cycles against the SAME
+#   state dir, using STUB_BDSHOW_MAP to control what `bd show` reports for
+#   the previously-minted bead:
+#     cycle 1: no prior state                          -> fresh mint (baseline)
+#     cycle 2: prior bead OPEN + assignee (in-flight)   -> SKIP (AC: no dup mint)
+#     cycle 3: prior bead CLOSED, head ADVANCED         -> fresh mint (AC: a
+#                                                          stale/closed bead
+#                                                          never false-skips)
+#     cycle 4: prior bead OPEN, UNASSIGNED (pending      -> SKIP, no supersede
+#              pool claim, NOT an orphan)                  (AC: no-duplicates /
+#                                                          no-over-mint
+#                                                          regression — this IS
+#                                                          the confirmed live
+#                                                          bug scenario)
 # ===========================================================================
 start_case "9: PART A dedup is PR-number keyed with in-flight/supersede semantics"
 setup_case_env "9"
 
-# --- Cycle 1: no prior marker -> fresh mint. ---
+# --- Cycle 1: no prior state -> fresh mint. ---
 GC_LOG_1="${SANDBOX}/gc-9a.log"; : > "$GC_LOG_1"
 OUT="$(
   env GH="${STUBDIR}/gh" GC="${STUBDIR}/gc" GC_CITY="$CITY_DIR" \
@@ -1058,16 +1108,17 @@ OUT="$(
 assert_eq "0" "$RC" "cycle 1 exits 0"
 assert_log_count "$GC_LOG_1" 'bd create .*--silent' 1 "cycle 1 pre-creates exactly one repair bead"
 assert_log_count "$GC_LOG_1" 'sling vandoor/gc.implementation-worker va-bead1 --on con-voyage-ci-repair' 1 "cycle 1 mints one ci-repair sling for #11"
-# The PR-scoped dedup marker (no head-sha in the filename) must now exist and
-# track the minted bead id.
-if [ "$(cat "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.minted" 2>/dev/null)" = "va-bead1" ]; then
-  pass "cycle 1 wrote the PR-scoped dedup marker tracking va-bead1"
-else
-  fail "expected the PR-scoped dedup marker to track va-bead1 after cycle 1"
-fi
+# The PR-scoped state record (no head-sha in the filename) must now exist and
+# track the minted bead id as its in-flight rework, with no known implementor
+# yet (this was the fallback path — nobody has claimed the bead yet).
+assert_eq "va-bead1" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "inflight_rework")" "cycle 1 wrote the PR-scoped state record tracking va-bead1"
+assert_eq "" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "implementor_session")" "cycle 1 has no known implementor yet (fallback mint, unclaimed)"
+assert_eq "checks_failed" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "last_handled_state")" "cycle 1 records last_handled_state=checks_failed"
 
 # --- Cycle 2: SAME head-sha, tracked bead reported OPEN + a live assignee ->
-#     genuinely in-flight -> SKIP, no duplicate mint. ---
+#     genuinely in-flight -> SKIP, no duplicate mint. The assignee is also
+#     opportunistically adopted as the PR's implementor (req 2: "the new
+#     worker becomes the implementor") for future cycles' reuse-routing. ---
 GC_LOG_2="${SANDBOX}/gc-9b.log"; : > "$GC_LOG_2"
 OUT="$(
   env GH="${STUBDIR}/gh" GC="${STUBDIR}/gc" GC_CITY="$CITY_DIR" \
@@ -1080,31 +1131,31 @@ OUT="$(
 assert_eq "0" "$RC" "cycle 2 exits 0"
 assert_log_count "$GC_LOG_2" 'bd create .*--silent' 0 "cycle 2 creates NO duplicate repair bead"
 assert_log_count "$GC_LOG_2" 'sling .*--on con-voyage-ci-repair' 0 "cycle 2 issues NO duplicate ci-repair sling for #11"
+assert_log_count "$GC_LOG_2" 'mail send' 0 "cycle 2 sends no mail either (genuinely in-flight — nothing to dispatch)"
 assert_log_count "$GC_LOG_2" 'bd close va-bead1' 0 "cycle 2 does not touch the in-flight bead"
 if printf '%s' "$OUT" | grep -q 'SKIP kriscoleman/foundry#11 @ aaa111 — repair genuinely in-flight'; then
   pass "cycle 2 logs the in-flight SKIP for #11"
 else
   fail "expected an in-flight SKIP log for #11 in cycle 2"
 fi
-if [ "$(cat "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.minted" 2>/dev/null)" = "va-bead1" ]; then
-  pass "marker still tracks va-bead1 after the in-flight skip"
-else
-  fail "marker was mutated despite an in-flight skip"
-fi
+assert_eq "va-bead1" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "inflight_rework")" "state still tracks va-bead1 after the in-flight skip"
+assert_eq "gc__implementation-worker-rc-1" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "implementor_session")" "the claimant is adopted as the PR's implementor even on a skip cycle"
 
 # --- Cycle 3: head ADVANCED to bcd222, tracked bead va-bead1 now CLOSED ->
-#     not in-flight -> fresh mint despite the stale marker (no false skip). ---
+#     not in-flight -> fresh mint despite the stale record (no false skip).
+#     Implementor resets to unknown: va-bead1's claimant finished/gave up
+#     without fixing it, so the fallback path runs again from scratch. ---
 GC_LOG_3="${SANDBOX}/gc-9c.log"; : > "$GC_LOG_3"
 OUT="$(
   env GH="${STUBDIR}/gh" GC="${STUBDIR}/gc" GC_CITY="$CITY_DIR" \
     CV_STATE_DIR="$STATE_DIR" STUB_GH_LOG="${SANDBOX}/gh-9c.log" \
     STUB_GC_LOG="$GC_LOG_3" CV_PR_AUTHOR="kriscoleman" \
     STUB_GH_USER_LOGIN="kriscoleman" STUB_HEAD_SHA="bcd222" \
-    STUB_BDSHOW_MAP="va-bead1|closed|" STUB_BD_CREATE_ID="va-bead2" \
+    STUB_BDSHOW_MAP="va-bead1|closed|gc__implementation-worker-rc-1" STUB_BD_CREATE_ID="va-bead2" \
     bash "$SCRIPT" 2>&1
 )"; RC=$?
 assert_eq "0" "$RC" "cycle 3 exits 0"
-assert_log_count "$GC_LOG_3" 'bd create .*--silent' 1 "cycle 3 pre-creates a FRESH repair bead despite the stale marker"
+assert_log_count "$GC_LOG_3" 'bd create .*--silent' 1 "cycle 3 pre-creates a FRESH repair bead despite the stale record"
 assert_log_count "$GC_LOG_3" 'sling vandoor/gc.implementation-worker va-bead2 --on con-voyage-ci-repair' 1 "cycle 3 mints one well-formed ci-repair sling at the new head"
 assert_log_count "$GC_LOG_3" 'sling vandoor/gc.implementation-worker va-bead2 --on con-voyage-ci-repair .*pr=11 .*repo=kriscoleman/foundry .*branch=fix/con-voyage-author-scope-pr-monitor' 1 "cycle 3 re-mint forwards pr/repo/branch vars"
 # The already-closed bead needs no supersede close call — closing it again
@@ -1115,15 +1166,15 @@ if printf '%s' "$OUT" | grep -q 'KEEP kriscoleman/foundry#11 .* (dedup: cv-ci-re
 else
   fail "expected a KEEP log naming the PR-scoped dedup key in cycle 3"
 fi
-if [ "$(cat "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.minted" 2>/dev/null)" = "va-bead2" ]; then
-  pass "marker now tracks the freshly-minted va-bead2"
-else
-  fail "expected the marker to track va-bead2 after cycle 3's fresh mint"
-fi
+assert_eq "va-bead2" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "inflight_rework")" "state now tracks the freshly-minted va-bead2"
 
 # --- Cycle 4: head ADVANCED to ccc333, tracked bead va-bead2 now OPEN but
-#     UNASSIGNED (orphaned, no live worker) -> not in-flight -> fresh mint,
-#     AND the orphan is superseded (closed) so it never piles up. ---
+#     UNASSIGNED. This is the CONFIRMED LIVE BUG SCENARIO (design doc: "the
+#     tracked bead va-94kf was open with assignee=None, so the next cycle
+#     would re-mint again" — that re-mint was the bug). Under the fix this
+#     is NOT an orphan — it's a fallback-slung repair still waiting for a
+#     pool worker to claim it — so it stays genuinely in-flight: SKIP, no
+#     supersede, no duplicate mint. ---
 GC_LOG_4="${SANDBOX}/gc-9d.log"; : > "$GC_LOG_4"
 OUT="$(
   env GH="${STUBDIR}/gh" GC="${STUBDIR}/gc" GC_CITY="$CITY_DIR" \
@@ -1134,20 +1185,17 @@ OUT="$(
     bash "$SCRIPT" 2>&1
 )"; RC=$?
 assert_eq "0" "$RC" "cycle 4 exits 0"
-assert_log_count "$GC_LOG_4" 'bd close va-bead1 .*superseded' 0 "cycle 4 does not touch the unrelated already-closed va-bead1"
-assert_log_count "$GC_LOG_4" 'bd close va-bead2 .*superseded' 1 "cycle 4 supersedes (closes) the orphaned va-bead2"
-assert_log_count "$GC_LOG_4" 'bd create .*--silent' 1 "cycle 4 pre-creates a fresh repair bead alongside the supersede"
-assert_log_count "$GC_LOG_4" 'sling vandoor/gc.implementation-worker va-bead3 --on con-voyage-ci-repair' 1 "cycle 4 mints one well-formed ci-repair sling for the new bead"
-if printf '%s' "$OUT" | grep -q 'SUPERSEDE kriscoleman/foundry#11: closed prior open repair bead va-bead2'; then
-  pass "cycle 4 logs the SUPERSEDE for the orphaned va-bead2"
+assert_log_count "$GC_LOG_4" 'bd close va-bead1' 0 "cycle 4 does not touch the unrelated already-closed va-bead1"
+assert_log_count "$GC_LOG_4" 'bd close va-bead2' 0 "cycle 4 does NOT supersede the pending (open, unassigned) va-bead2 — no-over-mint regression fix"
+assert_log_count "$GC_LOG_4" 'bd create .*--silent' 0 "cycle 4 creates NO duplicate repair bead"
+assert_log_count "$GC_LOG_4" 'sling .*--on con-voyage-ci-repair' 0 "cycle 4 issues NO duplicate ci-repair sling"
+assert_log_count "$GC_LOG_4" 'mail send' 0 "cycle 4 sends no mail either (no known implementor, and the fallback bead is still in-flight)"
+if printf '%s' "$OUT" | grep -q 'SKIP kriscoleman/foundry#11 @ ccc333 — repair genuinely in-flight'; then
+  pass "cycle 4 logs the in-flight SKIP for the pending (open, unassigned) va-bead2"
 else
-  fail "expected a SUPERSEDE log for va-bead2 in cycle 4"
+  fail "expected an in-flight SKIP log for #11 in cycle 4 (open-unassigned must not be treated as an orphan)"
 fi
-if [ "$(cat "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.minted" 2>/dev/null)" = "va-bead3" ]; then
-  pass "marker now tracks the freshly-minted va-bead3 after superseding the orphan"
-else
-  fail "expected the marker to track va-bead3 after cycle 4"
-fi
+assert_eq "va-bead2" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "inflight_rework")" "state still tracks va-bead2 — no supersede on a merely-unclaimed bead"
 
 # ===========================================================================
 # CASE 9b — legacy per-head-sha marker files (from the OLD dedup scheme) are
@@ -1181,11 +1229,7 @@ else
   fail "PR #11's sweep incorrectly removed PR #1's decoy marker"
 fi
 assert_log_count "$GC_LOG" 'bd close va-decoy' 0 "PR #1's decoy bead is never closed by PR #11's sweep"
-if [ "$(cat "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.minted" 2>/dev/null)" = "va-bead-fresh" ]; then
-  pass "fresh PR-scoped marker created after sweeping the legacy marker"
-else
-  fail "expected a fresh PR-scoped marker tracking va-bead-fresh"
-fi
+assert_eq "va-bead-fresh" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "inflight_rework")" "fresh PR-scoped state record created after sweeping the legacy marker"
 
 # ===========================================================================
 # CASE 10 — PART A mint failure is retried (no dedup marker on failure).
@@ -1202,10 +1246,10 @@ assert_eq "0" "$RC" "script exits 0 (mint failure is non-fatal)"
 # bd create was attempted, but returned empty -> the script must NOT sling and
 # must NOT write a marker (so the next cycle retries).
 assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair' 0 "no ci-repair sling when bead pre-create yields no id"
-if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.minted" ]; then
-  fail "dedup marker written despite a failed mint (would suppress retries)"
+if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.state" ]; then
+  fail "state record written despite a failed mint (would suppress retries)"
 else
-  pass "no dedup marker written on failed mint (mint will be retried next cycle)"
+  pass "no state record written on failed mint (mint will be retried next cycle)"
 fi
 if printf '%s' "$OUT" | grep -q 'failed to create repair bead for kriscoleman/foundry#11'; then
   pass "logs the bead-create failure for #11"
@@ -1238,12 +1282,12 @@ assert_log_count "$GC_LOG" 'bd create .*--silent' 1 "a repair bead was pre-creat
 # ...and exactly one well-formed ci-repair sling was ATTEMPTED for that bead
 # (the stub rejects it via STUB_SLING_FAIL, mirroring a routing failure).
 assert_log_count "$GC_LOG" 'sling vandoor/gc.implementation-worker va-newbead --on con-voyage-ci-repair' 1 "one well-formed ci-repair sling was attempted for #11"
-# CRUX: because that sling failed, NO dedup marker may be written — otherwise the
+# CRUX: because that sling failed, NO state record may be written — otherwise the
 # mint would be suppressed forever and never retried.
-if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.minted" ]; then
-  fail "dedup marker written despite a FAILED sling (would suppress retries)"
+if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.state" ]; then
+  fail "state record written despite a FAILED sling (would suppress retries)"
 else
-  pass "no dedup marker written on failed sling (mint will be retried next cycle)"
+  pass "no state record written on failed sling (mint will be retried next cycle)"
 fi
 # The retry WARNING must be logged (operator-observable evidence of the retry path).
 if printf '%s' "$OUT" | grep -q 'repair-bead sling failed for kriscoleman/foundry#11'; then
@@ -1291,12 +1335,8 @@ if printf '%s' "$OUT" | grep -q 'repair bead va-newbead created/attached and rou
 else
   fail "expected a successful route log to vandoor/gc.implementation-worker"
 fi
-# CRUX: the dedup marker IS written (mint+route succeeded), keyed on repo+PR.
-if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.minted" ]; then
-  pass "dedup marker written after a successful same-rig mint+route"
-else
-  fail "expected a dedup marker after the successful same-rig mint+route"
-fi
+# CRUX: the state record IS written (mint+route succeeded), keyed on repo+PR.
+assert_eq "va-newbead" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "inflight_rework")" "state record written after a successful same-rig mint+route"
 
 # ===========================================================================
 # CASE 13 — TRIPWIRE (RED on the OLD no-rig form): if the repair bead is minted
@@ -1325,12 +1365,12 @@ if printf '%s' "$OUT" | grep -q 'repair bead rc-oldbug created/attached and rout
 else
   pass "no success log — cross-rig sling was rejected (as real gc would)"
 fi
-# CRUX: because the sling was rejected, NO dedup marker may be written (so the
+# CRUX: because the sling was rejected, NO state record may be written (so the
 # next cycle retries rather than suppressing a never-routed bead forever).
-if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.minted" ]; then
-  fail "dedup marker written despite a cross-rig REJECTED sling (old-bug regression)"
+if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.state" ]; then
+  fail "state record written despite a cross-rig REJECTED sling (old-bug regression)"
 else
-  pass "no dedup marker on the cross-rig-rejected (city-minted) sling"
+  pass "no state record on the cross-rig-rejected (city-minted) sling"
 fi
 # And the retry WARNING is logged (operator-observable evidence of the retry path).
 if printf '%s' "$OUT" | grep -q 'repair-bead sling failed for kriscoleman/foundry#11'; then
@@ -1354,10 +1394,10 @@ assert_eq "0" "$RC" "script exits 0"
 assert_log_count "$GC_LOG" 'bd create' 0 "no repair bead created when the rig cannot be derived"
 assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair' 0 "no ci-repair sling when the rig cannot be derived"
 # No marker written.
-if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.minted" ]; then
-  fail "dedup marker written despite skipping an underivable-rig route"
+if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.state" ]; then
+  fail "state record written despite skipping an underivable-rig route"
 else
-  pass "no dedup marker written for the skipped underivable-rig route"
+  pass "no state record written for the skipped underivable-rig route"
 fi
 # The skip WARNING names the offending route and the reason.
 if printf '%s' "$OUT" | grep -q "repair_route 'gc.implementation-worker' has no '<rig>/' prefix"; then
@@ -1590,10 +1630,10 @@ if printf '%s' "$OUT" | grep -q 'SKIP kriscoleman/foundry#900 — awaiting human
 else
   fail "expected an awaiting-human SKIP log for #900"
 fi
-if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-900.minted" ]; then
-  fail "dedup marker written for a PR that was never minted (awaiting-human skip)"
+if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-900.state" ]; then
+  fail "state record written for a PR that was never minted (awaiting-human skip)"
 else
-  pass "no dedup marker written for the awaiting-human skip"
+  pass "no state record written for the awaiting-human skip"
 fi
 
 # ===========================================================================
@@ -1763,6 +1803,134 @@ assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin STDIN:.*src/r
 # (root) comment routing is unaffected by this change (proven by CASE 5 and the
 # reviews+comments routing above, which have no databaseId and still route).
 assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin STDIN:.*id:PRRC_test_11' 1 "the node-id is still present in the routed message"
+
+# ===========================================================================
+# CASE 32 — Task 2/3 (fk-4o74 Fix 1) "Reuse": when the PR's implementor is
+#   alive, the monitor mails + notifies that SAME implementor instead of
+#   spinning up a fresh pool worker. Pre-seed a state record with a known,
+#   alive implementor and a DIFFERENT last_handled_state (behind_base) than
+#   what this cycle observes (checks_failed, PR #11's default "full" fixture
+#   classification) so the dedup gate does not skip — this is a genuine new
+#   defect needing a fresh dispatch, and reuse (not fallback) must be chosen.
+# ===========================================================================
+start_case "32: Task 3 reuse — implementor alive gets mail+notify, zero pool sling"
+setup_case_env "32"
+printf 'implementor_session=gc__implementation-worker-rc-9\ninflight_rework=\nlast_handled_state=behind_base\n' \
+  > "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.state"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_SESSION_LIST_JSON='{"sessions":[{"id":"gc__implementation-worker-rc-9","state":"active"}]}'
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'mail send gc__implementation-worker-rc-9' 1 "exactly one mail to the known, alive implementor"
+assert_log_count "$GC_LOG" 'mail send gc__implementation-worker-rc-9 .*-s .*11.*checks_failed' 1 "the mail subject names the PR and failure_kind"
+assert_log_count "$GC_LOG" 'mail send gc__implementation-worker-rc-9 .*--notify' 1 "the mail is sent with --notify (durable + wake, no separate nudge call needed)"
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair' 0 "ZERO pool ci-repair slings when the implementor is alive"
+assert_log_count "$GC_LOG" 'bd create .*--silent' 0 "no fallback repair bead is created when the implementor is alive"
+assert_eq "gc__implementation-worker-rc-9" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "implementor_session")" "the known implementor is retained after a reuse dispatch"
+assert_eq "" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "inflight_rework")" "a mail-only reuse dispatch tracks no bead id"
+assert_eq "checks_failed" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "last_handled_state")" "last_handled_state advances to the newly-observed defect"
+
+# ===========================================================================
+# CASE 33 — Task 3 "Fallback": when the previously-known implementor is gone
+#   (no matching, non-closed session), the monitor falls back to spawning a
+#   fresh implementor via the pool con-voyage-ci-repair formula — exactly
+#   today's mint path — and does NOT know its claimant yet (implementor_session
+#   resets to empty; Task 2's write-back adopts it on a later cycle once gc
+#   records an assignee, per CASE 9 cycle 2).
+# ===========================================================================
+start_case "33: Task 3 fallback — implementor gone spawns a fresh pool worker"
+setup_case_env "33"
+printf 'implementor_session=gc__implementation-worker-rc-9dead\ninflight_rework=\nlast_handled_state=behind_base\n' \
+  > "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.state"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_SESSION_LIST_JSON='{"sessions":[]}' STUB_BD_CREATE_ID="va-newimpl"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'mail send' 0 "no mail is sent to a dead implementor"
+assert_log_count "$GC_LOG" 'bd create .*--silent' 1 "one fallback repair bead is created"
+assert_log_count "$GC_LOG" 'sling vandoor/gc.implementation-worker va-newimpl --on con-voyage-ci-repair' 1 "the fallback bead is slung to the pool ci-repair formula"
+if printf '%s' "$OUT" | grep -q 'fallback — no live implementor'; then
+  pass "logs that this dispatch used the fallback path (no live implementor)"
+else
+  fail "expected a fallback-path log line naming the reason (no live implementor)"
+fi
+assert_eq "" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "implementor_session")" "implementor resets to unknown until the fallback bead is claimed"
+assert_eq "va-newimpl" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "inflight_rework")" "the fresh fallback bead is now tracked"
+
+# ===========================================================================
+# CASE 34 — Task 3 reuse-path failure is retryable: a failed mail delivery to
+#   a live implementor must NOT update the state record (mirrors the existing
+#   CASE 11 discipline for a failed sling), so the next cycle retries the
+#   dispatch instead of silently losing it.
+# ===========================================================================
+start_case "34: Task 3 reuse mail failure leaves state untouched (retryable)"
+setup_case_env "34"
+printf 'implementor_session=gc__implementation-worker-rc-9\ninflight_rework=\nlast_handled_state=behind_base\n' \
+  > "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.state"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_SESSION_LIST_JSON='{"sessions":[{"id":"gc__implementation-worker-rc-9","state":"active"}]}' \
+  STUB_MAIL_SEND_FAIL=1
+assert_eq "0" "$RC" "script exits 0 (mail failure is non-fatal)"
+assert_log_count "$GC_LOG" 'mail send gc__implementation-worker-rc-9' 1 "the mail dispatch was attempted"
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair' 0 "a failed reuse-mail does NOT fall back to a pool sling"
+assert_eq "behind_base" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "last_handled_state")" "last_handled_state is unchanged after a failed dispatch (will retry)"
+if printf '%s' "$OUT" | grep -q 'WARNING: mail to implementor gc__implementation-worker-rc-9 failed'; then
+  pass "logs the mail-failure WARNING for the retry path"
+else
+  fail "expected a mail-failure WARNING for kriscoleman/foundry#11"
+fi
+
+# ===========================================================================
+# CASE 35 — Task 5 (fk-4o74 Fix 1) "Leave clean alone": a clean PR (#20 in the
+#   'states' fixture) is never dispatched (already proven by CASE 18) AND its
+#   state record is refreshed to last_handled_state=clean, so a LATER
+#   re-conflict has a real prior state to compare against (see CASE 36).
+# ===========================================================================
+start_case "35: Task 5 leave-clean-alone — no dispatch, and clean gets recorded"
+setup_case_env "35"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_BACKFILL_MODE="states"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling .*pr=20' 0 "no sling for #20 (clean)"
+assert_log_count "$GC_LOG" 'bd create Repair GitHub PR kriscoleman/foundry#20' 0 "no repair bead for #20 (clean)"
+assert_log_count "$GC_LOG" 'mail send' 0 "no mail for #20 either (nothing to repair)"
+assert_eq "clean" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-20" "last_handled_state")" "clean PR #20's state is recorded as clean"
+
+# ===========================================================================
+# CASE 36 — Task 5 "Re-detect after clean" (req 4): a PR previously recorded
+#   clean that is now actionable again must NOT be suppressed by the stale
+#   clean record — last_handled_state ("clean") differs from the newly
+#   observed failure_kind, so the dedup gate does not skip and a fresh
+#   dispatch fires (fallback path here — no implementor is known).
+# ===========================================================================
+start_case "36: Task 5 re-detect after clean — a stale clean record never suppresses a real conflict"
+setup_case_env "36"
+printf 'implementor_session=\ninflight_rework=\nlast_handled_state=clean\n' \
+  > "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.state"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_BD_CREATE_ID="va-reconflict"
+assert_eq "0" "$RC" "script exits 0"
+if printf '%s' "$OUT" | grep -q 'SKIP kriscoleman/foundry#11'; then
+  fail "a stale clean record incorrectly suppressed the re-detected conflict"
+else
+  pass "no SKIP logged — the clean->dirty transition was not suppressed"
+fi
+assert_log_count "$GC_LOG" 'bd create .*--silent' 1 "a fresh repair bead is minted after re-detecting a conflict"
+assert_log_count "$GC_LOG" 'sling vandoor/gc.implementation-worker va-reconflict --on con-voyage-ci-repair' 1 "the re-detected conflict is dispatched"
+assert_eq "checks_failed" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "last_handled_state")" "state advances from clean to the newly-observed failure_kind"
+
+# ===========================================================================
+# CASE 37 — Task 5 symmetry: when a PR that had an OPEN tracked repair bead
+#   transitions to clean (the repair evidently landed, but the tracked bead
+#   was left open), the monitor supersedes (closes) it so it never lingers as
+#   a phantom in-flight rework for a PR that no longer needs one.
+# ===========================================================================
+start_case "37: Task 5 clean transition supersedes a stale open tracked bead"
+setup_case_env "37"
+printf 'implementor_session=\ninflight_rework=va-oldbead\nlast_handled_state=merge_conflict\n' \
+  > "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-20.state"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_BACKFILL_MODE="states" \
+  STUB_BDSHOW_MAP="va-oldbead|open|"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd close va-oldbead .*now clean' 1 "the stale open bead is closed now that PR #20 is clean"
+assert_eq "clean" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-20" "last_handled_state")" "state advances to clean"
+assert_eq "" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-20" "inflight_rework")" "no bead is tracked once the PR is clean"
 
 # ===========================================================================
 # Summary
