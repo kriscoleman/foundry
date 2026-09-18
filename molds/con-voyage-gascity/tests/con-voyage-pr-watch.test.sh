@@ -1955,6 +1955,27 @@ assert_eq "clean" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-
 assert_eq "" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-20" "inflight_rework")" "no bead is tracked once the PR is clean"
 
 # ===========================================================================
+# CASE 37b — Task 5 / Req 2 parity (finding #4, fk-4o74 Fix-1 round 2): same
+#   clean transition as CASE 37, but the stale tracked bead now has a LIVE,
+#   NON-EMPTY assignee. The clean-branch path (script ~500-501) must adopt
+#   that assignee as the PR's implementor_session, exactly like the main
+#   dispatch path does on a skip cycle (CASE 9b) — otherwise a claimant who
+#   fixed the PR is silently forgotten the moment it goes clean, costing a
+#   needless fallback mint on a later re-conflict.
+# ===========================================================================
+start_case "37b: Task 5 clean transition adopts a live assignee as implementor"
+setup_case_env "37b"
+printf 'implementor_session=\ninflight_rework=va-oldbead\nlast_handled_state=merge_conflict\n' \
+  > "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-20.state"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_BACKFILL_MODE="states" \
+  STUB_BDSHOW_MAP="va-oldbead|open|gc__impl-rc-5"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd close va-oldbead .*now clean' 1 "the stale open bead is closed now that PR #20 is clean"
+assert_eq "clean" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-20" "last_handled_state")" "state advances to clean"
+assert_eq "" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-20" "inflight_rework")" "no bead is tracked once the PR is clean"
+assert_eq "gc__impl-rc-5" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-20" "implementor_session")" "the stale bead's live assignee is adopted as implementor_session"
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 echo

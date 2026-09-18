@@ -357,9 +357,10 @@ sys.exit(1)
 #               head-sha does NOT by itself block a fresh mint (a head-sha-keyed
 #               dedup let a stale marker or a reset-to-an-old-head block needed
 #               re-mints and let orphaned beads pile up). The tracked bead
-#               blocks a re-mint ONLY while it is genuinely in-flight (open + a
-#               live assignee); otherwise it is superseded (closed) and a fresh
-#               bead is minted, so a new head always re-arms the mint.
+#               blocks a re-mint ONLY while it is genuinely in-flight (open —
+#               status only, NOT assignee; keyed on last_handled_state);
+#               otherwise it is superseded (closed) and a fresh bead is
+#               minted, so a new head always re-arms the mint.
 #
 # We deliberately AVOID `--create-repair-beads` because that native path has no
 # author filter and would create a bead for every actionable PR. The report +
@@ -593,7 +594,7 @@ print(author + SEP + ("1" if skip_awaiting_human else "0"))
       fi
 
       # Load this PR's per-PR repair state (Task 1/2, fk-4o74 Fix 1):
-      # implementor_session (the worker mail/nudge should reach directly),
+      # implementor_session (the worker mail send --notify should reach directly),
       # inflight_rework (a tracked bead id, when the last dispatch used the
       # pool fallback), last_handled_state (the failure_kind — or "clean" —
       # this monitor last reacted to for this PR).
