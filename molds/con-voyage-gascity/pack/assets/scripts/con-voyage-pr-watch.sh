@@ -244,26 +244,6 @@ state_write() {
   rm -f "${CV_STATE_DIR}/${dedup_key}.minted"
 }
 
-# bead_status BEAD_ID — prints the bead's status (empty if unknown/gone).
-bead_status() {
-  local bead_id="$1"
-  [ -n "${bead_id// /}" ] || return 0
-  local json
-  json=$("$GC" --city "$GC_CITY" bd show "$bead_id" --json 2>/dev/null) || json=""
-  [ -n "$json" ] || return 0
-  printf '%s' "$json" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-except Exception:
-    print('')
-    raise SystemExit(0)
-if isinstance(data, list):
-    data = data[0] if data else {}
-print((data or {}).get('status', '') if isinstance(data, dict) else '')
-" 2>/dev/null || true
-}
-
 # bead_status_assignee BEAD_ID — prints "<status><0x1f><assignee>".
 bead_status_assignee() {
   local bead_id="$1"
@@ -287,6 +267,23 @@ if not isinstance(data, dict):
     raise SystemExit(0)
 print((data.get('status') or '') + SEP + (data.get('assignee') or ''))
 " 2>/dev/null || printf '%s' "$SEP"
+}
+
+# close_if_open BEAD_ID REASON PR_LABEL — if BEAD_ID names a bead that is
+# currently open (any status other than empty/unknown or "closed"), closes it
+# with REASON and logs a standard SUPERSEDE line tagged with PR_LABEL. No-op
+# if BEAD_ID is empty or the bead is already closed/unknown. Shared by the
+# clean-PR path, the genuinely-in-flight supersede, and the legacy
+# stale-marker sweep, which previously carried three independently-drifting
+# copies of this same "read status, close if open, log" sequence.
+close_if_open() {
+  local bead_id="$1" reason="$2" pr_label="$3"
+  [ -n "${bead_id// /}" ] || return 0
+  local status
+  IFS=$'\x1f' read -r status _ <<< "$(bead_status_assignee "$bead_id")"
+  [ -n "$status" ] && [ "$status" != "closed" ] || return 0
+  "$GC" --city "$GC_CITY" bd close "$bead_id" --reason "$reason" >/dev/null 2>&1 || true
+  echo "con-voyage-pr-watch: [PART A] ${pr_label}: closed prior open repair bead ${bead_id} (was status=${status})"
 }
 
 # implementor_alive SESSION_IDENT — exit 0 if a session matching this
@@ -491,14 +488,21 @@ print("\x1f".join(str(f).replace("\x1f", " ").replace("\n", " ") for f in fields
       if [ "$a_actionable" != "1" ]; then
         state_read "$a_dedup_key"
         if [ "$ST_LAST_STATE" != "clean" ]; then
+          clean_implementor="$ST_IMPLEMENTOR"
           if [ -n "${ST_INFLIGHT// /}" ]; then
-            IFS=$'\x1f' read -r clean_tracked_status _ <<< "$(bead_status_assignee "$ST_INFLIGHT")"
-            if [ -n "$clean_tracked_status" ] && [ "$clean_tracked_status" != "closed" ]; then
-              "$GC" --city "$GC_CITY" bd close "$ST_INFLIGHT" --reason "superseded: ${a_full}#${a_num} is now clean" >/dev/null 2>&1 || true
-              echo "con-voyage-pr-watch: [PART A] ${a_full}#${a_num} is now clean; closed prior open repair bead ${ST_INFLIGHT}"
+            # Req 2 parity (finding #4, fk-4o74 Fix-1 round 1): adopt a
+            # fallback bead's claimant as the implementor here too, same as
+            # the main dispatch path below — otherwise a PR that goes clean
+            # in the same window a pool worker claimed its fallback bead
+            # drops that claimant's identity, costing one extra needless
+            # fallback on a later re-conflict.
+            IFS=$'\x1f' read -r _ clean_tracked_assignee <<< "$(bead_status_assignee "$ST_INFLIGHT")"
+            if [ -z "${clean_implementor// /}" ] && [ -n "${clean_tracked_assignee// /}" ]; then
+              clean_implementor="$clean_tracked_assignee"
             fi
+            close_if_open "$ST_INFLIGHT" "superseded: ${a_full}#${a_num} is now clean" "${a_full}#${a_num} is now clean"
           fi
-          state_write "$a_dedup_key" "$ST_IMPLEMENTOR" "" "clean"
+          state_write "$a_dedup_key" "$clean_implementor" "" "clean"
         fi
         continue
       fi
@@ -588,20 +592,6 @@ print(author + SEP + ("1" if skip_awaiting_human else "0"))
         continue
       fi
 
-      # CROSS-RIG MINT GUARD: derive the target rig from the repair_route (the
-      # part BEFORE the first "/", e.g. "vandoor" from
-      # "vandoor/gc.implementation-worker"). The repair bead MUST be minted in
-      # THAT rig so its prefix matches the sling target; otherwise gc rejects the
-      # sling with a "cross-rig routing" error (see PART A header). A route with
-      # NO "/" gives us no rig to derive, so — mirroring the empty-a_route guard
-      # above — we SKIP with a WARNING rather than mint a mis-homed bead in the
-      # city store that could never route.
-      a_rig="${a_route%%/*}"
-      if [ "$a_rig" = "$a_route" ] || [ -z "$a_rig" ]; then
-        echo "con-voyage-pr-watch: [PART A] WARNING: ${a_full}#${a_num} repair_route '${a_route}' has no '<rig>/' prefix; cannot derive a target rig; skipping (would mis-home the repair bead and fail cross-rig routing)" >&2
-        continue
-      fi
-
       # Load this PR's per-PR repair state (Task 1/2, fk-4o74 Fix 1):
       # implementor_session (the worker mail/nudge should reach directly),
       # inflight_rework (a tracked bead id, when the last dispatch used the
@@ -657,19 +647,12 @@ print(author + SEP + ("1" if skip_awaiting_human else "0"))
       # matches PR 11's), so orphans never pile up across head changes or the
       # dedup-scheme upgrade from the old per-head-sha keying.
       if [ -n "${st_inflight// /}" ] && [ "$tracked_open" -eq 1 ]; then
-        "$GC" --city "$GC_CITY" bd close "$st_inflight" --reason "superseded: re-armed by a fresh PR-scoped repair mint for ${a_full}#${a_num}" >/dev/null 2>&1 || true
-        echo "con-voyage-pr-watch: [PART A] SUPERSEDE ${a_full}#${a_num}: closed prior open repair bead ${st_inflight} (was status=${tracked_status:-open})"
+        close_if_open "$st_inflight" "superseded: re-armed by a fresh PR-scoped repair mint for ${a_full}#${a_num}" "SUPERSEDE ${a_full}#${a_num}"
       fi
       for stale_marker in "${CV_STATE_DIR}/${dedup_key}"-*.minted; do
         [ -f "$stale_marker" ] || continue
         stale_bead_id="$(cat "$stale_marker" 2>/dev/null || true)"
-        if [ -n "${stale_bead_id// /}" ]; then
-          stale_status="$(bead_status "$stale_bead_id")"
-          if [ -n "$stale_status" ] && [ "$stale_status" != "closed" ]; then
-            "$GC" --city "$GC_CITY" bd close "$stale_bead_id" --reason "superseded: re-armed by a fresh PR-scoped repair mint for ${a_full}#${a_num}" >/dev/null 2>&1 || true
-            echo "con-voyage-pr-watch: [PART A] SUPERSEDE ${a_full}#${a_num}: closed prior open repair bead ${stale_bead_id} (was status=${stale_status})"
-          fi
-        fi
+        close_if_open "$stale_bead_id" "superseded: re-armed by a fresh PR-scoped repair mint for ${a_full}#${a_num}" "SUPERSEDE ${a_full}#${a_num}"
         rm -f "$stale_marker"
       done
 
@@ -697,45 +680,65 @@ print(author + SEP + ("1" if skip_awaiting_human else "0"))
           echo "con-voyage-pr-watch: [PART A] WARNING: mail to implementor ${st_implementor} failed for ${a_full}#${a_num}; will retry next cycle" >&2
         fi
       else
-        # v2-formula mint (gc 1.4.1): con-voyage-ci-repair is a v2 workflow formula
-        # that references {{convoy_id}} (the repair bead id). Such a formula CANNOT
-        # be inline-created via `gc sling --on <formula> --title <text>` — gc rejects
-        # that with "inline text requires explicit target", because {{convoy_id}}
-        # has no bead to resolve against. The required form is:
-        #   gc sling <target> <BEAD> --on <formula> --var ...
-        # where <BEAD> is a PRE-CREATED bead. So we create the repair bead first,
-        # capture its id, then attach the formula to it and route it. {{convoy_id}}
-        # then resolves to that bead id inside the ci-repair prompt.
-        #
-        # --rig "$a_rig" is MANDATORY (see CROSS-RIG MINT GUARD above): it mints the
-        # bead in the target agent's rig so its prefix matches the sling target. With
-        # NO --rig the bead lands in the CITY store (prefix "rc") and the subsequent
-        # sling to a rig agent fails the cross-rig gate — the runtime bug this fixes.
-        # (--rig is a TOP-LEVEL gc flag; it must precede the `bd` subcommand.)
-        repair_bead_id=$("$GC" --city "$GC_CITY" --rig "$a_rig" bd create "$repair_title" \
-          --priority 1 \
-          --silent 2>/dev/null || true)
-
-        if [ -z "${repair_bead_id// /}" ]; then
-          echo "con-voyage-pr-watch: [PART A] WARNING: failed to create repair bead for ${a_full}#${a_num}; will retry next cycle" >&2
-        elif "$GC" --city "$GC_CITY" sling "$a_route" "$repair_bead_id" \
-          --on con-voyage-ci-repair \
-          --var "title=${a_title}" \
-          --var "pr=${a_num}" \
-          --var "repo=${a_full}" \
-          --var "branch=${a_branch}" \
-          --var "failure_kind=${a_failure_kind}" \
-          --var "cv_pr_author=${CV_PR_AUTHOR}" \
-          --var "cv_author_gate=${CV_AUTHOR_GATE:-enabled}" \
-          --var "cv_conflict_strategy=${CV_CONFLICT_STRATEGY:-rebase}" \
-          2>&1; then
-          dispatched=1
-          new_inflight="$repair_bead_id"
-          new_implementor=""
-          echo "con-voyage-pr-watch: [PART A] ${a_full}#${a_num}: repair bead ${repair_bead_id} created/attached and routed to ${a_route} (fallback — no live implementor)"
+        # CROSS-RIG MINT GUARD (fk-4o74 Fix-1 round 1, finding #1): derive the
+        # target rig from the repair_route (the part BEFORE the first "/",
+        # e.g. "vandoor" from "vandoor/gc.implementation-worker") HERE,
+        # immediately before the fallback bd create — not up front. Only this
+        # fallback path mints a bead, and it MUST land in that rig so its
+        # prefix matches the sling target; otherwise gc rejects the sling
+        # with a "cross-rig routing" error (see PART A header). The
+        # reuse-dispatch path above (mail+notify to a live implementor) never
+        # mints a bead, so it never needed a rig — gating the whole PR on
+        # rig-derivation before even trying that path dropped mail delivery
+        # to a live implementor whenever repair_route happened to have no
+        # "<rig>/" prefix. A route with NO "/" gives us no rig to derive, so
+        # — mirroring the empty-a_route guard above — we skip the fallback
+        # mint with a WARNING rather than mis-home a bead in the city store
+        # that could never route.
+        a_rig="${a_route%%/*}"
+        if [ "$a_rig" = "$a_route" ] || [ -z "$a_rig" ]; then
+          echo "con-voyage-pr-watch: [PART A] WARNING: ${a_full}#${a_num} repair_route '${a_route}' has no '<rig>/' prefix; cannot derive a target rig; skipping fallback dispatch (would mis-home the repair bead and fail cross-rig routing)" >&2
         else
-          echo "con-voyage-pr-watch: [PART A] WARNING: repair-bead sling failed for ${a_full}#${a_num} (bead ${repair_bead_id}); will retry next cycle" >&2
-          # Non-fatal: continue to next PR / Part B.
+          # v2-formula mint (gc 1.4.1): con-voyage-ci-repair is a v2 workflow formula
+          # that references {{convoy_id}} (the repair bead id). Such a formula CANNOT
+          # be inline-created via `gc sling --on <formula> --title <text>` — gc rejects
+          # that with "inline text requires explicit target", because {{convoy_id}}
+          # has no bead to resolve against. The required form is:
+          #   gc sling <target> <BEAD> --on <formula> --var ...
+          # where <BEAD> is a PRE-CREATED bead. So we create the repair bead first,
+          # capture its id, then attach the formula to it and route it. {{convoy_id}}
+          # then resolves to that bead id inside the ci-repair prompt.
+          #
+          # --rig "$a_rig" is MANDATORY (see CROSS-RIG MINT GUARD above): it mints the
+          # bead in the target agent's rig so its prefix matches the sling target. With
+          # NO --rig the bead lands in the CITY store (prefix "rc") and the subsequent
+          # sling to a rig agent fails the cross-rig gate — the runtime bug this fixes.
+          # (--rig is a TOP-LEVEL gc flag; it must precede the `bd` subcommand.)
+          repair_bead_id=$("$GC" --city "$GC_CITY" --rig "$a_rig" bd create "$repair_title" \
+            --priority 1 \
+            --silent 2>/dev/null || true)
+
+          if [ -z "${repair_bead_id// /}" ]; then
+            echo "con-voyage-pr-watch: [PART A] WARNING: failed to create repair bead for ${a_full}#${a_num}; will retry next cycle" >&2
+          elif "$GC" --city "$GC_CITY" sling "$a_route" "$repair_bead_id" \
+            --on con-voyage-ci-repair \
+            --var "title=${a_title}" \
+            --var "pr=${a_num}" \
+            --var "repo=${a_full}" \
+            --var "branch=${a_branch}" \
+            --var "failure_kind=${a_failure_kind}" \
+            --var "cv_pr_author=${CV_PR_AUTHOR}" \
+            --var "cv_author_gate=${CV_AUTHOR_GATE:-enabled}" \
+            --var "cv_conflict_strategy=${CV_CONFLICT_STRATEGY:-rebase}" \
+            2>&1; then
+            dispatched=1
+            new_inflight="$repair_bead_id"
+            new_implementor=""
+            echo "con-voyage-pr-watch: [PART A] ${a_full}#${a_num}: repair bead ${repair_bead_id} created/attached and routed to ${a_route} (fallback — no live implementor)"
+          else
+            echo "con-voyage-pr-watch: [PART A] WARNING: repair-bead sling failed for ${a_full}#${a_num} (bead ${repair_bead_id}); will retry next cycle" >&2
+            # Non-fatal: continue to next PR / Part B.
+          fi
         fi
       fi
 
