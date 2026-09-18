@@ -268,6 +268,9 @@ post, so the banner can no longer be forgotten:
 - **Do NOT run raw `gh pr comment`** for any reason, in this workflow.
 - **Do NOT run raw `gh pr review`** (`--comment`, `--approve`, or
   `--request-changes`) for any reason, in this workflow.
+- **Do NOT run raw `gh api ... /replies`** (or any raw `gh` call) to reply to an
+  inline review-thread comment. Threaded replies go through
+  `cv-pr-comment.sh reply-thread` (below) so the banner is still guaranteed.
 - **Do NOT hand-assemble the banner string yourself and pass it via
   `gh ... --body`.** Always go through `cv-pr-comment.sh` so the banner is
   guaranteed by the script, not typed from memory.
@@ -293,6 +296,33 @@ identity the con-voyage reviewers use in their `[<rig>/<agent> — <lens>]`
 prefix). If you cannot resolve them, omit `--agent` — the script still posts,
 with a clear self-identification fallback. Never post a bare comment as if a
 human wrote it, and never find a way around the script to do so.
+
+#### Root comment vs. threaded reply — pick the right one
+
+Where a reply LANDS matters as much as the banner:
+
+- **General / summary feedback** (a top-level review, a whole-PR remark, an
+  overall status update) → post at ROOT with `cv-pr-comment.sh comment`
+  (or `review`), exactly as above.
+- **Addressing one specific INLINE review-thread comment** → reply INSIDE that
+  thread with `cv-pr-comment.sh reply-thread`, so your answer lands in the same
+  conversation the reviewer opened — not as a disconnected new root comment.
+
+When `con-voyage-pr-watch.sh` routes inline review-thread feedback to you, it
+names the reply target per item as
+`[reply-thread comment-id:<db_id> @ <path>:<line>]`. Use that `<db_id>` (the
+review comment's numeric DATABASE id) as `--comment-id`:
+
+```bash
+printf '%s\n' "<your reply text>" > /tmp/cv-reply-body.md
+"$CV_BIN" reply-thread {{pr}} --repo {{repo}} --comment-id <db_id> \
+  --body-file /tmp/cv-reply-body.md \
+  --formula con-voyage-ci-repair --agent "<rig>/<agent>"
+```
+
+`reply-thread` posts via the review-comment replies API and still prepends the
+identity banner. Root-level comments are for general/summary; a reply to a
+specific inline comment must be a thread reply.
 
 Note: this repair pass is normally SILENT on the PR — it pushes a code fix and
 lets the monitor re-evaluate. You generally do NOT need to comment. But IF you

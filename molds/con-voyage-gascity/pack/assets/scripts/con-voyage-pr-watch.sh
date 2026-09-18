@@ -827,8 +827,15 @@ print((d.get('author') or {}).get('login', ''))" 2>/dev/null || echo "")
     # con-voyage PR's inline feedback for a single cycle. A failure here is
     # non-fatal: log a NOTE and fall back to an empty threads set so
     # reviews+comments still route.
+    #
+    # We also select each comment's `databaseId` (the numeric REST id) plus its
+    # `path`/`line`, so PART B can tell the implementor the EXACT reply target
+    # per inline item (C10 / fk-bhz). `id` (the GraphQL node-id) stays the dedup
+    # key, but a threaded reply is posted via the review-comment replies API,
+    # which is keyed on the REST databaseId — so `cv-pr-comment.sh reply-thread
+    # --comment-id <databaseId>` needs the databaseId, not the node-id.
     # shellcheck disable=SC2016
-    _GQL_REVIEW_THREADS='query($owner:String!,$repo:String!,$num:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$num){reviewThreads(first:100){nodes{comments(first:100){nodes{id author{login} body}}}}}}}'
+    _GQL_REVIEW_THREADS='query($owner:String!,$repo:String!,$num:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$num){reviewThreads(first:100){nodes{comments(first:100){nodes{id databaseId path line author{login} body}}}}}}}'
     review_threads_json=$("$GH" api graphql \
       -f query="$_GQL_REVIEW_THREADS" \
       -F owner="$owner" \
@@ -965,12 +972,23 @@ for thread in pr_data.get("reviewThreads", []):
             continue
         if not body.strip():
             continue
+        # databaseId (numeric REST id) is the reply target for a threaded reply;
+        # path/line pin the inline location. All three come from the C10 GraphQL
+        # selection above. Guard for None (older gh, or a non-inline shape).
+        db_id = comment.get("databaseId")
+        comment_id = "" if db_id is None else str(db_id)
+        path = comment.get("path") or ""
+        line = comment.get("line")
+        line_str = "" if line is None else str(line)
         found.append({
-            "id":     nid,
-            "type":   "inline",
-            "author": author,
-            "body":   body[:200],
-            "state":  "",
+            "id":         nid,
+            "type":       "inline",
+            "author":     author,
+            "body":       body[:200],
+            "state":      "",
+            "comment_id": comment_id,
+            "path":       path,
+            "line":       line_str,
         })
         new_ids.add(nid)
 
@@ -1008,6 +1026,13 @@ print("SEEN_IDS:" + "\n".join(sorted(all_ids)))
 
     # Build a routing message summarizing the new feedback.
     # Pass JSON via stdin to avoid ARG_MAX issues.
+    #
+    # For INLINE review-thread items we ALSO surface the reply TARGET per item
+    # (C10 / fk-bhz): the REST comment databaseId plus its path:line. This is
+    # what tells the implementor to reply IN-thread via
+    # `cv-pr-comment.sh reply-thread ... --comment-id <databaseId>` instead of at
+    # root. The node-id [id:...] stays too (dedup key). Root/general comments and
+    # reviews carry no comment_id, so their line is unchanged.
     # shellcheck disable=SC2016
     _PY_SUMMARIZE='
 import sys, json
@@ -1020,7 +1045,17 @@ for item in items[:5]:   # cap at 5 items per run to avoid info overload
     body   = item.get("body", "").strip()
     nid    = item.get("id", "")
     label  = (" (" + state + ")") if state else ""
-    lines.append("  [" + kind + "] @" + author + label + ": " + body[:120] + "  [id:" + nid + "]")
+    target = ""
+    comment_id = item.get("comment_id", "") or ""
+    if comment_id:
+        path = item.get("path", "") or ""
+        line = item.get("line", "") or ""
+        loc = ""
+        if path:
+            loc = " @ " + path + ((":" + line) if line else "")
+        # reply IN-thread with: cv-pr-comment.sh reply-thread --comment-id <id>
+        target = "  [reply-thread comment-id:" + comment_id + loc + "]"
+    lines.append("  [" + kind + "] @" + author + label + ": " + body[:120] + "  [id:" + nid + "]" + target)
 if len(items) > 5:
     lines.append("  ... and " + str(len(items)-5) + " more comment(s)")
 print("\n".join(lines))

@@ -55,6 +55,14 @@ trap cleanup EXIT
 # ---------------------------------------------------------------------------
 cat > "${STUBDIR}/gh" <<'GH_STUB'
 #!/usr/bin/env bash
+# Records argv with any body-carrying temp path REDACTED to a fixed token, so the
+# recorded line is deterministic run-to-run. Two body-carrying shapes are
+# redacted+captured:
+#   --body-file <path>   (pr comment/review/create modes)
+#   -F body=@<path>      (the reply-thread mode's `gh api ... -F body=@file`,
+#                         which mirrors --body-file's foot-gun avoidance: the
+#                         body never round-trips through argv, only the file path
+#                         does — and we redact that path too).
 {
   line=""
   prev=""
@@ -62,6 +70,10 @@ cat > "${STUBDIR}/gh" <<'GH_STUB'
     a="${a//$'\n'/ }"
     if [ "$prev" = "--body-file" ]; then
       line="${line}<BODY_FILE_PATH> "
+    elif [ "$prev" = "-F" ] && [ "${a#body=@}" != "$a" ]; then
+      # `-F body=@<path>` — redact only the file path, keep the `body=@` shape
+      # visible so assertions can prove the body traveled via a file, not argv.
+      line="${line}body=@<BODY_FILE_PATH> "
     else
       line="${line}${a} "
     fi
@@ -70,12 +82,17 @@ cat > "${STUBDIR}/gh" <<'GH_STUB'
   printf '%s\n' "$line"
 } >> "${STUB_GH_LOG}"
 
-# Copy the body-file content (if any) to the body log, verbatim.
+# Copy the body content (if any) to the body log, verbatim. Handles BOTH the
+# `--body-file <path>` shape and the `-F body=@<path>` shape.
 prev=""
 for a in "$@"; do
   if [ "$prev" = "--body-file" ]; then
     if [ -n "${STUB_BODY_LOG:-}" ]; then
       cat "$a" > "${STUB_BODY_LOG}" 2>/dev/null || true
+    fi
+  elif [ "$prev" = "-F" ] && [ "${a#body=@}" != "$a" ]; then
+    if [ -n "${STUB_BODY_LOG:-}" ]; then
+      cat "${a#body=@}" > "${STUB_BODY_LOG}" 2>/dev/null || true
     fi
   fi
   prev="$a"
@@ -306,6 +323,101 @@ case "$first_line" in
   "${BANNER_PREFIX}"*) pass "banner still leads the body without --formula/--agent" ;;
   *) fail "banner missing when --formula/--agent are omitted (got: ${first_line})" ;;
 esac
+
+# ===========================================================================
+# CASE 12 — reply-thread: happy path. Addressing a specific INLINE review-thread
+#   comment must post a THREADED reply within that thread (the review-comment
+#   replies API), NOT a root-level `gh pr comment`. The banner leads the posted
+#   body, the caller's original body follows verbatim, and the body travels via a
+#   file (`-F body=@...`) — never inline in argv (same foot-gun avoidance as the
+#   other modes). This is the core of C10 (bead fk-bhz).
+# ===========================================================================
+start_case "12: reply-thread happy path — threaded reply via replies API, banner leads, body via file"
+setup_case_env "12"
+printf 'Fixed: renamed the var to `retryBackoff` as you suggested.\n' > "$BODY_SRC"
+ARGS=(reply-thread 42 --repo kriscoleman/foundry --comment-id 123456789 --body-file "$BODY_SRC" --formula con-voyage --agent foundry-kc/gc.implementation-worker)
+run_script
+assert_eq "0" "$RC" "script exits 0"
+# It must hit the review-comment replies API for THIS comment id, with POST.
+assert_log_count "$GH_LOG" '^api --method POST repos/kriscoleman/foundry/pulls/42/comments/123456789/replies' 1 "gh api POST targets the correct .../pulls/42/comments/123456789/replies endpoint"
+# It must NOT fall back to a root-level pr comment (that is the general/summary path).
+assert_log_count "$GH_LOG" '^pr comment ' 0 "reply-thread does NOT post a root-level pr comment"
+# The body must travel via a file (-F body=@<path>), never inline in argv.
+assert_log_count "$GH_LOG" 'body=@<BODY_FILE_PATH>' 1 "body travels via -F body=@file (out of argv), not inline"
+assert_log_count "$GH_LOG" '\-f body=' 0 "body is never passed inline via -f body=<text>"
+# Banner leads, original body preserved.
+first_line="$(head -1 "$BODY_LOG")"
+case "$first_line" in
+  "${BANNER_PREFIX}"*) pass "posted reply body's first line leads with the identity banner" ;;
+  *) fail "posted reply body's first line does not lead with the banner (got: ${first_line})" ;;
+esac
+if grep -q 'con-voyage / foundry-kc/gc.implementation-worker' "$BODY_LOG"; then
+  pass "banner names the resolved formula and rig/agent"
+else
+  fail "banner missing formula/agent identification in reply body"
+fi
+if grep -q 'Fixed: renamed the var to' "$BODY_LOG"; then
+  pass "original body content is preserved verbatim after the banner"
+else
+  fail "original body content missing from the posted reply body"
+fi
+
+# ===========================================================================
+# CASE 13 — reply-thread: missing --comment-id is a hard error; gh never invoked.
+# ===========================================================================
+start_case "13: reply-thread without --comment-id is rejected before invoking gh"
+setup_case_env "13"
+printf 'body\n' > "$BODY_SRC"
+ARGS=(reply-thread 42 --repo kriscoleman/foundry --body-file "$BODY_SRC")
+run_script
+if [ "$RC" -ne 0 ]; then pass "script exits non-zero"; else fail "expected non-zero exit for missing --comment-id"; fi
+assert_log_count "$GH_LOG" '.' 0 "gh is never invoked when --comment-id is missing"
+
+# ===========================================================================
+# CASE 14 — reply-thread: non-numeric --comment-id is a hard error (mirrors the
+#   PR-number validation). gh never invoked.
+# ===========================================================================
+start_case "14: reply-thread with a non-numeric --comment-id is rejected before invoking gh"
+setup_case_env "14"
+printf 'body\n' > "$BODY_SRC"
+ARGS=(reply-thread 42 --repo kriscoleman/foundry --comment-id PRRC_notanumber --body-file "$BODY_SRC")
+run_script
+if [ "$RC" -ne 0 ]; then pass "script exits non-zero"; else fail "expected non-zero exit for a non-numeric --comment-id"; fi
+assert_log_count "$GH_LOG" '.' 0 "gh is never invoked when --comment-id is non-numeric"
+
+# ===========================================================================
+# CASE 15 — reply-thread: missing --body-file is a hard error; gh never invoked
+#   (the body-out-of-argv contract applies to this mode too).
+# ===========================================================================
+start_case "15: reply-thread without --body-file is rejected before invoking gh"
+setup_case_env "15"
+ARGS=(reply-thread 42 --repo kriscoleman/foundry --comment-id 123456789)
+run_script
+if [ "$RC" -ne 0 ]; then pass "script exits non-zero"; else fail "expected non-zero exit for missing --body-file"; fi
+assert_log_count "$GH_LOG" '.' 0 "gh is never invoked when --body-file is missing"
+
+# ===========================================================================
+# CASE 16 — reply-thread: still requires the PR number and --repo (same as the
+#   other PR-scoped modes). A missing PR number is a hard error; gh never invoked.
+# ===========================================================================
+start_case "16: reply-thread without a PR number is rejected before invoking gh"
+setup_case_env "16"
+printf 'body\n' > "$BODY_SRC"
+ARGS=(reply-thread --repo kriscoleman/foundry --comment-id 123456789 --body-file "$BODY_SRC")
+run_script
+if [ "$RC" -ne 0 ]; then pass "script exits non-zero"; else fail "expected non-zero exit for missing PR number"; fi
+assert_log_count "$GH_LOG" '.' 0 "gh is never invoked when the PR number is missing"
+
+# ===========================================================================
+# CASE 17 — reply-thread: gh failure propagates as this script's own exit code
+#   (so a caller can tell a failed threaded reply from a success).
+# ===========================================================================
+start_case "17: reply-thread gh failure propagates"
+setup_case_env "17"
+printf 'body\n' > "$BODY_SRC"
+ARGS=(reply-thread 42 --repo kriscoleman/foundry --comment-id 123456789 --body-file "$BODY_SRC")
+run_script STUB_GH_EXIT=7
+assert_eq "7" "$RC" "script propagates gh's non-zero exit code"
 
 # ===========================================================================
 # Summary

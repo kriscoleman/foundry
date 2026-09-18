@@ -88,6 +88,13 @@ case "$sub" in
       # thread comment from a human so the merged payload exercises the
       # reviewThreads path end-to-end.
       #
+      # C10 (fk-bhz): each inline comment now also carries `databaseId` (the
+      # REST review-comment id `cv-pr-comment.sh reply-thread --comment-id`
+      # needs) plus `path`/`line`, so PART B can surface the exact reply target
+      # per item. The node `id` (PRRC_test_11) remains the dedup key; databaseId
+      # (556677) is the reply target. Real gh returns databaseId as a JSON
+      # NUMBER, so it is unquoted here on purpose.
+      #
       # STUB_GQL_THREADS_FAIL=1 simulates a GraphQL failure so the fix's
       # best-effort fallback is exercised: the script must degrade to
       # reviews+comments only (empty threads) and STILL route, never aborting.
@@ -95,7 +102,7 @@ case "$sub" in
         exit 1
       fi
       cat <<'JSON'
-{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"comments":{"nodes":[{"id":"PRRC_test_11","author":{"login":"a-human-reviewer"},"body":"inline: rename this var"}]}}]}}}}}
+{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"comments":{"nodes":[{"id":"PRRC_test_11","databaseId":556677,"path":"src/retry.go","line":42,"author":{"login":"a-human-reviewer"},"body":"inline: rename this var"}]}}]}}}}}
 JSON
       exit 0
     fi
@@ -1723,6 +1730,39 @@ run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman"
 assert_eq "0" "$RC" "script exits 0"
 assert_log_count "$GC_LOG" 'sling foundry-kc/gc.implementation-worker --stdin STDIN: Human PR feedback on kriscoleman/foundry#11' 1 "routes to the RIG-scoped worker foundry-kc/gc.implementation-worker"
 assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 0 "does NOT route to a bare gc.implementation-worker"
+
+# ===========================================================================
+# CASE 31 — C10 (fk-bhz): PART B must surface the reply TARGET for each inline
+#   review-thread item so the worker can reply IN-thread (not at root). Before
+#   C10, the routed feedback carried only the node-id ([id:PRRC_...]) — which
+#   the review-comment replies API cannot use. The fix selects the comment's
+#   REST databaseId plus its path/line in the reviewThreads GraphQL query and
+#   includes them per-item in the routed message, so the worker can run
+#   `cv-pr-comment.sh reply-thread ... --comment-id <databaseId>`.
+#
+#   The graphql stub (above) returns one inline comment with databaseId=556677
+#   at src/retry.go:42. The routed body is captured in GC_LOG via the --stdin
+#   capture (newlines squashed to spaces), so we assert the target is present.
+#
+#   TRIPWIRE (mutation-proof): revert the PART B databaseId/path/line change and
+#   these assertions fail — the routed message would carry only the node-id.
+# ===========================================================================
+start_case "31: C10 — PART B surfaces the DB comment id + path/line per inline-thread item"
+setup_case_env "31"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman"
+assert_eq "0" "$RC" "script exits 0"
+# The inline item still routes (baseline — proves the item reached the summary).
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin STDIN:.*inline: rename this var' 1 "the inline review-thread comment is routed"
+# CRUX: the routed message carries the REST databaseId (the reply target) for
+# the inline item — not just the node-id. Without the PART B change this is absent.
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin STDIN:.*inline.*(comment-id|comment_id|reply-id|reply target|databaseId)[^0-9]*556677' 1 "routed inline item names the DB comment-id 556677 (the reply-thread target)"
+# CRUX: and the routed message names the path:line so the worker knows which
+# thread/location the feedback is on.
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin STDIN:.*src/retry.go:42' 1 "routed inline item names the path:line (src/retry.go:42)"
+# The node-id remains present too (it stays the dedup key) — general/summary
+# (root) comment routing is unaffected by this change (proven by CASE 5 and the
+# reviews+comments routing above, which have no databaseId and still route).
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin STDIN:.*id:PRRC_test_11' 1 "the node-id is still present in the routed message"
 
 # ===========================================================================
 # Summary
