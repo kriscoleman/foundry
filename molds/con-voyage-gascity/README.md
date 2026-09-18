@@ -553,7 +553,19 @@ prepends the banner — there is no passthrough mode.
 cv-pr-comment.sh comment <pr> --repo <owner/repo> --body-file <path> [--formula <name>] [--agent <rig/agent>]
 cv-pr-comment.sh review <pr> --repo <owner/repo> (--comment|--approve|--request-changes) --body-file <path> [--formula <name>] [--agent <rig/agent>]
 cv-pr-comment.sh create --repo <owner/repo> --title <title> --body-file <path> [--base <branch>] [--head <branch>] [--draft] [--formula <name>] [--agent <rig/agent>]
+cv-pr-comment.sh reply-thread <pr> --repo <owner/repo> --comment-id <db_id> --body-file <path> [--formula <name>] [--agent <rig/agent>]
 ```
+
+`comment` posts at ROOT level (general/summary feedback); `reply-thread` posts a
+**threaded reply inside an existing inline review thread** — use it when
+addressing one specific inline review-thread comment so the reply lands in that
+conversation rather than as a new root-level comment. Its `--comment-id` is the
+review comment's numeric DATABASE id (not the GraphQL node-id); it posts via the
+review-comment replies API (`POST .../pulls/<pr>/comments/<comment_id>/replies`),
+reading the body from the file (`-F body=@<file>`) so — like every other mode —
+the body never round-trips through argv. `con-voyage-pr-watch.sh` PART B surfaces
+that reply target per inline item as `[reply-thread comment-id:<db_id> @
+<path>:<line>]` in the feedback it routes.
 
 Every posted body leads with:
 

@@ -31,10 +31,24 @@
 #       --body-file <path> [--base <branch>] [--head <branch>] [--draft] \
 #       [--formula <name>] [--agent <rig/agent>]
 #
+#   cv-pr-comment.sh reply-thread <pr> --repo <owner/repo> \
+#       --comment-id <db_id> --body-file <path> \
+#       [--formula <name>] [--agent <rig/agent>]
+#
+# `comment` posts at ROOT level (general/summary feedback). `reply-thread` posts
+# a THREADED reply INSIDE an existing inline review thread — use it when you are
+# addressing one specific inline review-thread comment, so your reply lands in
+# that conversation rather than as a new root-level comment. Its --comment-id is
+# the review comment's numeric DATABASE id (not the GraphQL node-id); it posts
+# via the review-comment replies API
+# (POST repos/<owner>/<repo>/pulls/<pr>/comments/<comment_id>/replies).
+#
 # The body is always read from a FILE (--body-file), never an inline string —
 # this keeps multi-line/markdown bodies out of argv entirely and avoids shell
 # quoting foot-guns. The file's contents are copied verbatim after the banner;
-# this script never mutates the caller's original file.
+# this script never mutates the caller's original file. (reply-thread carries the
+# body the same foot-gun-free way: `gh api ... -F body=@<file>` reads the body
+# from the file, so it never round-trips through argv either.)
 #
 # Environment / configuration:
 #
@@ -66,6 +80,7 @@ Usage:
   cv-pr-comment.sh comment <pr> --repo <owner/repo> --body-file <path> [--formula <name>] [--agent <rig/agent>]
   cv-pr-comment.sh review <pr> --repo <owner/repo> (--comment|--approve|--request-changes) --body-file <path> [--formula <name>] [--agent <rig/agent>]
   cv-pr-comment.sh create --repo <owner/repo> --title <title> --body-file <path> [--base <branch>] [--head <branch>] [--draft] [--formula <name>] [--agent <rig/agent>]
+  cv-pr-comment.sh reply-thread <pr> --repo <owner/repo> --comment-id <db_id> --body-file <path> [--formula <name>] [--agent <rig/agent>]
 USAGE
 }
 
@@ -74,10 +89,10 @@ SUBCOMMAND="${1:-}"
 shift || true
 
 case "$SUBCOMMAND" in
-  comment|review|create) ;;
+  comment|review|create|reply-thread) ;;
   *)
     usage
-    die "unknown subcommand '${SUBCOMMAND}' (expected comment, review, or create — no raw gh passthrough is supported)"
+    die "unknown subcommand '${SUBCOMMAND}' (expected comment, review, create, or reply-thread — no raw gh passthrough is supported)"
     ;;
 esac
 
@@ -91,8 +106,9 @@ BASE=""
 HEAD=""
 DRAFT="false"
 REVIEW_VERB=""
+COMMENT_ID=""
 
-# create has no positional PR argument; comment/review do.
+# create has no positional PR argument; comment/review/reply-thread do.
 if [ "$SUBCOMMAND" != "create" ]; then
   if [ "${1:-}" != "" ] && [ "${1#--}" = "$1" ]; then
     PR="$1"
@@ -109,6 +125,7 @@ while [ $# -gt 0 ]; do
     --title) TITLE="${2:-}"; shift 2 || true ;;
     --base) BASE="${2:-}"; shift 2 || true ;;
     --head) HEAD="${2:-}"; shift 2 || true ;;
+    --comment-id) COMMENT_ID="${2:-}"; shift 2 || true ;;
     --draft) DRAFT="true"; shift || true ;;
     --comment) REVIEW_VERB="--comment"; shift || true ;;
     --approve) REVIEW_VERB="--approve"; shift || true ;;
@@ -134,6 +151,17 @@ fi
 
 if [ "$SUBCOMMAND" = "create" ]; then
   [ -n "$TITLE" ] || { usage; die "--title is required for create"; }
+fi
+
+if [ "$SUBCOMMAND" = "reply-thread" ]; then
+  # --comment-id is the review comment's numeric DATABASE id (the reply target).
+  # Validate presence + numeric-ness the same way the PR number is validated —
+  # fail closed before gh is ever invoked, never interpolate a non-numeric value
+  # into the replies endpoint path below.
+  [ -n "$COMMENT_ID" ] || { usage; die "--comment-id is required for reply-thread (the review comment's numeric database id)"; }
+  case "$COMMENT_ID" in
+    ''|*[!0-9]*) die "--comment-id must be numeric (the review comment's database id), got '${COMMENT_ID}'" ;;
+  esac
 fi
 
 command -v "$GH" >/dev/null 2>&1 || die "gh CLI not found at '${GH}'. Install github.com/cli/cli."
@@ -178,6 +206,17 @@ case "$SUBCOMMAND" in
     [ -n "$HEAD" ] && set -- "$@" --head "$HEAD"
     [ "$DRAFT" = "true" ] && set -- "$@" --draft
     "$GH" "$@"
+    ;;
+  reply-thread)
+    # Threaded reply inside an existing inline review thread, via the
+    # review-comment replies API. `-F body=@<file>` makes gh read the field value
+    # FROM the file, so the (banner-prefixed) body never round-trips through argv
+    # — the same foot-gun avoidance as --body-file in the other modes (never a
+    # `-f body=<inline text>`). $REPO is <owner>/<repo>, which is exactly the
+    # path segment the endpoint wants.
+    "$GH" api --method POST \
+      "repos/${REPO}/pulls/${PR}/comments/${COMMENT_ID}/replies" \
+      -F body=@"$POSTED_BODY_FILE"
     ;;
 esac
 exit $?
