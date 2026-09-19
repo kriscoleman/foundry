@@ -128,6 +128,13 @@ state_read() {
   # value ever reaches arithmetic context downstream. A non-digit value (or
   # empty) resets to "0" rather than aborting the whole pass — same fail-safe
   # posture as every other malformed-field guard in this pack.
+  # Trim surrounding whitespace first so a space-padded value like "  7  "
+  # still coerces to 7 instead of tripping the non-numeric fail-safe below
+  # (only real non-digit content should hit the "0" reset).
+  ST_ATTEMPT_COUNT="${ST_ATTEMPT_COUNT#"${ST_ATTEMPT_COUNT%%[![:space:]]*}"}"
+  ST_ATTEMPT_COUNT="${ST_ATTEMPT_COUNT%"${ST_ATTEMPT_COUNT##*[![:space:]]}"}"
+  ST_ESCALATED="${ST_ESCALATED#"${ST_ESCALATED%%[![:space:]]*}"}"
+  ST_ESCALATED="${ST_ESCALATED%"${ST_ESCALATED##*[![:space:]]}"}"
   case "$ST_ATTEMPT_COUNT" in
     *[!0-9]*|'') ST_ATTEMPT_COUNT="0" ;;
   esac

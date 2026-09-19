@@ -1887,6 +1887,12 @@ assert_log_count "$GC_LOG" 'bd create .*--silent' 0 "no fallback repair bead is 
 assert_eq "gc__implementation-worker-rc-9" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "implementor_session")" "the known implementor is retained after a reuse dispatch"
 assert_eq "" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "inflight_rework")" "a mail-only reuse dispatch tracks no bead id"
 assert_eq "checks_failed" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "last_handled_state")" "last_handled_state advances to the newly-observed defect"
+last_dispatch_at_32="$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "last_dispatch_at")"
+if [[ "$last_dispatch_at_32" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+  pass "last_dispatch_at is written as a non-empty ISO-8601 UTC timestamp on the reuse dispatch"
+else
+  fail "expected last_dispatch_at to be a non-empty ISO-8601 timestamp (got '${last_dispatch_at_32}')"
+fi
 
 # ===========================================================================
 # CASE 33 — Task 3 "Fallback": when the previously-known implementor is gone
