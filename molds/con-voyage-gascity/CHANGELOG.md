@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.6.0](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.5.1...con-voyage-gascity-v0.6.0) (2026-09-19)
+
+
+### Features
+
+* **con-voyage:** repair-worker watchdog — self-heal dead/stalled rework (fk-wgqp) ([d3816b5](https://github.com/kriscoleman/foundry/commit/d3816b58cde1532b10a1d7e09886280d6a368355))
+
+
+### Bug Fixes
+
+* **con-voyage:** address Fix-2 round-1 review findings (fk-lfan) ([4a87f24](https://github.com/kriscoleman/foundry/commit/4a87f243c4e702628446cde3d123602aecd87a65))
+* **con-voyage:** address Fix-2 round-2 niceties (fk-cied) ([96809c7](https://github.com/kriscoleman/foundry/commit/96809c7f6bc4b09b4528acdcef08459e6e5dffd7))
+
 ## [0.5.1](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.5.0...con-voyage-gascity-v0.5.1) (2026-09-18)
 
 
