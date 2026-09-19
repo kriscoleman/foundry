@@ -23,7 +23,8 @@ failing after the push, a new repair bead will be created for the next cycle.
 
 | Variable         | Description                                      |
 |------------------|--------------------------------------------------|
-| convoy_id        | The repair bead id — the reserved v2 work-item id this formula is cooked against (use `{{convoy_id}}`; `bead_id` is NOT a valid v2 token) |
+| convoy_id        | The reserved v2 work-item id this formula step is cooked against (use `{{convoy_id}}`; `bead_id` is NOT a valid v2 token) — a gc-internal id, NOT necessarily the human-facing repair bead; use `repair_bead` for that (fk-7mw7) |
+| repair_bead      | The human-facing "Repair GitHub PR ..." bead id that `con-voyage-pr-watch.sh` pre-created and slung this formula onto. The workflow claims it (in_progress) on start and MUST close it on every terminal exit via `cv_bead_mark_in_progress`/`cv_bead_close` in `con-voyage-lib.sh` — closing only `convoy_id` left this bead orphaned forever (fk-7mw7). Empty for a bead minted by a caller that does not pass this var (e.g. the native `[[github.pr_monitor]]`'s own `--create-repair-beads` path); the lifecycle helpers fail safe (warn, no-op) on an empty id. |
 | title            | PR title                                         |
 | pr               | PR number (integer string)                       |
 | repo             | Repository in owner/repo form                    |

@@ -918,6 +918,11 @@ assert_log_count "$GC_LOG" 'sling vandoor/gc.implementation-worker va-newbead --
 assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*--title' 0 "mint does not use the broken --on+--title inline form"
 # 4. All PR-context vars ride on the (correct) sling for #11.
 assert_log_count "$GC_LOG" 'sling vandoor/gc.implementation-worker va-newbead --on con-voyage-ci-repair .*pr=11 .*repo=kriscoleman/foundry .*branch=fix/con-voyage-author-scope-pr-monitor' 1 "mint forwards pr/repo/branch vars on the bead-positional sling"
+# 4a. fk-7mw7 FIX-A: the sling also forwards the pre-created bead's OWN id as
+#     --var repair_bead=<id>, so ci-repair.md's close steps have a KNOWN bead
+#     to close instead of inferring it from {{convoy_id}} (a different,
+#     gc-internal work-item id) — the #1 driver of orphaned repair beads.
+assert_log_count "$GC_LOG" 'sling vandoor/gc.implementation-worker va-newbead --on con-voyage-ci-repair .*repair_bead=va-newbead' 1 "mint forwards repair_bead=<own id> (fk-7mw7)"
 # 5. The KEEP log names the minted bead id (operator-observable evidence).
 if printf '%s' "$OUT" | grep -q 'repair bead va-newbead created/attached and routed'; then
   pass "logs the minted repair bead id for #11"

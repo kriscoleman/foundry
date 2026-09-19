@@ -225,11 +225,18 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/con-voyage-lib.sh"
 #      comment below.
 #   3. For each remaining PR, create ONE deduped repair bead and attach the
 #      `con-voyage-ci-repair` v2-formula to it, then route it to the monitor's
-#      repair_route. Because that formula references {{convoy_id}} (the repair
-#      bead id), gc 1.4.1 requires a PRE-CREATED bead as the sling positional:
+#      repair_route. Because that formula references {{convoy_id}}, gc 1.4.1
+#      requires a PRE-CREATED bead as the sling positional:
 #        gc --rig <rig> bd create "<title>"   # -> repair_bead_id (in <rig>'s store)
 #        gc sling <repair_route> <repair_bead_id> --on con-voyage-ci-repair --var ...
 #      where <rig> is parsed from repair_route (the part BEFORE the first "/").
+#
+#      {{convoy_id}} is NOT reliably the same id as repair_bead_id (fk-7mw7): it
+#      is a gc-internal v2 work-item id for the ci-repair STEP, which can differ
+#      from the human-facing bead minted above. So this call also forwards
+#      `--var repair_bead=${repair_bead_id}` — the ci-repair workflow closes
+#      THAT known id on every terminal exit instead of inferring one from
+#      {{convoy_id}}, which was the #1 driver of orphaned repair beads.
 #
 #      CROSS-RIG ROUTING (why --rig is mandatory): gc refuses to route a bead to
 #      an agent in a DIFFERENT rig ("cross-rig routing — bead <id> (prefix ...)
@@ -635,6 +642,7 @@ print(author + SEP + ("1" if skip_awaiting_human else "0"))
             --var "cv_pr_author=${CV_PR_AUTHOR}" \
             --var "cv_author_gate=${CV_AUTHOR_GATE}" \
             --var "cv_conflict_strategy=${CV_CONFLICT_STRATEGY}" \
+            --var "repair_bead=${repair_bead_id}" \
             2>&1; then
             dispatched=1
             new_inflight="$repair_bead_id"
