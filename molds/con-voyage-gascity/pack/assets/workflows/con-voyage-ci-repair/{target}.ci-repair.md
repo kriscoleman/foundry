@@ -13,10 +13,37 @@ The monitor re-evaluates the PR on the next backfill — you do not merge.
 | repo      | {{repo}}           |
 | branch    | {{branch}}         |
 | convoy_id | {{convoy_id}}      |
+| repair_bead | {{repair_bead}}  |
 | title     | {{title}}          |
 | cv_pr_author | {{cv_pr_author}} |
 | cv_author_gate | {{cv_author_gate}} |
 | cv_conflict_strategy | {{cv_conflict_strategy}} |
+
+## Claim — mark the repair bead in_progress
+
+`{{convoy_id}}` is a gc-internal work-item id for this step, not the
+human-facing bead `con-voyage-pr-watch.sh` minted and that a human sees on the
+dashboard (`{{repair_bead}}`). That bead must never sit at READY for the
+duration of this repair, and must close on every terminal exit below — see
+`cv_bead_mark_in_progress`/`cv_bead_close` in `con-voyage-lib.sh` (fk-7mw7
+FIX-A: closing only `{{convoy_id}}` and never `{{repair_bead}}` was the #1
+driver of a batch of orphaned repair beads found in a live sweep).
+
+Run this block VERBATIM, before Step 0 — the claim must land even if Step 0
+immediately drops the PR, because the worker IS actively evaluating the bead
+from this point on:
+
+```bash
+GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
+CV_LIB="$(find "${GC_CITY}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"
+if [ -n "$CV_LIB" ] && [ -f "$CV_LIB" ]; then
+  # shellcheck disable=SC1090
+  source "$CV_LIB"
+  cv_bead_mark_in_progress "{{repair_bead}}"
+else
+  echo "con-voyage-lib.sh not found — skipping repair-bead in_progress marker (non-fatal)" >&2
+fi
+```
 
 ## Step 0 — Author gate (fail-closed by default, toggle-able)
 
@@ -80,6 +107,10 @@ else
     gc bd update "{{convoy_id}}" \
       --notes "dropped: not authored by operator (invalid pr='${pr}', expected a numeric PR id)"
     gc bd close "{{convoy_id}}" --reason "dropped: not authored by operator"
+    GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
+    CV_LIB="$(find "${GC_CITY}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"
+    [ -n "$CV_LIB" ] && [ -f "$CV_LIB" ] && source "$CV_LIB" \
+      && cv_bead_close "{{repair_bead}}" abandoned "dropped: not authored by operator (invalid pr)"
     exit 0
   fi
 
@@ -90,6 +121,10 @@ else
     gc bd update "{{convoy_id}}" \
       --notes "dropped: not authored by operator (pr_author='${pr_author:-<unresolved>}', CV_PR_AUTHOR='${CV_PR_AUTHOR:-<unresolved>}')"
     gc bd close "{{convoy_id}}" --reason "dropped: not authored by operator"
+    GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
+    CV_LIB="$(find "${GC_CITY}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"
+    [ -n "$CV_LIB" ] && [ -f "$CV_LIB" ] && source "$CV_LIB" \
+      && cv_bead_close "{{repair_bead}}" abandoned "dropped: not authored by operator (author mismatch)"
     exit 0
   fi
 fi
@@ -168,6 +203,10 @@ print('1' if skip else '0')
     gc bd update "{{convoy_id}}" \
       --notes "not actionable: awaiting human review only (CI green, MERGEABLE, branch up to date, reviewDecision=REVIEW_REQUIRED) — no machine action taken, no PR comment posted"
     gc bd close "{{convoy_id}}"
+    GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
+    CV_LIB="$(find "${GC_CITY}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"
+    [ -n "$CV_LIB" ] && [ -f "$CV_LIB" ] && source "$CV_LIB" \
+      && cv_bead_close "{{repair_bead}}" no-op "awaiting human review only — no machine action taken"
     exit 0
   fi
 fi
@@ -635,10 +674,26 @@ queue.** The PR stays open. A human lands it.
 
 ## Step 7 — Close the repair bead
 
+This is the shared close point for every non-drop, non-blocked path above: 4a
+(fix pushed), 4b/4c (conflict/behind-base resolved), and 4d's pending-checks
+wait and branch-protection escalation. Pick the outcome that matches what
+actually happened this cycle — do not default to `landed` for a no-op or
+escalated cycle:
+
+- `landed` — a fix was pushed (4a), or a conflict/behind-base rebase resolved
+  and pushed (4b/4c).
+- `no-op` — 4d's pending-checks wait: nothing changed this cycle.
+- `abandoned` — 4d's branch-protection escalation: the machine could not
+  satisfy the block and mailed a human instead.
+
 ```bash
 gc bd update "{{convoy_id}}" \
   --notes "CI repair pushed to {{branch}}: <one-line summary of fix>"
 gc bd close "{{convoy_id}}"
+GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
+CV_LIB="$(find "${GC_CITY}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"
+[ -n "$CV_LIB" ] && [ -f "$CV_LIB" ] && source "$CV_LIB" \
+  && cv_bead_close "{{repair_bead}}" <landed|no-op|abandoned> "<one-line summary of fix, or the 4d reason>"
 ```
 
 ## Failure / escalation
@@ -650,6 +705,11 @@ requirements, or the fix requires a human decision):
 gc mail send {{escalation_target}} \
   -s "CI repair blocked: {{repo}}#{{pr}}" \
   -m "Repair bead {{convoy_id}} is stuck. Reason: <brief explanation>. Branch: {{branch}}."
+gc bd close "{{convoy_id}}" --reason "abandoned: escalated to {{escalation_target}} — <brief explanation>"
+GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
+CV_LIB="$(find "${GC_CITY}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"
+[ -n "$CV_LIB" ] && [ -f "$CV_LIB" ] && source "$CV_LIB" \
+  && cv_bead_close "{{repair_bead}}" abandoned "escalated to {{escalation_target}} — <brief explanation>"
 gc runtime drain-ack
 exit 1
 ```

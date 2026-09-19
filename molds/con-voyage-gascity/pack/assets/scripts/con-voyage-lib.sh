@@ -266,6 +266,85 @@ close_if_open() {
 }
 
 # ===========================================================================
+# GLOBAL BEAD-STATE-EVENT HELPERS (fk-7mw7 FIX-A)
+#
+# OPERATOR DIRECTIVE (north star): beads MUST update deterministically on
+# formula STATE EVENTS as a GLOBAL pack norm — a step/work bead goes
+# in_progress when its step starts (never left sitting at READY) and CLOSES on
+# terminal (landed / abandoned / no-op / superseded). These two helpers are
+# the foundation every workflow step in this pack should call at claim time
+# and at each terminal exit, instead of hand-rolling `bd update`/`bd close`
+# per call site. The primary consumer is con-voyage-ci-repair (the "Repair
+# GitHub PR ..." bead that con-voyage-pr-watch.sh mints and slings the ci-repair
+# formula onto): that workflow closed only `{{convoy_id}}` — a gc-internal
+# work-item id, NOT the human-facing repair bead — at every exit, so the
+# repair bead itself was left open forever. That was the #1 driver of a batch
+# of orphaned ko-*/va-* repair beads found in a live sweep.
+# ===========================================================================
+
+# cv_bead_mark_in_progress BEAD_ID — idempotently claim BEAD_ID (assignee=you,
+# status=in_progress) the moment a step starts working it, so a routed bead is
+# never left sitting at READY for the duration of the work. `bd update
+# --claim` is already idempotent for the same actor (see con-voyage's own
+# {target}.setup-con-voyage-review.md "Claim -> in_progress (idempotent)"
+# precedent), so this does not special-case an already-in_progress bead —
+# re-claiming it is a harmless no-op. It DOES pre-check existence/terminal
+# state (below) before calling `bd update` at all.
+#
+# FAIL-SAFE: warns to stderr and no-ops — never aborts the caller — for an
+# empty BEAD_ID, a bead unknown to `bd show` (gc hiccup or bad id), or a bead
+# that is already closed (a terminal bead never reopens here). A `bd update`
+# failure itself is also swallowed (warn only) so a transient gc/bd error
+# never fails the step that is just trying to mark its own progress.
+cv_bead_mark_in_progress() {
+  local bead_id="$1"
+  [ -n "${bead_id// /}" ] || { echo "cv_bead_mark_in_progress: empty bead id, skipping" >&2; return 0; }
+  local status
+  IFS=$'\x1f' read -r status _ <<< "$(bead_status "$bead_id" assignee)"
+  if [ -z "$status" ]; then
+    echo "cv_bead_mark_in_progress: bead ${bead_id} not found, skipping" >&2
+    return 0
+  fi
+  if [ "$status" = "closed" ]; then
+    echo "cv_bead_mark_in_progress: bead ${bead_id} already closed, skipping" >&2
+    return 0
+  fi
+  "$GC" --city "$GC_CITY" bd update "$bead_id" --claim >/dev/null 2>&1 \
+    || echo "cv_bead_mark_in_progress: failed to claim ${bead_id}" >&2
+  return 0
+}
+
+# cv_bead_close BEAD_ID OUTCOME REASON — idempotently close BEAD_ID with a
+# reason stamped "<OUTCOME>: <REASON>" (mirrors cv_close_reason_for_pr's
+# existing "landed: PR #N merged" / "abandoned: PR #N closed without merge"
+# shape, so every bead-close reason in this pack reads the same way). OUTCOME
+# is the GLOBAL pack vocabulary from the OPERATOR DIRECTIVE above: landed |
+# abandoned | no-op | superseded — this helper does not hard-enforce the enum,
+# a caller passes whichever token fits its own terminal state.
+#
+# FAIL-SAFE: warns to stderr and no-ops — never aborts the caller — for an
+# empty BEAD_ID, a bead unknown to `bd show`, or a bead that is already closed
+# (idempotent: re-running the same terminal exit twice never errors). A
+# `bd close` failure itself is also swallowed (warn only).
+cv_bead_close() {
+  local bead_id="$1" outcome="$2" reason="$3"
+  [ -n "${bead_id// /}" ] || { echo "cv_bead_close: empty bead id, skipping" >&2; return 0; }
+  local status
+  IFS=$'\x1f' read -r status _ <<< "$(bead_status "$bead_id" assignee)"
+  if [ -z "$status" ]; then
+    echo "cv_bead_close: bead ${bead_id} not found, skipping" >&2
+    return 0
+  fi
+  if [ "$status" = "closed" ]; then
+    echo "cv_bead_close: bead ${bead_id} already closed, skipping" >&2
+    return 0
+  fi
+  "$GC" --city "$GC_CITY" bd close "$bead_id" --reason "${outcome}: ${reason}" >/dev/null 2>&1 \
+    || echo "cv_bead_close: failed to close ${bead_id}" >&2
+  return 0
+}
+
+# ===========================================================================
 # WORK-BEAD LIFECYCLE HELPERS (fk-p7j9 / fk-hsca)
 #
 # The helpers above track REPAIR beads (CI failures). The helpers below track

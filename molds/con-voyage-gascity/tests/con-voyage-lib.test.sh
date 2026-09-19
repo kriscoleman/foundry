@@ -36,9 +36,13 @@ trap cleanup EXIT
 
 # Recording `gc` stub. For `bd show <id> --json` it echoes the environment
 # variable STUB_BDSHOW_JSON_<id> verbatim (empty => `bd show` "fails" by
-# printing nothing and the lib falls back). Other subcommands no-op.
+# printing nothing and the lib falls back). Other subcommands no-op. EVERY
+# invocation (including `bd show`) is also appended to STUB_GC_LOG, one
+# space-joined argv per line, so cv_bead_mark_in_progress/cv_bead_close tests
+# can assert exactly which `bd update`/`bd close` calls (if any) fired.
 cat > "${STUBDIR}/gc" <<'GC_STUB'
 #!/usr/bin/env bash
+{ line=""; for a in "$@"; do a="${a//$'\n'/ }"; line="${line}${a} "; done; printf '%s\n' "$line"; } >> "${STUB_GC_LOG:-/dev/null}"
 args=("$@")
 i=0
 while :; do
@@ -73,6 +77,13 @@ GH="${STUBDIR}/gc"
 CV_STATE_DIR="${SANDBOX}/state"
 mkdir -p "$CV_STATE_DIR"
 
+# Call log for the `gc` stub (cv_bead_mark_in_progress/cv_bead_close cases
+# assert on this — see the stub's logging line above). Exported so the
+# separately-exec'd stub process inherits it.
+GC_LOG="${SANDBOX}/gc.log"
+: > "$GC_LOG"
+export STUB_GC_LOG="$GC_LOG"
+
 # shellcheck source=../pack/assets/scripts/con-voyage-lib.sh
 source "$LIB"
 
@@ -81,6 +92,14 @@ assert_eq() {
   if [ "$1" = "$2" ]; then echo "  PASS: $3 (=$1)"; else echo "  FAIL: $3 (expected '$1', got '$2')" >&2; FAILURES=$((FAILURES+1)); fi
 }
 start_case() { echo; echo "=== CASE: $1 ==="; }
+
+# assert_log_count PATTERN EXPECTED MESSAGE — counts lines in $GC_LOG matching
+# an extended regex (mirrors tests/con-voyage-pr-watch.test.sh's helper).
+assert_log_count() {
+  local pattern="$1" expected="$2" msg="$3" n
+  n="$(grep -E -c -- "$pattern" "$GC_LOG")"
+  assert_eq "$expected" "${n:-0}" "$msg"
+}
 
 # ---------------------------------------------------------------------------
 # cv_resolve_work_bead
@@ -123,6 +142,64 @@ start_case "cv_close_reason_for_pr: canonical reasons"
 assert_eq "landed: PR #29 merged" "$(cv_close_reason_for_pr MERGED 29)" "MERGED -> landed reason"
 assert_eq "landed: PR #29 merged" "$(cv_close_reason_for_pr merged 29)" "case-insensitive merged -> landed"
 assert_eq "abandoned: PR #27 closed without merge" "$(cv_close_reason_for_pr CLOSED 27)" "CLOSED -> abandoned reason"
+
+# ---------------------------------------------------------------------------
+# cv_bead_mark_in_progress / cv_bead_close (fk-7mw7 FIX-A — the shared
+# bead-state-event helpers: a step/work bead goes in_progress the moment a
+# step starts it, and closes on ANY terminal outcome, never left orphaned).
+# ---------------------------------------------------------------------------
+export STUB_BDSHOW_JSON_rb_open='{"id":"rb-open","status":"open","assignee":""}'
+export STUB_BDSHOW_JSON_rb_closed='{"id":"rb-closed","status":"closed","assignee":"someone"}'
+
+start_case "cv_bead_mark_in_progress: empty bead id -> no-op, no bd call"
+: > "$GC_LOG"
+cv_bead_mark_in_progress "" 2>/dev/null
+assert_log_count 'bd update' 0 "empty id never calls bd update"
+
+start_case "cv_bead_mark_in_progress: unknown bead -> no-op, no bd call (fail-safe)"
+: > "$GC_LOG"
+cv_bead_mark_in_progress "rb-unknown" 2>/dev/null
+assert_log_count 'bd update' 0 "unknown bead never calls bd update"
+
+start_case "cv_bead_mark_in_progress: already-closed bead -> no-op, no bd call (fail-safe)"
+: > "$GC_LOG"
+cv_bead_mark_in_progress "rb-closed" 2>/dev/null
+assert_log_count 'bd update' 0 "already-closed bead never calls bd update"
+
+start_case "cv_bead_mark_in_progress: open bead -> claims it exactly once"
+: > "$GC_LOG"
+cv_bead_mark_in_progress "rb-open" 2>/dev/null
+assert_log_count 'bd update rb-open --claim' 1 "claims the open bead"
+
+start_case "cv_bead_mark_in_progress: fail-safe paths never abort the caller"
+rc=0
+cv_bead_mark_in_progress "rb-unknown" 2>/dev/null || rc=$?
+assert_eq "0" "$rc" "unknown-bead call still returns 0 (never aborts the step)"
+
+start_case "cv_bead_close: empty bead id -> no-op, no bd call"
+: > "$GC_LOG"
+cv_bead_close "" "landed" "fix pushed" 2>/dev/null
+assert_log_count 'bd close' 0 "empty id never calls bd close"
+
+start_case "cv_bead_close: unknown bead -> no-op, no bd call (fail-safe)"
+: > "$GC_LOG"
+cv_bead_close "rb-unknown" "landed" "fix pushed" 2>/dev/null
+assert_log_count 'bd close' 0 "unknown bead never calls bd close"
+
+start_case "cv_bead_close: already-closed bead -> no-op, no bd call (idempotent)"
+: > "$GC_LOG"
+cv_bead_close "rb-closed" "landed" "fix pushed" 2>/dev/null
+assert_log_count 'bd close' 0 "already-closed bead never calls bd close again"
+
+start_case "cv_bead_close: open bead -> closes with an outcome-prefixed reason"
+: > "$GC_LOG"
+cv_bead_close "rb-open" "landed" "fix pushed" 2>/dev/null
+assert_log_count 'bd close rb-open --reason landed: fix pushed' 1 "closes with '<outcome>: <reason>'"
+
+start_case "cv_bead_close: fail-safe paths never abort the caller"
+rc=0
+cv_bead_close "rb-unknown" "abandoned" "dropped" 2>/dev/null || rc=$?
+assert_eq "0" "$rc" "unknown-bead call still returns 0 (never aborts the step)"
 
 # ---------------------------------------------------------------------------
 # finalize_read / finalize_write round-trip
