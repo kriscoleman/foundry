@@ -11,18 +11,31 @@
 #                     <dir>/.git/info/exclude — that path is wrong for a
 #                     linked worktree, where .git is a file, not a dir).
 #                     Never touches the tracked .gitignore.
-#   `guard <dir>`   — a commit-step backstop: detects any hygiene path
-#                     currently staged or already tracked, unstages what it
-#                     safely can, and refuses to report clean (non-zero exit)
-#                     until nothing offending remains staged.
+#   `guard <dir> [base-ref]`
+#                   — a commit-step backstop. A STAGED-but-uncommitted hygiene
+#                     path is always unstaged (DROPPED); that check is
+#                     base-independent. A COMMITTED hygiene path is only an
+#                     offense (BLOCKED) if THIS branch ADDED it relative to its
+#                     base — a hygiene path that already exists in the base
+#                     (e.g. an upstream repo that legitimately tracks
+#                     .claude/agents+commands) is NOT flagged. Base is the
+#                     optional 3rd arg, else auto-derived from origin/HEAD ->
+#                     origin/main -> main, else the empty tree (fail-safe).
 #
 # HOW IT WORKS: real, local git repos created under a temp sandbox (git init
-# is fully offline) — no stubs needed, since git's own exclude/ls-files
+# is fully offline) — no stubs needed, since git's own exclude/ls-files/diff
 # behavior is exactly what's under test.
 #
 # Run:  bash tests/cv-worktree-prep.test.sh   (exit 0 => all passed)
 
 set -uo pipefail
+
+# Hermetic / offline: never prompt for credentials, never read a developer's
+# system git config. Every repo below is a throwaway under a temp sandbox with
+# inline user.name/email (see git_c) — no network, no gh, no real remotes, no
+# sleeps, no unbounded loops.
+export GIT_TERMINAL_PROMPT=0
+export GIT_CONFIG_NOSYSTEM=1
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOLD_DIR="$(cd "${TEST_DIR}/.." && pwd)"
@@ -209,21 +222,25 @@ else
 fi
 
 # ===========================================================================
-# CASE 9 — guard detects a hygiene path that is ALREADY COMMITTED to HEAD
-#   (a pre-existing violation). It must BLOCK (fail loud) rather than
-#   silently rewrite history, and must leave the file tracked exactly as it
-#   was — no destructive git surgery.
+# CASE 9 — guard BLOCKS a hygiene path that THIS BRANCH committed on top of
+#   base. It must fail loud rather than silently rewrite history, and must
+#   leave the file tracked exactly as it was — no destructive git surgery.
+#   (mk_repo's initial commit is on `main`; here `main` is the base and the
+#   offending .gc/ commit lands on a work branch, so it is genuinely
+#   branch-added relative to base.)
 # ===========================================================================
-start_case "9: guard blocks (never auto-fixes) an already-committed hygiene path"
+start_case "9: guard blocks (never auto-fixes) a hygiene path this branch committed"
 REPO9="$(mk_repo repo9)"
+git_c "$REPO9" checkout -q -b work
 mkdir -p "${REPO9}/.gc"
 printf 'runtime state\n' > "${REPO9}/.gc/state.json"
 git_c "$REPO9" add -f .gc/state.json
 git_c "$REPO9" commit -q -m "oops: accidentally committed .gc state"
 run_script exclude "$REPO9"
 tracked_before="$(git_c "$REPO9" ls-files -- .gc)"
-run_script guard "$REPO9"
-if [ "$RC" -ne 0 ]; then pass "guard exits non-zero for an already-committed hygiene path"; else fail "expected guard to exit non-zero"; fi
+head_before="$(git_c "$REPO9" rev-parse HEAD)"
+run_script guard "$REPO9" main
+if [ "$RC" -ne 0 ]; then pass "guard exits non-zero for a branch-added committed hygiene path"; else fail "expected guard to exit non-zero"; fi
 if printf '%s' "$OUT" | grep -qi 'BLOCKED'; then
   pass "guard logs a BLOCKED message (cannot auto-fix committed history)"
 else
@@ -231,7 +248,6 @@ else
 fi
 tracked_after="$(git_c "$REPO9" ls-files -- .gc)"
 assert_eq "$tracked_before" "$tracked_after" "committed hygiene path is still tracked identically (no destructive history rewrite)"
-head_before="$(git_c "$REPO9" rev-parse HEAD)"
 assert_eq "$head_before" "$(git_c "$REPO9" rev-parse HEAD)" "HEAD is unchanged by guard"
 
 # ===========================================================================
@@ -266,6 +282,135 @@ if [ "$RC" -ne 0 ]; then pass "guard exits non-zero with no directory argument";
 start_case "12: unknown subcommand is rejected"
 run_script frobnicate "$REPO1"
 if [ "$RC" -ne 0 ]; then pass "unknown subcommand exits non-zero"; else fail "expected non-zero exit for an unknown subcommand"; fi
+
+# ===========================================================================
+# CASE 13 — THE FALSE-POSITIVE FIX. A hygiene path exists in the BASE only
+#   (e.g. upstream legitimately tracks .claude/agents), and the work branch
+#   adds an unrelated file. guard must report CLEAN (exit 0) — the branch did
+#   not introduce the hygiene path, so blocking it would wedge every publish
+#   on that repo. Base is passed explicitly.
+# ===========================================================================
+start_case "13: guard is CLEAN when a committed hygiene path lives only in base"
+REPO13="$(mk_repo repo13)"
+mkdir -p "${REPO13}/.claude"
+printf 'agent config\n' > "${REPO13}/.claude/agents"
+git_c "$REPO13" add -f .claude/agents
+git_c "$REPO13" commit -q -m "upstream: legitimately tracks .claude/agents"
+git_c "$REPO13" checkout -q -b work
+printf 'feature code\n' > "${REPO13}/feature.go"
+git_c "$REPO13" add feature.go
+git_c "$REPO13" commit -q -m "feat: unrelated work"
+run_script exclude "$REPO13"
+run_script guard "$REPO13" main
+assert_eq "0" "$RC" "guard exits 0 when the hygiene path is inherited from base, not branch-added"
+if printf '%s' "$OUT" | grep -qi 'BLOCKED'; then
+  fail "guard wrongly BLOCKED a base-inherited hygiene path (the false-positive bug)"
+else
+  pass "guard did not BLOCK the base-inherited hygiene path"
+fi
+if [ -n "$(git_c "$REPO13" ls-files -- .claude)" ]; then
+  pass "sanity: .claude/agents is genuinely tracked (present in HEAD)"
+else
+  fail "sanity check failed: .claude/agents should be tracked"
+fi
+
+# ===========================================================================
+# CASE 14 — a hygiene path that already exists in base but is ALSO newly
+#   STAGED (a brand-new file under the same tree) is still DROPPED. The
+#   staged-but-uncommitted check is base-independent, and a base-inherited
+#   committed sibling must not shield a freshly staged offender.
+# ===========================================================================
+start_case "14: guard drops a staged hygiene file even when a sibling exists in base"
+REPO14="$(mk_repo repo14)"
+mkdir -p "${REPO14}/.claude"
+printf 'agent config\n' > "${REPO14}/.claude/agents"
+git_c "$REPO14" add -f .claude/agents
+git_c "$REPO14" commit -q -m "upstream: legitimately tracks .claude/agents"
+git_c "$REPO14" checkout -q -b work
+printf '{}\n' > "${REPO14}/.claude/settings.json"   # NEW, never committed
+git_c "$REPO14" add -f .claude/settings.json
+run_script exclude "$REPO14"
+run_script guard "$REPO14" main
+if [ "$RC" -ne 0 ]; then pass "guard exits non-zero when a new hygiene file is staged"; else fail "expected guard to exit non-zero"; fi
+staged_after="$(git_c "$REPO14" diff --cached --name-only)"
+if printf '%s' "$staged_after" | grep -q '.claude/settings.json'; then
+  fail ".claude/settings.json is still staged after guard ran"
+else
+  pass ".claude/settings.json (freshly staged) was unstaged by guard"
+fi
+if printf '%s' "$OUT" | grep -q 'DROPPED'; then
+  pass "guard logs a DROPPED message for the staged file"
+else
+  fail "expected a DROPPED log line from guard"
+fi
+if [ -n "$(git_c "$REPO14" ls-files -- .claude/agents)" ]; then
+  pass "base-inherited .claude/agents remains tracked and untouched"
+else
+  fail "guard should not have disturbed the base-inherited .claude/agents"
+fi
+
+# ===========================================================================
+# CASE 15 — base AUTO-DERIVATION via origin/HEAD. With no explicit base arg
+#   and a real origin whose HEAD points at main, guard derives origin/main as
+#   the base: a base-inherited hygiene path is clean, and a branch-added one
+#   is blocked. A bare local remote stands in for GitHub — still fully offline.
+# ===========================================================================
+start_case "15: guard auto-derives base from origin/HEAD"
+UPSTREAM15="${SANDBOX}/repo15-upstream.git"
+git init -q -b main --bare "$UPSTREAM15"
+REPO15="$(mk_repo repo15)"
+mkdir -p "${REPO15}/.claude"
+printf 'cmds\n' > "${REPO15}/.claude/commands"
+git_c "$REPO15" add -f .claude/commands
+git_c "$REPO15" commit -q -m "upstream: legitimately tracks .claude/commands"
+git_c "$REPO15" remote add origin "$UPSTREAM15"
+git_c "$REPO15" push -q -u origin main
+git_c "$REPO15" remote set-head origin main
+derived_head="$(git_c "$REPO15" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+assert_eq "origin/main" "$derived_head" "origin/HEAD resolves to origin/main"
+git_c "$REPO15" checkout -q -b work
+printf 'code\n' > "${REPO15}/f.go"
+git_c "$REPO15" add f.go
+git_c "$REPO15" commit -q -m "feat: unrelated"
+run_script exclude "$REPO15"
+run_script guard "$REPO15"   # NO explicit base — must auto-derive origin/main
+assert_eq "0" "$RC" "guard (auto-derived base) is clean when hygiene path is base-inherited"
+# Now the branch ADDS a committed hygiene path — auto-derived base must block it.
+mkdir -p "${REPO15}/.beads"
+printf 'cfg\n' > "${REPO15}/.beads/config.yaml"
+git_c "$REPO15" add -f .beads/config.yaml
+git_c "$REPO15" commit -q -m "oops: branch adds .beads"
+run_script guard "$REPO15"   # still no explicit base
+if [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -qi 'BLOCKED'; then
+  pass "guard (auto-derived base) BLOCKS a branch-added committed hygiene path"
+else
+  fail "expected guard to BLOCK a branch-added hygiene path with an auto-derived base (rc=$RC)"
+fi
+
+# ===========================================================================
+# CASE 16 — DOCUMENTED FALLBACK. With no origin, no origin/main, and a branch
+#   whose name is not main (so `main` never resolves either), the base cannot
+#   be resolved. guard must fail SAFE: treat the empty tree as base, so ANY
+#   committed hygiene path is flagged — never silently pass a real offender.
+# ===========================================================================
+start_case "16: guard fails SAFE (empty-tree base) when no base ref resolves"
+REPO16="${SANDBOX}/repo16"
+mkdir -p "$REPO16"
+git_c "$REPO16" init -q -b trunk        # not 'main'; no remote at all
+printf 'placeholder\n' > "${REPO16}/README.md"
+git_c "$REPO16" add README.md
+git_c "$REPO16" commit -q -m "init"
+mkdir -p "${REPO16}/.beads"
+printf 'cfg\n' > "${REPO16}/.beads/config.yaml"
+git_c "$REPO16" add -f .beads/config.yaml
+git_c "$REPO16" commit -q -m "committed hygiene path"
+run_script exclude "$REPO16"
+run_script guard "$REPO16"   # no base arg, no origin, branch != main
+if [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -qi 'BLOCKED'; then
+  pass "guard fails safe: BLOCKS a committed hygiene path when no base resolves"
+else
+  fail "expected fail-safe BLOCK when no base resolves (rc=$RC)"
+fi
 
 # ===========================================================================
 # Summary

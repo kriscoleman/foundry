@@ -605,13 +605,18 @@ git add -p   # stage only relevant changes
 
 Run the artifact-hygiene guard before committing. It fails loud (non-zero
 exit) and unstages anything it safely can if a hygiene path (`.beads/`,
-`.gc/`, `.claude/`, dolt data) ever ends up staged — do not commit until it
-reports clean:
+`.gc/`, `.claude/`, dolt data) ends up staged, or is committed AND was added
+by this branch relative to its base — do not commit until it reports clean.
+Pass this PR's base branch as the 3rd arg so a hygiene path the repo
+legitimately tracks upstream (e.g. `.claude/`) is not a false positive; if the
+base lookup comes up empty the guard auto-derives it (origin/HEAD → origin/main
+→ main) and, failing that, fails safe:
 
 ```bash
 CV_GUARD="$(command -v cv-worktree-prep.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name cv-worktree-prep.sh 2>/dev/null | head -1)"
 if [ -n "$CV_GUARD" ] && [ -x "$CV_GUARD" ]; then
-  "$CV_GUARD" guard "$(pwd)" || { echo "fix the reported hygiene violation, re-stage, and re-run the guard before committing" >&2; exit 1; }
+  guard_base="$(gh pr view {{pr}} --repo {{repo}} --json baseRefName --jq .baseRefName 2>/dev/null || true)"
+  "$CV_GUARD" guard "$(pwd)" "${guard_base:+origin/${guard_base}}" || { echo "fix the reported hygiene violation, re-stage, and re-run the guard before committing" >&2; exit 1; }
 fi
 ```
 
