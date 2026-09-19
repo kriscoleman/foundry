@@ -7,6 +7,11 @@
 
 * **con-voyage:** drive the work-bead lifecycle end-to-end (fk-p7j9, subsumes fk-hsca) ([6c7a25e](https://github.com/kriscoleman/foundry/commit/6c7a25e4f4ff6da21fd291f5668f4d1899043455))
 
+
+### Bug Fixes
+
+* **con-voyage-gascity:** guard blocks only branch-added hygiene paths, not base-inherited ones ([d6d0180](https://github.com/kriscoleman/foundry/commit/d6d0180a996d027ab2c8e4def115c1b6c3c0e0db))
+
 ## [0.6.0](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.5.1...con-voyage-gascity-v0.6.0) (2026-09-19)
 
 
