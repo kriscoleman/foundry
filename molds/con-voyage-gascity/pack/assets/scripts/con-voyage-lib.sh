@@ -264,3 +264,191 @@ close_if_open() {
     echo "con-voyage-pr-watch: [PART A] ${pr_label}: closed prior open repair bead ${bead_id} (was status=${status})"
   fi
 }
+
+# ===========================================================================
+# WORK-BEAD LIFECYCLE HELPERS (fk-p7j9 / fk-hsca)
+#
+# The helpers above track REPAIR beads (CI failures). The helpers below track
+# the WORK BEAD itself — the bead a con-voyage delivers — across its full
+# lifecycle (setup -> reviewing -> awaiting_merge -> closed on PR land) so it
+# moves on the dashboard, carries a real description, and is closed when its PR
+# merges/closes instead of sitting open forever.
+#
+# Bead-id note (verified against a live con-voyage run, fk-c0t): the con-voyage
+# graph.v2 formula's `{{convoy_id}}` token resolves to a SYNTHETIC input convoy
+# (e.g. fk-8ba: `gc.synthetic=true`, `issue_type=convoy`) that `tracks` the REAL
+# work bead (e.g. fk-2co). cv_resolve_work_bead() below maps convoy_id -> the
+# real work bead; the con-voyage-finalize monitor and the con-voyage workflow
+# steps both go through it so the lifecycle acts on the right bead.
+# ===========================================================================
+
+# cv_resolve_work_bead CONVOY_ID — print the REAL work bead id for a con-voyage
+# `{{convoy_id}}`. If CONVOY_ID is a synthetic input convoy (or otherwise an
+# issue_type=convoy bead), the work bead is its first `tracks` dependency;
+# otherwise CONVOY_ID is already the work bead and is echoed unchanged.
+#
+# FAIL-SAFE: on any error (empty id, `bd show` failure, unparseable JSON, no
+# dependency found) this echoes the INPUT id unchanged rather than an empty
+# string, so a caller never accidentally runs a lifecycle `bd` command against
+# an empty/garbage id. A caller that must distinguish "resolved to a different
+# bead" from "fell back to the input" can compare the output to the input.
+cv_resolve_work_bead() {
+  local convoy_id="$1"
+  [ -n "${convoy_id// /}" ] || { printf '%s' "$convoy_id"; return 0; }
+  local json
+  json=$("$GC" --city "$GC_CITY" bd show "$convoy_id" --json 2>/dev/null) || json=""
+  if [ -z "$json" ]; then printf '%s' "$convoy_id"; return 0; fi
+  printf '%s' "$json" | python3 -c "
+import sys, json
+convoy_id = sys.argv[1]
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print(convoy_id); raise SystemExit(0)
+if isinstance(data, list):
+    data = data[0] if data else {}
+if not isinstance(data, dict):
+    print(convoy_id); raise SystemExit(0)
+meta = data.get('metadata') or {}
+synthetic = str(meta.get('gc.synthetic', '')).lower() in ('true', '1', 'yes')
+is_convoy = (data.get('issue_type') or '') == 'convoy'
+if synthetic or is_convoy:
+    for dep in (data.get('dependencies') or []):
+        if not isinstance(dep, dict):
+            continue
+        # A single-item input convoy 'tracks' exactly one work bead. Prefer a
+        # 'tracks' edge; fall back to the first dependency id if the type field
+        # is absent (older records) but never to an empty/self id.
+        dtype = dep.get('dependency_type') or dep.get('type') or ''
+        dep_id = dep.get('id') or ''
+        if dep_id and dep_id != convoy_id and (dtype == 'tracks' or dtype == ''):
+            print(dep_id); raise SystemExit(0)
+    # Convoy with no usable dependency — fail safe to the input id.
+    print(convoy_id); raise SystemExit(0)
+# Not a convoy: convoy_id is already the work bead.
+print(convoy_id)
+" "$convoy_id" 2>/dev/null || printf '%s' "$convoy_id"
+}
+
+# cv_close_reason_for_pr PR_STATE PR_NUMBER — canonical work-bead close reason
+# for a finalized PR. PR_STATE is the GitHub PR state ("MERGED" or "CLOSED",
+# case-insensitive). Any merged state -> "landed: PR #N merged"; a closed-
+# without-merge state -> "abandoned: PR #N closed without merge". These strings
+# match the reasons the facilitator runbook and the operator already use by
+# hand (README Phase 6 / orchestration template).
+cv_close_reason_for_pr() {
+  local pr_state="$1" pr_number="$2"
+  local lc
+  lc="$(printf '%s' "$pr_state" | tr '[:upper:]' '[:lower:]')"
+  if [ "$lc" = "merged" ]; then
+    printf 'landed: PR #%s merged' "$pr_number"
+  else
+    printf 'abandoned: PR #%s closed without merge' "$pr_number"
+  fi
+}
+
+# pr_finalize_state REPO PR_NUMBER — resolve a PR's terminal state via ONE
+# `gh pr view`. Prints "<state><0x1f><merged_at><0x1f><closed_at>" where state
+# is one of MERGED | CLOSED | OPEN | "" (unknown/error). merged_at/closed_at are
+# the raw ISO timestamps (empty when absent). A gh failure or unparseable body
+# yields an empty state (SEP-only) so the caller FAILS SAFE — never treats an
+# unknown PR as merged/closed. GitHub reports a merged PR as state=CLOSED with a
+# non-null mergedAt, so this normalizes that to MERGED for the caller.
+pr_finalize_state() {
+  local repo="$1" pr_number="$2"
+  local SEP=$'\x1f'
+  [ -n "${repo// /}" ] && [ -n "${pr_number// /}" ] || { printf '%s%s' "$SEP" "$SEP"; return 0; }
+  # PR number must be numeric — never interpolate anything else into the gh call.
+  case "$pr_number" in
+    ''|*[!0-9]*) printf '%s%s' "$SEP" "$SEP"; return 0 ;;
+  esac
+  local json
+  json=$("$GH" pr view "$pr_number" --repo "$repo" --json state,mergedAt,closedAt 2>/dev/null) || json=""
+  if [ -z "$json" ]; then printf '%s%s' "$SEP" "$SEP"; return 0; fi
+  printf '%s' "$json" | python3 -c "
+import sys, json
+SEP = '\x1f'
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print(SEP + SEP, end=''); raise SystemExit(0)
+if not isinstance(d, dict):
+    print(SEP + SEP, end=''); raise SystemExit(0)
+state = (d.get('state') or '').upper()
+merged_at = d.get('mergedAt') or ''
+closed_at = d.get('closedAt') or ''
+# GitHub returns MERGED directly in the GraphQL 'state' for gh>=2, but older
+# gh reports a merged PR as CLOSED with a non-null mergedAt — normalize both.
+if merged_at:
+    state = 'MERGED'
+print(state + SEP + merged_at + SEP + closed_at, end='')
+" 2>/dev/null || printf '%s%s' "$SEP" "$SEP"
+}
+
+# ---------------------------------------------------------------------------
+# Per-PR FINALIZE record (fk-p7j9 / fk-hsca). File:
+# "<CV_STATE_DIR>/<dedup_key>.finalize", plain key=value lines:
+#   work_bead=<the real work bead id the con-voyage delivers>
+#   convoy_id=<the con-voyage {{convoy_id}} = synthetic input convoy id>
+#   repo_full=<owner/repo>
+#   pr_number=<PR number>
+#   pr_author=<the PR author login recorded at publish time>
+#   implementor_session=<the long-lived implementor to release on land, or empty>
+#   last_phase=<the last cv=<phase> the finalize monitor set on the work bead:
+#     reviewing | awaiting_merge | repairing — used to avoid a redundant
+#     set-state every poll (idempotence), or empty for a fresh record>
+#
+# This is a SEPARATE record type from the repair ".state" file: the repair
+# state only exists for PRs with an actionable CI failure, so it cannot serve
+# as the work-bead<->PR map for a clean, review-approved PR that is simply
+# awaiting a human merge. The publish step writes THIS record for EVERY
+# con-voyage PR it opens (via the finalize-record snippet in publish.md), and
+# the con-voyage-finalize monitor is the sole consumer/GC of it.
+#
+# dedup_key convention: "cv-finalize-<owner>-<repo>-<pr_number>" (mirrors the
+# repair state's "cv-ci-repair-..." shape). The monitor globs "*.finalize".
+# ---------------------------------------------------------------------------
+# shellcheck disable=SC2034  # FS_* globals are consumed by the sourcing script
+# (con-voyage-finalize.sh), invisible to shellcheck when this file is checked
+# standalone.
+finalize_read() {
+  local dedup_key="$1"
+  local f="${CV_STATE_DIR}/${dedup_key}.finalize"
+  FS_WORK_BEAD=""
+  FS_CONVOY_ID=""
+  FS_REPO_FULL=""
+  FS_PR_NUMBER=""
+  FS_PR_AUTHOR=""
+  FS_IMPLEMENTOR=""
+  FS_LAST_PHASE=""
+  [ -f "$f" ] || return 0
+  local k v
+  while IFS='=' read -r k v || [ -n "$k" ]; do
+    case "$k" in
+      work_bead) FS_WORK_BEAD="$v" ;;
+      convoy_id) FS_CONVOY_ID="$v" ;;
+      repo_full) FS_REPO_FULL="$v" ;;
+      pr_number) FS_PR_NUMBER="$v" ;;
+      pr_author) FS_PR_AUTHOR="$v" ;;
+      implementor_session) FS_IMPLEMENTOR="$v" ;;
+      last_phase) FS_LAST_PHASE="$v" ;;
+    esac
+  done < "$f"
+}
+
+# finalize_write DEDUP_KEY WORK_BEAD CONVOY_ID REPO_FULL PR_NUMBER PR_AUTHOR
+#                IMPLEMENTOR LAST_PHASE
+finalize_write() {
+  local dedup_key="$1" work_bead="$2" convoy_id="$3" repo_full="$4"
+  local pr_number="$5" pr_author="$6" implementor="${7:-}" last_phase="${8:-}"
+  local f="${CV_STATE_DIR}/${dedup_key}.finalize"
+  {
+    printf 'work_bead=%s\n' "$work_bead"
+    printf 'convoy_id=%s\n' "$convoy_id"
+    printf 'repo_full=%s\n' "$repo_full"
+    printf 'pr_number=%s\n' "$pr_number"
+    printf 'pr_author=%s\n' "$pr_author"
+    printf 'implementor_session=%s\n' "$implementor"
+    printf 'last_phase=%s\n' "$last_phase"
+  } > "$f"
+}

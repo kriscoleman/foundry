@@ -20,5 +20,23 @@ Loop rules (authoritative at the finding level, not the verdict level):
 Re-run mechanics: before each cycle, reopen the completed review bead with
 gc bd reopen <review-bead>, then re-run. Do not create new review beads per cycle.
 
+## Append a per-cycle summary to the WORK BEAD (work-bead lifecycle)
+
+After each review cycle synthesizes, append a one-line summary to the work bead
+so the dashboard shows progress and the description stays current. The work bead
+is `$WORK_BEAD` recorded in the review context (resolved from `{{convoy_id}}` at
+setup); re-resolve it the same way if the context does not carry it. Keep the
+work bead in the `reviewing` phase for the whole loop — do NOT close it here
+(the publish step and the con-voyage-finalize monitor own the later phases and
+the close). Each cycle, after synthesis produces the verdict and finding counts:
+
+```bash
+# WORK_BEAD is the value recorded at setup (review context `work_bead`). Count
+# fields come from this cycle's synthesis. This is a best-effort note — a bd
+# hiccup must never break the review loop.
+gc bd note "$WORK_BEAD" "review cycle <N>: verdict=<approve|iterate>, BLOCKING=<count>, LOW=<count>" \
+  || echo "note: could not append cycle summary to $WORK_BEAD (continuing)"
+```
+
 Do not invoke provider-native subagents. Continue only through this Gas City
 graph loop.
