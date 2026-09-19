@@ -24,6 +24,15 @@ A Gas City pack containing:
   `merge_queue="observe"` in `city.toml` prevents any auto-merge path. A human
   must land the PR.
 
+- **Work-bead lifecycle** — the formula now drives the *work bead* it delivers
+  through its full lifecycle so it moves on the dashboard and never sits open
+  after its PR lands (see § "Work-bead lifecycle" below): setup claims it
+  (`--claim` → in_progress), seeds its description, and labels it `cv:reviewing`;
+  each review cycle appends a verdict/finding-count note; publish records the PR
+  URL and flips it to `cv:awaiting_merge`; and the new `con-voyage-finalize`
+  order closes it (with an accurate reason), closes the convoy, and releases the
+  implementor when the PR merges or closes.
+
 - **16 reviewer-lens agents** (scope `rig`, prefixed `cv-`) — gascity-native persona
   agents ported from the full con-voyage roster:
 
@@ -276,18 +285,84 @@ same self-heal idea as an *inline* staleness check inside
 state schema. This order is a ground-up rebuild against the current schema, as
 a standalone periodic order — the inline version was not reused.
 
+### `con-voyage-finalize` order (work-bead lifecycle: claim → close on land)
+
+Before this, con-voyage managed only *repair* beads — it issued **zero** `bd`
+calls against the **work bead** it was delivering, and the gc runtime does not
+auto-transition beads. So the work bead never moved on the dashboard, its
+description was whatever intake left (often empty), and it stayed `open`
+forever after its PR merged (e.g. `fk-eiw`/#29 and `fk-wgl`/#27 sat `open` for
+~2 days after their PRs merged, closed by hand). This order — plus small `bd`
+additions in the formula's workflow steps — closes that gap end to end.
+
+**Where the work bead lives.** In this `graph.v2` formula the `{{convoy_id}}`
+token resolves to a **synthetic input convoy** (`gc.synthetic=true`,
+`issue_type=convoy`) that `tracks` the real work bead. The workflow steps
+resolve the work bead from `{{convoy_id}}` (convoy → its `tracks` dependency;
+a non-convoy id is already the work bead — see `cv_resolve_work_bead` in
+`con-voyage-lib.sh` and the inline resolver snippet in
+`{target}.setup-con-voyage-review.md`). The `con-voyage-ci-repair` formula's
+own `{{convoy_id}}` is a *repair* bead — a different formula; the two are never
+confused.
+
+**The lifecycle, stage by stage:**
+
+| Stage | Work-bead action | Where |
+|---|---|---|
+| setup | `bd update <wb> --claim` (→ in_progress) + seed description (branch, base, roster, PR target) + `bd set-state <wb> cv=reviewing` | `{target}.setup-con-voyage-review.md` |
+| review loop | append a per-cycle `bd note` (verdict + BLOCKING/LOW counts); stays `cv:reviewing` | `{target}.con-voyage-review-loop.md` |
+| publish (PR open) | `bd update <wb> --set-metadata pr_url=<url>` + PR note + `bd set-state <wb> cv=awaiting_merge`; write the per-PR `.finalize` record | `{target}.publish.md` |
+| PR merge/close | close `<wb>` (accurate reason) + close convoy + release implementor + rm record; while still open, keep `cv=` phase in sync (`awaiting_merge` clean / `repairing` red) | `con-voyage-finalize.sh` |
+
+`cv=<phase>` is set via `bd set-state` — a **custom dimension** that renders as
+a `cv:<phase>` dashboard label — NOT the primary status. Primary status stays
+`in_progress` (via `--claim`) until the finalize monitor closes the bead on
+land; there is no native `awaiting_merge` status, so that phase is modelled as
+the `cv` dimension while status stays `in_progress`.
+
+**The finalize monitor** (`con-voyage-finalize.sh`, a 5-minute cooldown order)
+is the teardown side. The publish step writes a per-PR `.finalize` record under
+`CV_STATE_DIR` (default `.gc/cv-pr-watch`, same dir the PR-watch orders use)
+carrying `work_bead`, `convoy_id`, `repo_full`, `pr_number`, `pr_author`, and
+`implementor_session`. This record is the **only reliable work-bead↔PR map**
+for a clean, review-approved PR — the repair `.state` records exist only for
+PRs with a CI failure, so they cannot serve that role. The monitor globs
+`*.finalize`, polls each PR via one `gh pr view`, and:
+
+- **merged** → close the work bead `"landed: PR #N merged"`, close the convoy,
+  mail the implementor a release note, remove the record;
+- **closed without merge** → same, with `"abandoned: PR #N closed without
+  merge"`;
+- **still open** → reflect the live phase on the work bead as a `cv=` label
+  (`awaiting_merge` when clean / only awaiting human review; `repairing` when a
+  check is failing, the branch is `DIRTY`/conflicting, or it is `BEHIND` base),
+  idempotent via the record's `last_phase`;
+- **unresolved state (gh error)** → fail safe: touch nothing, retry next cycle.
+
+Every action is idempotent (re-closing an already-closed bead is a guarded
+no-op via `close_if_open`; a re-poll after the record is gone is a clean
+no-op) and **author-scoped**: a record whose `pr_author` is not `CV_PR_AUTHOR`
+is skipped before any poll — the same fail-closed HARD INVARIANT as the other
+two monitors. It **never** merges, force-pushes, comments on a PR, or kills a
+session (releasing the long-lived implementor is a best-effort *mail*, not a
+kill — the monitor cannot prove exclusive session ownership from a record
+alone). See `con-voyage-finalize.toml` for the tunables (`CV_PR_AUTHOR`,
+`CV_RELEASE_IMPLEMENTOR`).
+
 ### Coverage table
 
-| Signal | Native monitor | pr-watch order | repair-watchdog order |
-|---|---|---|---|
-| Failed CI check-runs | Yes | Driven (Part A) | — |
-| Merge conflict (DIRTY) | Yes | Driven (Part A) | — |
-| Branch behind base | Yes | Driven (Part A) | — |
-| Branch-protection block | Yes | Driven (Part A) | — |
-| Human review comments | No | Yes (best-effort, Part B) | — |
-| Dead implementor mid-rework | No | No | Yes (reassigns) |
-| Stalled rework (no progress) | No | No | Yes (re-dispatches, then escalates) |
-| Auto-merge | Never | Never | Never |
+| Signal | Native monitor | pr-watch order | repair-watchdog order | finalize order |
+|---|---|---|---|---|
+| Failed CI check-runs | Yes | Driven (Part A) | — | — |
+| Merge conflict (DIRTY) | Yes | Driven (Part A) | — | — |
+| Branch behind base | Yes | Driven (Part A) | — | — |
+| Branch-protection block | Yes | Driven (Part A) | — | — |
+| Human review comments | No | Yes (best-effort, Part B) | — | — |
+| Dead implementor mid-rework | No | No | Yes (reassigns) | — |
+| Stalled rework (no progress) | No | No | Yes (re-dispatches, then escalates) | — |
+| Work-bead status/phase/description | No | No | No | Yes (claim/phase/note; setup+loop+publish steps too) |
+| Work-bead close on PR merge/close | No | No | No | Yes (close bead+convoy, release implementor) |
+| Auto-merge | Never | Never | Never | Never |
 
 ### Per-state repair semantics (native-monitor parity)
 

@@ -84,11 +84,17 @@ When the `cv-product-owner` lens is active, "docs PR missing" is a **BLOCKING** 
 3. Open the docs PR in **draft** and cross-link it to the feature PR.
 4. **Merge in lockstep:** neither PR lands alone. Confirm both merged (or both closed) before marking the convoy complete.
 
-### Phase 6 — Never merge; human lands
+### Phase 6 — Never merge; human lands (teardown is automated)
 
 You push the branch (`push=true`) and open the PR (`open_pr=true`). You do not merge it. The `merge_queue="observe"` setting in `city.toml` ensures no auto-merge path exists. Done means a human merged or closed it.
 
-On "PR LANDED":
+**The work-bead lifecycle is now driven by the pack itself, not by you:**
+- The **setup** step claims the work bead (`--claim` → in_progress), seeds its description, and sets `cv=reviewing`.
+- Each **review cycle** appends a one-line verdict/finding-count summary to the work bead.
+- The **publish** step records `pr_url` on the work bead, sets `cv=awaiting_merge`, and writes a per-PR finalize record under `.gc/cv-pr-watch`.
+- The **`con-voyage-finalize`** monitor order polls each tracked PR and, on merge/close, closes the work bead with the accurate reason, closes the convoy, releases the long-lived implementor, and removes the record — and while the PR is open it keeps the work bead's `cv=` phase in sync (`awaiting_merge` when clean, `repairing` when CI is red / a rebase is needed).
+
+On "PR LANDED" the `con-voyage-finalize` monitor handles teardown within its cooldown. Do the following only as a **fallback** (monitor down, or you want it immediate):
 1. `gc bd close` the work bead and all team beads. Reason must reflect reality: merged → "landed: PR #<n> merged"; closed without merge → "abandoned: PR #<n> closed without merge".
 2. Verify the convoy closed: `gc convoy status <convoy-id>`.
 3. Report to the user: PR link, review cycles, CI cycles.

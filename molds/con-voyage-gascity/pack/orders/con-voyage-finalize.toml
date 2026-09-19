@@ -1,0 +1,46 @@
+# con-voyage-finalize — work-bead finalize monitor order (fk-hsca, the teardown
+# side of fk-p7j9's work-bead lifecycle).
+#
+# con-voyage-pr-watch.sh polls only OPEN PRs (CI-repair + comment routing) and
+# never finalizes a con-voyage when its PR merges/closes: nothing closes the
+# WORK BEAD, closes the convoy, releases the long-lived implementor, or removes
+# the per-PR record on land. (Concretely: fk-eiw/#29 and fk-wgl/#27 sat `open`
+# for ~2 days after their PRs merged.) This order runs con-voyage-finalize.sh
+# on a cooldown to close that gap.
+#
+# It reads the per-PR ".finalize" records con-voyage's publish step writes under
+# CV_STATE_DIR (must match that step's dir — both default to .gc/cv-pr-watch, so
+# leave it alone unless you change it there too). For each record it polls the
+# PR's terminal state via `gh` and, on merged/closed:
+#   - closes the WORK BEAD with an accurate reason,
+#   - closes the con-voyage convoy,
+#   - releases the long-lived implementor (best-effort mail — never a kill),
+#   - removes the record.
+# While the PR is still open it reflects the live phase (awaiting_merge |
+# repairing) on the work bead as a `cv=` dashboard label. Every action is
+# idempotent (safe to re-poll) and fails safe on an unresolved PR state.
+#
+# No auto-merge, force-push, PR comment, or session kill ever occurs from this
+# order — it only closes beads/convoys the operator's own con-voyage created,
+# reflects phase, and mails a release note.
+#
+# AUTHOR SCOPING: this monitor only ever acts on finalize records whose
+# recorded pr_author is CV_PR_AUTHOR (see the [order.env] block below and the
+# HARD INVARIANT in the script header). Those records already came from
+# con-voyage's own author-scoped publish; this is defense in depth.
+
+[order]
+description = "Finalize con-voyage work beads on PR merge/close: close work bead + convoy, release the implementor, clean the record (author-scoped)"
+trigger = "cooldown"
+interval = "5m"
+exec = "$PACK_DIR/assets/scripts/con-voyage-finalize.sh"
+
+# Author-scope the monitor explicitly (belt-and-suspenders over the script's
+# gh-login default — see con-voyage-pr-watch.toml for the same convention).
+# CV_PR_AUTHOR is the single GitHub login whose PRs this monitor may finalize.
+# CV_RELEASE_IMPLEMENTOR toggles the release note to the long-lived implementor
+# on finalize (default "1" = send it; "0" = skip the mail, still close the
+# bead/convoy).
+[order.env]
+CV_PR_AUTHOR = "kriscoleman"
+CV_RELEASE_IMPLEMENTOR = "1"
