@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.2](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.7.1...con-voyage-gascity-v0.7.2) (2026-09-20)
+
+
+### Bug Fixes
+
+* **con-voyage:** finalize monitor closes repair beads on PR merge/close (fk-f1vp) ([638c2f4](https://github.com/kriscoleman/foundry/commit/638c2f44a111b71f0aa1dc4ba3e46292b302bfa6))
+
 ## [0.7.1](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.7.0...con-voyage-gascity-v0.7.1) (2026-09-20)
 
 
