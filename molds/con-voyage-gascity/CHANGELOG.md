@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.7.0...con-voyage-gascity-v0.7.1) (2026-09-20)
+
+
+### Bug Fixes
+
+* **con-voyage:** ci-repair closes the repair bead, not just the input convoy (fk-7mw7) ([e083cb6](https://github.com/kriscoleman/foundry/commit/e083cb602c856c1fe8f67eeee30826e9dd2039df))
+
 ## [0.7.0](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.6.0...con-voyage-gascity-v0.7.0) (2026-09-19)
 
 
