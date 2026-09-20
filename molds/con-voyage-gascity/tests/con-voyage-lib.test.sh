@@ -144,6 +144,19 @@ assert_eq "landed: PR #29 merged" "$(cv_close_reason_for_pr merged 29)" "case-in
 assert_eq "abandoned: PR #27 closed without merge" "$(cv_close_reason_for_pr CLOSED 27)" "CLOSED -> abandoned reason"
 
 # ---------------------------------------------------------------------------
+# cv_repair_close_reason_for_pr (fk-f1vp FIX-B)
+# ---------------------------------------------------------------------------
+start_case "cv_repair_close_reason_for_pr: canonical reasons (no outcome prefix)"
+assert_eq "PR #83 merged" "$(cv_repair_close_reason_for_pr MERGED 83)" "MERGED -> 'PR #N merged'"
+assert_eq "PR #83 merged" "$(cv_repair_close_reason_for_pr merged 83)" "case-insensitive merged -> 'PR #N merged'"
+assert_eq "PR #84 closed" "$(cv_repair_close_reason_for_pr CLOSED 84)" "CLOSED -> 'PR #N closed' (not 'closed without merge')"
+start_case "cv_repair_close_reason_for_pr: composes with cv_bead_close into the full 'superseded: ...' reason"
+: > "$GC_LOG"
+export STUB_BDSHOW_JSON_rb_repair='{"id":"rb-repair","status":"open","assignee":""}'
+cv_bead_close "rb-repair" "superseded" "$(cv_repair_close_reason_for_pr MERGED 83)" 2>/dev/null
+assert_log_count 'bd close rb-repair --reason superseded: PR #83 merged' 1 "composes into 'superseded: PR #83 merged'"
+
+# ---------------------------------------------------------------------------
 # cv_bead_mark_in_progress / cv_bead_close (fk-7mw7 FIX-A — the shared
 # bead-state-event helpers: a step/work bead goes in_progress the moment a
 # step starts it, and closes on ANY terminal outcome, never left orphaned).

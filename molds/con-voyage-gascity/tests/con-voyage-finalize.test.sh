@@ -242,6 +242,29 @@ write_finalize() {
   } > "${dir}/${key}.finalize"
 }
 
+# write_state DIR DEDUP_KEY implementor inflight last_state pr_author route repo_full pr_number branch attempt_count escalated [last_dispatch_at]
+# Same repair ".state" record shape con-voyage-pr-watch.sh/con-voyage-repair-
+# watchdog.sh read and write (see con-voyage-lib.sh state_read/state_write) —
+# fk-f1vp extends this monitor to ALSO glob these records for merge/close
+# cleanup of repair beads (a separate concern from the ".finalize" work-bead
+# lifecycle above).
+write_state() {
+  local dir="$1" key="$2"
+  {
+    printf 'implementor_session=%s\n' "${3}"
+    printf 'inflight_rework=%s\n' "${4}"
+    printf 'last_handled_state=%s\n' "${5}"
+    printf 'pr_author=%s\n' "${6}"
+    printf 'repair_route=%s\n' "${7}"
+    printf 'repo_full=%s\n' "${8}"
+    printf 'pr_number=%s\n' "${9}"
+    printf 'branch=%s\n' "${10}"
+    printf 'attempt_count=%s\n' "${11}"
+    printf 'escalated=%s\n' "${12}"
+    printf 'last_dispatch_at=%s\n' "${13:-}"
+  } > "${dir}/${key}.state"
+}
+
 CITY_DIR=""
 STATE_DIR=""
 GC_LOG=""
@@ -514,6 +537,153 @@ run_script "${DEFAULT_ENV[@]}" \
   STUB_BDSHOW_MAP=$'fk-same|in_progress'
 assert_eq "0" "$RC" "script exits 0"
 assert_log_count "$GC_LOG" 'bd close fk-same' 1 "exactly one close when convoy_id == work_bead"
+
+# ===========================================================================
+# CASE 17 — fk-f1vp (FIX-B): a repair ".state" record whose PR has MERGED must
+#   close its tracked inflight_rework bead ("superseded: PR #N merged") and
+#   remove the .state record, exactly like a ".finalize" record does for the
+#   work bead. ROOT CAUSE this closes: this monitor previously globbed ONLY
+#   "*.finalize" — repair beads tracked in "*.state" (inflight_rework=...)
+#   never closed on merge/close, orphaning them (kots#6067's 15 beads,
+#   fk-eiw/#29, fk-wgl/#27).
+# ===========================================================================
+start_case "17: merged PR -> tracked repair bead closes (superseded), .state removed"
+setup_case_env "17"
+write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-83" \
+  "gc__impl-rc-1" "rw-bead83" "checks_failed" "kriscoleman" "vandoor/gc.implementation-worker" \
+  "kriscoleman/foundry" "83" "fix/x" "1" "0"
+run_script "${DEFAULT_ENV[@]}" \
+  STUB_PR_MAP="kriscoleman/foundry|83|MERGED|2026-09-19T10:00:00Z|2026-09-19T10:00:00Z|||" \
+  STUB_BDSHOW_MAP="rw-bead83|open"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd close rw-bead83 .*superseded: PR #83 merged' 1 "tracked repair bead closes with 'superseded: PR #83 merged'"
+assert_file_absent "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-83.state" ".state record removed after finalize"
+
+# ===========================================================================
+# CASE 18 — CLOSED-without-merge PR: same teardown, "closed" phrasing instead
+#   of "merged".
+# ===========================================================================
+start_case "18: closed-unmerged PR -> tracked repair bead closes (superseded: PR #N closed)"
+setup_case_env "18"
+write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-84" \
+  "gc__impl-rc-2" "rw-bead84" "blocked" "kriscoleman" "vandoor/gc.implementation-worker" \
+  "kriscoleman/foundry" "84" "fix/y" "0" "0"
+run_script "${DEFAULT_ENV[@]}" \
+  STUB_PR_MAP="kriscoleman/foundry|84|CLOSED||2026-09-19T11:00:00Z|||" \
+  STUB_BDSHOW_MAP="rw-bead84|open"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd close rw-bead84 .*superseded: PR #84 closed' 1 "tracked repair bead closes with 'superseded: PR #84 closed'"
+assert_log_count "$GC_LOG" 'superseded: PR #84 merged' 0 "not reported as merged"
+assert_file_absent "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-84.state" ".state record removed"
+
+# ===========================================================================
+# CASE 19 — Acceptance: "PR still OPEN -> no-op." The repair-watchdog script
+#   owns dead/stalled handling for an open PR; this monitor's repair-state
+#   sweep only ever acts on a TERMINAL PR state.
+# ===========================================================================
+start_case "19: open PR -> no action, .state record kept"
+setup_case_env "19"
+write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-85" \
+  "gc__impl-rc-3" "rw-bead85" "checks_failed" "kriscoleman" "vandoor/gc.implementation-worker" \
+  "kriscoleman/foundry" "85" "fix/z" "0" "0"
+run_script "${DEFAULT_ENV[@]}" \
+  STUB_PR_MAP="kriscoleman/foundry|85|OPEN|||MERGEABLE|CLEAN|SUCCESS" \
+  STUB_BDSHOW_MAP="rw-bead85|open"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd close rw-bead85' 0 "no close while the PR is still open"
+assert_file_present "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-85.state" ".state record kept for an open PR"
+
+# ===========================================================================
+# CASE 20 — Acceptance: "sibling orphan repair beads exist for the same merged
+#   PR -> swept closed too." Two independent .state records (different dedup
+#   keys) both point at the SAME repo+PR — e.g. a stale/legacy dedup-key
+#   collision — so the sweep must close BOTH tracked beads, not just the one
+#   the outer loop happened to iterate to.
+# ===========================================================================
+start_case "20: sibling .state records for the same PR are all swept closed"
+setup_case_env "20"
+write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-90" \
+  "gc__impl-rc-4" "rw-bead90" "checks_failed" "kriscoleman" "vandoor/gc.implementation-worker" \
+  "kriscoleman/foundry" "90" "fix/a" "1" "0"
+write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-90-legacy" \
+  "" "rw-bead90-old" "merge_conflict" "kriscoleman" "vandoor/gc.implementation-worker" \
+  "kriscoleman/foundry" "90" "fix/a" "0" "0"
+run_script "${DEFAULT_ENV[@]}" \
+  STUB_PR_MAP="kriscoleman/foundry|90|MERGED|2026-09-19T12:00:00Z|2026-09-19T12:00:00Z|||" \
+  STUB_BDSHOW_MAP=$'rw-bead90|open\nrw-bead90-old|open'
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd close rw-bead90 .*superseded: PR #90 merged' 1 "primary record's tracked bead closes"
+assert_log_count "$GC_LOG" 'bd close rw-bead90-old .*superseded: PR #90 merged' 1 "sibling record's tracked bead is swept closed too"
+assert_file_absent "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-90.state" "primary .state record removed"
+assert_file_absent "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-90-legacy.state" "sibling .state record removed too"
+
+# ===========================================================================
+# CASE 21 — Author scoping: a repair .state record authored by someone else is
+#   never polled or acted on (HARD INVARIANT, defensive re-check).
+# ===========================================================================
+start_case "21: author-scope skip on a mismatched pr_author -> no poll, no close, record kept"
+setup_case_env "21"
+write_state "$STATE_DIR" "cv-ci-repair-someone-else-repo-91" \
+  "" "rw-bead91" "checks_failed" "someone-else" "vandoor/gc.implementation-worker" \
+  "someone-else/repo" "91" "fix/b" "0" "0"
+run_script "${DEFAULT_ENV[@]}" \
+  STUB_PR_MAP="someone-else/repo|91|MERGED|2026-09-19T13:00:00Z|2026-09-19T13:00:00Z|||" \
+  STUB_BDSHOW_MAP="rw-bead91|open"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GH_LOG" 'pr view 91' 0 "no gh pr view for a non-operator repair record"
+assert_log_count "$GC_LOG" 'bd close' 0 "no bd close for a non-operator repair record"
+assert_file_present "${STATE_DIR}/cv-ci-repair-someone-else-repo-91.state" "non-operator .state record left untouched"
+
+# ===========================================================================
+# CASE 22 — gh failure (unresolved PR state): FAIL SAFE, same posture as the
+#   ".finalize" loop — no close, record kept for the next cycle.
+# ===========================================================================
+start_case "22: unresolved PR state (gh error) -> fail safe, no close, record kept"
+setup_case_env "22"
+write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-92" \
+  "gc__impl-rc-5" "rw-bead92" "checks_failed" "kriscoleman" "vandoor/gc.implementation-worker" \
+  "kriscoleman/foundry" "92" "fix/c" "0" "0"
+# STUB_PR_MAP omits #92 => gh pr view exits 1 => unresolved state.
+run_script "${DEFAULT_ENV[@]}" STUB_BDSHOW_MAP="rw-bead92|open"
+assert_eq "0" "$RC" "script exits 0 (transient, retried next cycle)"
+assert_log_count "$GC_LOG" 'bd close' 0 "no bd close on an unresolved PR state"
+assert_file_present "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-92.state" ".state record kept for retry on gh error"
+
+# ===========================================================================
+# CASE 23 — Idempotent re-poll: run twice on a merged repair record. The
+#   second run finds the record already gone and cleanly no-ops.
+# ===========================================================================
+start_case "23: idempotent re-poll after repair-record finalize"
+setup_case_env "23"
+write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-93" \
+  "gc__impl-rc-6" "rw-bead93" "checks_failed" "kriscoleman" "vandoor/gc.implementation-worker" \
+  "kriscoleman/foundry" "93" "fix/d" "0" "0"
+PRMAP93="kriscoleman/foundry|93|MERGED|2026-09-19T14:00:00Z|2026-09-19T14:00:00Z|||"
+run_script "${DEFAULT_ENV[@]}" STUB_PR_MAP="$PRMAP93" STUB_BDSHOW_MAP="rw-bead93|open"
+assert_eq "0" "$RC" "first run exits 0"
+assert_file_absent "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-93.state" "record removed after first run"
+: > "$GC_LOG"; : > "$GH_LOG"
+run_script "${DEFAULT_ENV[@]}" STUB_PR_MAP="$PRMAP93" STUB_BDSHOW_MAP="rw-bead93|open"
+assert_eq "0" "$RC" "second run exits 0 (idempotent)"
+assert_log_count "$GC_LOG" 'bd close' 0 "second run makes zero bd close calls (record already gone)"
+assert_log_count "$GH_LOG" 'pr view' 0 "second run polls nothing"
+
+# ===========================================================================
+# CASE 24 — Bead-less repair record (inflight_rework empty — e.g. a mail-only
+#   reuse dispatch that never minted a bead) on a merged PR: the .state record
+#   is still removed (cleanup is unconditional), and cv_bead_close's own
+#   empty-id fail-safe means no bd close is ever attempted.
+# ===========================================================================
+start_case "24: bead-less repair record on a merged PR -> record removed, no close attempted"
+setup_case_env "24"
+write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-94" \
+  "gc__impl-rc-7" "" "checks_failed" "kriscoleman" "vandoor/gc.implementation-worker" \
+  "kriscoleman/foundry" "94" "fix/e" "0" "0" "2026-09-19T09:00:00Z"
+run_script "${DEFAULT_ENV[@]}" \
+  STUB_PR_MAP="kriscoleman/foundry|94|MERGED|2026-09-19T15:00:00Z|2026-09-19T15:00:00Z|||"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd close' 0 "no bd close attempted — there is no tracked bead"
+assert_file_absent "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-94.state" ".state record still removed"
 
 # ===========================================================================
 # Summary

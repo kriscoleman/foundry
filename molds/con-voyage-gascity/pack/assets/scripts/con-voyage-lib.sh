@@ -426,6 +426,25 @@ cv_close_reason_for_pr() {
   fi
 }
 
+# cv_repair_close_reason_for_pr PR_STATE PR_NUMBER — the REASON half (no
+# outcome prefix) for closing a repair bead once its PR reaches a terminal
+# state (fk-f1vp FIX-B). Unlike cv_close_reason_for_pr, a repair bead's own
+# OUTCOME is always "superseded" regardless of merged vs. closed-without-merge
+# — the CI failure it existed to fix is moot either way once the PR itself is
+# terminal — so the caller passes this string to cv_bead_close's own REASON
+# argument (which prepends the outcome): cv_bead_close "$bead" "superseded"
+# "$(cv_repair_close_reason_for_pr "$state" "$num")".
+cv_repair_close_reason_for_pr() {
+  local pr_state="$1" pr_number="$2"
+  local lc
+  lc="$(printf '%s' "$pr_state" | tr '[:upper:]' '[:lower:]')"
+  if [ "$lc" = "merged" ]; then
+    printf 'PR #%s merged' "$pr_number"
+  else
+    printf 'PR #%s closed' "$pr_number"
+  fi
+}
+
 # pr_finalize_state REPO PR_NUMBER — resolve a PR's terminal state via ONE
 # `gh pr view`. Prints "<state><0x1f><merged_at><0x1f><closed_at>" where state
 # is one of MERGED | CLOSED | OPEN | "" (unknown/error). merged_at/closed_at are

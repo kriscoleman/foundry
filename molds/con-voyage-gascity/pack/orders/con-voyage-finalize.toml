@@ -24,13 +24,23 @@
 # order — it only closes beads/convoys the operator's own con-voyage created,
 # reflects phase, and mails a release note.
 #
-# AUTHOR SCOPING: this monitor only ever acts on finalize records whose
+# REPAIR-STATE SWEEP (fk-f1vp FIX-B): this same order ALSO globs the ".state"
+# repair records con-voyage-pr-watch.sh/con-voyage-repair-watchdog.sh track
+# (inflight_rework=...) — a separate record type from ".finalize" above, which
+# previously never got merge/close handling at all (the exact orphan class as
+# kots#6067's 15 beads and fk-eiw/#29, fk-wgl/#27, but for repair beads rather
+# than work beads). On a terminal PR state it closes the tracked repair bead
+# ("superseded: PR #N merged/closed"), sweeps any sibling record for the same
+# repo+PR, and removes the record(s). A still-OPEN PR is left to
+# con-voyage-repair-watchdog.sh's own dead/stalled/escalate handling.
+#
+# AUTHOR SCOPING: this monitor only ever acts on finalize/repair records whose
 # recorded pr_author is CV_PR_AUTHOR (see the [order.env] block below and the
 # HARD INVARIANT in the script header). Those records already came from
-# con-voyage's own author-scoped publish; this is defense in depth.
+# con-voyage's own author-scoped publish/dispatch; this is defense in depth.
 
 [order]
-description = "Finalize con-voyage work beads on PR merge/close: close work bead + convoy, release the implementor, clean the record (author-scoped)"
+description = "Finalize con-voyage work beads AND repair beads on PR merge/close: close work bead + convoy, release the implementor, sweep tracked/sibling repair beads, clean the records (author-scoped)"
 trigger = "cooldown"
 interval = "5m"
 exec = "$PACK_DIR/assets/scripts/con-voyage-finalize.sh"
