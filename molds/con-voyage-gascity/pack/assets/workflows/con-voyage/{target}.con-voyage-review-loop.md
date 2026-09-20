@@ -94,9 +94,11 @@ print(d.get('status') or '-', d.get('assignee') or '-', meta.get('gc.routed_to')
     fi
 
     if [ "$routed_to" = "-" ]; then
-      echo "note: $lane_id has no gc.routed_to metadata; cannot safely re-dispatch (continuing)"
-      still_pending+=("$lane_id")
-      continue
+      gc mail send "$CV_LENS_ESCALATE_TARGET" \
+        -s "con-voyage review loop: giving up re-dispatching ${lane_id}" \
+        -m "Review lane ${lane_id} has no gc.routed_to metadata; cannot safely re-dispatch. Stopping automatic re-dispatch here; the periodic con-voyage-review-watchdog order keeps watching it." \
+        2>&1 || echo "note: escalation mail failed for $lane_id (continuing)"
+      continue  # stop tracking — cannot safely re-dispatch without gc.routed_to
     fi
 
     live_session="$(gc session list --json 2>/dev/null | python3 -c "
