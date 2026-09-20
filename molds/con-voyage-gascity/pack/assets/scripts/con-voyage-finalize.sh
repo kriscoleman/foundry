@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # con-voyage-finalize.sh — work-bead finalize monitor (fk-hsca, the teardown
-# side of fk-p7j9's work-bead lifecycle).
+# side of fk-p7j9's work-bead lifecycle) AND repair-bead finalize sweep
+# (fk-f1vp FIX-B — see "REPAIR-STATE SWEEP" below).
 #
 # ############################################################################
 # # HARD INVARIANT — AUTHOR SCOPING                                          #
@@ -51,6 +52,20 @@
 # This monitor NEVER merges, force-pushes, comments on a PR, or kills a
 # session. It only closes beads/convoys the operator's own con-voyage created,
 # reflects phase, and mails the implementor a release note.
+#
+# REPAIR-STATE SWEEP (fk-f1vp FIX-B): the loop above only ever reads
+# ".finalize" records — con-voyage-pr-watch.sh/con-voyage-repair-watchdog.sh
+# separately track CI-repair beads in ".state" records (inflight_rework=...)
+# under the SAME CV_STATE_DIR, which this monitor never enumerated. So a
+# monitored PR's repair bead(s) never closed on merge/close — the exact orphan
+# class as kots#6067's 15 beads (cleaned by hand) and fk-eiw/#29, fk-wgl/#27.
+# A second pass below globs those SAME ".state" records and, per record whose
+# PR has reached a terminal state, closes the tracked repair bead
+# ("superseded: PR #N merged" | "superseded: PR #N closed"), sweeps any
+# sibling ".state" record for the identical repo+PR (never leave a
+# differently-keyed record's own bead behind), and removes the record(s). A
+# still-OPEN PR is untouched here — con-voyage-repair-watchdog.sh's own
+# dead/stalled/escalate logic owns that case exclusively, so as not to race it.
 #
 # Environment / configuration (all optional with sane defaults):
 #
@@ -292,6 +307,107 @@ for finalize_file in "${CV_STATE_DIR}"/*.finalize; do
   #    before here just re-runs the (idempotent) close next cycle.
   rm -f "$finalize_file"
   echo "con-voyage-finalize: done ${label} — finalize record removed"
+done
+
+# ---------------------------------------------------------------------------
+# Repair-state sweep (fk-f1vp FIX-B) — see the REPAIR-STATE SWEEP header
+# comment above. Iterates the SAME per-PR ".state" records con-voyage-pr-
+# watch.sh/con-voyage-repair-watchdog.sh read and write. Glob-safe against an
+# empty/missing directory, same idiom as every loop in this pack.
+# ---------------------------------------------------------------------------
+for state_file in "${CV_STATE_DIR}"/*.state; do
+  [ -f "$state_file" ] || continue
+
+  dedup_key="${state_file##*/}"
+  dedup_key="${dedup_key%.state}"
+
+  state_read "$dedup_key"
+  # Capture before the sibling-sweep loop below re-runs state_read and
+  # clobbers these same ST_* globals.
+  # ST_REPO_FULL/ST_PR_NUMBER are state_read's own globals (con-voyage-lib.sh),
+  # not a typo for finalize_read's FS_REPO_FULL/FS_PR_NUMBER.
+  # shellcheck disable=SC2153
+  primary_repo_full="$ST_REPO_FULL"
+  # shellcheck disable=SC2153
+  primary_pr_number="$ST_PR_NUMBER"
+  primary_pr_author="$ST_PR_AUTHOR"
+  primary_inflight="$ST_INFLIGHT"
+
+  label="${dedup_key}"
+  if [ -n "${primary_repo_full// /}" ] && [ -n "${primary_pr_number// /}" ]; then
+    label="${primary_repo_full}#${primary_pr_number}"
+  fi
+
+  # A record missing the fields needed to poll a terminal state is not safe to
+  # act on — defer to the next cycle (e.g. still being populated, or a
+  # bead-less "clean" record with nothing to poll for).
+  if [ -z "${primary_repo_full// /}" ] || [ -z "${primary_pr_number// /}" ]; then
+    echo "con-voyage-finalize: SKIP ${dedup_key} — repair record missing repo_full/pr_number; deferring"
+    continue
+  fi
+
+  # HARD INVARIANT — AUTHOR SCOPING (defensive re-check; see header). Mirrors
+  # the ".finalize" loop's own gate above.
+  if [ -z "${primary_pr_author// /}" ] || [ "$primary_pr_author" != "$CV_PR_AUTHOR" ]; then
+    echo "con-voyage-finalize: SKIP ${dedup_key} — repair record author scoping (pr_author='${primary_pr_author}' != CV_PR_AUTHOR='${CV_PR_AUTHOR}')"
+    continue
+  fi
+
+  # Poll the PR's terminal state (ONE gh call). Fail safe on unknown.
+  IFS=$'\x1f' read -r pr_state _merged_at _closed_at <<< "$(pr_finalize_state "$primary_repo_full" "$primary_pr_number")"
+
+  if [ -z "${pr_state// /}" ]; then
+    echo "con-voyage-finalize: SKIP ${label} — repair record PR state unresolved (gh error?); retrying next cycle" >&2
+    continue
+  fi
+
+  case "$pr_state" in
+    OPEN)
+      # Acceptance: "PR still OPEN -> no-op." con-voyage-repair-watchdog.sh
+      # owns dead/stalled/escalate handling while the PR is open; racing it
+      # here would risk double-dispatch/double-close.
+      echo "con-voyage-finalize: OK ${label} — repair record, PR still OPEN (watchdog owns dead/stalled handling)"
+      continue
+      ;;
+    MERGED|CLOSED)
+      : # fall through to teardown
+      ;;
+    *)
+      echo "con-voyage-finalize: SKIP ${label} — repair record, unexpected PR state '${pr_state}'; retrying next cycle" >&2
+      continue
+      ;;
+  esac
+
+  # ---- Terminal: MERGED or CLOSED-without-merge -> close the repair bead ---
+  repair_reason="$(cv_repair_close_reason_for_pr "$pr_state" "$primary_pr_number")"
+  echo "con-voyage-finalize: FINALIZE ${label} — repair record, PR ${pr_state}; closing tracked repair bead ${primary_inflight:-<none>} (superseded: ${repair_reason})"
+  cv_bead_close "$primary_inflight" "superseded" "$repair_reason"
+
+  # Sweep sibling records: any OTHER ".state" file for the IDENTICAL repo+PR
+  # (e.g. a stale/differently-keyed record) must never leave its own tracked
+  # bead open or its own record lingering. Acceptance: "sibling orphan repair
+  # beads exist for the same merged PR -> swept closed too."
+  for sibling_file in "${CV_STATE_DIR}"/*.state; do
+    [ -f "$sibling_file" ] || continue
+    [ "$sibling_file" != "$state_file" ] || continue
+    sibling_key="${sibling_file##*/}"
+    sibling_key="${sibling_key%.state}"
+    state_read "$sibling_key"
+    [ "$ST_REPO_FULL" = "$primary_repo_full" ] && [ "$ST_PR_NUMBER" = "$primary_pr_number" ] || continue
+    # Defensive author re-check on the sibling too — same HARD INVARIANT
+    # posture as every other gate in this pack.
+    if [ -z "${ST_PR_AUTHOR// /}" ] || [ "$ST_PR_AUTHOR" != "$CV_PR_AUTHOR" ]; then
+      continue
+    fi
+    echo "con-voyage-finalize: FINALIZE ${label} — sweeping sibling repair record ${sibling_key} (bead ${ST_INFLIGHT:-<none>})"
+    cv_bead_close "$ST_INFLIGHT" "superseded" "$repair_reason"
+    rm -f "$sibling_file"
+  done
+
+  # Remove the primary record LAST — a crash before here just re-runs the
+  # (idempotent) close next cycle, same posture as the ".finalize" loop above.
+  rm -f "$state_file"
+  echo "con-voyage-finalize: done ${label} — repair .state record removed"
 done
 
 echo "con-voyage-finalize: done"
