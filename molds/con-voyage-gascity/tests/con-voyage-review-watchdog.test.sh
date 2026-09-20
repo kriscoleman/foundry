@@ -585,6 +585,20 @@ else
   fail "expected [vars.cv_lens_escalate_target] default = \"human\""
 fi
 
+start_case "16c: review-loop.md integer-coerces CV_LENS_CLAIM_SECONDS/CV_LENS_MAX_REDISPATCH (FIX-F security LOW follow-up)"
+if grep -A3 'case "\$CV_LENS_CLAIM_SECONDS" in' "$REVIEW_LOOP_MD" | grep -q '\*\[!0-9\]\*' \
+   && grep -A3 'case "\$CV_LENS_CLAIM_SECONDS" in' "$REVIEW_LOOP_MD" | grep -q 'CV_LENS_CLAIM_SECONDS="300"'; then
+  pass "a non-numeric CV_LENS_CLAIM_SECONDS falls back to the documented default (300)"
+else
+  fail "expected a case \"\$CV_LENS_CLAIM_SECONDS\" in *[!0-9]*|'') CV_LENS_CLAIM_SECONDS=\"300\" ;; esac guard, mirroring con-voyage-review-watchdog.sh:95-97"
+fi
+if grep -A3 'case "\$CV_LENS_MAX_REDISPATCH" in' "$REVIEW_LOOP_MD" | grep -q '\*\[!0-9\]\*' \
+   && grep -A3 'case "\$CV_LENS_MAX_REDISPATCH" in' "$REVIEW_LOOP_MD" | grep -q 'CV_LENS_MAX_REDISPATCH="3"'; then
+  pass "a non-numeric CV_LENS_MAX_REDISPATCH falls back to the documented default (3)"
+else
+  fail "expected a case \"\$CV_LENS_MAX_REDISPATCH\" in *[!0-9]*|'') CV_LENS_MAX_REDISPATCH=\"3\" ;; esac guard, mirroring con-voyage-review-watchdog.sh:98-100"
+fi
+
 # ===========================================================================
 # Summary
 # ===========================================================================
