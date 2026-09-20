@@ -41,7 +41,44 @@ description_file = "../assets/workflows/con-voyage/{target}.setup-con-voyage-rev
 
 # ---------------------------------------------------------------------------
 # Review loop — children fan out and synthesize, loop until approved
+#
+# Review-lane liveness (fk-loo1 FIX-F): review lenses are pool-managed and
+# only ever wake on a nudge. On a slow-startup (large) repo, a pool churn
+# cycle can drain a still-starting lens roster before it claims its lane
+# bead, leaving that lane open+unassigned forever with nothing to re-drive
+# it. The three vars below tune the in-loop claim-verification/re-dispatch
+# block documented in the review-loop's own description file; the
+# independent con-voyage-review-watchdog order (con-voyage-review-watchdog.
+# toml) is the periodic defense-in-depth backstop for the same problem.
 # ---------------------------------------------------------------------------
+
+[vars.cv_lens_claim_seconds]
+description = """
+Seconds a review-lane bead may sit open+unassigned before the review loop
+re-arms delivery: touch the bead (bump updated_at, re-firing core
+nudge-on-route) and nudge a live pool session, or re-route immediately if the
+routed lens pool has no live session at all. Default 300s (5 minutes) covers
+the ~2-minute worst-case lens wake time observed on a large-repo cold start
+(fk-loo1 dogfooding) while staying comfortably under
+con-voyage-review-watchdog's own 10-minute stall threshold, so the faster
+in-loop check is normally the one that recovers a stalled lane.
+"""
+default = "300"
+
+[vars.cv_lens_max_redispatch]
+description = """
+Bounded re-dispatch attempts per stalled review lane before the review loop
+escalates to cv_lens_escalate_target via mail and stops re-dispatching that
+lane. Mirrors CV_MAX_ATTEMPTS in con-voyage-repair-watchdog.toml.
+"""
+default = "3"
+
+[vars.cv_lens_escalate_target]
+description = """
+Mail recipient when a review lane exhausts cv_lens_max_redispatch. Defaults
+to the reserved `human` alias.
+"""
+default = "human"
 
 [[template]]
 id = "{target}.con-voyage-review-loop"

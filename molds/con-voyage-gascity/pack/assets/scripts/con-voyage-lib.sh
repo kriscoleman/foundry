@@ -1,8 +1,9 @@
 # shellcheck shell=bash
 # con-voyage-lib.sh — shared per-PR state/dispatch helpers for
-# con-voyage-pr-watch.sh (Fix 1) and con-voyage-repair-watchdog.sh (Fix 2).
+# con-voyage-pr-watch.sh (Fix 1), con-voyage-repair-watchdog.sh (Fix 2), and
+# con-voyage-review-watchdog.sh (fk-loo1 FIX-F, review-lane liveness).
 #
-# Both scripts read and write the SAME per-PR state record format under
+# The first two scripts read and write the SAME per-PR state record format under
 # CV_STATE_DIR (see the field-by-field doc comment on state_read below) and
 # share the same author-scoping/session-liveness primitives. This file is
 # sourced, not executed — it defines functions only and has no shebang-level
@@ -236,6 +237,71 @@ for s in sessions:
         sys.exit(0)
 sys.exit(1)
 " "$ident"
+}
+
+# session_id_for_ident IDENT — print the canonical session `id` of a live
+# session (state != closed) whose id/alias/name/session_name matches IDENT.
+# Empty output if none found. Shares implementor_alive's identity-matching
+# rule but resolves to the `id` field specifically, since `gc session nudge`
+# documents accepting only "a session ID or session alias" and a recorded
+# identity (e.g. a bead's `assignee`) is often in the longer session_name
+# form instead. Used by con-voyage-review-watchdog.sh (fk-loo1 FIX-F) to turn
+# a claimed review-lane bead's assignee into a nudge-able session id.
+session_id_for_ident() {
+  local ident="$1"
+  [ -n "${ident// /}" ] || return 0
+  local json
+  json=$("$GC" --city "$GC_CITY" session list --json 2>/dev/null) || json=""
+  [ -n "$json" ] || return 0
+  printf '%s' "$json" | python3 -c "
+import sys, json
+ident = sys.argv[1]
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+sessions = data.get('sessions') if isinstance(data, dict) else data
+if not isinstance(sessions, list):
+    raise SystemExit(0)
+for s in sessions:
+    if not isinstance(s, dict):
+        continue
+    idents = {s.get('id'), s.get('alias'), s.get('name'), s.get('session_name')}
+    if ident in idents and (s.get('state') or '') != 'closed':
+        print(s.get('id') or '')
+        raise SystemExit(0)
+" "$ident"
+}
+
+# first_alive_session_id_for_route ROUTE — print the `id` of the first live
+# session (state != closed) whose `template` equals ROUTE (the "<rig>/<role>"
+# form recorded as a lane bead's gc.routed_to metadata). Empty output means
+# the routed pool has no live session at all — the unambiguous "pool is
+# drained" signal con-voyage-review-watchdog.sh uses to decide re-route
+# (gc sling) vs. a direct nudge to an already-alive pool member.
+first_alive_session_id_for_route() {
+  local route="$1"
+  [ -n "${route// /}" ] || return 0
+  local json
+  json=$("$GC" --city "$GC_CITY" session list --json 2>/dev/null) || json=""
+  [ -n "$json" ] || return 0
+  printf '%s' "$json" | python3 -c "
+import sys, json
+route = sys.argv[1]
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+sessions = data.get('sessions') if isinstance(data, dict) else data
+if not isinstance(sessions, list):
+    raise SystemExit(0)
+for s in sessions:
+    if not isinstance(s, dict):
+        continue
+    if (s.get('template') or '') == route and (s.get('state') or '') != 'closed':
+        print(s.get('id') or '')
+        raise SystemExit(0)
+" "$route"
 }
 
 # close_if_open BEAD_ID REASON [PR_LABEL] [KNOWN_STATUS] — closes BEAD_ID if

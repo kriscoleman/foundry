@@ -285,6 +285,70 @@ same self-heal idea as an *inline* staleness check inside
 state schema. This order is a ground-up rebuild against the current schema, as
 a standalone periodic order — the inline version was not reused.
 
+### Review-lane liveness guard (fk-loo1 FIX-F: PRIMARY in-loop check + `con-voyage-review-watchdog` order)
+
+Review lenses are pool-managed and their only task delivery is a core
+nudge-on-route mechanism. On a slow-startup (large) repo a lens can take
+minutes to wake; if the pool restarts its still-starting run-operator in that
+window, the review-lane bead it would have claimed is left open+unassigned
+forever — the review loop can never fan in and the implementor waits forever
+(the dogfooding root cause behind this fix; foundry-kc itself dodges it only
+by waking its own roster fast enough to claim on the first nudge). This is
+fixed in two complementary layers, mirroring the CI-repair watchdog's own
+primary-check-plus-periodic-backstop shape:
+
+- **PRIMARY — in-loop claim verification**, added directly to
+  `{target}.con-voyage-review-loop.md`. After each fan-out (the initial one
+  and every re-run after applying findings), it polls the cycle's active
+  lanes — discovered from the claimed review-loop step bead's own
+  `tracks`-dependents, filtered to the `"Con-voyage: "` lane-title prefix so
+  sibling scope members (`Apply con-voyage review findings`, `Synthesize
+  con-voyage review`) are never mistaken for lanes. A lane still
+  open+unassigned past `cv_lens_claim_seconds` (default 300s) gets touched
+  (bumping `updated_at`, which re-fires nudge-on-route) and its live pool
+  session nudged directly; if the routed pool has **no** live session at all,
+  it is immediately re-routed via `gc sling <routed_to> <lane> --nudge`
+  instead (no staleness gate — a confirmed-empty pool is unambiguous on its
+  own). Bounded to `cv_lens_max_redispatch` (default 3) attempts per lane,
+  then escalates via `gc mail send cv_lens_escalate_target` and stops
+  re-dispatching that one lane, without blocking the rest of the cycle.
+
+- **DEFENSE-IN-DEPTH — `con-voyage-review-watchdog` order** (independent,
+  5-minute cooldown). Catches the case the inline check cannot: the
+  review-loop's own run-operator session is the thing that died, so nobody is
+  even running the inline poll anymore. It discovers every open/in_progress
+  review-lane bead city-wide with a single `bd list --has-metadata-key
+  gc.ralph_step_id` query (no external state file — unlike
+  `con-voyage-repair-watchdog`, a review-lane bead has no gap in its bd-native
+  lifecycle to paper over, so attempt/escalation bookkeeping lives directly on
+  the lane bead's own `gc.review_watchdog.*` metadata) and applies the same
+  remedy shape: an open+unassigned lane with a live routed pool gets nudged
+  directly once stalled past `CV_LENS_STALL_SECONDS` (default 600s), a lane
+  whose pool has no live session at all is re-routed immediately, and a
+  claimed-but-stalled lane is re-notified via its own assignee session (never
+  re-routed out from under it — the inline check owns re-dispatch decisions
+  with fuller context). `CV_LENS_MAX_ATTEMPTS` (default 3) and
+  `CV_LENS_ESCALATE_TARGET` (default `human`) mirror the inline vars under a
+  deliberately distinct `CV_LENS_` prefix so the two watchdogs' tunables never
+  collide with `con-voyage-repair-watchdog`'s own `CV_STALL_SECONDS`/
+  `CV_MAX_ATTEMPTS`/`CV_ESCALATE_TARGET`. No GitHub calls are made anywhere in
+  this script — review lanes are internal gc beads, not PRs, so there is no
+  author-scoping concern.
+
+On a fast repo where lenses claim on the first nudge (foundry-kc itself),
+both layers see every lane claimed well within their grace windows and take
+no action — no extra churn.
+
+**Testing:** `bash molds/con-voyage-gascity/tests/con-voyage-review-watchdog.test.sh`
+covers the watchdog order end to end (never-claimed vs. claimed-but-stalled
+lanes, pool-drained re-route vs. live-pool nudge, bounded escalation across
+multiple cycles, malformed-metadata fail-safes) and content-checks the
+PRIMARY in-loop block's required shape in `{target}.con-voyage-review-loop.md`
+and the `cv_lens_*` var defaults in `con-voyage.formula.toml`. The
+`session_id_for_ident`/`first_alive_session_id_for_route` helpers it shares
+with `con-voyage-lib.sh` are unit-tested directly in
+`tests/con-voyage-lib.test.sh`.
+
 ### `con-voyage-finalize` order (work-bead lifecycle: claim → close on land)
 
 Before this, con-voyage managed only *repair* beads — it issued **zero** `bd`
@@ -911,9 +975,13 @@ The formula loops until `implementation-review-approved.sh` exits 0 (up to 8
 attempts). Each iteration:
 
 1. All active lanes run in parallel and produce PASS/CHANGES REQUIRED verdicts.
+   Each fan-out is claim-verified — see [Review-lane liveness
+   guard](#review-lane-liveness-guard-fk-loo1-fix-f-primary-in-loop-check--con-voyage-review-watchdog-order)
+   — so a lens that never wakes gets re-dispatched instead of stalling the
+   loop forever.
 2. Any BLOCKING finding triggers a consolidate-all → apply-findings step that runs
    the implementor in the same session (`continuation_group = "con-voyage-review-fixes"`).
-3. All active lanes re-run against the new diff.
+3. All active lanes re-run against the new diff (claim-verified again).
 4. LOW-only findings: the mayor surfaces them to the human (accept vs send back).
 5. Zero blocking findings: the loop exits; the PR is opened (or updated).
 

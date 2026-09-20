@@ -1,0 +1,40 @@
+# con-voyage-review-watchdog — review-lane liveness watchdog (fk-loo1 FIX-F)
+#
+# DOGFOODING ROOT CAUSE: review lens sessions are pool-managed and their only
+# task delivery is the gascity-core nudge-on-route claim-nudge. On a
+# slow-startup (large) repo a lens can take ~2 minutes to wake; if the pool
+# restarts its still-starting run-operator in that window, the review-lane
+# bead it would have claimed is left open+unassigned forever — the review
+# loop can never fan in and the implementor waits forever. The PRIMARY fix is
+# an in-loop claim-verification/re-dispatch block added directly to
+# {target}.con-voyage-review-loop.md, which runs INSIDE the review-loop's own
+# run-operator session. This order is the independent, periodic safety net:
+# it catches a stalled lane even when that run-operator itself is the thing
+# that died, so nobody is left running the inline check at all.
+#
+# Unlike con-voyage-repair-watchdog.sh, this watchdog needs no external state
+# file: a review-lane bead is a durable, queryable bd bead for its whole
+# lifecycle, so attempt/escalation bookkeeping lives directly on the lane
+# bead's own metadata (gc.review_watchdog.*). Discovery is a single `bd list`
+# metadata-field query — see assets/scripts/con-voyage-review-watchdog.sh for
+# the full design rationale and algorithm.
+#
+# No GitHub calls are made anywhere in this script; it is not part of the
+# CI-repair/PR-monitoring subsystem and carries no author-scoping concern —
+# review lanes are internal gc beads, not GitHub PRs.
+
+[order]
+description = "Self-heal stalled/never-claimed con-voyage review lanes: nudge a live pool session, re-route to a drained pool, or escalate after repeated failures"
+trigger = "cooldown"
+interval = "5m"
+exec = "$PACK_DIR/assets/scripts/con-voyage-review-watchdog.sh"
+
+# CV_LENS_STALL_SECONDS/CV_LENS_MAX_ATTEMPTS/CV_LENS_ESCALATE_TARGET are the
+# tunable policy knobs (check ~5m via the order interval above; stalled =
+# no progress ~10m; escalate after 3 attempts) — same shape as
+# con-voyage-repair-watchdog.toml's own [order.env], deliberately under a
+# distinct CV_LENS_ prefix so the two watchdogs' tunables never collide.
+[order.env]
+CV_LENS_STALL_SECONDS = "600"
+CV_LENS_MAX_ATTEMPTS = "3"
+CV_LENS_ESCALATE_TARGET = "human"
