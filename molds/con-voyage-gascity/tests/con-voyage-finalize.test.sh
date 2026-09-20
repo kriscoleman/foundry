@@ -686,6 +686,31 @@ assert_log_count "$GC_LOG" 'bd close' 0 "no bd close attempted — there is no t
 assert_file_absent "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-94.state" ".state record still removed"
 
 # ===========================================================================
+# CASE 25 — Sibling author-scope re-check: the sibling-sweep loop's OWN
+#   HARD-INVARIANT author gate (finalize.sh:399-401) must fire even when the
+#   sibling's repo_full+pr_number match the primary. CASE 20 only proves the
+#   sweep mechanism when both records share the same author; this proves the
+#   defensive re-check on the sibling is not dead code — a mismatched-author
+#   sibling must be left untouched while the matching primary still closes.
+# ===========================================================================
+start_case "25: sibling with mismatched pr_author is not swept, record kept"
+setup_case_env "25"
+write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-95" \
+  "gc__impl-rc-8" "rw-bead95" "checks_failed" "kriscoleman" "vandoor/gc.implementation-worker" \
+  "kriscoleman/foundry" "95" "fix/f" "0" "0"
+write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-95-forged" \
+  "" "rw-bead95-forged" "checks_failed" "someone-else" "vandoor/gc.implementation-worker" \
+  "kriscoleman/foundry" "95" "fix/f" "0" "0"
+run_script "${DEFAULT_ENV[@]}" \
+  STUB_PR_MAP="kriscoleman/foundry|95|MERGED|2026-09-19T16:00:00Z|2026-09-19T16:00:00Z|||" \
+  STUB_BDSHOW_MAP=$'rw-bead95|open\nrw-bead95-forged|open'
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd close rw-bead95 .*superseded: PR #95 merged' 1 "primary record's tracked bead still closes"
+assert_log_count "$GC_LOG" 'bd close rw-bead95-forged' 0 "mismatched-author sibling bead is never closed"
+assert_file_absent "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-95.state" "primary .state record removed"
+assert_file_present "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-95-forged.state" "mismatched-author sibling .state record is left untouched (fail closed)"
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 echo
