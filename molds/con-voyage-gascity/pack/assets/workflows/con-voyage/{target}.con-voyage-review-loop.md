@@ -57,6 +57,18 @@ for dep in (d.get('dependents') or []):
 
 CV_LENS_CLAIM_SECONDS="{{cv_lens_claim_seconds}}"
 CV_LENS_MAX_REDISPATCH="{{cv_lens_max_redispatch}}"
+# A malformed override must never silently break the claim-grace/re-dispatch-cap
+# checks below (a non-numeric CV_LENS_MAX_REDISPATCH would make `-ge` exit 2 —
+# treated as false — so the escalate-and-stop branch would never fire and a
+# stuck lane would re-dispatch forever). Coerce both to their documented
+# defaults when not a valid non-negative base-10 integer, same pattern as
+# CV_STALL_SECONDS/CV_MAX_ATTEMPTS in con-voyage-repair-watchdog.sh.
+case "$CV_LENS_CLAIM_SECONDS" in
+  *[!0-9]*|'') CV_LENS_CLAIM_SECONDS="300" ;;
+esac
+case "$CV_LENS_MAX_REDISPATCH" in
+  *[!0-9]*|'') CV_LENS_MAX_REDISPATCH="3" ;;
+esac
 CV_LENS_ESCALATE_TARGET="{{cv_lens_escalate_target}}"
 declare -A CV_LENS_ATTEMPTS
 pending=("${LANE_BEAD_IDS[@]}")
