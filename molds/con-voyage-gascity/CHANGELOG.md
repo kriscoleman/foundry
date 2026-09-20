@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.4](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.7.3...con-voyage-gascity-v0.7.4) (2026-09-20)
+
+
+### Bug Fixes
+
+* **con-voyage:** integer-coerce review-loop lens knobs (fk-jpxo) ([9f76ce4](https://github.com/kriscoleman/foundry/commit/9f76ce4685a60c4199b34644dbac309f7ccbff3a))
+* **con-voyage:** silence shellcheck SC2016 on literal $VAR grep patterns ([2033b7e](https://github.com/kriscoleman/foundry/commit/2033b7e1bcf6a65b6c6c85a6ecb1e55bf729761c))
+
 ## [0.7.3](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.7.2...con-voyage-gascity-v0.7.3) (2026-09-20)
 
 
