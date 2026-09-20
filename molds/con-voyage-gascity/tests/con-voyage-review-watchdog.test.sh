@@ -586,12 +586,14 @@ else
 fi
 
 start_case "16c: review-loop.md integer-coerces CV_LENS_CLAIM_SECONDS/CV_LENS_MAX_REDISPATCH (FIX-F security LOW follow-up)"
+# shellcheck disable=SC2016 # intentionally matching the literal $VAR text in the markdown source, not expanding it
 if grep -A3 'case "\$CV_LENS_CLAIM_SECONDS" in' "$REVIEW_LOOP_MD" | grep -q '\*\[!0-9\]\*' \
    && grep -A3 'case "\$CV_LENS_CLAIM_SECONDS" in' "$REVIEW_LOOP_MD" | grep -q 'CV_LENS_CLAIM_SECONDS="300"'; then
   pass "a non-numeric CV_LENS_CLAIM_SECONDS falls back to the documented default (300)"
 else
   fail "expected a case \"\$CV_LENS_CLAIM_SECONDS\" in *[!0-9]*|'') CV_LENS_CLAIM_SECONDS=\"300\" ;; esac guard, mirroring con-voyage-review-watchdog.sh:95-97"
 fi
+# shellcheck disable=SC2016 # intentionally matching the literal $VAR text in the markdown source, not expanding it
 if grep -A3 'case "\$CV_LENS_MAX_REDISPATCH" in' "$REVIEW_LOOP_MD" | grep -q '\*\[!0-9\]\*' \
    && grep -A3 'case "\$CV_LENS_MAX_REDISPATCH" in' "$REVIEW_LOOP_MD" | grep -q 'CV_LENS_MAX_REDISPATCH="3"'; then
   pass "a non-numeric CV_LENS_MAX_REDISPATCH falls back to the documented default (3)"
