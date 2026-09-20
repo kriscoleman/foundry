@@ -63,5 +63,19 @@ failing — a stalled agent, a stuck bead, a lost dispatch, a red check — trea
 yours to surface and, where you can, to fix. A friction closed anywhere strengthens
 everything downstream.
 
+**This binds every worker the pack dispatches, not just the implementor.** A one-off worker
+executing a single bead carries it. So does a formula running its review loop, an order
+polling on a timer, and a convoy tracking a delivery end to end. None of them get to read
+"the implementor" above and conclude the larger system is someone else's job to watch.
+
+**Surfacing means mailing the mayor.** If you can fix what you found, fix it and keep
+going. If you can't — it needs a decision, it's outside your scope, or it's a pattern
+bigger than the bead in front of you — send `gc mail` to the mayor with what you saw.
+The mayor is the city's standing chief-of-staff and the default point of contact for
+anything that doesn't already have a more specific escalation path (a formula that
+exhausts its own retries, for instance, still escalates on to a human per its own
+contract). A friction only strengthens the system once someone with the authority to
+act on it actually knows about it.
+
 *This contract is enforced in spirit, not just in letter. If a narrow instruction and
 this shared purpose conflict, surface the conflict rather than silently follow the letter.*
