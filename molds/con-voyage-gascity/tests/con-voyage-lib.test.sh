@@ -57,6 +57,10 @@ if [ "${args[$i]:-}" = "bd" ] && [ "${args[$((i+1))]:-}" = "show" ]; then
   printf '%s' "${!var:-}"
   exit 0
 fi
+if [ "${args[$i]:-}" = "session" ] && [ "${args[$((i+1))]:-}" = "list" ]; then
+  printf '%s' "${STUB_SESSION_LIST_JSON:-{\"sessions\":[]\}}"
+  exit 0
+fi
 exit 0
 GC_STUB
 chmod +x "${STUBDIR}/gc"
@@ -232,6 +236,46 @@ start_case "finalize_read: missing record leaves fields empty (no stale bleed)"
 finalize_read "does-not-exist"
 assert_eq "" "$FS_WORK_BEAD" "missing record => empty work_bead"
 assert_eq "" "$FS_LAST_PHASE" "missing record => empty last_phase"
+
+# ---------------------------------------------------------------------------
+# session_id_for_ident / first_alive_session_id_for_route (fk-loo1 FIX-F —
+# review-lane liveness guard helpers, shared with con-voyage-review-watchdog.sh)
+# ---------------------------------------------------------------------------
+start_case "session_id_for_ident: matches by session_name form (bead assignee shape) -> canonical id"
+export STUB_SESSION_LIST_JSON='{"sessions":[{"id":"rc-1","alias":"foundry-kc/gc.gap-analyst-1","name":"gap-analyst-1","session_name":"gc__gap-analyst-rc-1","template":"foundry-kc/gc.gap-analyst","state":"active"}]}'
+assert_eq "rc-1" "$(session_id_for_ident "gc__gap-analyst-rc-1")" "resolves a session_name-form identity to the canonical id"
+
+start_case "session_id_for_ident: matches by alias form too"
+assert_eq "rc-1" "$(session_id_for_ident "foundry-kc/gc.gap-analyst-1")" "resolves an alias-form identity to the canonical id"
+
+start_case "session_id_for_ident: closed session is not alive"
+export STUB_SESSION_LIST_JSON='{"sessions":[{"id":"rc-2","session_name":"gc__gap-analyst-rc-2","template":"foundry-kc/gc.gap-analyst","state":"closed"}]}'
+assert_eq "" "$(session_id_for_ident "gc__gap-analyst-rc-2")" "a closed session never resolves"
+
+start_case "session_id_for_ident: no match -> empty"
+export STUB_SESSION_LIST_JSON='{"sessions":[{"id":"rc-1","session_name":"gc__gap-analyst-rc-1","state":"active"}]}'
+assert_eq "" "$(session_id_for_ident "gc__someone-else")" "an unmatched identity resolves empty"
+
+start_case "session_id_for_ident: empty ident -> empty, no gc call"
+: > "$GC_LOG"
+assert_eq "" "$(session_id_for_ident "")" "empty ident short-circuits"
+assert_log_count 'session list' 0 "empty ident never calls gc session list"
+
+start_case "first_alive_session_id_for_route: one live session for the route"
+export STUB_SESSION_LIST_JSON='{"sessions":[{"id":"rc-1","template":"foundry-kc/gc.gap-analyst","state":"active"}]}'
+assert_eq "rc-1" "$(first_alive_session_id_for_route "foundry-kc/gc.gap-analyst")" "finds the live session matching the route template"
+
+start_case "first_alive_session_id_for_route: pool fully drained (no sessions at all) -> empty"
+export STUB_SESSION_LIST_JSON='{"sessions":[]}'
+assert_eq "" "$(first_alive_session_id_for_route "foundry-kc/gc.gap-analyst")" "an empty session list resolves to no live route session"
+
+start_case "first_alive_session_id_for_route: only a closed session for the route -> empty"
+export STUB_SESSION_LIST_JSON='{"sessions":[{"id":"rc-1","template":"foundry-kc/gc.gap-analyst","state":"closed"}]}'
+assert_eq "" "$(first_alive_session_id_for_route "foundry-kc/gc.gap-analyst")" "a closed-only pool is treated as drained"
+
+start_case "first_alive_session_id_for_route: a session for a DIFFERENT route never matches"
+export STUB_SESSION_LIST_JSON='{"sessions":[{"id":"rc-1","template":"foundry-kc/con-voyage.cv-security-reviewer","state":"active"}]}'
+assert_eq "" "$(first_alive_session_id_for_route "foundry-kc/gc.gap-analyst")" "a live session on an unrelated route template does not match"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
