@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.3](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.7.2...con-voyage-gascity-v0.7.3) (2026-09-20)
+
+
+### Bug Fixes
+
+* **con-voyage:** escalate immediately when a review lane has no gc.routed_to (fk-loo1) ([bf0524e](https://github.com/kriscoleman/foundry/commit/bf0524ef02fecb872ef901cf4a839769cf7abaa0))
+* **con-voyage:** review-lane liveness guard — re-dispatch stalled lenses (fk-loo1) ([43bf421](https://github.com/kriscoleman/foundry/commit/43bf421e9562d9d898dde3967cff0654bbd75a4d))
+
 ## [0.7.2](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.7.1...con-voyage-gascity-v0.7.2) (2026-09-20)
 
 
