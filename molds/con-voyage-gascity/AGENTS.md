@@ -77,5 +77,16 @@ exhausts its own retries, for instance, still escalates on to a human per its ow
 contract). A friction only strengthens the system once someone with the authority to
 act on it actually knows about it.
 
+**This file does not reach a dispatched worker on its own.** It lives at the mold
+root, outside `pack/`, so `ailloy cast` never ships it into a target rig — a worker
+doing real work in some other city never has it on disk. The bead a worker claims is
+what actually reaches it, so the pack carries this duty there instead: every
+formula-dispatched task's `description_file` ends with the same reminder
+(`CV_COMMUNAL_DUTY_REMINDER` in `con-voyage-lib.sh`), and the one place the pack
+free-texts a bead body outside the formula graph — routing human PR feedback to the
+implementor — builds it from that same constant. `tests/agents-contract.test.sh`
+checks both surfaces against the pack's own formula definitions, so a new workflow
+node added without the reminder fails the suite instead of shipping a blind spot.
+
 *This contract is enforced in spirit, not just in letter. If a narrow instruction and
 this shared purpose conflict, surface the conflict rather than silently follow the letter.*
