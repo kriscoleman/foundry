@@ -125,3 +125,7 @@ Close only after the push, PR creation, or explicit no-op is recorded on both
 the workflow root and this publish step.
 
 Do not merge the branch. Do not invoke provider-native subagents.
+
+## Communal duty (con-voyage-gascity pack)
+
+You are dispatched by the con-voyage-gascity pack — this duty binds every worker it sends out, not just the implementor. If you hit something broken outside the scope of this bead (a stalled agent, a stuck bead, a lost dispatch, a red check), surface it: fix it if you can, otherwise mail the mayor (`gc mail`) with what you saw.

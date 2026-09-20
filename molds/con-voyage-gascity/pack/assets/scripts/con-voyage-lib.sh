@@ -78,6 +78,44 @@
 # shellcheck disable=SC2034  # ST_* globals are consumed by the sourcing
 # scripts (con-voyage-pr-watch.sh, con-voyage-repair-watchdog.sh), invisible
 # to shellcheck when this file is checked standalone.
+
+# ---------------------------------------------------------------------------
+# Communal-duty reminder (PR #45 human review, fk-doh9): the mold's AGENTS.md
+# states that every worker the pack dispatches — one-off, formula, order, or
+# convoy — shares the duty to surface system-level trouble by mailing the
+# mayor, not just the TDD implementor. AGENTS.md itself never reaches a
+# dispatched worker (it lives at the mold root, outside pack/, so `ailloy
+# cast` never ships it into a target rig) — the bead a worker claims is what
+# actually reaches it. Every formula-dispatched task's text is a literal copy
+# of this reminder appended to its description_file template (they are
+# static assets, not shell, so they cannot source this constant directly —
+# tests/agents-contract.test.sh diffs them against it instead, driven by the
+# formulas' own description_file lists). cv_build_pr_feedback_body below is
+# the one surface that composes a bead body in shell, so it is the one
+# surface that references this constant instead of duplicating it.
+CV_COMMUNAL_DUTY_REMINDER='You are dispatched by the con-voyage-gascity pack — this duty binds every worker it sends out, not just the implementor. If you hit something broken outside the scope of this bead (a stalled agent, a stuck bead, a lost dispatch, a red check), surface it: fix it if you can, otherwise mail the mayor (`gc mail`) with what you saw.'
+
+# cv_build_pr_feedback_body PR_URL HEAD_REF FEEDBACK_SUMMARY IDEMPOTENCY_KEY
+# Composes the routed bead body for a human-PR-comment routing event
+# (con-voyage-pr-watch.sh Part B). Extracted out of the scan loop so it is
+# directly unit-testable without re-running PR discovery.
+cv_build_pr_feedback_body() {
+  local pr_url="$1" head_ref="$2" feedback_summary="$3" idempotency_key="$4"
+  cat <<BODY
+New human review feedback on PR ${pr_url} (branch: ${head_ref}).
+
+Please read and respond to the following comments. Address any requested
+changes on the branch '${head_ref}' using TDD. Push the fix — do NOT merge.
+
+New feedback:
+${feedback_summary}
+
+${CV_COMMUNAL_DUTY_REMINDER}
+
+Routing from con-voyage-pr-watch (idempotency: ${idempotency_key})
+BODY
+}
+
 state_read() {
   local dedup_key="$1"
   local state_file="${CV_STATE_DIR}/${dedup_key}.state"

@@ -1174,15 +1174,8 @@ items = json.load(sys.stdin)
 print(','.join(sorted(x['id'] for x in items)))" 2>/dev/null || echo "unknown")
 
     route_title="Human PR feedback on ${full_repo}#${pr_number}: ${head_ref}"
-    route_body="New human review feedback on PR ${pr_url} (branch: ${head_ref}).
-
-Please read and respond to the following comments. Address any requested
-changes on the branch '${head_ref}' using TDD. Push the fix — do NOT merge.
-
-New feedback:
-${feedback_summary}
-
-Routing from con-voyage-pr-watch (idempotency: pr-comment-${full_repo//\//_}-${pr_number}-nodeids-${new_ids_for_key})"
+    route_body="$(cv_build_pr_feedback_body "$pr_url" "$head_ref" "$feedback_summary" \
+      "pr-comment-${full_repo//\//_}-${pr_number}-nodeids-${new_ids_for_key}")"
 
     # Route the feedback as a new task bead to the implementor. gc 1.4.1's
     # `gc sling` has NO --body flag; the create-bead-from-text forms are inline

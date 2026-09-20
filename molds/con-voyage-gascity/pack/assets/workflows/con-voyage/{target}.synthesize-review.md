@@ -27,3 +27,7 @@ it to the PR MUST do so via `cv-pr-comment.sh`, never a raw `gh pr comment` /
 `gh pr review`, so the machine-identity banner always leads the posted text.
 
 Do not invoke provider-native subagents. Synthesis happens in this Gas City fan-in lane.
+
+## Communal duty (con-voyage-gascity pack)
+
+You are dispatched by the con-voyage-gascity pack — this duty binds every worker it sends out, not just the implementor. If you hit something broken outside the scope of this bead (a stalled agent, a stuck bead, a lost dispatch, a red check), surface it: fix it if you can, otherwise mail the mayor (`gc mail`) with what you saw.
