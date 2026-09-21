@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.5](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.7.4...con-voyage-gascity-v0.7.5) (2026-09-21)
+
+
+### Bug Fixes
+
+* **con-voyage:** pr-watch dedup keys on PR-number; update repair bead on failure_kind flip instead of re-minting (fk-zyh5) ([461c2dd](https://github.com/kriscoleman/foundry/commit/461c2dd29034cd2970d0e29f042af87a1ab86883))
+
 ## [0.7.4](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.7.3...con-voyage-gascity-v0.7.4) (2026-09-20)
 
 
