@@ -96,6 +96,22 @@
 # surface that references this constant instead of duplicating it.
 CV_COMMUNAL_DUTY_REMINDER='You are dispatched by the con-voyage-gascity pack — this duty binds every worker it sends out, not just the implementor. If you hit something broken outside the scope of this bead (a stalled agent, a stuck bead, a lost dispatch, a red check), surface it: fix it if you can, otherwise mail the mayor (`gc mail`) with what you saw.'
 
+# ---------------------------------------------------------------------------
+# Review-lane worktree isolation reminder (fk-q659 LIVE finding): every
+# con-voyage review lane for a work item used to read the review context's
+# recorded source-anchor work_dir and run its own verification directly
+# inside that ONE shared directory. A lane doing mutate-run-revert
+# verification (temporarily edit a file, run a command, revert) races another
+# lane's concurrent build/test in the same directory, producing a false
+# BLOCKING or false-negative finding. cv-review-lane-worktree.sh gives each
+# lane its own throwaway linked git worktree instead. Like
+# CV_COMMUNAL_DUTY_REMINDER above, every review-lane description_file carries
+# a literal copy of this text (static assets, not shell, so they cannot
+# source the constant directly) — tests/review-lane-worktree-isolation.test.sh
+# diffs them against it, driven by the con-voyage-review-loop's own
+# `[[template.children]]` list in the formula, not a hand-maintained lane list.
+CV_REVIEW_LANE_WORKTREE_REMINDER='This review lane never runs a command that touches the implementation on disk directly inside the shared source-anchor work_dir recorded in the review context. Every active lane can read and execute against that same directory at the same time, so a local edit (including a temporary mutate-run-revert check) or a build/test invocation there can race a concurrent build or test run from another lane and produce a false BLOCKING or false-negative finding (fk-q659). Acquire your own private worktree copy first with `cv-review-lane-worktree.sh acquire`, and run every such command inside it instead — never inside the shared work_dir.'
+
 # cv_build_pr_feedback_body PR_URL HEAD_REF FEEDBACK_SUMMARY IDEMPOTENCY_KEY
 # Composes the routed bead body for a human-PR-comment routing event
 # (con-voyage-pr-watch.sh Part B). Extracted out of the scan loop so it is
