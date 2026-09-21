@@ -523,44 +523,61 @@ print(author + SEP + ("1" if skip_awaiting_human else "0"))
         st_implementor="$tracked_assignee"
       fi
 
-      # DE-DUPLICATION + RE-DETECTION (Task 4/5, fk-4o74 Fix 1): a repair is
-      # genuinely in-flight ONLY while (a) the just-classified failure_kind
-      # matches the state this PR was last handled for, AND (b) the tracked
-      # bead (if any) is still open. Status alone gates it — NOT assignee. A
-      # pool-slung bead sits with an EMPTY assignee for an unbounded time
-      # before a worker claims it (confirmed live: vandoor #10494 — see the
-      # design doc and Task 0 findings), so requiring a live assignee here is
-      # exactly the bug that made the monitor re-mint every cycle. Any state
-      # CHANGE (a different failure_kind, or dirty-again after clean) always
-      # supersedes and re-arms a fresh dispatch (req 4) — an unresolved,
-      # unchanged defect never re-dispatches while still in flight (req 3).
-      tracked_open=1
-      if [ -n "${st_inflight// /}" ] && { [ -z "$tracked_status" ] || [ "$tracked_status" = "closed" ]; }; then
-        tracked_open=0
+      # DE-DUPLICATION + RE-DETECTION (Task 4/5, fk-4o74 Fix 1; PR-NUMBER-ONLY
+      # keying, FIX-C fk-zyh5): a repair is genuinely in-flight while the
+      # tracked bead (if any) is still open — status alone gates it, NOT
+      # assignee and NOT failure_kind. A pool-slung bead sits with an EMPTY
+      # assignee for an unbounded time before a worker claims it (confirmed
+      # live: vandoor #10494 — see the design doc and Task 0 findings), so
+      # requiring a live assignee here is exactly the bug that made the
+      # monitor re-mint every cycle.
+      #
+      # A failure_kind CHANGE while the tracked bead is still open no longer
+      # supersedes+re-mints — that behavior implicitly keyed the in-flight
+      # check on (PR-number, failure_kind), and turned kots#6067's
+      # blocked<->checks_failed oscillation (a ~10min classifier cooldown)
+      # into one new orphaned bead per flip. The SAME bead is now updated in
+      # place (title + failure_kind metadata) so it reflects the current
+      # classification without spawning a second implementor for one PR.
+      # Mint fresh ONLY when no open repair bead is tracked for this PR.
+      tracked_open=0
+      if [ -n "${st_inflight// /}" ] && [ -n "$tracked_status" ] && [ "$tracked_status" != "closed" ]; then
+        tracked_open=1
       fi
 
-      if [ "$st_last_state" = "$a_failure_kind" ] && [ "$tracked_open" -eq 1 ]; then
-        echo "con-voyage-pr-watch: [PART A] SKIP ${a_full}#${a_num} @ ${a_sha} — repair genuinely in-flight (dedup: ${dedup_key}, last_handled_state=${st_last_state})"
-        # Persist the write-back (if any) even on a skip cycle, so a known
-        # implementor is not silently lost/re-derived every cycle. Nothing
-        # changed from THIS script's perspective, so the extended fields
-        # (pr_author/repair_route/repo_full/pr_number/branch) and the
-        # watchdog's own attempt_count/escalated bookkeeping are carried
-        # forward unchanged from the state_read above — never reset here.
-        state_write "$dedup_key" "$st_implementor" "$st_inflight" "$st_last_state" \
+      if [ "$tracked_open" -eq 1 ]; then
+        new_last_state="$st_last_state"
+        if [ "$st_last_state" = "$a_failure_kind" ]; then
+          echo "con-voyage-pr-watch: [PART A] SKIP ${a_full}#${a_num} @ ${a_sha} — repair genuinely in-flight (dedup: ${dedup_key}, last_handled_state=${st_last_state})"
+        elif "$GC" --city "$GC_CITY" bd update "$st_inflight" \
+          --title "$repair_title" \
+          --set-metadata "failure_kind=${a_failure_kind}" \
+          2>&1; then
+          echo "con-voyage-pr-watch: [PART A] UPDATE ${a_full}#${a_num} @ ${a_sha} — repair still in-flight on ${st_inflight} (dedup: ${dedup_key}); failure_kind ${st_last_state} -> ${a_failure_kind}"
+          new_last_state="$a_failure_kind"
+        else
+          echo "con-voyage-pr-watch: [PART A] WARNING: failed to update ${st_inflight} with the new failure_kind for ${a_full}#${a_num}; will retry next cycle" >&2
+        fi
+        # Persist the write-back (if any) even on a skip/update cycle, so a
+        # known implementor is not silently lost/re-derived every cycle. The
+        # tracked bead/implementor never change here — last_handled_state only
+        # advances once the update actually lands (a failed update is retried
+        # next cycle, mirroring the mint-failure discipline elsewhere in this
+        # loop). The extended fields (pr_author/repair_route/repo_full/
+        # pr_number/branch) and the watchdog's own attempt_count/escalated
+        # bookkeeping are carried forward unchanged from the state_read above
+        # — never reset here.
+        state_write "$dedup_key" "$st_implementor" "$st_inflight" "$new_last_state" \
           "$ST_PR_AUTHOR" "$ST_REPAIR_ROUTE" "$ST_REPO_FULL" "$ST_PR_NUMBER" "$ST_BRANCH" \
           "$ST_ATTEMPT_COUNT" "$ST_ESCALATED" "$ST_LAST_DISPATCH_AT"
         continue
       fi
 
-      # Not genuinely in-flight: supersede the tracked bead (if any, and still
-      # open) plus any leftover markers from the old per-head-sha scheme for
-      # this same PR (glob is dash-delimited so e.g. PR 1's marker never
-      # matches PR 11's), so orphans never pile up across head changes or the
-      # dedup-scheme upgrade from the old per-head-sha keying.
-      if [ -n "${st_inflight// /}" ] && [ "$tracked_open" -eq 1 ]; then
-        close_if_open "$st_inflight" "superseded: re-armed by a fresh PR-scoped repair mint for ${a_full}#${a_num}" "SUPERSEDE ${a_full}#${a_num}"
-      fi
+      # Not in-flight (no tracked bead, or it is closed): sweep any leftover
+      # markers from the old per-head-sha scheme for this same PR (glob is
+      # dash-delimited so e.g. PR 1's marker never matches PR 11's), so
+      # orphans never pile up across the dedup-scheme upgrade from the old
+      # per-head-sha keying.
       for stale_marker in "${CV_STATE_DIR}/${dedup_key}"-*.minted; do
         [ -f "$stale_marker" ] || continue
         stale_bead_id="$(cat "$stale_marker" 2>/dev/null || true)"
