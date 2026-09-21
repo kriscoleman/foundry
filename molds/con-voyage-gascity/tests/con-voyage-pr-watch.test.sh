@@ -425,6 +425,21 @@ JSON
 ]}
 JSON
           ;;
+        flip)
+          # FIX-C fixture (fk-zyh5): a single operator PR (#11, SAME head_sha
+          # across cycles) whose failure_kind is pinned directly by
+          # STUB_FLIP_KIND (default "blocked") — gc-provided, so the
+          # classifier trusts it as-is regardless of state/failed_checks.
+          # Lets a test drive #11 through consecutive cycles with a DIFFERENT
+          # classification each time (e.g. blocked -> checks_failed ->
+          # blocked) with NO head movement, reproducing kots#6067's observed
+          # blocked<->checks_failed oscillation on a ~10min classifier
+          # cooldown. PR #11 gets no canned reviewDecision from the gh stub
+          # (that table only covers 900-906), so the safe-default
+          # reviewDecision="" never trips the C6 awaiting-human skip here.
+          printf '{"results":[{"actionable":true,"owner":"kriscoleman","repo":"foundry","number":11,"title":"oscillating pr","head_ref_name":"fix/con-voyage-author-scope-pr-monitor","head_sha":"%s","repair_route":"vandoor/gc.implementation-worker","state":"blocked","failed_checks":[],"merge_state_status":"UNSTABLE","failure_kind":"%s"}]}\n' \
+            "${STUB_HEAD_SHA:-aaa111}" "${STUB_FLIP_KIND:-blocked}"
+          ;;
         states)
           # Native-monitor parity fixtures (R3/CV-B, fk-08o): one operator PR per
           # state (failing-CI/DIRTY/BEHIND/BLOCKED) plus a matching non-operator
@@ -570,15 +585,25 @@ JSON
       fi
       exit 0
     fi
+    # STUB_BD_UPDATE_FAIL=1 simulates a failed `bd update` (e.g. the FIX-C
+    # in-place title/failure_kind update on a still-open tracked bead), so the
+    # retry discipline can be proven: the script must NOT advance
+    # last_handled_state, must NOT fall back to a fresh mint, and must NOT
+    # supersede the tracked bead either — the same update is simply retried
+    # next cycle.
+    if [ "${args[$((i+1))]:-}" = "update" ] && [ "${STUB_BD_UPDATE_FAIL:-0}" = "1" ]; then
+      exit 1
+    fi
     # `gc [--city X] bd show <id> --json` — faithful stub of the PR-scoped
     # dedup in-flight check (C5). STUB_BDSHOW_MAP is a newline-delimited
     # lookup table of "<id>|<status>|<assignee>" entries (pipe-separated so
     # ids/statuses never collide with the delimiter). A bead id with no
     # matching entry returns an empty JSON object (unknown/never-minted bead).
-    # `bd close`/`bd update` are deliberately NOT special-cased — they fall
-    # through to the generic `exit 0` below, which is all the script under
-    # test requires; the argv is still recorded in $STUB_GC_LOG by the
-    # universal logging above, so close/update calls remain assertable.
+    # `bd close`/`bd update` are deliberately NOT special-cased beyond the
+    # STUB_BD_UPDATE_FAIL check above — they fall through to the generic
+    # `exit 0` below, which is all the script under test requires; the argv is
+    # still recorded in $STUB_GC_LOG by the universal logging above, so
+    # close/update calls remain assertable.
     if [ "${args[$((i+1))]:-}" = "show" ]; then
       show_id="${args[$((i+2))]:-}"
       match=""
@@ -2029,6 +2054,92 @@ assert_log_count "$GC_LOG" 'bd close va-oldbead .*now clean' 1 "the stale open b
 assert_eq "clean" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-20" "last_handled_state")" "state advances to clean"
 assert_eq "" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-20" "inflight_rework")" "no bead is tracked once the PR is clean"
 assert_eq "gc__impl-rc-5" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-20" "implementor_session")" "the stale bead's live assignee is adopted as implementor_session"
+
+# ===========================================================================
+# CASE 38 — FIX-C (fk-zyh5): a failure_kind FLIP while the tracked repair
+#   bead is still OPEN must UPDATE that bead in place (title + failure_kind
+#   metadata) instead of superseding it and minting a fresh one. Reproduces
+#   the live kots#6067 incident: the classifier oscillated blocked<->
+#   checks_failed roughly every 10-minute cooldown, and the OLD in-flight
+#   gate was implicitly keyed on (PR-number, failure_kind) — every flip
+#   looked like "not in-flight" and minted a brand-new orphan bead. Drive
+#   THREE consecutive cycles against the SAME open, unclaimed pool bead
+#   (assignee empty, mirroring the confirmed-live "still waiting to be
+#   claimed" shape from CASE 9 cycle 4 — not a stale/abandoned bead):
+#     cycle 1: fresh mint @ blocked                   -> ONE bead created
+#     cycle 2: SAME bead open, flips to checks_failed -> UPDATE, no re-mint
+#     cycle 3: SAME bead open, flips back to blocked  -> UPDATE, no re-mint
+#   Across all three cycles exactly ONE repair bead is ever created — the
+#   pre-fix behavior minted a second orphan on cycle 2 and a third on cycle 3.
+# ===========================================================================
+start_case "38: FIX-C — a failure_kind flip on an open tracked bead updates in place, never re-mints"
+setup_case_env "38"
+DEDUP_38="cv-ci-repair-kriscoleman-foundry-11"
+
+# --- Cycle 1: fresh mint at failure_kind=blocked. ---
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_BACKFILL_MODE="flip" STUB_FLIP_KIND="blocked" STUB_BD_CREATE_ID="va-osc1"
+assert_eq "0" "$RC" "cycle 1 exits 0"
+assert_log_count "$GC_LOG" 'bd create .*--silent' 1 "cycle 1 pre-creates exactly one repair bead"
+assert_log_count "$GC_LOG" 'sling vandoor/gc.implementation-worker va-osc1 --on con-voyage-ci-repair .*failure_kind=blocked' 1 "cycle 1 mints the ci-repair sling with failure_kind=blocked"
+assert_eq "va-osc1" "$(state_field "$STATE_DIR" "$DEDUP_38" "inflight_rework")" "cycle 1 tracks the minted bead"
+assert_eq "blocked" "$(state_field "$STATE_DIR" "$DEDUP_38" "last_handled_state")" "cycle 1 records last_handled_state=blocked"
+
+# --- Cycle 2: SAME bead still open (unclaimed — empty assignee, the
+#     confirmed-live shape), classifier flips to checks_failed. Must UPDATE
+#     va-osc1 in place, not supersede/re-mint. ---
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_BACKFILL_MODE="flip" STUB_FLIP_KIND="checks_failed" \
+  STUB_BDSHOW_MAP="va-osc1|open|"
+assert_eq "0" "$RC" "cycle 2 exits 0"
+assert_log_count "$GC_LOG" 'bd create .*--silent' 1 "cycle 2 creates NO additional repair bead (still exactly one total)"
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair' 1 "cycle 2 issues NO duplicate ci-repair sling"
+assert_log_count "$GC_LOG" 'bd close va-osc1' 0 "cycle 2 never supersedes the still-open bead"
+assert_log_count "$GC_LOG" 'bd update va-osc1 --title Repair GitHub PR kriscoleman/foundry#11 .*checks_failed.*oscillating pr --set-metadata failure_kind=checks_failed' 1 "cycle 2 updates the tracked bead's title + failure_kind metadata in place"
+if printf '%s' "$OUT" | grep -q 'UPDATE kriscoleman/foundry#11 .* — repair still in-flight on va-osc1 .*failure_kind blocked -> checks_failed'; then
+  pass "cycle 2 logs the in-place UPDATE for the blocked -> checks_failed flip"
+else
+  fail "expected an UPDATE log for the blocked -> checks_failed flip in cycle 2"
+fi
+assert_eq "va-osc1" "$(state_field "$STATE_DIR" "$DEDUP_38" "inflight_rework")" "cycle 2 still tracks the SAME bead"
+assert_eq "checks_failed" "$(state_field "$STATE_DIR" "$DEDUP_38" "last_handled_state")" "cycle 2 advances last_handled_state to checks_failed"
+
+# --- Cycle 3: SAME bead still open, classifier flips BACK to blocked. Must
+#     UPDATE again in place — still no re-mint (this is the exact oscillation
+#     that minted a SECOND orphan under the pre-fix behavior). ---
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_BACKFILL_MODE="flip" STUB_FLIP_KIND="blocked" \
+  STUB_BDSHOW_MAP="va-osc1|open|"
+assert_eq "0" "$RC" "cycle 3 exits 0"
+assert_log_count "$GC_LOG" 'bd create .*--silent' 1 "cycle 3 STILL creates no additional repair bead — exactly ONE total across all three cycles (pre-fix: three)"
+assert_log_count "$GC_LOG" 'bd close va-osc1' 0 "cycle 3 still never supersedes the open bead"
+assert_log_count "$GC_LOG" 'bd update va-osc1 --title Repair GitHub PR kriscoleman/foundry#11 .*blocked.*oscillating pr --set-metadata failure_kind=blocked' 1 "cycle 3 updates the tracked bead back to failure_kind=blocked"
+assert_eq "va-osc1" "$(state_field "$STATE_DIR" "$DEDUP_38" "inflight_rework")" "cycle 3 still tracks the SAME bead after flipping back"
+assert_eq "blocked" "$(state_field "$STATE_DIR" "$DEDUP_38" "last_handled_state")" "cycle 3 advances last_handled_state back to blocked"
+
+# ===========================================================================
+# CASE 38b — FIX-C retry discipline: a FAILED bd update must not be treated as
+#   applied. last_handled_state stays at the OLD value so the next cycle
+#   retries the SAME update (mirrors the mint-failure discipline in CASE 10/11)
+#   instead of silently losing the reclassification.
+# ===========================================================================
+start_case "38b: FIX-C — a failed bd update leaves last_handled_state untouched (retryable)"
+setup_case_env "38b"
+printf 'implementor_session=\ninflight_rework=va-osc-stuck\nlast_handled_state=blocked\n' \
+  > "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.state"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_BACKFILL_MODE="flip" STUB_FLIP_KIND="checks_failed" \
+  STUB_BDSHOW_MAP="va-osc-stuck|open|" STUB_BD_UPDATE_FAIL=1
+assert_eq "0" "$RC" "script exits 0 (a failed bd update is non-fatal)"
+assert_log_count "$GC_LOG" 'bd update va-osc-stuck' 1 "the update was attempted"
+assert_log_count "$GC_LOG" 'bd create .*--silent' 0 "a failed update never falls back to a fresh mint"
+assert_log_count "$GC_LOG" 'bd close va-osc-stuck' 0 "a failed update never supersedes the tracked bead either"
+assert_eq "blocked" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "last_handled_state")" "last_handled_state stays at the OLD value after a failed update (will retry)"
+if printf '%s' "$OUT" | grep -q 'WARNING: failed to update va-osc-stuck with the new failure_kind'; then
+  pass "logs a WARNING naming the bead when the update fails"
+else
+  fail "expected a WARNING for the failed update on va-osc-stuck"
+fi
 
 # ===========================================================================
 # Summary

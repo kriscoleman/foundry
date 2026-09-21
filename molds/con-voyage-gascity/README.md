@@ -525,23 +525,35 @@ repair bead and routing it to the pool `con-voyage-ci-repair` formula — same
 as before. Once a pool worker claims that fallback bead, it becomes the PR's
 implementor for future cycles.
 
-**Dedup.** A re-dispatch is blocked *only* while the SAME defect
-(`last_handled_state` equals the just-classified failure_kind) is genuinely
-in-flight — a tracked fallback bead, if any, is still open (**status alone**,
-not assignee — a pool-slung bead sits unclaimed with an empty assignee for an
+**Dedup.** A re-dispatch is blocked *only* while a tracked fallback bead, if
+any, is still open — **status alone gates it**, not assignee and not
+failure_kind (a pool-slung bead sits unclaimed with an empty assignee for an
 unbounded time before a worker picks it up, so requiring a live assignee here
 was the historical over-mint bug: a repair that was still legitimately
-pending got treated as abandoned and re-minted every cycle). A closed tracked
-bead never blocks a fresh dispatch: it is superseded (closed, with a note)
-and a new one is minted in its place.
+pending got treated as abandoned and re-minted every cycle). A closed (or
+never-tracked) bead never blocks a fresh dispatch: a new one is minted in its
+place.
 
-**Re-detection.** Any state *change* — a different failure_kind, or the PR
-going dirty again after a prior `clean` observation — always supersedes the
-old record and dispatches exactly one fresh rework, so a stale record can
-never permanently suppress a real, newly-observed defect. A PR that is
-already clean is left alone; its record is refreshed to `last_handled_state=
-clean` (and any still-open tracked bead is closed) purely so a *later*
-re-conflict has a real prior state to compare against.
+**Reclassification while in-flight (update, never supersede).** When the
+SAME open tracked bead's failure_kind changes mid-flight (e.g. `blocked`
+flipping to `checks_failed` on a later cycle), the monitor no longer
+supersedes it and mints a fresh one — that behavior was implicitly keyed on
+(PR-number, failure_kind), so a PR whose classification kept flipping minted a
+new orphaned bead on every single flip (confirmed live: kots#6067 oscillated
+`blocked`<->`checks_failed` on its ~10-minute cooldown). Instead the SAME bead
+is updated in place (`bd update <bead> --title ... --set-metadata
+failure_kind=...`) so its title and metadata reflect the current
+classification, and `last_handled_state` advances — without spawning a second
+implementor for one PR. A failed update is retried next cycle rather than
+silently dropped.
+
+**Re-detection.** A truly new problem cycle — no bead is currently tracked and
+open (the prior one closed, or the PR was previously `clean`) — always
+dispatches exactly one fresh rework, so a stale record can never permanently
+suppress a real, newly-observed defect. A PR that is already clean is left
+alone; its record is refreshed to `last_handled_state=clean` (and any
+still-open tracked bead is closed) purely so a *later* re-conflict has a real
+prior state to compare against.
 
 **Back-compat.** A pre-upgrade `<dedup_key>.minted` marker (bead-id only) is
 read as `inflight_rework=<that id>`, no known implementor, `last_handled_state
