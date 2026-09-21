@@ -71,7 +71,10 @@
 #
 #   GC              Path to the gc binary (default: gc)
 #   GH              Path to the gh binary (default: gh)
-#   GC_CITY         City root passed to gc (default: current directory)
+#   GC_CITY         Local checkout root used only to compute CV_STATE_DIR's
+#                   default (default: current directory). No longer passed to
+#                   gc as --city (fk-7v3r) — bd/mail calls below rely on gc's
+#                   own cwd-based store auto-detection instead.
 #   CV_STATE_DIR    Directory holding the per-PR finalize records this script
 #                   reads (default: .gc/cv-pr-watch — MUST match the dir
 #                   con-voyage's publish step writes them to; that is the same
@@ -163,7 +166,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/con-voyage-lib.sh"
 set_work_bead_phase() {
   local work_bead="$1" phase="$2"
   [ -n "${work_bead// /}" ] && [ -n "${phase// /}" ] || return 0
-  "$GC" --city "$GC_CITY" bd set-state "$work_bead" "cv=${phase}" \
+  "$GC" bd set-state "$work_bead" "cv=${phase}" \
     --reason "con-voyage-finalize: PR phase ${phase}" >/dev/null 2>&1 \
     || echo "con-voyage-finalize: WARNING: could not set cv=${phase} on ${work_bead}" >&2
 }
@@ -276,13 +279,16 @@ for finalize_file in "${CV_STATE_DIR}"/*.finalize; do
 
   # 1. Close the work bead (idempotent — no-op if already closed).
   close_if_open "$FS_WORK_BEAD" "$reason"
+  work_bead_close_rc="$CV_CLOSE_RC"
 
   # 2. Close the con-voyage convoy if we recorded one and it is still open. A
   #    synthetic input convoy autocloses when its tracked work bead closes, but
   #    close it explicitly too (idempotent) so a non-autoclosing convoy is not
   #    left dangling.
+  convoy_close_rc=0
   if [ -n "${FS_CONVOY_ID// /}" ] && [ "$FS_CONVOY_ID" != "$FS_WORK_BEAD" ]; then
     close_if_open "$FS_CONVOY_ID" "con-voyage finalized: ${reason}"
+    convoy_close_rc="$CV_CLOSE_RC"
   fi
 
   # 3. Release the long-lived implementor (best-effort mail). This monitor
@@ -292,7 +298,7 @@ for finalize_file in "${CV_STATE_DIR}"/*.finalize; do
   #    sessions). A release NOTE lets the session (or its supervisor) reclaim
   #    the slot; the bead/convoy close is what actually ends the work.
   if [ "$CV_RELEASE_IMPLEMENTOR" = "1" ] && [ -n "${FS_IMPLEMENTOR// /}" ]; then
-    if "$GC" --city "$GC_CITY" mail send "$FS_IMPLEMENTOR" \
+    if "$GC" mail send "$FS_IMPLEMENTOR" \
       -s "con-voyage finalized: ${label}" \
       -m "PR ${label} is ${pr_state}. The work bead ${FS_WORK_BEAD} and its convoy are closed (${reason}). You are released from this con-voyage — no further rework is expected. If you are idle, you may drain." \
       2>&1; then
@@ -302,11 +308,20 @@ for finalize_file in "${CV_STATE_DIR}"/*.finalize; do
     fi
   fi
 
-  # 4. Remove the finalize record — its lifecycle is complete. A later poll
-  #    finds nothing and cleanly no-ops (idempotent). Do this LAST so a crash
-  #    before here just re-runs the (idempotent) close next cycle.
-  rm -f "$finalize_file"
-  echo "con-voyage-finalize: done ${label} — finalize record removed"
+  # 4. Remove the finalize record — ONLY once every close attempted this cycle
+  #    actually succeeded (fk-7v3r: close_if_open used to swallow a failed `bd
+  #    close`'s exit status, so this removal ran unconditionally and deleted
+  #    the retry record on the very first close failure — self-destructing the
+  #    idempotent-retry safety net). A failed close leaves the record in place
+  #    so the next cycle retries close_if_open against the still-open bead(s);
+  #    re-running a close that already succeeded is a safe no-op. Do this LAST
+  #    so a crash before here just re-runs the (idempotent) close next cycle.
+  if [ "$work_bead_close_rc" -eq 0 ] && [ "$convoy_close_rc" -eq 0 ]; then
+    rm -f "$finalize_file"
+    echo "con-voyage-finalize: done ${label} — finalize record removed"
+  else
+    echo "con-voyage-finalize: WARNING: ${label} — bd close failed (work_bead_rc=${work_bead_close_rc}, convoy_rc=${convoy_close_rc}); keeping finalize record for retry next cycle" >&2
+  fi
 done
 
 # ---------------------------------------------------------------------------

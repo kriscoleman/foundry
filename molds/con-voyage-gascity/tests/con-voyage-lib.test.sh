@@ -36,10 +36,13 @@ trap cleanup EXIT
 
 # Recording `gc` stub. For `bd show <id> --json` it echoes the environment
 # variable STUB_BDSHOW_JSON_<id> verbatim (empty => `bd show` "fails" by
-# printing nothing and the lib falls back). Other subcommands no-op. EVERY
-# invocation (including `bd show`) is also appended to STUB_GC_LOG, one
-# space-joined argv per line, so cv_bead_mark_in_progress/cv_bead_close tests
-# can assert exactly which `bd update`/`bd close` calls (if any) fired.
+# printing nothing and the lib falls back). For `bd close <id>` it exits 1
+# when STUB_BDCLOSE_FAIL_<id>=1 (used by the close_if_open exit-status tests,
+# fk-7v3r) — unset/0 behaves like every other no-op subcommand (exit 0).
+# Other subcommands no-op. EVERY invocation (including `bd show`) is also
+# appended to STUB_GC_LOG, one space-joined argv per line, so
+# cv_bead_mark_in_progress/cv_bead_close tests can assert exactly which
+# `bd update`/`bd close` calls (if any) fired.
 cat > "${STUBDIR}/gc" <<'GC_STUB'
 #!/usr/bin/env bash
 { line=""; for a in "$@"; do a="${a//$'\n'/ }"; line="${line}${a} "; done; printf '%s\n' "$line"; } >> "${STUB_GC_LOG:-/dev/null}"
@@ -55,6 +58,14 @@ if [ "${args[$i]:-}" = "bd" ] && [ "${args[$((i+1))]:-}" = "show" ]; then
   id="${args[$((i+2))]:-}"
   var="STUB_BDSHOW_JSON_${id//-/_}"
   printf '%s' "${!var:-}"
+  exit 0
+fi
+if [ "${args[$i]:-}" = "bd" ] && [ "${args[$((i+1))]:-}" = "close" ]; then
+  id="${args[$((i+2))]:-}"
+  var="STUB_BDCLOSE_FAIL_${id//-/_}"
+  if [ "${!var:-0}" = "1" ]; then
+    exit 1
+  fi
   exit 0
 fi
 if [ "${args[$i]:-}" = "session" ] && [ "${args[$((i+1))]:-}" = "list" ]; then
@@ -276,6 +287,79 @@ assert_eq "" "$(first_alive_session_id_for_route "foundry-kc/gc.gap-analyst")" "
 start_case "first_alive_session_id_for_route: a session for a DIFFERENT route never matches"
 export STUB_SESSION_LIST_JSON='{"sessions":[{"id":"rc-1","template":"foundry-kc/con-voyage.cv-security-reviewer","state":"active"}]}'
 assert_eq "" "$(first_alive_session_id_for_route "foundry-kc/gc.gap-analyst")" "a live session on an unrelated route template does not match"
+
+# ---------------------------------------------------------------------------
+# --city omission (fk-7v3r): bead_status/close_if_open/cv_bead_mark_in_progress/
+# cv_bead_close/cv_resolve_work_bead must NOT pass --city on their bd calls —
+# passing --city alone routed an already-rig-prefixed bead id to the CITY
+# store instead of its owning rig's store, so bd show/close/update silently
+# no-op'd against the wrong store ("Issue not found", swallowed by each
+# helper's own fail-safe posture) and the bead never actually advanced.
+# Omitting --city/--rig entirely lets gc's own cwd-based store auto-detection
+# resolve the correct store instead (confirmed working in practice).
+# ---------------------------------------------------------------------------
+start_case "bead_status: omits --city"
+: > "$GC_LOG"
+bead_status "rb-open" assignee >/dev/null 2>/dev/null
+assert_log_count '--city' 0 "bead_status never passes --city"
+
+start_case "close_if_open: omits --city on the underlying bd close"
+: > "$GC_LOG"
+close_if_open "rb-open" "landed: fix pushed" 2>/dev/null
+assert_log_count '--city' 0 "close_if_open never passes --city"
+
+start_case "cv_bead_mark_in_progress: omits --city"
+: > "$GC_LOG"
+cv_bead_mark_in_progress "rb-open" 2>/dev/null
+assert_log_count '--city' 0 "cv_bead_mark_in_progress never passes --city"
+
+start_case "cv_bead_close: omits --city"
+: > "$GC_LOG"
+cv_bead_close "rb-open" "landed" "fix pushed" 2>/dev/null
+assert_log_count '--city' 0 "cv_bead_close never passes --city"
+
+start_case "cv_resolve_work_bead: omits --city"
+: > "$GC_LOG"
+cv_resolve_work_bead "fk-2co" >/dev/null 2>/dev/null
+assert_log_count '--city' 0 "cv_resolve_work_bead never passes --city"
+
+# ---------------------------------------------------------------------------
+# close_if_open: CV_CLOSE_RC / exit-status handling (fk-7v3r COMPOUNDING fix —
+# a swallowed `bd close` failure used to let con-voyage-finalize.sh delete its
+# own retry record right after, self-destructing the idempotent-retry safety
+# net on the very first close failure).
+# ---------------------------------------------------------------------------
+start_case "close_if_open: empty bead id -> CV_CLOSE_RC=0 (no-op), no bd call"
+: > "$GC_LOG"
+close_if_open "" "landed: x" 2>/dev/null
+assert_eq "0" "$CV_CLOSE_RC" "empty id reports rc=0 (no-op)"
+assert_log_count 'bd close' 0 "empty id never calls bd close"
+
+start_case "close_if_open: already-closed bead -> CV_CLOSE_RC=0 (no-op), no bd call"
+: > "$GC_LOG"
+close_if_open "rb-closed" "landed: x" 2>/dev/null
+assert_eq "0" "$CV_CLOSE_RC" "already-closed bead reports rc=0 (no-op)"
+assert_log_count 'bd close' 0 "already-closed bead never calls bd close"
+
+start_case "close_if_open: open bead, bd close succeeds -> CV_CLOSE_RC=0"
+: > "$GC_LOG"
+close_if_open "rb-open" "landed: x" 2>/dev/null
+assert_eq "0" "$CV_CLOSE_RC" "a successful close reports rc=0"
+assert_log_count 'bd close rb-open' 1 "bd close was attempted"
+
+start_case "close_if_open: open bead, bd close FAILS -> CV_CLOSE_RC is non-zero, exit status not swallowed"
+: > "$GC_LOG"
+export STUB_BDCLOSE_FAIL_rb_open=1
+close_if_open "rb-open" "landed: x" 2>/dev/null
+assert_eq "1" "$CV_CLOSE_RC" "a failed close reports the real (non-zero) exit status instead of swallowing it"
+unset STUB_BDCLOSE_FAIL_rb_open
+
+start_case "close_if_open: bd close failure still returns 0 from the function itself (never aborts a set -e caller)"
+rc=0
+export STUB_BDCLOSE_FAIL_rb_open=1
+close_if_open "rb-open" "landed: x" 2>/dev/null || rc=$?
+unset STUB_BDCLOSE_FAIL_rb_open
+assert_eq "0" "$rc" "close_if_open's own return code stays 0 even on a bd close failure (con-voyage-pr-watch.sh calls this under set -e as a bare statement)"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

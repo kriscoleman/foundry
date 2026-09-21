@@ -11,9 +11,18 @@
 # shell-option choice: con-voyage-pr-watch.sh runs `set -euo pipefail`,
 # con-voyage-repair-watchdog.sh runs `set -uo pipefail` without `-e`).
 #
-# Callers must already have GC and GC_CITY set (both scripts resolve these in
-# their own Configuration block before sourcing this file) — every function
-# below reads them as globals at CALL time, not at source time.
+# Callers must already have GC set (each caller resolves it in its own
+# Configuration block before sourcing this file) — every function below reads
+# it as a global at CALL time, not at source time.
+#
+# Bead/mail calls below intentionally omit --city/--rig (fk-7v3r): passing
+# --city alone routed an already-rig-prefixed bead id to the CITY store
+# instead of its owning rig's store, so bd show/close/update silently
+# no-op'd against the wrong store ("Issue not found") — invisible because
+# every helper here already fails safe (warns, never aborts). Every caller's
+# cwd is already inside the correct rig checkout when these scripts run, so
+# omitting both flags lets gc's own cwd-based store auto-detection resolve
+# the right store instead.
 #
 # Requires: bash 4+, gc CLI, python3.
 
@@ -227,7 +236,7 @@ bead_status() {
   local SEP=$'\x1f'
   [ -n "${bead_id// /}" ] || { printf '%s' "$SEP"; return 0; }
   local json
-  json=$("$GC" --city "$GC_CITY" bd show "$bead_id" --json 2>/dev/null) || json=""
+  json=$("$GC" bd show "$bead_id" --json 2>/dev/null) || json=""
   if [ -z "$json" ]; then printf '%s' "$SEP"; return 0; fi
   printf '%s' "$json" | python3 -c "
 import sys, json
@@ -355,18 +364,33 @@ for s in sessions:
 # already called `bead_status ... updated_at` to decide it needs closing)
 # skip the redundant second `bd show` — when empty (the default), the status
 # is fetched fresh, same as before.
+#
+# CV_CLOSE_RC (fk-7v3r): set on every call to the real `bd close` exit status
+# — 0 for a no-op (empty id / already closed) and for a successful close,
+# non-zero when `bd close` itself fails. The function's OWN return value
+# stays 0 in every case: con-voyage-pr-watch.sh calls this as a bare statement
+# under `set -e` and must never abort mid-scan over a single PR's failed
+# close. A caller that must not proceed past a failed close (e.g.
+# con-voyage-finalize.sh deleting its retry record) checks CV_CLOSE_RC
+# immediately after the call instead of the call's own return code.
 close_if_open() {
   local bead_id="$1" reason="$2" pr_label="${3:-}" known_status="${4:-}"
+  CV_CLOSE_RC=0
   [ -n "${bead_id// /}" ] || return 0
   local status="$known_status"
   if [ -z "$status" ]; then
     IFS=$'\x1f' read -r status _ <<< "$(bead_status "$bead_id" assignee)"
   fi
   [ -n "$status" ] && [ "$status" != "closed" ] || return 0
-  "$GC" --city "$GC_CITY" bd close "$bead_id" --reason "$reason" >/dev/null 2>&1 || true
-  if [ -n "$pr_label" ]; then
-    echo "con-voyage-pr-watch: [PART A] ${pr_label}: closed prior open repair bead ${bead_id} (was status=${status})"
+  if "$GC" bd close "$bead_id" --reason "$reason" >/dev/null 2>&1; then
+    if [ -n "$pr_label" ]; then
+      echo "con-voyage-pr-watch: [PART A] ${pr_label}: closed prior open repair bead ${bead_id} (was status=${status})"
+    fi
+  else
+    CV_CLOSE_RC=$?
+    echo "close_if_open: WARNING: bd close failed for ${bead_id} (status=${status}, rc=${CV_CLOSE_RC}); leaving it open for retry" >&2
   fi
+  return 0
 }
 
 # ===========================================================================
@@ -413,7 +437,7 @@ cv_bead_mark_in_progress() {
     echo "cv_bead_mark_in_progress: bead ${bead_id} already closed, skipping" >&2
     return 0
   fi
-  "$GC" --city "$GC_CITY" bd update "$bead_id" --claim >/dev/null 2>&1 \
+  "$GC" bd update "$bead_id" --claim >/dev/null 2>&1 \
     || echo "cv_bead_mark_in_progress: failed to claim ${bead_id}" >&2
   return 0
 }
@@ -443,7 +467,7 @@ cv_bead_close() {
     echo "cv_bead_close: bead ${bead_id} already closed, skipping" >&2
     return 0
   fi
-  "$GC" --city "$GC_CITY" bd close "$bead_id" --reason "${outcome}: ${reason}" >/dev/null 2>&1 \
+  "$GC" bd close "$bead_id" --reason "${outcome}: ${reason}" >/dev/null 2>&1 \
     || echo "cv_bead_close: failed to close ${bead_id}" >&2
   return 0
 }
@@ -479,7 +503,7 @@ cv_resolve_work_bead() {
   local convoy_id="$1"
   [ -n "${convoy_id// /}" ] || { printf '%s' "$convoy_id"; return 0; }
   local json
-  json=$("$GC" --city "$GC_CITY" bd show "$convoy_id" --json 2>/dev/null) || json=""
+  json=$("$GC" bd show "$convoy_id" --json 2>/dev/null) || json=""
   if [ -z "$json" ]; then printf '%s' "$convoy_id"; return 0; fi
   printf '%s' "$json" | python3 -c "
 import sys, json
