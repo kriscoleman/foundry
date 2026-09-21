@@ -134,6 +134,9 @@ chmod +x "${STUBDIR}/gh"
 # STUB_BDSHOW_MAP: newline-delimited "<id>|<status>" rows (finalize only ever
 # reads a bead's status, via close_if_open). An id with no row => empty {} =>
 # treated as unknown/closed (close_if_open no-ops).
+# STUB_BDCLOSE_FAIL_IDS: newline-delimited bead ids for which `bd close` exits
+# 1 (simulates the fk-7v3r "bd close silently fails" scenario) — every other
+# id's `bd close` succeeds (exit 0).
 # ---------------------------------------------------------------------------
 cat > "${STUBDIR}/gc" <<'GC_STUB'
 #!/usr/bin/env bash
@@ -167,7 +170,14 @@ case "$sub" in
       fi
       exit 0
     fi
-    # bd close / bd update / bd set-state / bd note — generic accept (logged).
+    if [ "$bdsub" = "close" ]; then
+      close_id="${args[$((i+2))]:-}"
+      if [ -n "${STUB_BDCLOSE_FAIL_IDS:-}" ] && printf '%s\n' "$STUB_BDCLOSE_FAIL_IDS" | grep -qx -- "$close_id"; then
+        exit 1
+      fi
+      exit 0
+    fi
+    # bd update / bd set-state / bd note — generic accept (logged).
     exit 0
     ;;
   mail)
@@ -338,6 +348,7 @@ assert_log_count "$GC_LOG" 'bd close fk-convoy' 1 "convoy closed"
 assert_log_count "$GC_LOG" 'mail send foundry/impl-1' 1 "implementor released via mail"
 assert_out_contains 'FINALIZE kriscoleman/foundry#29' "logs a FINALIZE line for the PR"
 assert_file_absent "${STATE_DIR}/cv-finalize-kriscoleman-foundry-29.finalize" "finalize record removed after finalize"
+assert_log_count "$GC_LOG" '--city' 0 "no bd/mail call in this run passes --city (fk-7v3r: --city alone routes to the wrong store)"
 
 # ===========================================================================
 # CASE 4 — CLOSED-without-merge PR: 'abandoned' reason.
@@ -385,6 +396,7 @@ assert_log_count "$GC_LOG" 'bd close' 0 "no bd close on an open PR"
 assert_log_count "$GC_LOG" 'bd set-state fk-w50 cv=awaiting_merge' 1 "cv=awaiting_merge set on open+clean PR"
 assert_file_present "${STATE_DIR}/cv-finalize-kriscoleman-foundry-50.finalize" "record kept for an open PR"
 assert_eq "awaiting_merge" "$(fs_field "$STATE_DIR" "cv-finalize-kriscoleman-foundry-50" "last_phase")" "last_phase advanced to awaiting_merge"
+assert_log_count "$GC_LOG" '--city' 0 "bd set-state never passes --city (fk-7v3r)"
 
 # ===========================================================================
 # CASE 7 — Still-OPEN PR with a FAILED check: reflect cv=repairing.
@@ -709,6 +721,47 @@ assert_log_count "$GC_LOG" 'bd close rw-bead95 .*superseded: PR #95 merged' 1 "p
 assert_log_count "$GC_LOG" 'bd close rw-bead95-forged' 0 "mismatched-author sibling bead is never closed"
 assert_file_absent "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-95.state" "primary .state record removed"
 assert_file_present "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-95-forged.state" "mismatched-author sibling .state record is left untouched (fail closed)"
+
+# ===========================================================================
+# CASE 26 — fk-7v3r COMPOUNDING fix: close_if_open no longer swallows a failed
+#   `bd close`'s exit status. When the WORK BEAD's close fails, the finalize
+#   record must be KEPT (not deleted) so the next cycle retries the same
+#   close instead of losing the bead forever. Before this fix, close_if_open
+#   always reported success (`|| true`) and finalize.sh unconditionally
+#   removed the record right after, self-destructing its own retry safety net
+#   on the very first close failure.
+# ===========================================================================
+start_case "26: work-bead bd close fails -> finalize record kept for retry (fk-7v3r)"
+setup_case_env "26"
+write_finalize "$STATE_DIR" "cv-finalize-kriscoleman-foundry-96" \
+  "fk-w96" "fk-c96" "kriscoleman/foundry" "96" "kriscoleman" "foundry/impl-13" "awaiting_merge"
+run_script "${DEFAULT_ENV[@]}" \
+  STUB_PR_MAP="kriscoleman/foundry|96|MERGED|2026-09-19T10:00:00Z|2026-09-19T10:00:00Z|||" \
+  STUB_BDSHOW_MAP=$'fk-w96|in_progress\nfk-c96|open' \
+  STUB_BDCLOSE_FAIL_IDS="fk-w96"
+assert_eq "0" "$RC" "script still exits 0 (a failed close is logged, not fatal)"
+assert_log_count "$GC_LOG" 'bd close fk-w96' 1 "bd close was attempted for the work bead"
+assert_file_present "${STATE_DIR}/cv-finalize-kriscoleman-foundry-96.finalize" "record KEPT because the work-bead close failed — no self-destructing retry record"
+assert_out_contains 'keeping finalize record for retry' "logs that the record is being kept for retry"
+
+# ===========================================================================
+# CASE 27 — Same fix, the CONVOY close fails instead of the work bead: the
+#   record must still be kept (either close failing is reason enough to retry
+#   next cycle — close_if_open is idempotent, so re-running a close that
+#   already succeeded is a safe no-op).
+# ===========================================================================
+start_case "27: convoy bd close fails -> finalize record kept for retry too"
+setup_case_env "27"
+write_finalize "$STATE_DIR" "cv-finalize-kriscoleman-foundry-97" \
+  "fk-w97" "fk-c97" "kriscoleman/foundry" "97" "kriscoleman" "foundry/impl-14" "awaiting_merge"
+run_script "${DEFAULT_ENV[@]}" \
+  STUB_PR_MAP="kriscoleman/foundry|97|MERGED|2026-09-19T10:00:00Z|2026-09-19T10:00:00Z|||" \
+  STUB_BDSHOW_MAP=$'fk-w97|in_progress\nfk-c97|open' \
+  STUB_BDCLOSE_FAIL_IDS="fk-c97"
+assert_eq "0" "$RC" "script still exits 0"
+assert_log_count "$GC_LOG" 'bd close fk-w97' 1 "work-bead close succeeded"
+assert_log_count "$GC_LOG" 'bd close fk-c97' 1 "convoy close was attempted"
+assert_file_present "${STATE_DIR}/cv-finalize-kriscoleman-foundry-97.finalize" "record kept because the convoy close failed"
 
 # ===========================================================================
 # Summary
