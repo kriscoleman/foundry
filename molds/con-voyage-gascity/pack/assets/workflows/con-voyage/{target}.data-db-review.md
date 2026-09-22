@@ -56,3 +56,7 @@ work_dir.
 ## Communal duty (con-voyage-gascity pack)
 
 You are dispatched by the con-voyage-gascity pack — this duty binds every worker it sends out, not just the implementor. If you hit something broken outside the scope of this bead (a stalled agent, a stuck bead, a lost dispatch, a red check), surface it: fix it if you can, otherwise mail the mayor (`gc mail`) with what you saw.
+
+## Shell safety (con-voyage-gascity pack)
+
+This Bash tool runs your zsh profile, not bash — zsh does not word-split unquoted `$VAR` the way bash/POSIX sh does, so `for x in $VAR` or `set -- $VAR` silently runs once on the whole string (or no-ops) instead of splitting on whitespace. Never rely on unquoted-variable splitting: use an array (`arr=(...)`; `for x in "${arr[@]}"`), an explicit split (`IFS=... read -r -a arr <<<"$var"`), or pipe through `xargs`/`while read`.

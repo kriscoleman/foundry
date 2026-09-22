@@ -17,8 +17,10 @@
 # this pack free-texts a bead body outside the formula graph is
 # con-voyage-pr-watch.sh's human-comment router (cv_build_pr_feedback_body in
 # con-voyage-lib.sh). This suite asserts the shared communal-duty reminder
-# (con-voyage-lib.sh's CV_COMMUNAL_DUTY_REMINDER) is present on every one of
-# those surfaces:
+# (con-voyage-lib.sh's CV_COMMUNAL_DUTY_REMINDER) AND the shell-safety
+# reminder (CV_SHELL_SAFETY_REMINDER — fk-k14n, the Bash tool runs zsh, which
+# does not word-split unquoted `$VAR` the way bash does) are present on every
+# one of those surfaces:
 #
 #   (a) driven by the formulas' OWN description_file lists, not a
 #       hand-maintained list, so a new workflow node added later without the
@@ -45,6 +47,11 @@ source "$LIB"
 
 if [ -z "${CV_COMMUNAL_DUTY_REMINDER:-}" ]; then
   echo "FATAL: CV_COMMUNAL_DUTY_REMINDER is not defined by ${LIB}" >&2
+  exit 2
+fi
+
+if [ -z "${CV_SHELL_SAFETY_REMINDER:-}" ]; then
+  echo "FATAL: CV_SHELL_SAFETY_REMINDER is not defined by ${LIB}" >&2
   exit 2
 fi
 
@@ -77,7 +84,9 @@ for formula in "${MOLD_DIR}"/pack/formulas/*.toml; do
     [ -n "$rel_path" ] || continue
     node_count=$((node_count+1))
     assert_contains "${formula_dir}/${rel_path}" "$CV_COMMUNAL_DUTY_REMINDER" \
-      "$(basename "$formula"): $(basename "$rel_path")"
+      "$(basename "$formula"): $(basename "$rel_path") (communal duty)"
+    assert_contains "${formula_dir}/${rel_path}" "$CV_SHELL_SAFETY_REMINDER" \
+      "$(basename "$formula"): $(basename "$rel_path") (shell safety)"
   done < <(grep -oE 'description_file *= *"[^"]+"' "$formula" | sed -E 's/description_file *= *"([^"]+)"/\1/')
 done
 
@@ -94,9 +103,16 @@ if declare -f cv_build_pr_feedback_body >/dev/null 2>&1; then
     "  [comment] @reviewer: an example finding  [id:1]" "test-key")"
   case "$sample_body" in
     *"${CV_COMMUNAL_DUTY_REMINDER}"*)
-      echo "  PASS: cv_build_pr_feedback_body output includes the reminder" ;;
+      echo "  PASS: cv_build_pr_feedback_body output includes the communal-duty reminder" ;;
     *)
-      echo "  FAIL: cv_build_pr_feedback_body output is missing the reminder" >&2
+      echo "  FAIL: cv_build_pr_feedback_body output is missing the communal-duty reminder" >&2
+      FAILURES=$((FAILURES+1)) ;;
+  esac
+  case "$sample_body" in
+    *"${CV_SHELL_SAFETY_REMINDER}"*)
+      echo "  PASS: cv_build_pr_feedback_body output includes the shell-safety reminder" ;;
+    *)
+      echo "  FAIL: cv_build_pr_feedback_body output is missing the shell-safety reminder" >&2
       FAILURES=$((FAILURES+1)) ;;
   esac
 else
