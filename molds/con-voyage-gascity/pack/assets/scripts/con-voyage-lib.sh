@@ -122,19 +122,25 @@ CV_COMMUNAL_DUTY_REMINDER='You are dispatched by the con-voyage-gascity pack —
 CV_REVIEW_LANE_WORKTREE_REMINDER='This review lane never runs a command that touches the implementation on disk directly inside the shared source-anchor work_dir recorded in the review context. Every active lane can read and execute against that same directory at the same time, so a local edit (including a temporary mutate-run-revert check) or a build/test invocation there can race a concurrent build or test run from another lane and produce a false BLOCKING or false-negative finding (fk-q659). Acquire your own private worktree copy first with `cv-review-lane-worktree.sh acquire`, and run every such command inside it instead — never inside the shared work_dir.'
 
 # ---------------------------------------------------------------------------
-# Shell-safety reminder (fk-k14n): the Bash tool runs the operator's zsh
-# profile, not bash — zsh does NOT word-split unquoted parameter expansions
-# by default, so a pattern that behaves correctly under bash/POSIX sh
-# (`for x in $var`, `set -- $pair`) silently collapses to one iteration (or a
-# no-op on empty input) under zsh instead of splitting on whitespace. It
-# reads like a tool malfunction rather than a shell semantics difference, and
-# has already cost real turns (a rig-hygiene loop, a research-sling loop).
+# Shell-safety reminder (fk-k14n; reworded fk-0o4d after PR #58 human review —
+# the operator's shell is not always zsh): the Bash tool runs whichever shell
+# the operator has configured — bash or zsh, never assume which. zsh does NOT
+# word-split unquoted parameter expansions by default, so a pattern that
+# behaves correctly under bash/POSIX sh (`for x in $var`, `set -- $pair`)
+# silently collapses to one iteration (or a no-op on empty input) under zsh
+# instead of splitting on whitespace — it reads like a tool malfunction
+# rather than a shell semantics difference, and has already cost real turns
+# (a rig-hygiene loop, a research-sling loop). The fix for that footgun must
+# itself work in either shell: `read -a` (bash) and `read -A` (zsh) are NOT
+# interchangeable and zsh hard-errors on `-a`, so hard-coding one over the
+# other just trades a silent bash-side bug for a loud zsh-side one (or vice
+# versa) depending on the operator's profile.
 # Distributed the same way as CV_COMMUNAL_DUTY_REMINDER, for the same reason
 # documented in the comment above it: static template assets cannot source
 # this constant directly, so tests/agents-contract.test.sh diffs them against
 # it instead, driven by the formulas' own description_file lists.
 # shellcheck disable=SC2016  # backticks/$VAR below are literal reminder text for the reader, not expansion
-CV_SHELL_SAFETY_REMINDER='This Bash tool runs your zsh profile, not bash — zsh does not word-split unquoted `$VAR` the way bash/POSIX sh does, so `for x in $VAR` or `set -- $VAR` silently runs once on the whole string (or no-ops) instead of splitting on whitespace. Never rely on unquoted-variable splitting: use an array (`arr=(...)`; `for x in "${arr[@]}"`), an explicit split (`IFS=... read -r -A arr <<<"$var"`), or pipe through `xargs`/`while read`.'
+CV_SHELL_SAFETY_REMINDER='This Bash tool runs whichever shell the operator has configured — bash or zsh, never assume which. zsh does not word-split unquoted `$VAR` the way bash/POSIX sh does, so under zsh `for x in $VAR` or `set -- $VAR` silently runs once on the whole string (or no-ops) instead of splitting on whitespace. Never rely on unquoted-variable splitting: use an array of literal elements (`arr=(...)`; `for x in "${arr[@]}"`), or pipe through `xargs`/`while read` — both behave identically in bash and zsh. If you must split a variable into an array directly, `read -a` (bash) and `read -A` (zsh) are not interchangeable (zsh hard-errors on `-a`) — branch on `$ZSH_VERSION` rather than hard-coding one.'
 
 # cv_build_pr_feedback_body PR_URL HEAD_REF FEEDBACK_SUMMARY IDEMPOTENCY_KEY
 # Composes the routed bead body for a human-PR-comment routing event
