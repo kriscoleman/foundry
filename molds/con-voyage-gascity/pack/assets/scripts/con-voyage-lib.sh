@@ -134,7 +134,7 @@ CV_REVIEW_LANE_WORKTREE_REMINDER='This review lane never runs a command that tou
 # this constant directly, so tests/agents-contract.test.sh diffs them against
 # it instead, driven by the formulas' own description_file lists.
 # shellcheck disable=SC2016  # backticks/$VAR below are literal reminder text for the reader, not expansion
-CV_SHELL_SAFETY_REMINDER='This Bash tool runs your zsh profile, not bash — zsh does not word-split unquoted `$VAR` the way bash/POSIX sh does, so `for x in $VAR` or `set -- $VAR` silently runs once on the whole string (or no-ops) instead of splitting on whitespace. Never rely on unquoted-variable splitting: use an array (`arr=(...)`; `for x in "${arr[@]}"`), an explicit split (`IFS=... read -r -a arr <<<"$var"`), or pipe through `xargs`/`while read`.'
+CV_SHELL_SAFETY_REMINDER='This Bash tool runs your zsh profile, not bash — zsh does not word-split unquoted `$VAR` the way bash/POSIX sh does, so `for x in $VAR` or `set -- $VAR` silently runs once on the whole string (or no-ops) instead of splitting on whitespace. Never rely on unquoted-variable splitting: use an array (`arr=(...)`; `for x in "${arr[@]}"`), an explicit split (`IFS=... read -r -A arr <<<"$var"`), or pipe through `xargs`/`while read`.'
 
 # cv_build_pr_feedback_body PR_URL HEAD_REF FEEDBACK_SUMMARY IDEMPOTENCY_KEY
 # Composes the routed bead body for a human-PR-comment routing event
