@@ -48,19 +48,31 @@
 #                   committed hygiene path is flagged, degrading to the old
 #                   absolute-tracked-ness behavior rather than silently passing
 #                   a real offender.
+#   dirty <dir>   — a pre-push backstop (fk-etw7): fails loud if <dir> has any
+#                   uncommitted change (modified, staged, or untracked) OUTSIDE
+#                   the hygiene patterns. con-voyage's apply-review-findings
+#                   step commits its own edits, so a dirty worktree at publish
+#                   time means a fix was applied but never committed — without
+#                   this guard, publish would silently push stale HEAD and the
+#                   review fix would never reach the PR. Hygiene paths are
+#                   excluded from this check (that is `guard`'s job, and they
+#                   are expected local scratch state, not a sign of a missed
+#                   commit).
 #
 # Usage:
 #   cv-worktree-prep.sh exclude <dir>
 #   cv-worktree-prep.sh guard <dir> [base-ref]
+#   cv-worktree-prep.sh dirty <dir>
 #
 # Environment:
 #   CV_HYGIENE_PATTERNS   Space-separated gitignore-style patterns.
 #                         Default: ".beads/ .gc/ .claude/ .dolt/"
 #
 # Exit codes:
-#   0 — clean (exclude: written or already present; guard: nothing offending)
-#   1 — usage/validation error, OR (guard only) an offending path was found —
-#       the caller must NOT proceed to commit/push until a re-run of `guard`
+#   0 — clean (exclude: written or already present; guard/dirty: nothing
+#       offending)
+#   1 — usage/validation error, OR (guard/dirty only) an offending path was
+#       found — the caller must NOT proceed to commit/push until a re-run
 #       reports clean.
 #
 # Requires: bash 4+, git.
@@ -77,6 +89,7 @@ usage() {
 Usage:
   cv-worktree-prep.sh exclude <dir>
   cv-worktree-prep.sh guard <dir> [base-ref]
+  cv-worktree-prep.sh dirty <dir>
 USAGE
 }
 
@@ -224,6 +237,41 @@ cmd_guard() {
   [ "$any_offense" -eq 0 ]
 }
 
+cmd_dirty() {
+  local dir="$1"
+  require_git_dir "$dir" "dirty"
+
+  mapfile -t PATHSPECS < <(pathspecs)
+
+  local status_out
+  status_out="$(git -C "$dir" status --porcelain --untracked-files=all 2>/dev/null || true)"
+
+  # Porcelain v1: "XY path" (path starts at column 4). A rename/copy line
+  # reads "XY old -> new" — the new path is what matters for hygiene matching.
+  local offending="" line path pat is_hygiene
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    path="${line:3}"
+    case "$path" in *' -> '*) path="${path#*' -> '}" ;; esac
+    is_hygiene=0
+    for pat in "${PATHSPECS[@]}"; do
+      case "$path" in
+        "${pat}"/*|"${pat}") is_hygiene=1; break ;;
+      esac
+    done
+    [ "$is_hygiene" -eq 1 ] || offending="${offending}${line}"$'\n'
+  done <<< "$status_out"
+
+  if [ -z "$offending" ]; then
+    echo "cv-worktree-prep: dirty-check clean — no uncommitted changes outside hygiene paths in ${dir}"
+    return 0
+  fi
+
+  echo "cv-worktree-prep: REFUSING — ${dir} has uncommitted changes outside hygiene paths. Review fixes must be committed before push, or they are silently dropped from the PR:" >&2
+  printf '%s\n' "$offending" >&2
+  return 1
+}
+
 SUBCOMMAND="${1:-}"
 [ -n "$SUBCOMMAND" ] || { usage; die "missing subcommand"; }
 shift || true
@@ -231,8 +279,9 @@ shift || true
 case "$SUBCOMMAND" in
   exclude) cmd_exclude "${1:-}" ;;
   guard) cmd_guard "${1:-}" "${2:-}" ;;
+  dirty) cmd_dirty "${1:-}" ;;
   *)
     usage
-    die "unknown subcommand '${SUBCOMMAND}' (expected exclude or guard)"
+    die "unknown subcommand '${SUBCOMMAND}' (expected exclude, guard, or dirty)"
     ;;
 esac
