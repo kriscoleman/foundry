@@ -121,6 +121,21 @@ CV_COMMUNAL_DUTY_REMINDER='You are dispatched by the con-voyage-gascity pack —
 # `[[template.children]]` list in the formula, not a hand-maintained lane list.
 CV_REVIEW_LANE_WORKTREE_REMINDER='This review lane never runs a command that touches the implementation on disk directly inside the shared source-anchor work_dir recorded in the review context. Every active lane can read and execute against that same directory at the same time, so a local edit (including a temporary mutate-run-revert check) or a build/test invocation there can race a concurrent build or test run from another lane and produce a false BLOCKING or false-negative finding (fk-q659). Acquire your own private worktree copy first with `cv-review-lane-worktree.sh acquire`, and run every such command inside it instead — never inside the shared work_dir.'
 
+# ---------------------------------------------------------------------------
+# Shell-safety reminder (fk-k14n): the Bash tool runs the operator's zsh
+# profile, not bash — zsh does NOT word-split unquoted parameter expansions
+# by default, so a pattern that behaves correctly under bash/POSIX sh
+# (`for x in $var`, `set -- $pair`) silently collapses to one iteration (or a
+# no-op on empty input) under zsh instead of splitting on whitespace. It
+# reads like a tool malfunction rather than a shell semantics difference, and
+# has already cost real turns (a rig-hygiene loop, a research-sling loop).
+# Distributed the same way as CV_COMMUNAL_DUTY_REMINDER, for the same reason
+# documented in the comment above it: static template assets cannot source
+# this constant directly, so tests/agents-contract.test.sh diffs them against
+# it instead, driven by the formulas' own description_file lists.
+# shellcheck disable=SC2016  # backticks/$VAR below are literal reminder text for the reader, not expansion
+CV_SHELL_SAFETY_REMINDER='This Bash tool runs your zsh profile, not bash — zsh does not word-split unquoted `$VAR` the way bash/POSIX sh does, so `for x in $VAR` or `set -- $VAR` silently runs once on the whole string (or no-ops) instead of splitting on whitespace. Never rely on unquoted-variable splitting: use an array (`arr=(...)`; `for x in "${arr[@]}"`), an explicit split (`IFS=... read -r -a arr <<<"$var"`), or pipe through `xargs`/`while read`.'
+
 # cv_build_pr_feedback_body PR_URL HEAD_REF FEEDBACK_SUMMARY IDEMPOTENCY_KEY
 # Composes the routed bead body for a human-PR-comment routing event
 # (con-voyage-pr-watch.sh Part B). Extracted out of the scan loop so it is
@@ -137,6 +152,8 @@ New feedback:
 ${feedback_summary}
 
 ${CV_COMMUNAL_DUTY_REMINDER}
+
+${CV_SHELL_SAFETY_REMINDER}
 
 Routing from con-voyage-pr-watch (idempotency: ${idempotency_key})
 BODY
