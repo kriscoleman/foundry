@@ -416,18 +416,18 @@ close_if_open() {
   local bead_id="$1" reason="$2" pr_label="${3:-}" known_status="${4:-}"
   CV_CLOSE_RC=0
   [ -n "${bead_id// /}" ] || return 0
-  local status="$known_status"
-  if [ -z "$status" ]; then
-    IFS=$'\x1f' read -r status _ <<< "$(bead_status "$bead_id" assignee)"
+  local bead_state="$known_status"
+  if [ -z "$bead_state" ]; then
+    IFS=$'\x1f' read -r bead_state _ <<< "$(bead_status "$bead_id" assignee)"
   fi
-  [ -n "$status" ] && [ "$status" != "closed" ] || return 0
+  [ -n "$bead_state" ] && [ "$bead_state" != "closed" ] || return 0
   if "$GC" bd close "$bead_id" --reason "$reason" >/dev/null 2>&1; then
     if [ -n "$pr_label" ]; then
-      echo "con-voyage-pr-watch: [PART A] ${pr_label}: closed prior open repair bead ${bead_id} (was status=${status})"
+      echo "con-voyage-pr-watch: [PART A] ${pr_label}: closed prior open repair bead ${bead_id} (was status=${bead_state})"
     fi
   else
     CV_CLOSE_RC=$?
-    echo "close_if_open: WARNING: bd close failed for ${bead_id} (status=${status}, rc=${CV_CLOSE_RC}); leaving it open for retry" >&2
+    echo "close_if_open: WARNING: bd close failed for ${bead_id} (status=${bead_state}, rc=${CV_CLOSE_RC}); leaving it open for retry" >&2
   fi
   return 0
 }
@@ -466,13 +466,13 @@ close_if_open() {
 cv_bead_mark_in_progress() {
   local bead_id="$1"
   [ -n "${bead_id// /}" ] || { echo "cv_bead_mark_in_progress: empty bead id, skipping" >&2; return 0; }
-  local status
-  IFS=$'\x1f' read -r status _ <<< "$(bead_status "$bead_id" assignee)"
-  if [ -z "$status" ]; then
+  local bead_state
+  IFS=$'\x1f' read -r bead_state _ <<< "$(bead_status "$bead_id" assignee)"
+  if [ -z "$bead_state" ]; then
     echo "cv_bead_mark_in_progress: bead ${bead_id} not found, skipping" >&2
     return 0
   fi
-  if [ "$status" = "closed" ]; then
+  if [ "$bead_state" = "closed" ]; then
     echo "cv_bead_mark_in_progress: bead ${bead_id} already closed, skipping" >&2
     return 0
   fi
@@ -496,13 +496,13 @@ cv_bead_mark_in_progress() {
 cv_bead_close() {
   local bead_id="$1" outcome="$2" reason="$3"
   [ -n "${bead_id// /}" ] || { echo "cv_bead_close: empty bead id, skipping" >&2; return 0; }
-  local status
-  IFS=$'\x1f' read -r status _ <<< "$(bead_status "$bead_id" assignee)"
-  if [ -z "$status" ]; then
+  local bead_state
+  IFS=$'\x1f' read -r bead_state _ <<< "$(bead_status "$bead_id" assignee)"
+  if [ -z "$bead_state" ]; then
     echo "cv_bead_close: bead ${bead_id} not found, skipping" >&2
     return 0
   fi
-  if [ "$status" = "closed" ]; then
+  if [ "$bead_state" = "closed" ]; then
     echo "cv_bead_close: bead ${bead_id} already closed, skipping" >&2
     return 0
   fi

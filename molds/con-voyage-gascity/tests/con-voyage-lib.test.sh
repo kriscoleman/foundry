@@ -361,6 +361,68 @@ close_if_open "rb-open" "landed: x" 2>/dev/null || rc=$?
 unset STUB_BDCLOSE_FAIL_rb_open
 assert_eq "0" "$rc" "close_if_open's own return code stays 0 even on a bd close failure (con-voyage-pr-watch.sh calls this under set -e as a bare statement)"
 
+# ---------------------------------------------------------------------------
+# zsh portability (fk-k14n REWORK — operator PR comment + new bug report):
+# `status` is a special/read-only parameter in zsh (it mirrors `$?`), so
+# `local status` followed by an assignment (`status="$x"` or
+# `read -r status ...`) throws "read-only variable: status" and ABORTS the
+# function before it reaches its `bd update`/`bd close` call. Any agent whose
+# configured shell is zsh (the Bash tool runs whichever shell the operator
+# has configured — see CV_SHELL_SAFETY_REMINDER above) silently loses the
+# bead-state-event update every time these helpers run, unless the caller
+# happens to route through an explicit `bash <<EOF` workaround.
+#
+# These cases source the real lib into an actual zsh subprocess (not bash
+# emulating zsh) and call each affected helper end-to-end against the SAME
+# stub harness used above, asserting both "did not raise read-only variable"
+# AND "the expected bd call actually landed" — a caught-but-swallowed abort
+# would still show zero bd calls in the log, so the log assertion is the one
+# that would have caught the bug even if zsh's error text ever changes.
+# ---------------------------------------------------------------------------
+if ! command -v zsh >/dev/null 2>&1; then
+  echo
+  echo "SKIP: zsh not installed on this host, skipping zsh portability cases" >&2
+else
+  start_case "cv_bead_mark_in_progress under zsh: open bead -> claims it (no read-only-variable abort)"
+  : > "$GC_LOG"
+  zsh_err="$(GC="$GC" GC_CITY="$GC_CITY" GH="$GH" CV_STATE_DIR="$CV_STATE_DIR" \
+    zsh -c "source '$LIB'; cv_bead_mark_in_progress 'rb-open'" 2>&1 >/dev/null)"
+  case "$zsh_err" in
+    *"read-only variable"*)
+      echo "  FAIL: cv_bead_mark_in_progress aborts under zsh: $zsh_err" >&2
+      FAILURES=$((FAILURES+1)) ;;
+    *)
+      echo "  PASS: cv_bead_mark_in_progress raises no read-only-variable error under zsh" ;;
+  esac
+  assert_log_count 'bd update rb-open --claim' 1 "cv_bead_mark_in_progress under zsh still reaches bd update"
+
+  start_case "cv_bead_close under zsh: open bead -> closes it (no read-only-variable abort)"
+  : > "$GC_LOG"
+  zsh_err="$(GC="$GC" GC_CITY="$GC_CITY" GH="$GH" CV_STATE_DIR="$CV_STATE_DIR" \
+    zsh -c "source '$LIB'; cv_bead_close 'rb-open' 'landed' 'fix pushed'" 2>&1 >/dev/null)"
+  case "$zsh_err" in
+    *"read-only variable"*)
+      echo "  FAIL: cv_bead_close aborts under zsh: $zsh_err" >&2
+      FAILURES=$((FAILURES+1)) ;;
+    *)
+      echo "  PASS: cv_bead_close raises no read-only-variable error under zsh" ;;
+  esac
+  assert_log_count 'bd close rb-open --reason landed: fix pushed' 1 "cv_bead_close under zsh still reaches bd close"
+
+  start_case "close_if_open under zsh: open bead -> closes it (no read-only-variable abort)"
+  : > "$GC_LOG"
+  zsh_err="$(GC="$GC" GC_CITY="$GC_CITY" GH="$GH" CV_STATE_DIR="$CV_STATE_DIR" \
+    zsh -c "source '$LIB'; close_if_open 'rb-open' 'landed: x'" 2>&1 >/dev/null)"
+  case "$zsh_err" in
+    *"read-only variable"*)
+      echo "  FAIL: close_if_open aborts under zsh: $zsh_err" >&2
+      FAILURES=$((FAILURES+1)) ;;
+    *)
+      echo "  PASS: close_if_open raises no read-only-variable error under zsh" ;;
+  esac
+  assert_log_count 'bd close rb-open' 1 "close_if_open under zsh still reaches bd close"
+fi
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "ALL CASES PASSED"
