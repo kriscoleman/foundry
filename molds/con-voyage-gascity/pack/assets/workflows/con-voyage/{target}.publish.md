@@ -9,16 +9,27 @@ city.toml monitor watches the PR for CI results and human feedback only. A
 human must land the PR.
 
 If push is true:
-- Before pushing, run the artifact-hygiene guard as a last line of defense —
-  it fails loud if a local tooling path (`.beads/`, `.gc/`, `.claude/`, dolt
-  data) is staged, or is committed AND was added by this work branch relative
-  to its base. Pass the same `<base-branch>` you use in the PR-create call
-  below as the 3rd argument: the guard flags only hygiene paths this branch
+- Before pushing, refuse to ship a worktree that still has uncommitted review
+  fixes (fk-etw7): apply-review-findings commits its own edits, so anything
+  left uncommitted here means a fix was applied but never landed in a commit —
+  pushing anyway would silently drop it from the PR. Fail loud instead of
+  pushing stale HEAD:
+
+  ```bash
+  CV_GUARD="$(command -v cv-worktree-prep.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name cv-worktree-prep.sh 2>/dev/null | head -1)"
+  if [ -n "$CV_GUARD" ] && [ -x "$CV_GUARD" ]; then
+    "$CV_GUARD" dirty "$(pwd)" || { echo "worktree has uncommitted changes — review fixes must be committed before publish; refusing to push stale HEAD" >&2; exit 1; }
+  fi
+  ```
+- Then run the artifact-hygiene guard as a last line of defense — it fails
+  loud if a local tooling path (`.beads/`, `.gc/`, `.claude/`, dolt data) is
+  staged, or is committed AND was added by this work branch relative to its
+  base. Pass the same `<base-branch>` you use in the PR-create call below as
+  the 3rd argument: the guard flags only hygiene paths this branch
   *introduced* on top of that base, so a repo that legitimately tracks e.g.
   `.claude/` upstream is not a false positive:
 
   ```bash
-  CV_GUARD="$(command -v cv-worktree-prep.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name cv-worktree-prep.sh 2>/dev/null | head -1)"
   if [ -n "$CV_GUARD" ] && [ -x "$CV_GUARD" ]; then
     "$CV_GUARD" guard "$(pwd)" "origin/<base-branch>" || { echo "hygiene violation detected — fix it before pushing" >&2; exit 1; }
   fi

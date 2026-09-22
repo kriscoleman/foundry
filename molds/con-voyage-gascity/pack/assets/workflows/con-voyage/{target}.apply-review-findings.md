@@ -12,6 +12,28 @@ findings before setting verdict.
 Apply fixes to the implementation source anchor/worktree named in the review
 context, not to the launcher rig root.
 
+### Commit fixes before closing
+
+A fix applied here lives only in the worktree until it is committed — publish
+later pushes whatever is at HEAD, so an uncommitted fix is silently dropped
+from the PR. When you changed any files this pass, commit them before closing
+this step, from inside the worktree. Run the artifact-hygiene guard first; it
+fails loud and unstages anything it safely can if a hygiene path (`.beads/`,
+`.gc/`, `.claude/`, dolt data) ended up staged from your edits — do not commit
+until it reports clean:
+
+```bash
+CV_GUARD="$(command -v cv-worktree-prep.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name cv-worktree-prep.sh 2>/dev/null | head -1)"
+git add -A
+if [ -n "$CV_GUARD" ] && [ -x "$CV_GUARD" ]; then
+  "$CV_GUARD" guard "$(pwd)" || { echo "fix the reported hygiene violation, re-stage, and re-run the guard before committing" >&2; exit 1; }
+fi
+git commit -m "fix: <brief description of the review fix> (review {{convoy_id}})"
+```
+
+Commit ONLY when you actually changed files this pass — never an empty/no-op
+commit when all lanes already approved and nothing needed fixing.
+
 Set code_review.verdict=done only when acceptance, test-evidence, simplicity,
 security, and code review (plus any active roster lanes) all approve after this
 pass. Set code_review.verdict=iterate when BLOCKING findings remain.
@@ -29,8 +51,9 @@ Use the exact claimed bead id when updating metadata:
     --set-metadata 'code_review.output_path=<review summary path>'
   bd close "$CLAIMED_BEAD_ID" --reason 'Con-voyage review approved.'
 
-Do not commit, push, or open a PR. The formula controls push and PR via the
-push and open_pr vars. You are the fix-application lane.
+Commit fixes locally as described above, but do not push or open a PR. The
+formula controls push and PR via the push and open_pr vars. You are the
+fix-application lane.
 Do not invoke provider-native subagents.
 
 ## Communal duty (con-voyage-gascity pack)

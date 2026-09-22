@@ -413,6 +413,113 @@ else
 fi
 
 # ===========================================================================
+# CASE 17 — dirty is CLEAN on a repo with no uncommitted changes.
+# ===========================================================================
+start_case "17: dirty is clean on a repo with nothing uncommitted"
+REPO17="$(mk_repo repo17)"
+run_script dirty "$REPO17"
+assert_eq "0" "$RC" "dirty exits 0 on a clean repo"
+
+# ===========================================================================
+# CASE 18 — dirty FAILS LOUD on a modified tracked file (the fk-etw7 bug: an
+#   applied review fix that was never committed).
+# ===========================================================================
+start_case "18: dirty fails on a modified tracked file"
+REPO18="$(mk_repo repo18)"
+printf 'changed\n' > "${REPO18}/README.md"
+run_script dirty "$REPO18"
+if [ "$RC" -ne 0 ]; then pass "dirty exits non-zero for a modified tracked file"; else fail "expected dirty to exit non-zero"; fi
+if printf '%s' "$OUT" | grep -q 'README.md'; then
+  pass "dirty reports the offending path (README.md)"
+else
+  fail "expected dirty's output to name the offending path"
+fi
+
+# ===========================================================================
+# CASE 19 — dirty FAILS LOUD on an untracked new file (a fix that added a
+#   file but never staged/committed it).
+# ===========================================================================
+start_case "19: dirty fails on an untracked new file"
+REPO19="$(mk_repo repo19)"
+printf 'new code\n' > "${REPO19}/feature.go"
+run_script dirty "$REPO19"
+if [ "$RC" -ne 0 ]; then pass "dirty exits non-zero for an untracked file"; else fail "expected dirty to exit non-zero"; fi
+if printf '%s' "$OUT" | grep -q 'feature.go'; then
+  pass "dirty reports the offending untracked path (feature.go)"
+else
+  fail "expected dirty's output to name the untracked path"
+fi
+
+# ===========================================================================
+# CASE 20 — dirty is CLEAN when the only uncommitted state lives under
+#   hygiene paths (.beads/, .gc/, .claude/, .dolt/) — that is expected local
+#   scratch state, not a missed commit, and is `guard`'s concern, not dirty's.
+# ===========================================================================
+start_case "20: dirty ignores uncommitted state confined to hygiene paths"
+REPO20="$(mk_repo repo20)"
+mkdir -p "${REPO20}/.gc" "${REPO20}/.beads" "${REPO20}/.claude"
+printf 'runtime\n' > "${REPO20}/.gc/state.json"
+printf 'cfg\n' > "${REPO20}/.beads/config.yaml"
+printf '{}\n' > "${REPO20}/.claude/settings.json"
+run_script dirty "$REPO20"
+assert_eq "0" "$RC" "dirty exits 0 when only hygiene paths are uncommitted"
+
+# ===========================================================================
+# CASE 21 — dirty on a non-git directory / missing argument is a hard error,
+#   same validation as exclude and guard.
+# ===========================================================================
+start_case "21: dirty validates its arguments the same way exclude/guard do"
+run_script dirty "$NOTGIT"
+if [ "$RC" -ne 0 ]; then pass "dirty exits non-zero for a non-git directory"; else fail "expected non-zero exit for a non-git directory"; fi
+run_script dirty
+if [ "$RC" -ne 0 ]; then pass "dirty exits non-zero with no directory argument"; else fail "expected non-zero exit with no directory argument"; fi
+
+# ===========================================================================
+# CASE 22 — fk-etw7 REGRESSION: a review fix applied but never committed must
+#   never reach a pushed ref, and once committed (mirroring the
+#   apply-review-findings commit step) it MUST reach the pushed ref. This
+#   proves the actual bug end to end: apply-findings edits a file, dirty
+#   blocks the push while it is uncommitted, committing clears the block, and
+#   the fix is then present on the remote after push — the exact chain that
+#   was previously silently broken (fixes lived only in the worktree, publish
+#   pushed stale HEAD with no error).
+# ===========================================================================
+start_case "22: fk-etw7 regression — uncommitted fix blocked, committed fix reaches the pushed remote"
+UPSTREAM22="${SANDBOX}/repo22-upstream.git"
+git init -q -b main --bare "$UPSTREAM22"
+REPO22="$(mk_repo repo22)"
+git_c "$REPO22" remote add origin "$UPSTREAM22"
+git_c "$REPO22" push -q -u origin main
+git_c "$REPO22" checkout -q -b work
+
+# Simulate apply-review-findings applying a BLOCKING fix, WITHOUT committing
+# (the pre-fk-etw7 bug: apply-findings edited the worktree and stopped here).
+printf 'fixed content\n' > "${REPO22}/README.md"
+run_script dirty "$REPO22"
+if [ "$RC" -ne 0 ]; then
+  pass "dirty blocks publish while the applied fix is uncommitted (reproduces the bug's failure mode)"
+else
+  fail "expected dirty to block an uncommitted applied fix"
+fi
+
+# Simulate apply-review-findings' new commit step: hygiene guard, then commit.
+run_script guard "$REPO22"
+assert_eq "0" "$RC" "hygiene guard is clean before the fix commit"
+git_c "$REPO22" add -A
+git_c "$REPO22" commit -q -m "fix: apply review finding (review test-convoy)"
+
+# Simulate publish's new pre-push guard: must now be clean.
+run_script dirty "$REPO22"
+assert_eq "0" "$RC" "dirty is clean once the applied fix is committed"
+
+# Simulate publish's push.
+git_c "$REPO22" push -q -u origin work
+
+# Verify the fix is present on the REMOTE — not just local HEAD.
+pushed_content="$(git_c "$REPO22" show "origin/work:README.md")"
+assert_eq "fixed content" "$pushed_content" "the committed review fix reached the pushed remote ref"
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 echo
