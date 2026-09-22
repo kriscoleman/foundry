@@ -8,6 +8,48 @@ base branch. Neither action triggers an auto-merge — the merge_queue="observe"
 city.toml monitor watches the PR for CI results and human feedback only. A
 human must land the PR.
 
+## Verify the review was actually approved before doing anything else (fk-6i53)
+
+This step's graph.v2 dependency on `{target}.con-voyage-review-loop` is
+satisfied by that bead's CLOSURE alone, regardless of its own gc.outcome. A
+controller-level gate error (e.g. a missing check script) can close the
+review loop with gc.outcome=fail while still leaving this dependency
+satisfied — silently converting "review never actually ran" into "review
+approved" for whatever runs next, which is you. Do not trust graph dispatch
+alone; re-derive the true verdict directly before touching push or PR state:
+
+```bash
+ROOT_ID="${GC_ROOT_BEAD_ID:-}"
+if [ -z "$ROOT_ID" ]; then
+  ROOT_ID="$(gc bd show "$GC_BEAD_ID" --json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    d = d[0] if isinstance(d, list) else d
+except Exception:
+    d = {}
+print((d.get('metadata') or {}).get('gc.root_bead_id') or '')
+" 2>/dev/null)"
+fi
+[ -n "$ROOT_ID" ] || ROOT_ID="$GC_BEAD_ID"
+
+CV_VERIFY="$(command -v cv-verify-review-approved.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name cv-verify-review-approved.sh 2>/dev/null | head -1)"
+if [ -z "$CV_VERIFY" ] || [ ! -x "$CV_VERIFY" ]; then
+  echo "cv-verify-review-approved.sh not found — refusing to publish without being able to verify the review outcome" >&2
+  exit 1
+fi
+"$CV_VERIFY" "$ROOT_ID" || { echo "review was NOT genuinely approved — refusing to push or open a PR" >&2; exit 1; }
+```
+
+If this block fails for ANY reason (script not found, or the review genuinely
+was not approved), STOP here. Do not push, do not open a PR, do not write a
+no-op publish record either. Mail the mayor with the exact output above, set
+gc.build.publish_status=failed, gc.build.publish_action=failed, and
+gc.build.publish_reason=<the printed reason> on the workflow root, and close
+this publish bead with gc.outcome=fail and
+gc.failure_class=review_not_approved instead of proceeding to the push/PR
+logic below.
+
 If push is true:
 - Before pushing, run the artifact-hygiene guard as a last line of defense —
   it fails loud if a local tooling path (`.beads/`, `.gc/`, `.claude/`, dolt

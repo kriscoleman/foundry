@@ -68,11 +68,40 @@ gc bd note "$WORK_BEAD" "con-voyage started — base <base-branch>, branch <bran
 Record `$WORK_BEAD` in the review context file (as `work_bead`) so the publish
 step reuses it without re-resolving.
 
+## Seed the review-loop gate check scripts (fk-6i53)
+
+The review loop's gate (`implementation-review-approved.sh`) and the workflow's
+finalize gate (`build-artifact-valid.sh`) are graph.v2 `mode = "exec"` checks
+that reference `.gc/scripts/checks/*.sh` BY PATH, resolved relative to this
+rig's root — NOT shipped there automatically by casting the pack. A rig
+missing that path cannot even run the check: the controller errors resolving
+the gate condition and the whole review loop goes gc.control_quarantined,
+which can close the loop bead with gc.outcome=fail while the dependency graph
+still treats it as satisfied — silently converting "review never ran" into
+"review approved" for the publish step that follows. Guarantee the scripts
+exist BEFORE the review loop is ever dispatched, not after:
+
+```bash
+CV_ENSURE_GATE_SCRIPTS="$(command -v cv-ensure-gate-scripts.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name cv-ensure-gate-scripts.sh 2>/dev/null | head -1)"
+if [ -z "$CV_ENSURE_GATE_SCRIPTS" ] || [ ! -x "$CV_ENSURE_GATE_SCRIPTS" ]; then
+  echo "cv-ensure-gate-scripts.sh not found under ${GC_CITY:-.} — the con-voyage pack may not be imported correctly on this rig" >&2
+  exit 1
+fi
+"$CV_ENSURE_GATE_SCRIPTS" "${GC_CITY:-.}" || { echo "gate check script seeding failed — refusing to start a review loop that would quarantine" >&2; exit 1; }
+```
+
+If this block fails for any reason, do NOT proceed to dispatch the review
+loop — it would only quarantine. Instead, mail the mayor with the exact
+output above, then close this setup bead with gc.outcome=fail and
+gc.failure_class=gate_scripts_missing (see the GC Role Worker failure
+contract) rather than gc.outcome=pass. Failing fast here, with a clear
+reason, beats failing slow and confusing eight quarantine-retry cycles later.
+
 Do not invoke provider-native subagents. Gas City graph lanes are the delegation
 mechanism.
 
 Close this setup bead with gc.outcome=pass only after the review context path is
-recorded.
+recorded AND the gate check scripts are confirmed present.
 
 ## Communal duty (con-voyage-gascity pack)
 

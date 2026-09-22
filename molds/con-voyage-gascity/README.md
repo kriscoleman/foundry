@@ -1029,14 +1029,44 @@ ailloy `cast` does not preserve or set file modes: it writes every file `0644`,
 so `pack/assets/scripts/*.sh` lose their execute bit on cast even under
 `process: false`. gc's order runner execs the script directly
 (`exec = "$PACK_DIR/assets/scripts/con-voyage-pr-watch.sh"`), which needs the
-bit. After casting, restore it:
+bit. After casting, restore it — including the `checks/` subdirectory, which
+the plain `assets/scripts/*.sh` glob does not reach:
 
 ```bash
-chmod +x packs/con-voyage/assets/scripts/*.sh
+chmod +x packs/con-voyage/assets/scripts/*.sh packs/con-voyage/assets/scripts/checks/*.sh
 ```
 
 The source keeps the bit (git mode `100755`); this only re-applies it to the
 cast output. If ailloy gains file-mode preservation, this step goes away.
+(`cv-ensure-gate-scripts.sh` below re-applies the exec bit itself to whatever
+it seeds into a rig's `.gc/scripts/checks/`, so a forgotten chmod here does
+not block the gate scripts specifically — but the manual step is still needed
+for every other `pack/assets/scripts/*.sh` entry point.)
+
+### Gate check scripts — shipped and self-seeded (fk-6i53)
+
+The `con-voyage-review-loop` and workflow-finalize gates are graph.v2
+`mode = "exec"` checks that reference `.gc/scripts/checks/*.sh` by path,
+resolved relative to the rig root — `.gc/` is local, non-committed, rig-specific
+state, never touched by `ailloy cast`. The pack ships the two check scripts
+(`pack/assets/scripts/checks/build-artifact-valid.sh` and
+`implementation-review-approved.sh`) and the con-voyage-review formula's setup
+step runs `cv-ensure-gate-scripts.sh` to seed any missing one into
+`.gc/scripts/checks/` before the review loop is ever dispatched, without
+overwriting a rig-local customization if one already exists. `publish.md` also
+runs `cv-verify-review-approved.sh` as a defense-in-depth check immediately
+before pushing or opening a PR: it re-derives the review loop's true
+gc.outcome directly, instead of trusting graph dispatch, so a quarantined or
+otherwise-broken gate can never silently read as "review approved" downstream.
+
+**Known limitation:** `build-artifact-valid.sh` itself further depends on a
+`validate_build_artifact.py` validator and a `schemas/build/*.yaml` schema set
+that this pack does **not** ship or seed — they currently only exist as local,
+uncommitted scratch files in some rigs. A rig with the gate script seeded but
+without that validator will fail the workflow-finalize gate with a clear
+"validator not found" message (a normal, retryable check failure, not a
+controller-level quarantine) rather than succeeding. Shipping that validator
+and its schemas is tracked as separate follow-up work, not covered here.
 
 ### About `README.md`
 
