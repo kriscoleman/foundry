@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.7.7](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.7.6...con-voyage-gascity-v0.7.7) (2026-09-22)
+
+
+### Bug Fixes
+
+* **con-voyage:** commit review fixes before publish pushes HEAD ([c73f0b3](https://github.com/kriscoleman/foundry/commit/c73f0b30801bc8d9b115ec81e34144d56b53ab1a))
+* **con-voyage:** stop asserting the operator's shell is always zsh (fk-0o4d) ([1987ec0](https://github.com/kriscoleman/foundry/commit/1987ec015736496b29888a4da2aba0b2fcf9cf28))
+* **con-voyage:** use zsh-compatible read -A in shell-safety reminder (fk-k14n) ([7d94873](https://github.com/kriscoleman/foundry/commit/7d948730d4020403d0d55f595332a6986d5df815))
+* **con-voyage:** warn agents about the zsh word-splitting footgun (fk-k14n) ([4b08ac9](https://github.com/kriscoleman/foundry/commit/4b08ac93f9321d7df818c54a6461f5e6115486cb))
+
 ## [0.7.6](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.7.5...con-voyage-gascity-v0.7.6) (2026-09-22)
 
 
