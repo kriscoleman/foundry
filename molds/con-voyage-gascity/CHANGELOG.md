@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.6](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.7.5...con-voyage-gascity-v0.7.6) (2026-09-22)
+
+
+### Bug Fixes
+
+* **con-voyage:** drop --city from lib/finalize bd+mail calls (fk-7v3r) ([1230557](https://github.com/kriscoleman/foundry/commit/1230557ee6f08d77c5a2cd3c48cc7be0421d9fcf))
+* **con-voyage:** isolate review lanes into per-lane worktrees (fk-q659) ([3ead89c](https://github.com/kriscoleman/foundry/commit/3ead89c6d85388f2483fab670c0fbff3a0377268))
+
 ## [0.7.5](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.7.4...con-voyage-gascity-v0.7.5) (2026-09-21)
 
 
