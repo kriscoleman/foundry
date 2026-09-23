@@ -50,8 +50,12 @@ behalf of a city:
    and simplicity at minimum; add lenses that fit the change. Iterate fix→re-review until
    clean.
 5. **Never auto-merge to main.** Finish on a branch, open a PR, and stop. A human lands it.
-6. **Conventional Commits**, small single-purpose PRs, WHY in the body, no secrets.
-7. **Deterministic bead lifecycle.** Beads move on state events — claimed → in_progress
+6. **Parallel PRs by default.** Independent beads travel concurrently, not in a serial
+   queue. Same-file overlap is not a dependency — every do-work gets its own worktree,
+   so resolve it by rebase at land time. Genuinely dependent changes prefer stacked PRs
+   over a land-chain; serial queueing is a last resort.
+7. **Conventional Commits**, small single-purpose PRs, WHY in the body, no secrets.
+8. **Deterministic bead lifecycle.** Beads move on state events — claimed → in_progress
    when a step starts, closed on land ("landed") or abandon ("abandoned") — never left
    stranded, never left READY while work is active.
 
