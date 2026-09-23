@@ -359,6 +359,7 @@ run_script "${DEFAULT_ENV[@]}" STUB_SESSION_LIST_JSON='{"sessions":[]}'
 assert_eq "0" "$RC" "script exits 0"
 assert_log_count "$GC_LOG" 'sling foundry-kc/gc.gap-analyst fk-lane3 --nudge' 1 "the lane is re-routed to its own target with an immediate nudge"
 assert_log_count "$GC_LOG" 'session nudge' 0 "no direct session nudge — there is nobody alive to nudge"
+assert_log_count "$GC_LOG" '^bd update fk-lane3 ' 1 "fk-mr07: the re-route branch's attempt_count update omits --city (fk-lane3 is an existing, already-rig-prefixed lane bead — same fk-7v3r bug class as CASE 4's nudge-branch update); relies on cwd auto-detection like every other already-fixed bd call in this pack"
 assert_eq "1" "$(db_metadata_field "$DB_FILE" "fk-lane3" "gc.review_watchdog.attempt_count")" "attempt_count advances to 1 even though the lane was still fresh"
 
 # ===========================================================================
@@ -433,6 +434,7 @@ assert_eq "0" "$RC" "script exits 0"
 assert_log_count "$GC_LOG" 'sling|session nudge' 0 "no 4th re-dispatch once the cap is reached"
 assert_log_count "$GC_LOG" 'mail send human' 1 "exactly one escalation mail to the operator"
 assert_log_count "$GC_LOG" 'mail send human .*fk-lane9' 1 "the escalation mail names the lane"
+assert_log_count "$GC_LOG" '^bd update fk-lane9 ' 1 "fk-mr07: the escalate branch's escalated-flag update omits --city (fk-lane9 is an existing, already-rig-prefixed lane bead — same fk-7v3r bug class as CASE 4's nudge-branch update); relies on cwd auto-detection like every other already-fixed bd call in this pack"
 assert_eq "1" "$(db_metadata_field "$DB_FILE" "fk-lane9" "gc.review_watchdog.escalated")" "escalated flag is now set"
 assert_eq "3" "$(db_metadata_field "$DB_FILE" "fk-lane9" "gc.review_watchdog.attempt_count")" "attempt_count is preserved through escalation, not incremented further"
 
