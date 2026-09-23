@@ -230,6 +230,72 @@ cv_bead_close "rb-unknown" "abandoned" "dropped" 2>/dev/null || rc=$?
 assert_eq "0" "$rc" "unknown-bead call still returns 0 (never aborts the step)"
 
 # ---------------------------------------------------------------------------
+# cv_bead_claim_non_routable / CV_WORK_BEAD_OWNER (fk-9f2n — the WORK_BEAD
+# claim re-hand loop): setup-con-voyage-review's WORK_BEAD lifecycle block
+# used to run `bd update $WORK_BEAD --claim`, which assigns the work bead to
+# the CALLING run-operator session. Because the work bead carries no graph.v2
+# step metadata (empty gc.root_bead_id/gc.routed_to/gc.continuation_group),
+# that same session's NEXT `gc hook --claim` immediately re-surfaced the
+# identical bead as fresh routed work -- a live dispatch loop confirmed
+# recurring across three separate con-voyage runs (see fk-9f2n notes).
+# Assigning to the fixed CV_WORK_BEAD_OWNER identity instead means no
+# session's resume-my-own-in-progress-work claim fallback ever matches it.
+# ---------------------------------------------------------------------------
+start_case "CV_WORK_BEAD_OWNER: defined and non-empty"
+if [ -n "${CV_WORK_BEAD_OWNER:-}" ]; then
+  echo "  PASS: CV_WORK_BEAD_OWNER is defined (=${CV_WORK_BEAD_OWNER})"
+else
+  echo "  FAIL: CV_WORK_BEAD_OWNER is not defined by ${LIB}" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
+start_case "cv_bead_claim_non_routable: empty bead id -> no-op, no bd call"
+: > "$GC_LOG"
+cv_bead_claim_non_routable "" 2>/dev/null
+assert_log_count 'bd update' 0 "empty id never calls bd update"
+
+start_case "cv_bead_claim_non_routable: unknown bead -> no-op, no bd call (fail-safe)"
+: > "$GC_LOG"
+cv_bead_claim_non_routable "rb-unknown" 2>/dev/null
+assert_log_count 'bd update' 0 "unknown bead never calls bd update"
+
+start_case "cv_bead_claim_non_routable: already-closed bead -> no-op, no bd call (fail-safe)"
+: > "$GC_LOG"
+cv_bead_claim_non_routable "rb-closed" 2>/dev/null
+assert_log_count 'bd update' 0 "already-closed bead never calls bd update"
+
+start_case "cv_bead_claim_non_routable: open bead -> assigns to CV_WORK_BEAD_OWNER, in_progress, exactly once"
+: > "$GC_LOG"
+cv_bead_claim_non_routable "rb-open" 2>/dev/null
+assert_log_count "bd update rb-open --assignee ${CV_WORK_BEAD_OWNER} --status in_progress" 1 "claims under the non-routable owner identity (never --claim)"
+assert_log_count '--claim( |$)' 0 "never uses --claim (that is exactly what assigns to the caller's own session)"
+
+start_case "cv_bead_claim_non_routable: fail-safe paths never abort the caller"
+rc=0
+cv_bead_claim_non_routable "rb-unknown" 2>/dev/null || rc=$?
+assert_eq "0" "$rc" "unknown-bead call still returns 0 (never aborts the step)"
+
+start_case "setup-con-voyage-review.md: WORK_BEAD claim uses the non-routable owner identity, not --claim"
+SETUP_MD="${MOLD_DIR}/pack/assets/workflows/con-voyage/{target}.setup-con-voyage-review.md"
+if [ -f "$SETUP_MD" ]; then
+  if grep -qF -- "--assignee \"${CV_WORK_BEAD_OWNER}\"" "$SETUP_MD"; then
+    echo "  PASS: workflow block assigns the work bead to CV_WORK_BEAD_OWNER"
+  else
+    echo "  FAIL: workflow block does not assign the work bead to CV_WORK_BEAD_OWNER (drifted from ${LIB}?)" >&2
+    FAILURES=$((FAILURES+1))
+  fi
+  if grep -qE -- '\$\{?WORK_BEAD\}? --claim\b' "$SETUP_MD"; then
+    echo "  FAIL: workflow block still claims WORK_BEAD under the caller's own identity (--claim regressed)" >&2
+    FAILURES=$((FAILURES+1))
+  else
+    echo "  PASS: workflow block no longer claims WORK_BEAD under the caller's own identity"
+  fi
+else
+  echo "  FAIL: setup-con-voyage-review.md not found at ${SETUP_MD}" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
+# ---------------------------------------------------------------------------
 # finalize_read / finalize_write round-trip
 # ---------------------------------------------------------------------------
 start_case "finalize_write/read round-trip"

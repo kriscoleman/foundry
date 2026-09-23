@@ -21,9 +21,14 @@ con-voyage now drives the WORK BEAD's own lifecycle so it moves on the dashboard
 and never sits open after its PR lands. The work bead is the bead this con-voyage
 delivers — NOT this setup step's own claimed bead. In this graph.v2 workflow the
 `{{convoy_id}}` token resolves to a synthetic input convoy that `tracks` the real
-work bead; resolve it, then claim it and seed its body. Run this block VERBATIM
-(it fails safe: on any resolution error it falls back to the convoy id, and every
-bd call is best-effort so a bd hiccup never blocks review):
+work bead; resolve it, then claim it and seed its body. Assign it to the fixed
+`con-voyage:work-bead` identity — NOT this session's own actor identity — because
+the work bead carries no graph.v2 step metadata (empty gc.root_bead_id/
+gc.routed_to/gc.continuation_group); assigning it to yourself means your own next
+`gc hook --claim` immediately re-hands you that same bead as fresh routed work, a
+confirmed dispatch loop (fk-9f2n). Run this block VERBATIM (it fails safe: on any
+resolution error it falls back to the convoy id, and every bd call is best-effort
+so a bd hiccup never blocks review):
 
 ```bash
 # Resolve the real work bead from {{convoy_id}} (synthetic input convoy ->
@@ -53,12 +58,15 @@ if synthetic or (d.get('issue_type') or '') == 'convoy':
 print(cid)
 " "$CONVOY_ID" 2>/dev/null || echo "$CONVOY_ID")"
 
-# Claim -> in_progress (idempotent). Seed the description from the review
-# context (base + branch under review, PR target, active roster) so the bead
-# carries real content even when intake left it empty. Append rather than
-# clobber if the human already wrote a description — use --append-notes/note for
-# the review context so the original ask is preserved.
-gc bd update "$WORK_BEAD" --claim || echo "note: could not claim work bead $WORK_BEAD (continuing)"
+# Claim -> in_progress (idempotent). Assign to the fixed non-routable
+# "con-voyage:work-bead" identity, NOT --claim (which would assign to this
+# session and re-trigger the fk-9f2n dispatch loop described above). Seed the
+# description from the review context (base + branch under review, PR target,
+# active roster) so the bead carries real content even when intake left it
+# empty. Append rather than clobber if the human already wrote a description —
+# use --append-notes/note for the review context so the original ask is
+# preserved.
+gc bd update "$WORK_BEAD" --assignee "con-voyage:work-bead" --status in_progress || echo "note: could not claim work bead $WORK_BEAD (continuing)"
 gc bd set-state "$WORK_BEAD" cv=reviewing --reason "con-voyage: review started" \
   || echo "note: could not set cv=reviewing on $WORK_BEAD (continuing)"
 gc bd note "$WORK_BEAD" "con-voyage started — base <base-branch>, branch <branch-under-review>, PR target <owner/repo>. Review roster: floor (acceptance, test-evidence, simplicity, security, code) + <active roster lenses>. A human lands the PR; this bead closes automatically on merge/close via the con-voyage-finalize monitor." \
