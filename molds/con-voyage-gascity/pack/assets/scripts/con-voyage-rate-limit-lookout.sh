@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# con-voyage-lookout.sh — claude-fleet usage/context lookout: the pack's
-# rate-limit circuit breaker and proactive context-compact handoff monitor.
+# con-voyage-rate-limit-lookout.sh — the pack's claude-fleet rate-limit
+# circuit breaker and proactive context-compaction handoff monitor.
 #
 # WHY THIS MONITOR EXISTS: con-voyage puts its most important work on claude
 # (opus for the mayor, sonnet for do-work/implementation workers — see the
@@ -140,19 +140,19 @@ case "$CV_LOOKOUT_USAGE_WINDOW_MINUTES" in        *[!0-9]*|'') CV_LOOKOUT_USAGE_
 # Preflight checks
 # ---------------------------------------------------------------------------
 if ! command -v "$GC" >/dev/null 2>&1; then
-  echo "con-voyage-lookout: ERROR: gc binary not found at '${GC}'. Set GC= to override." >&2
+  echo "con-voyage-rate-limit-lookout: ERROR: gc binary not found at '${GC}'. Set GC= to override." >&2
   exit 1
 fi
 
 if ! command -v python3 >/dev/null 2>&1; then
-  echo "con-voyage-lookout: ERROR: python3 not found; required for JSON parsing." >&2
+  echo "con-voyage-rate-limit-lookout: ERROR: python3 not found; required for JSON parsing." >&2
   exit 1
 fi
 
-echo "con-voyage-lookout: claude_providers=${CV_LOOKOUT_CLAUDE_PROVIDERS} compact<=${CV_LOOKOUT_COMPACT_HANDOFF_PERCENT}% reset=${CV_LOOKOUT_BREAKER_RESET_SECONDS}s escalate=${CV_LOOKOUT_ESCALATE_TARGET} fallback=${CV_LOOKOUT_FALLBACK_LARGE_POOL},${CV_LOOKOUT_FALLBACK_MEDIUM_POOL},${CV_LOOKOUT_FALLBACK_SMALL_POOL}"
+echo "con-voyage-rate-limit-lookout: claude_providers=${CV_LOOKOUT_CLAUDE_PROVIDERS} compact<=${CV_LOOKOUT_COMPACT_HANDOFF_PERCENT}% reset=${CV_LOOKOUT_BREAKER_RESET_SECONDS}s escalate=${CV_LOOKOUT_ESCALATE_TARGET} fallback=${CV_LOOKOUT_FALLBACK_LARGE_POOL},${CV_LOOKOUT_FALLBACK_MEDIUM_POOL},${CV_LOOKOUT_FALLBACK_SMALL_POOL}"
 
 mkdir -p "${CV_LOOKOUT_STATE_DIR}/sessions" || {
-  echo "con-voyage-lookout: ERROR: cannot create state dir ${CV_LOOKOUT_STATE_DIR}" >&2
+  echo "con-voyage-rate-limit-lookout: ERROR: cannot create state dir ${CV_LOOKOUT_STATE_DIR}" >&2
   exit 1
 }
 
@@ -184,7 +184,7 @@ breaker_write() {
   # breaker_write STATE OPENED_AT LAST_LIMIT_AT LAST_MAIL_AT
   printf 'state=%s\nopened_at=%s\nlast_limit_seen_at=%s\nlast_escalated_at=%s\n' \
     "$1" "$2" "$3" "$4" > "$BREAKER_FILE" \
-    || echo "con-voyage-lookout: WARNING: failed to write ${BREAKER_FILE}" >&2
+    || echo "con-voyage-rate-limit-lookout: WARNING: failed to write ${BREAKER_FILE}" >&2
 }
 
 # ---------------------------------------------------------------------------
@@ -218,18 +218,18 @@ for s in sessions:
 " 2>/dev/null)"
 
 if [ -z "$SESSIONS_TSV" ]; then
-  echo "con-voyage-lookout: no active claude-backed sessions found"
+  echo "con-voyage-rate-limit-lookout: no active claude-backed sessions found"
   # A city with zero claude sessions cannot be rate-limited; if the breaker
   # was left open (e.g. sessions closed before the window elapsed), close it
   # out rather than stranding the fleet in fallback mode.
   if [ "$BREAKER_STATE" = "open" ]; then
-    echo "con-voyage-lookout: CLEAR — breaker open but no claude sessions remain; closing"
+    echo "con-voyage-rate-limit-lookout: CLEAR — breaker open but no claude sessions remain; closing"
     breaker_write closed "$BREAKER_OPENED_AT" 0 "$NOW_EPOCH"
     "$GC" --city "$GC_CITY" mail send "$CV_LOOKOUT_ESCALATE_TARGET" \
-      -s "con-voyage lookout: breaker closed (no claude sessions remain)" \
+      -s "con-voyage rate-limit lookout: breaker closed (no claude sessions remain)" \
       -m "The usage-limit circuit breaker is CLOSED. No active claude-backed sessions remain, so no limit pressure is possible. Safe to resume normal claude-tier dispatch." \
       >/dev/null 2>&1 \
-      || echo "con-voyage-lookout: WARNING: all-clear mail to ${CV_LOOKOUT_ESCALATE_TARGET} failed" >&2
+      || echo "con-voyage-rate-limit-lookout: WARNING: all-clear mail to ${CV_LOOKOUT_ESCALATE_TARGET} failed" >&2
   fi
   exit 0
 fi
@@ -281,10 +281,10 @@ parts = [
 print('; '.join(parts))
 " 2>/dev/null)"
 if [ -n "$USAGE_SUMMARY" ]; then
-  printf '# con-voyage-lookout usage snapshot (trailing %sm, epoch %s)\n%s\n' \
+  printf '# con-voyage-rate-limit-lookout usage snapshot (trailing %sm, epoch %s)\n%s\n' \
     "$CV_LOOKOUT_USAGE_WINDOW_MINUTES" "$NOW_EPOCH" "$USAGE_SUMMARY" \
     > "${CV_LOOKOUT_STATE_DIR}/usage-snapshot.txt" 2>/dev/null || true
-  echo "con-voyage-lookout: usage ${CV_LOOKOUT_USAGE_WINDOW_MINUTES}m: ${USAGE_SUMMARY}"
+  echo "con-voyage-rate-limit-lookout: usage ${CV_LOOKOUT_USAGE_WINDOW_MINUTES}m: ${USAGE_SUMMARY}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -333,14 +333,14 @@ handoff_session() {
   local last
   last="$(int_or_zero "$(state_get "$sfile" last_handoff_at)")"
   if [ "$((NOW_EPOCH - last))" -lt "$CV_LOOKOUT_HANDOFF_COOLDOWN_SECONDS" ]; then
-    echo "con-voyage-lookout: SKIP ${sid} — handed off $((NOW_EPOCH - last))s ago (cooldown ${CV_LOOKOUT_HANDOFF_COOLDOWN_SECONDS}s)"
+    echo "con-voyage-rate-limit-lookout: SKIP ${sid} — handed off $((NOW_EPOCH - last))s ago (cooldown ${CV_LOOKOUT_HANDOFF_COOLDOWN_SECONDS}s)"
     return 0
   fi
-  if "$GC" --city "$GC_CITY" handoff --target "$sid" "con-voyage-lookout: ${reason}" 2>&1; then
+  if "$GC" --city "$GC_CITY" handoff --target "$sid" "con-voyage-rate-limit-lookout: ${reason}" 2>&1; then
     printf 'last_handoff_at=%s\n' "$NOW_EPOCH" > "$sfile" 2>/dev/null || true
-    echo "con-voyage-lookout: HANDOFF ${sid} — ${reason}"
+    echo "con-voyage-rate-limit-lookout: HANDOFF ${sid} — ${reason}"
   else
-    echo "con-voyage-lookout: WARNING: handoff failed for ${sid} (${reason}); will retry next cycle" >&2
+    echo "con-voyage-rate-limit-lookout: WARNING: handoff failed for ${sid} (${reason}); will retry next cycle" >&2
   fi
 }
 
@@ -366,12 +366,12 @@ while IFS=$'\x1f' read -r sid template provider; do
   case "$compact_pct" in *[!0-9-]*|'') compact_pct="-1" ;; esac
 
   if [ "$limited" = "1" ]; then
-    echo "con-voyage-lookout: LIMITED ${sid} (${template})${reset_hint:+ — ${reset_hint}}"
+    echo "con-voyage-rate-limit-lookout: LIMITED ${sid} (${template})${reset_hint:+ — ${reset_hint}}"
     LIMITED_ROWS="${LIMITED_ROWS}${sid}"$'\x1f'"${template}"$'\x1f'"${reset_hint}"$'\n'
   elif [ "$compact_pct" -ge 0 ] && [ "$compact_pct" -le "$CV_LOOKOUT_COMPACT_HANDOFF_PERCENT" ]; then
     COMPACT_ROWS="${COMPACT_ROWS}${sid}"$'\x1f'"${template}"$'\x1f'"${compact_pct}"$'\n'
   else
-    echo "con-voyage-lookout: OK ${sid} (${template}, provider=${provider})"
+    echo "con-voyage-rate-limit-lookout: OK ${sid} (${template}, provider=${provider})"
   fi
 done <<< "$SESSIONS_TSV"
 
@@ -383,9 +383,9 @@ if [ -n "$LIMITED_ROWS" ]; then
   limited_list="$(printf '%s' "$LIMITED_ROWS" | awk -F'\x1f' '{printf "%s(%s)%s ", $1, $2, ($3 != "" ? " reset:" $3 : "")}')"
 
   if [ "$BREAKER_STATE" != "open" ]; then
-    echo "con-voyage-lookout: TRIP — ${limited_count} claude session(s) limited: ${limited_list}"
+    echo "con-voyage-rate-limit-lookout: TRIP — ${limited_count} claude session(s) limited: ${limited_list}"
   else
-    echo "con-voyage-lookout: breaker already open — ${limited_count} session(s) still limited"
+    echo "con-voyage-rate-limit-lookout: breaker already open — ${limited_count} session(s) still limited"
   fi
 
   # Fleet-wide handoff: every active claude session restarts with its
@@ -399,7 +399,7 @@ if [ -n "$LIMITED_ROWS" ]; then
 
   # Escalate to the mayor on trip, then at most every REMIND seconds.
   if [ "$BREAKER_STATE" != "open" ] || [ "$((NOW_EPOCH - BREAKER_LAST_MAIL_AT))" -ge "$CV_LOOKOUT_BREAKER_REMIND_SECONDS" ]; then
-    mail_body="The con-voyage lookout observed claude usage/rate limits. The circuit breaker is OPEN — switch dispatch to all-opencode mode.
+    mail_body="The con-voyage rate-limit lookout observed claude usage/rate limits. The circuit breaker is OPEN — switch dispatch to all-opencode mode.
 
 Limited sessions: ${limited_list:-unknown}
 
@@ -422,13 +422,13 @@ Claude usage (trailing ${CV_LOOKOUT_USAGE_WINDOW_MINUTES}m): ${USAGE_SUMMARY:-no
 
 The breaker auto-closes after ${CV_LOOKOUT_BREAKER_RESET_SECONDS}s with no limit signature; you will get an all-clear mail here."
     if "$GC" --city "$GC_CITY" mail send "$CV_LOOKOUT_ESCALATE_TARGET" \
-      -s "con-voyage lookout: claude limit circuit breaker OPEN — switch to all-opencode mode" \
+      -s "con-voyage rate-limit lookout: claude limit circuit breaker OPEN — switch to all-opencode mode" \
       -m "$mail_body" \
       2>&1; then
-      echo "con-voyage-lookout: escalated to ${CV_LOOKOUT_ESCALATE_TARGET}"
+      echo "con-voyage-rate-limit-lookout: escalated to ${CV_LOOKOUT_ESCALATE_TARGET}"
       breaker_write open "${BREAKER_OPENED_AT:-$NOW_EPOCH}" "$NOW_EPOCH" "$NOW_EPOCH"
     else
-      echo "con-voyage-lookout: WARNING: escalation mail to ${CV_LOOKOUT_ESCALATE_TARGET} failed; will retry next cycle" >&2
+      echo "con-voyage-rate-limit-lookout: WARNING: escalation mail to ${CV_LOOKOUT_ESCALATE_TARGET} failed; will retry next cycle" >&2
       # Keep the observed limit timestamp even when the mail fails, so the
       # reset window still measures from the last SEEN limit.
       breaker_write open "${BREAKER_OPENED_AT:-$NOW_EPOCH}" "$NOW_EPOCH" "$BREAKER_LAST_MAIL_AT"
@@ -440,20 +440,20 @@ The breaker auto-closes after ${CV_LOOKOUT_BREAKER_RESET_SECONDS}s with no limit
 elif [ "$BREAKER_STATE" = "open" ]; then
   # No limit showing this run. Close only after a full reset window clean.
   if [ "$((NOW_EPOCH - BREAKER_LAST_LIMIT_AT))" -ge "$CV_LOOKOUT_BREAKER_RESET_SECONDS" ]; then
-    echo "con-voyage-lookout: CLEAR — no limit signature for ${CV_LOOKOUT_BREAKER_RESET_SECONDS}s; breaker closed"
+    echo "con-voyage-rate-limit-lookout: CLEAR — no limit signature for ${CV_LOOKOUT_BREAKER_RESET_SECONDS}s; breaker closed"
     breaker_write closed "$BREAKER_OPENED_AT" 0 "$NOW_EPOCH"
     if "$GC" --city "$GC_CITY" mail send "$CV_LOOKOUT_ESCALATE_TARGET" \
-      -s "con-voyage lookout: breaker closed — claude tiers clear" \
+      -s "con-voyage rate-limit lookout: breaker closed — claude tiers clear" \
       -m "No claude usage/rate-limit signature has been observed for ${CV_LOOKOUT_BREAKER_RESET_SECONDS}s. The circuit breaker is CLOSED — safe to resume normal claude-tier dispatch (opus/sonnet) for new work.
 
 Claude usage (trailing ${CV_LOOKOUT_USAGE_WINDOW_MINUTES}m): ${USAGE_SUMMARY:-no model facts recorded}" \
       2>&1; then
-      echo "con-voyage-lookout: all-clear mailed to ${CV_LOOKOUT_ESCALATE_TARGET}"
+      echo "con-voyage-rate-limit-lookout: all-clear mailed to ${CV_LOOKOUT_ESCALATE_TARGET}"
     else
-      echo "con-voyage-lookout: WARNING: all-clear mail to ${CV_LOOKOUT_ESCALATE_TARGET} failed" >&2
+      echo "con-voyage-rate-limit-lookout: WARNING: all-clear mail to ${CV_LOOKOUT_ESCALATE_TARGET} failed" >&2
     fi
   else
-    echo "con-voyage-lookout: breaker open — clean this run, $((BREAKER_LAST_LIMIT_AT + CV_LOOKOUT_BREAKER_RESET_SECONDS - NOW_EPOCH))s left in reset window"
+    echo "con-voyage-rate-limit-lookout: breaker open — clean this run, $((BREAKER_LAST_LIMIT_AT + CV_LOOKOUT_BREAKER_RESET_SECONDS - NOW_EPOCH))s left in reset window"
   fi
 fi
 

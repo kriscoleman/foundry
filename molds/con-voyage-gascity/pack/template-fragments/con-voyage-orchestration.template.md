@@ -99,7 +99,7 @@ On "PR LANDED" the `con-voyage-finalize` monitor handles teardown within its coo
 2. Verify the convoy closed: `gc convoy status <convoy-id>`.
 3. Report to the user: PR link, review cycles, CI cycles.
 
-### Model tiers & the opt-in all-opencode fallback mode (con-voyage lookout)
+### Model tiers & the opt-in all-opencode fallback mode (con-voyage-rate-limit-lookout)
 
 Work is tiered by complexity, with a claude ↔ opencode equivalency:
 
@@ -113,7 +113,7 @@ By default reviewers ride the same claude tiers you and the workers do (the
 pack's claude mode) — a city can opt into an opencode + fireworks mode for
 reviewers instead (see README.md "Model tiers"), a separate, static choice
 from the fallback mode below. You don't manage that choice — but if the city
-has also opted into the **`con-voyage-lookout`** order (it ships off by
+has also opted into the **`con-voyage-rate-limit-lookout`** order (it ships off by
 default; a city enables it by overriding its trigger), it watches every
 claude-backed session for you, and its mail is actionable:
 

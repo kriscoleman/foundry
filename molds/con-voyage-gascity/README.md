@@ -150,7 +150,7 @@ the pack to repair beads (instead of the default `mol-polecat-work`).
 > provider tiers (`cv-review-light` / `cv-review-standard` / `cv-review-intensive`),
 > which default to **claude** models — no `[[patches.agent]]` blocks or opencode
 > account needed. A city can opt into an opencode + fireworks mode instead. The
-> rate-limit circuit breaker (`con-voyage-lookout`) is separately opt-in, and if
+> rate-limit circuit breaker (`con-voyage-rate-limit-lookout`) is separately opt-in, and if
 > enabled its opencode fallback pools need city providers regardless of which
 > mode the reviewers are in. See [Model tiers](#model-tiers) below.
 
@@ -280,12 +280,12 @@ name = "cv-qa-test-engineer"
 provider = "cv-review-intensive"
 ```
 
-### The `con-voyage-lookout` order (rate-limit circuit breaker + compact handoffs) — opt-in
+### The `con-voyage-rate-limit-lookout` order (circuit breaker + compact handoffs) — opt-in
 
 The claude side of the split has two provider-side failure modes that bead-level
 watchdogs can't see: **usage/rate limits** (a Claude Code session at its cap looks
 alive but produces nothing) and **context auto-compaction** landing mid-task.
-The city-scoped **`con-voyage-lookout`** order watches for both — but it ships
+The city-scoped **`con-voyage-rate-limit-lookout`** order watches for both — but it ships
 **opt-in** (`trigger = "manual"`), not default-on. A city switches it on only if
 it wants automatic failover for claude-backed mayor/do-work/implementation-worker
 sessions — relevant regardless of which reviewer mode above the city runs, since
@@ -294,7 +294,7 @@ the mayor and workers stay claude either way. Enable it with:
 ```toml
 # city.toml — opt into the circuit breaker
 [[orders.overrides]]
-name = "con-voyage-lookout"
+name = "con-voyage-rate-limit-lookout"
 trigger = "cooldown"
 ```
 
