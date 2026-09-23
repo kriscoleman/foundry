@@ -96,6 +96,10 @@ start_case "pack.toml declares all three tier providers on builtin:opencode with
 # ---------------------------------------------------------------------------
 # Parse the real TOML (python3 tomllib) — grep-based block extraction is too
 # fragile around nested [providers.<tier>.option_defaults] sub-tables.
+# Each tier must ALSO re-declare the model option with an explicit choice
+# carrying flag_args: gc's builtin opencode catalog is a closed choice list
+# (gc 1.4.2 predates open flag_template options), so without the choice the
+# fireworks model ids fail config validation with "not a valid choice".
 check_provider_block() {
   local tier="$1" model="$2"
   result="$(python3 - "$tier" "$model" "${PACK_DIR}/pack.toml" <<'PY'
@@ -106,20 +110,34 @@ with open(path, 'rb') as fh:
 prov = (data.get('providers') or {}).get(tier)
 if prov is None:
     print('missing')
-elif prov.get('base') != 'builtin:opencode':
+    raise SystemExit(0)
+if prov.get('base') != 'builtin:opencode':
     print('bad-base:' + str(prov.get('base')))
-elif (prov.get('option_defaults') or {}).get('model') != model:
+    raise SystemExit(0)
+if (prov.get('option_defaults') or {}).get('model') != model:
     print('bad-model:' + str((prov.get('option_defaults') or {}).get('model')))
-else:
-    print('ok')
+    raise SystemExit(0)
+opts = [o for o in (prov.get('options_schema') or []) if o.get('key') == 'model']
+if not opts:
+    print('missing-model-option')
+    raise SystemExit(0)
+choice = next((c for c in (opts[0].get('choices') or []) if c.get('value') == model), None)
+if choice is None:
+    print('missing-model-choice')
+    raise SystemExit(0)
+if choice.get('flag_args') != ['--model', model]:
+    print('bad-flag-args:' + str(choice.get('flag_args')))
+    raise SystemExit(0)
+print('ok')
 PY
 )"
   case "$result" in
-    ok)         pass "[providers.${tier}] base=builtin:opencode model=${model}" ;;
-    missing)    fail "pack.toml missing [providers.${tier}]" ;;
-    bad-base:*) fail "[providers.${tier}] ${result}" ;;
-    bad-model:*) fail "[providers.${tier}] ${result} (expected ${model})" ;;
-    *)          fail "[providers.${tier}] unexpected parse result: ${result}" ;;
+    ok)                    pass "[providers.${tier}] opencode tier, model=${model}, choice carries --model flag_args" ;;
+    missing)               fail "pack.toml missing [providers.${tier}]" ;;
+    missing-model-option)  fail "[providers.${tier}] must re-declare the model option (closed builtin catalog rejects the pin)" ;;
+    missing-model-choice)  fail "[providers.${tier}] model option lacks a choice for ${model}" ;;
+    bad-base:*|bad-model:*|bad-flag-args:*) fail "[providers.${tier}] ${result}" ;;
+    *)                     fail "[providers.${tier}] unexpected parse result: ${result}" ;;
   esac
 }
 check_provider_block cv-review-intensive "fireworks-ai/accounts/fireworks/models/kimi-k3"
