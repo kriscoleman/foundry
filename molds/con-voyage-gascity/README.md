@@ -1071,14 +1071,14 @@ before pushing or opening a PR: it re-derives the review loop's true
 gc.outcome directly, instead of trusting graph dispatch, so a quarantined or
 otherwise-broken gate can never silently read as "review approved" downstream.
 
-**Known limitation:** `build-artifact-valid.sh` itself further depends on a
-`validate_build_artifact.py` validator and a `schemas/build/*.yaml` schema set
-that this pack does **not** ship or seed — they currently only exist as local,
-uncommitted scratch files in some rigs. A rig with the gate script seeded but
-without that validator will fail the workflow-finalize gate with a clear
-"validator not found" message (a normal, retryable check failure, not a
-controller-level quarantine) rather than succeeding. Shipping that validator
-and its schemas is tracked as separate follow-up work, not covered here.
+`build-artifact-valid.sh` itself further depends on a `validate_build_artifact.py`
+validator and a `schemas/build/*.yaml` schema set, both resolved relative to the
+rig root (`.gc/scripts/validate_build_artifact.py` and `schemas/build/`). The
+pack ships both (`pack/assets/scripts/validate_build_artifact.py` and
+`pack/assets/schemas/build/*.yaml`) and the same setup step runs
+`cv-ensure-build-artifact-validator.sh` to seed whichever of them is missing,
+right after `cv-ensure-gate-scripts.sh`, without overwriting a rig-local
+customization if one already exists (fk-ohoy).
 
 ### About `README.md`
 
