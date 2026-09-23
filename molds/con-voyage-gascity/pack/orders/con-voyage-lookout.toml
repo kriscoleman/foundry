@@ -1,0 +1,40 @@
+# con-voyage-lookout — claude-fleet usage/context monitor.
+#
+# Peeks every active claude-backed session (mayor, do-work pools,
+# implementation workers) for two provider-side events:
+#   - context auto-compact approaching -> proactive `gc handoff --target`
+#     (smooth restart with the worker's own handoff mail waiting)
+#   - usage/rate limit observed        -> circuit breaker OPENS: fleet-wide
+#     handoff + structured escalation to the mayor so it can switch dispatch
+#     to the all-opencode fallback pools; auto-closes (all-clear mail) after
+#     a limit-free reset window.
+#
+# scope = "city" is deliberate: sessions span rigs, so one lookout instance
+# watches the whole fleet — per-rig instances would duplicate handoffs and
+# escalation mail.
+#
+# Every knob is overridable per city via [[orders.overrides]] env, e.g.:
+#   [[orders.overrides]]
+#   name = "con-voyage-lookout"
+#   rig = "*"
+#   [orders.overrides.env]
+#   CV_LOOKOUT_FALLBACK_LARGE_POOL = "my-opus-equivalent"
+[order]
+description = "Watch claude-backed sessions for usage/rate limits and approaching context compaction: proactive handoff before compact, circuit breaker + mayor escalation to all-opencode fallback mode on limits"
+trigger = "cooldown"
+interval = "5m"
+exec = "$PACK_DIR/assets/scripts/con-voyage-lookout.sh"
+scope = "city"
+
+[order.env]
+CV_LOOKOUT_CLAUDE_PROVIDERS = "claude,opus,sonnet"
+CV_LOOKOUT_PEEK_LINES = "80"
+CV_LOOKOUT_COMPACT_HANDOFF_PERCENT = "15"
+CV_LOOKOUT_HANDOFF_COOLDOWN_SECONDS = "1800"
+CV_LOOKOUT_BREAKER_RESET_SECONDS = "3600"
+CV_LOOKOUT_BREAKER_REMIND_SECONDS = "1800"
+CV_LOOKOUT_ESCALATE_TARGET = "mayor"
+CV_LOOKOUT_FALLBACK_LARGE_POOL = "kimi-k3"
+CV_LOOKOUT_FALLBACK_MEDIUM_POOL = "glm-5p3-flash"
+CV_LOOKOUT_FALLBACK_SMALL_POOL = "minimax-m3"
+CV_LOOKOUT_USAGE_WINDOW_MINUTES = "60"
