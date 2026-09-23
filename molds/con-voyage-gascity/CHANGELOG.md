@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.8](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.7.7...con-voyage-gascity-v0.7.8) (2026-09-23)
+
+
+### Bug Fixes
+
+* **con-voyage:** ship + self-seed gate check scripts, verify before publish ([9bd6458](https://github.com/kriscoleman/foundry/commit/9bd64581d93d77b5ba1f5402c581e76bea079c2b))
+
 ## [0.7.7](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.7.6...con-voyage-gascity-v0.7.7) (2026-09-22)
 
 
