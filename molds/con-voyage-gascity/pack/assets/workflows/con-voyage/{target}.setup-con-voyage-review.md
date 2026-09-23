@@ -97,11 +97,38 @@ gc.failure_class=gate_scripts_missing (see the GC Role Worker failure
 contract) rather than gc.outcome=pass. Failing fast here, with a clear
 reason, beats failing slow and confusing eight quarantine-retry cycles later.
 
+## Seed the build-artifact validator dependency (fk-ohoy)
+
+The workflow's finalize gate (`build-artifact-valid.sh`, seeded above) does not
+validate anything itself — it shells out to a `validate_build_artifact.py`
+validator at `.gc/scripts/validate_build_artifact.py`, which loads schema
+definitions from `schemas/build/*.yaml`, both resolved relative to this rig's
+root and neither shipped or seeded there automatically by casting the pack. A
+rig with the gate script seeded but not its validator fails the
+workflow-finalize gate with a confusing "validator not found" error instead of
+actually validating anything. Guarantee both exist BEFORE the workflow-finalize
+gate is ever evaluated:
+
+```bash
+CV_ENSURE_VALIDATOR="$(command -v cv-ensure-build-artifact-validator.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name cv-ensure-build-artifact-validator.sh 2>/dev/null | head -1)"
+if [ -z "$CV_ENSURE_VALIDATOR" ] || [ ! -x "$CV_ENSURE_VALIDATOR" ]; then
+  echo "cv-ensure-build-artifact-validator.sh not found under ${GC_CITY:-.} — the con-voyage pack may not be imported correctly on this rig" >&2
+  exit 1
+fi
+"$CV_ENSURE_VALIDATOR" "${GC_CITY:-.}" || { echo "build-artifact validator seeding failed — refusing to proceed toward a workflow-finalize gate that would fail confusingly" >&2; exit 1; }
+```
+
+If this block fails for any reason, do NOT proceed. Instead, mail the mayor
+with the exact output above, then close this setup bead with gc.outcome=fail
+and gc.failure_class=gate_scripts_missing (see the GC Role Worker failure
+contract) rather than gc.outcome=pass.
+
 Do not invoke provider-native subagents. Gas City graph lanes are the delegation
 mechanism.
 
 Close this setup bead with gc.outcome=pass only after the review context path is
-recorded AND the gate check scripts are confirmed present.
+recorded AND both the gate check scripts and the build-artifact validator
+dependency are confirmed present.
 
 ## Communal duty (con-voyage-gascity pack)
 
