@@ -342,6 +342,7 @@ run_script "${DEFAULT_ENV[@]}" STUB_SESSION_LIST_JSON='{"sessions":[{"id":"rc-2"
 assert_eq "0" "$RC" "script exits 0"
 assert_log_count "$GC_LOG" 'session nudge rc-2 ' 1 "the live pool session is nudged directly"
 assert_log_count "$GC_LOG" 'sling' 0 "no re-route while the pool still has a live session"
+assert_log_count "$GC_LOG" '^bd update fk-lane2 ' 1 "fk-mr07: the attempt_count update omits --city (fk-lane2 is an existing, already-rig-prefixed lane bead — --city alone routes it to the CITY store and 'Issue not found's every cycle, the fk-7v3r bug class); relies on cwd auto-detection like every other already-fixed bd call in this pack"
 assert_eq "1" "$(db_metadata_field "$DB_FILE" "fk-lane2" "gc.review_watchdog.attempt_count")" "attempt_count advances to 1"
 assert_eq "0" "$(db_metadata_field "$DB_FILE" "fk-lane2" "gc.review_watchdog.escalated")" "not escalated after one attempt"
 

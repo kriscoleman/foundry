@@ -249,6 +249,45 @@ assert_eq "" "$FS_WORK_BEAD" "missing record => empty work_bead"
 assert_eq "" "$FS_LAST_PHASE" "missing record => empty last_phase"
 
 # ---------------------------------------------------------------------------
+# cv_default_state_dir (fk-mr07): the default CV_STATE_DIR base every caller
+# falls back to when it does not set CV_STATE_DIR explicitly. GC_CITY is the
+# multi-rig CITY root, not any one rig's own root -- defaulting to it (the
+# pre-fix behavior) let con-voyage's publish step and the finalize/pr-watch/
+# repair-watchdog monitors independently compute two disagreeing paths
+# whenever one happened to run in a context that did not have CV_STATE_DIR
+# pre-scoped to the rig (confirmed live: PR #59's finalize record landed at
+# the city root this way and sat orphaned until moved by hand).
+# ---------------------------------------------------------------------------
+start_case "cv_default_state_dir: prefers GC_RIG_ROOT when set"
+GC_RIG_ROOT_SAVE="${GC_RIG_ROOT:-}"
+GC_RIG_ROOT="${SANDBOX}/rig-root"
+result="$(cv_default_state_dir)"
+assert_eq "${SANDBOX}/rig-root/.gc/cv-pr-watch" "$result" "GC_RIG_ROOT wins over GC_CITY"
+
+start_case "cv_default_state_dir: falls back to walking up from cwd for a .beads marker when GC_RIG_ROOT is unset"
+unset GC_RIG_ROOT
+mkdir -p "${SANDBOX}/walkup-rig/.beads" "${SANDBOX}/walkup-rig/worktrees/nested/deep"
+# Resolve RIGDIR through a real cd+pwd round-trip so it is normalized the
+# same way $PWD is inside cv_default_state_dir itself — SANDBOX (built from
+# $TMPDIR) can carry a redundant "//" that only one side would otherwise
+# collapse, producing a false mismatch.
+RIGDIR="$(cd "${SANDBOX}/walkup-rig" && pwd)"
+result="$(cd "${RIGDIR}/worktrees/nested/deep" && cv_default_state_dir)"
+assert_eq "${RIGDIR}/.gc/cv-pr-watch" "$result" "walks up to the nearest .beads-marked rig root"
+
+start_case "cv_default_state_dir: falls back to GC_CITY when neither signal is available"
+NOMARKERDIR="${SANDBOX}/no-marker-zone"
+mkdir -p "$NOMARKERDIR"
+result="$(cd "$NOMARKERDIR" && cv_default_state_dir)"
+assert_eq "${GC_CITY}/.gc/cv-pr-watch" "$result" "last-resort fallback to GC_CITY preserves prior behavior"
+
+if [ -n "$GC_RIG_ROOT_SAVE" ]; then
+  GC_RIG_ROOT="$GC_RIG_ROOT_SAVE"
+else
+  unset GC_RIG_ROOT
+fi
+
+# ---------------------------------------------------------------------------
 # session_id_for_ident / first_alive_session_id_for_route (fk-loo1 FIX-F —
 # review-lane liveness guard helpers, shared with con-voyage-review-watchdog.sh)
 # ---------------------------------------------------------------------------

@@ -103,7 +103,14 @@ set -uo pipefail
 GC="${GC:-gc}"
 GH="${GH:-gh}"
 GC_CITY="${GC_CITY:-.}"
-CV_STATE_DIR="${CV_STATE_DIR:-${GC_CITY}/.gc/cv-pr-watch}"
+
+# Sourced early (functions only, no side effects at source time — see the
+# file's own header) so cv_default_state_dir is available for CV_STATE_DIR's
+# default below.
+# shellcheck source=con-voyage-lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/con-voyage-lib.sh"
+
+CV_STATE_DIR="${CV_STATE_DIR:-$(cv_default_state_dir)}"
 CV_PR_AUTHOR="${CV_PR_AUTHOR:-}"
 CV_RELEASE_IMPLEMENTOR="${CV_RELEASE_IMPLEMENTOR:-1}"
 
@@ -151,14 +158,11 @@ echo "con-voyage-finalize: author-scoped to PRs authored by '${CV_PR_AUTHOR}' (a
 
 mkdir -p "$CV_STATE_DIR"
 
-# ---------------------------------------------------------------------------
 # Shared helpers (finalize_read/_write, cv_resolve_work_bead,
-# cv_close_reason_for_pr, pr_finalize_state, bead_status, close_if_open) — see
-# con-voyage-lib.sh for the authoritative record/field docs. Shared with
-# con-voyage-pr-watch.sh and con-voyage-repair-watchdog.sh.
-# ---------------------------------------------------------------------------
-# shellcheck source=con-voyage-lib.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/con-voyage-lib.sh"
+# cv_close_reason_for_pr, pr_finalize_state, bead_status, close_if_open,
+# cv_default_state_dir) were sourced above, before CV_STATE_DIR's default was
+# computed — see con-voyage-lib.sh for the authoritative record/field docs.
+# Shared with con-voyage-pr-watch.sh and con-voyage-repair-watchdog.sh.
 
 # set_work_bead_phase WORK_BEAD PHASE — set the `cv=<phase>` dimension on the
 # work bead (renders as a `cv:<phase>` dashboard label). Best-effort: a failure

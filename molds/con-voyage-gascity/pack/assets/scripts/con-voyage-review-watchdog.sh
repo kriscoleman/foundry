@@ -273,7 +273,15 @@ while IFS=$'\x1f' read -r lane_id status assignee updated_at routed_to attempt_c
       -s "con-voyage review watchdog: giving up on ${lane_id}" \
       -m "Review lane ${lane_id} (routed_to=${routed_to}) has made no progress after ${attempt_count} watchdog re-dispatch attempt(s). This watchdog is stopping automatic re-dispatch for this lane — please take a look." \
       2>&1; then
-      "$GC" --city "$GC_CITY" bd update "$lane_id" --set-metadata "gc.review_watchdog.escalated=1" >/dev/null 2>&1 \
+      # $lane_id is an EXISTING, already-rig-prefixed review-lane bead — the
+      # same fk-7v3r bug class as con-voyage-lib.sh's helpers and
+      # con-voyage-pr-watch.sh's in-flight update: `--city` alone (no
+      # `--rig`) routes an already-rig-prefixed id to the CITY store instead
+      # of its owning rig's, so `bd update` silently "Issue not found"s
+      # every cycle (fk-mr07). Rely on cwd auto-detection instead, matching
+      # this file's own bead_status/close_if_open calls (via con-voyage-lib.sh)
+      # and every other already-fixed bd call in this pack.
+      "$GC" bd update "$lane_id" --set-metadata "gc.review_watchdog.escalated=1" >/dev/null 2>&1 \
         || echo "con-voyage-review-watchdog: WARNING: failed to persist the escalated flag for ${lane_id}" >&2
     else
       echo "con-voyage-review-watchdog: WARNING: escalation mail to ${CV_LENS_ESCALATE_TARGET} failed for ${lane_id}; will retry next cycle" >&2
@@ -286,7 +294,7 @@ while IFS=$'\x1f' read -r lane_id status assignee updated_at routed_to attempt_c
   if [ "$use_reroute" -eq 1 ]; then
     echo "con-voyage-review-watchdog: ${action_desc} ${lane_id} — re-routing to ${routed_to} (attempt ${new_attempt_count}/${CV_LENS_MAX_ATTEMPTS})"
     if "$GC" --city "$GC_CITY" sling "$routed_to" "$lane_id" --nudge 2>&1; then
-      "$GC" --city "$GC_CITY" bd update "$lane_id" \
+      "$GC" bd update "$lane_id" \
         --set-metadata "gc.review_watchdog.attempt_count=${new_attempt_count}" \
         --set-metadata "gc.review_watchdog.escalated=0" >/dev/null 2>&1 \
         || echo "con-voyage-review-watchdog: WARNING: failed to persist attempt_count for ${lane_id}" >&2
@@ -298,7 +306,7 @@ while IFS=$'\x1f' read -r lane_id status assignee updated_at routed_to attempt_c
     if "$GC" --city "$GC_CITY" session nudge "$target_session_id" \
       "Review lane ${lane_id} has shown no progress in over ${CV_LENS_STALL_SECONDS}s. Watchdog re-dispatch attempt ${new_attempt_count}/${CV_LENS_MAX_ATTEMPTS}." \
       2>&1; then
-      "$GC" --city "$GC_CITY" bd update "$lane_id" \
+      "$GC" bd update "$lane_id" \
         --set-metadata "gc.review_watchdog.attempt_count=${new_attempt_count}" \
         --set-metadata "gc.review_watchdog.escalated=0" >/dev/null 2>&1 \
         || echo "con-voyage-review-watchdog: WARNING: failed to persist attempt_count for ${lane_id}" >&2

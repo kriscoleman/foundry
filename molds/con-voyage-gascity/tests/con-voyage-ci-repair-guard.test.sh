@@ -354,6 +354,7 @@ assert_log_count "$GC_LOG" 'bd update step-op'    0 "operator bead is never upda
 assert_log_count "$GC_LOG" 'bd close step-op'     0 "operator bead is never closed"
 assert_log_count "$GC_LOG" 'bd close step-other'  1 "non-operator bead #500 is closed exactly once"
 assert_log_count "$GC_LOG" 'bd update step-other' 1 "non-operator bead #500 gets a drop note"
+assert_log_count "$GC_LOG" '--city' 0 "fk-mr07: no bd call in this run passes --city (drop_bead's update/close and the per-root bd show all rely on cwd auto-detection instead — the fk-7v3r bug class: --city alone on an already-rig-prefixed id routes to the wrong store and silently no-ops)"
 # The sweep must be unbounded: bd list defaults to 50 results, and silently
 # dropping beads past the 50th would defeat the whole point of this guard.
 assert_log_count "$GC_LOG" 'bd list .*--limit 0' 1 "bd list overrides the default 50-result limit"
