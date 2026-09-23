@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.7.9](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.7.8...con-voyage-gascity-v0.7.9) (2026-09-23)
+
+
+### Bug Fixes
+
+* address con-voyage review BLOCKING findings B1-B4 (review fk-abxo) ([f59b788](https://github.com/kriscoleman/foundry/commit/f59b788d44ebdca73478592668b8b494fdda9813))
+* **con-voyage:** rename zsh-reserved local status to bead_state ([6d721e2](https://github.com/kriscoleman/foundry/commit/6d721e2836ce38a0011d2f5f8f9048d03b3df4dd))
+* **con-voyage:** resolve CV_STATE_DIR from the rig root, not the city root (fk-mr07) ([36a4f58](https://github.com/kriscoleman/foundry/commit/36a4f58fd7a2d7d4aa2fca0b47fbbc3f0cac3b0f))
+* **con-voyage:** ship + self-seed the build-artifact validator dependency ([2da20f4](https://github.com/kriscoleman/foundry/commit/2da20f4d259208e46cf2239d9f228325f88138d7))
+
 ## [0.7.8](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.7.7...con-voyage-gascity-v0.7.8) (2026-09-23)
 
 
