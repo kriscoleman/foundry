@@ -178,6 +178,51 @@ CV_REVIEW_LANE_WORKTREE_REMINDER='This review lane never runs a command that tou
 # it instead, driven by the formulas' own description_file lists.
 # shellcheck disable=SC2016  # backticks/$VAR below are literal reminder text for the reader, not expansion
 CV_SHELL_SAFETY_REMINDER='This Bash tool runs whichever shell the operator has configured — bash or zsh, never assume which. zsh does not word-split unquoted `$VAR` the way bash/POSIX sh does, so under zsh `for x in $VAR` or `set -- $VAR` silently runs once on the whole string (or no-ops) instead of splitting on whitespace. Never rely on unquoted-variable splitting: use an array of literal elements (`arr=(...)`; `for x in "${arr[@]}"`), or pipe through `xargs`/`while read` — both behave identically in bash and zsh. If you must split a variable into an array directly, `read -a` (bash) and `read -A` (zsh) are not interchangeable (zsh hard-errors on `-a`) — branch on `$ZSH_VERSION` rather than hard-coding one.'
+# ---------------------------------------------------------------------------
+# Non-routable WORK BEAD owner identity (fk-9f2n): setup-con-voyage-review's
+# WORK_BEAD lifecycle block used to run `bd update $WORK_BEAD --claim`, which
+# assigns the work bead to the CALLING run-operator session. The work bead
+# carries no graph.v2 step metadata (empty gc.root_bead_id/gc.routed_to/
+# gc.continuation_group), so that same session's NEXT `gc hook --claim`
+# immediately re-surfaced the identical bead as fresh routed work — a live
+# dispatch loop confirmed recurring across three separate con-voyage runs.
+# Assigning the work bead to THIS fixed identity instead of the caller's own
+# means no session's resume-my-own-in-progress-work claim fallback ever
+# matches it again. No live gc session is ever identified by this string.
+# Like CV_COMMUNAL_DUTY_REMINDER above, the workflow markdown asset that uses
+# this value is static text, not shell, so it cannot source this constant
+# directly — tests/con-voyage-lib.test.sh diffs it against the literal value
+# instead.
+CV_WORK_BEAD_OWNER='con-voyage:work-bead'
+
+# cv_bead_claim_non_routable BEAD_ID — idempotently claim BEAD_ID (status=
+# in_progress) under the fixed CV_WORK_BEAD_OWNER identity instead of the
+# caller's own session identity (fk-9f2n; see CV_WORK_BEAD_OWNER above for
+# why). Deliberately does NOT use `bd update --claim`, which always sets
+# assignee to the caller.
+#
+# FAIL-SAFE: warns to stderr and no-ops — never aborts the caller — for an
+# empty BEAD_ID, a bead unknown to `bd show`, or a bead that is already closed
+# (idempotent: re-running the same setup step twice never errors). A `bd
+# update` failure itself is also swallowed (warn only), matching
+# cv_bead_mark_in_progress's posture.
+cv_bead_claim_non_routable() {
+  local bead_id="$1"
+  [ -n "${bead_id// /}" ] || { echo "cv_bead_claim_non_routable: empty bead id, skipping" >&2; return 0; }
+  local bead_state
+  IFS=$'\x1f' read -r bead_state _ <<< "$(bead_status "$bead_id" assignee)"
+  if [ -z "$bead_state" ]; then
+    echo "cv_bead_claim_non_routable: bead ${bead_id} not found, skipping" >&2
+    return 0
+  fi
+  if [ "$bead_state" = "closed" ]; then
+    echo "cv_bead_claim_non_routable: bead ${bead_id} already closed, skipping" >&2
+    return 0
+  fi
+  "$GC" --city "$GC_CITY" bd update "$bead_id" --assignee "$CV_WORK_BEAD_OWNER" --status in_progress >/dev/null 2>&1 \
+    || echo "cv_bead_claim_non_routable: failed to claim ${bead_id}" >&2
+  return 0
+}
 
 # cv_build_pr_feedback_body PR_URL HEAD_REF FEEDBACK_SUMMARY IDEMPOTENCY_KEY
 # Composes the routed bead body for a human-PR-comment routing event
