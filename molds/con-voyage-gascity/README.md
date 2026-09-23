@@ -148,9 +148,11 @@ the pack to repair beads (instead of the default `mol-polecat-work`).
 
 > **Reviewer models:** the 16 `cv-*` reviewer agents bind to three pack-shipped
 > provider tiers (`cv-review-light` / `cv-review-standard` / `cv-review-intensive`),
-> which default to opencode models. No `[[patches.agent]]` blocks are needed — but
-> the opencode fallback pools the lookout escalates to DO need city providers. See
-> [Model tiers](#model-tiers) below.
+> which default to **claude** models — no `[[patches.agent]]` blocks or opencode
+> account needed. A city can opt into an opencode + fireworks mode instead. The
+> rate-limit circuit breaker (`con-voyage-lookout`) is separately opt-in, and if
+> enabled its opencode fallback pools need city providers regardless of which
+> mode the reviewers are in. See [Model tiers](#model-tiers) below.
 
 ---
 
@@ -159,40 +161,115 @@ the pack to repair beads (instead of the default `mol-polecat-work`).
 Con-voyage ranks all work by task complexity into **three tiers**, with a fixed
 claude ↔ opencode equivalency:
 
-| Tier | Kind of work | claude | opencode (pack default) |
+| Tier | Kind of work | claude | opencode (fireworks) |
 |---|---|---|---|
 | **small** | rudimentary (prose, hygiene, aesthetics) | haiku | `fireworks-ai/accounts/fireworks/models/minimax-m3` |
 | **medium** | standard (workers, structured judgment) | sonnet | `fireworks-ai/accounts/fireworks/models/glm-5p3-flash` |
 | **large** | critical / intensive (orchestration, deep code & security reasoning) | opus | `fireworks-ai/accounts/fireworks/models/kimi-k3` |
+
+The pack ships **two modes** for the tier providers — pre-installed config
+profiles a city picks between, not something you build from scratch:
+
+- **claude mode (default)** — every tier runs on claude. Casting the pack into
+  any city yields working reviewers immediately: no opencode account, no city
+  config. Claude (and codex) are far more widely adopted than opencode, so
+  this is the friction-free default for anyone adopting the pack fresh.
+- **opencode + fireworks mode (opt-in)** — every tier runs on opencode against
+  Fireworks-hosted models. Lower cost per token, higher throughput, at the
+  cost of requiring an opencode + Fireworks account. repl_city runs this mode
+  (see [Switching to opencode + fireworks mode](#switching-to-opencode--fireworks-mode)).
 
 **Who rides what, by default:**
 
 - **Mayor** → claude **opus** (city `[[patches.agent]]`).
 - **do-work / implementation workers** → claude **sonnet** (city `[agent_defaults]`;
   the `gc.*` role agents are providerless and inherit it).
-- **Reviewers** → **opencode**, split across the three tiers. The pack ships the
+- **Reviewers** → claude, split across the three tiers. The pack ships the
   tier providers itself (`[providers.cv-review-*]` in `pack/pack.toml`), so casting
   the pack into any city yields working reviewers with no city changes:
 
-| Tier provider | Default model | Lenses |
+| Tier provider | Default model (claude mode) | Lenses |
 |---|---|---|
-| `cv-review-intensive` (large) | kimi-k3 | `cv-security-reviewer`, `cv-code-reviewer`, `cv-go-principal-engineer`, `cv-frontend-principal-engineer`, `cv-data-db-engineer`, `cv-api-platform-contract` |
-| `cv-review-standard` (medium) | glm-5p3-flash | `cv-qa-test-engineer`, `cv-sre-reliability`, `cv-compliance-privacy`, `cv-product-owner`, `cv-founder-cto`, `cv-dev-ex-reviewer` |
-| `cv-review-light` (small) | minimax-m3 | `cv-standards-janitor`, `cv-documentation`, `cv-marketing`, `cv-design-ux` |
+| `cv-review-intensive` (large) | opus | `cv-security-reviewer`, `cv-code-reviewer`, `cv-go-principal-engineer`, `cv-frontend-principal-engineer`, `cv-data-db-engineer`, `cv-api-platform-contract` |
+| `cv-review-standard` (medium) | sonnet | `cv-qa-test-engineer`, `cv-sre-reliability`, `cv-compliance-privacy`, `cv-product-owner`, `cv-founder-cto`, `cv-dev-ex-reviewer` |
+| `cv-review-light` (small) | haiku | `cv-standards-janitor`, `cv-documentation`, `cv-marketing`, `cv-design-ux` |
 
-### Overriding tiers (everything is configurable)
+### Switching to opencode + fireworks mode
 
-The shipped values are defaults. Because city providers load before pack
-providers, a city rebinds any tier by redeclaring the same provider name in
-`city.toml`:
+Paste this into the city's `city.toml` to move **all three** reviewer tiers to
+opencode in one step — city providers load before pack providers, so the city
+wins over the pack's claude defaults:
 
 ```toml
-# Move the intensive review tier to a different opencode model —
-# or back to claude — without touching the pack.
+# city.toml — opencode + fireworks mode (all three reviewer tiers)
+[providers.cv-review-light]
+base = "builtin:opencode"
+options_schema_merge = "by_key"
+[providers.cv-review-light.option_defaults]
+model = "fireworks-ai/accounts/fireworks/models/minimax-m3"
+[[providers.cv-review-light.options_schema]]
+key = "model"
+type = "select"
+default = "fireworks-ai/accounts/fireworks/models/minimax-m3"
+[[providers.cv-review-light.options_schema.choices]]
+value = "fireworks-ai/accounts/fireworks/models/minimax-m3"
+flag_args = ["--model", "fireworks-ai/accounts/fireworks/models/minimax-m3"]
+
+[providers.cv-review-standard]
+base = "builtin:opencode"
+options_schema_merge = "by_key"
+[providers.cv-review-standard.option_defaults]
+model = "fireworks-ai/accounts/fireworks/models/glm-5p3-flash"
+[[providers.cv-review-standard.options_schema]]
+key = "model"
+type = "select"
+default = "fireworks-ai/accounts/fireworks/models/glm-5p3-flash"
+[[providers.cv-review-standard.options_schema.choices]]
+value = "fireworks-ai/accounts/fireworks/models/glm-5p3-flash"
+flag_args = ["--model", "fireworks-ai/accounts/fireworks/models/glm-5p3-flash"]
+
 [providers.cv-review-intensive]
 base = "builtin:opencode"
+options_schema_merge = "by_key"
 [providers.cv-review-intensive.option_defaults]
-model = "some-provider/some-model"
+model = "fireworks-ai/accounts/fireworks/models/kimi-k3"
+[[providers.cv-review-intensive.options_schema]]
+key = "model"
+type = "select"
+default = "fireworks-ai/accounts/fireworks/models/kimi-k3"
+[[providers.cv-review-intensive.options_schema.choices]]
+value = "fireworks-ai/accounts/fireworks/models/kimi-k3"
+flag_args = ["--model", "fireworks-ai/accounts/fireworks/models/kimi-k3"]
+```
+
+The `options_schema` re-declaration is required: gc's builtin opencode catalog
+(gc 1.4.2) is a closed choice list that only knows opencode's own models, so a
+Fireworks model id outside it fails config validation ("not a valid choice")
+without an explicit choice carrying `flag_args`. All three Fireworks model
+strings above are verified present in opencode's live model catalog
+(`opencode models`) in the exact `provider/account/models/name` form its
+`--model` flag expects.
+
+### Overriding a single tier
+
+Both modes are pack-wide defaults — a city can also move just one tier
+without switching modes wholesale, by redeclaring that one provider:
+
+```toml
+# Move only the intensive review tier to opencode, leave the rest on claude —
+# same provider shape as the opencode-mode block above, just for one tier.
+[providers.cv-review-intensive]
+base = "builtin:opencode"
+options_schema_merge = "by_key"
+[providers.cv-review-intensive.option_defaults]
+model = "fireworks-ai/accounts/fireworks/models/kimi-k3"
+[[providers.cv-review-intensive.options_schema]]
+key = "model"
+type = "select"
+default = "fireworks-ai/accounts/fireworks/models/kimi-k3"
+[[providers.cv-review-intensive.options_schema.choices]]
+value = "fireworks-ai/accounts/fireworks/models/kimi-k3"
+flag_args = ["--model", "fireworks-ai/accounts/fireworks/models/kimi-k3"]
 ```
 
 Move a single lens across tiers with a patch:
@@ -203,13 +280,25 @@ name = "cv-qa-test-engineer"
 provider = "cv-review-intensive"
 ```
 
-### The `con-voyage-lookout` order (rate-limit circuit breaker + compact handoffs)
+### The `con-voyage-lookout` order (rate-limit circuit breaker + compact handoffs) — opt-in
 
 The claude side of the split has two provider-side failure modes that bead-level
 watchdogs can't see: **usage/rate limits** (a Claude Code session at its cap looks
 alive but produces nothing) and **context auto-compaction** landing mid-task.
-The city-scoped **`con-voyage-lookout`** order (cooldown 5m) peeks every active
-claude-backed session and acts:
+The city-scoped **`con-voyage-lookout`** order watches for both — but it ships
+**opt-in** (`trigger = "manual"`), not default-on. A city switches it on only if
+it wants automatic failover for claude-backed mayor/do-work/implementation-worker
+sessions — relevant regardless of which reviewer mode above the city runs, since
+the mayor and workers stay claude either way. Enable it with:
+
+```toml
+# city.toml — opt into the circuit breaker
+[[orders.overrides]]
+name = "con-voyage-lookout"
+trigger = "cooldown"
+```
+
+Once enabled (cooldown 5m), it peeks every active claude-backed session and acts:
 
 - **Context compact approaching** (`auto-compact` ≤ 15% in the pane) → proactive
   `gc handoff --target`, so the worker restarts fresh with its own handoff mail
@@ -252,7 +341,8 @@ Defining these providers also gives gc implicit pool agents per rig
 open. All lookout knobs (`CV_LOOKOUT_*`: claude provider names, peek depth,
 compact threshold, cooldowns, reset/remind windows, escalate target, fallback
 pool names, usage window) are documented in the order file and the script
-header, and overridable per city via `[[orders.overrides]]` env.
+header, and overridable per city via `[[orders.overrides]]` env — alongside the
+`trigger` override above that turns the order on in the first place.
 
 ---
 

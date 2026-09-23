@@ -10,21 +10,28 @@
 #      `provider = "opus"`, which silently required every consuming city to
 #      define an `opus` provider).
 #   2. pack.toml declares ALL THREE tier providers, each based on
-#      builtin:opencode with a concrete default model, so the pack is
-#      self-contained: casting it into any city yields working reviewers.
-#      The shipped defaults are the opencode side of the claude three-tier
+#      builtin:claude with a concrete default model, so the pack is
+#      self-contained AND claude-first: casting it into any city yields
+#      working reviewers with no city changes and no opencode account
+#      required. The shipped defaults are the claude side of the three-tier
 #      equivalency (haiku<->minimax-m3, sonnet<->glm-5p3-flash,
-#      opus<->kimi-k3).
+#      opus<->kimi-k3) — see README.md "Model tiers" for the opt-in
+#      opencode + fireworks mode a city can switch to instead.
 #   3. The tier split is INTENTIONAL, not accidental — lens membership in
 #      each tier is pinned explicitly so a drive-by edit moving a lens
 #      across tiers is a visible, reviewable decision.
-#   4. The con-voyage-lookout order ships and points at the lookout script,
-#      with the fallback pools wired to the opencode equivalents of the
-#      claude tiers (opus<->large, sonnet<->medium, haiku<->small).
+#   4. The con-voyage-lookout order ships pointed at the lookout script but
+#      OPT-IN by default (trigger = "manual") — the circuit breaker only
+#      ever fires once a city deliberately overrides its trigger back to
+#      "cooldown". Fallback pools stay wired to the opencode equivalents of
+#      the claude tiers (opus<->large, sonnet<->medium, haiku<->small)
+#      regardless of mode, since the breaker's whole job is failing claude
+#      over to opencode.
 #
 # Everything here is a DEFAULT — a city may rebind a tier to any provider/
-# model by redeclaring the provider in city.toml. This test pins the pack's
-# shipped defaults only.
+# model by redeclaring the provider in city.toml, or opt into the pack's
+# opencode + fireworks mode wholesale. This test pins the pack's shipped
+# defaults only.
 #
 # Run:  bash tests/model-tiers.test.sh   (exit 0 => all cases passed)
 
@@ -92,14 +99,14 @@ check_membership cv-review-standard "$EXPECTED_STANDARD"
 check_membership cv-review-light "$EXPECTED_LIGHT"
 
 # ---------------------------------------------------------------------------
-start_case "pack.toml declares all three tier providers on builtin:opencode with default models"
+start_case "pack.toml declares all three tier providers on builtin:claude with default models"
 # ---------------------------------------------------------------------------
 # Parse the real TOML (python3 tomllib) — grep-based block extraction is too
 # fragile around nested [providers.<tier>.option_defaults] sub-tables.
-# Each tier must ALSO re-declare the model option with an explicit choice
-# carrying flag_args: gc's builtin opencode catalog is a closed choice list
-# (gc 1.4.2 predates open flag_template options), so without the choice the
-# fireworks model ids fail config validation with "not a valid choice".
+# Unlike the opt-in opencode mode (README.md "Model tiers"), builtin:claude's
+# haiku/sonnet/opus aliases are already known choices in gc's builtin catalog,
+# so — unlike opencode's fireworks pins — no options_schema re-declaration is
+# needed here.
 check_provider_block() {
   local tier="$1" model="$2"
   result="$(python3 - "$tier" "$model" "${PACK_DIR}/pack.toml" <<'PY'
@@ -111,38 +118,25 @@ prov = (data.get('providers') or {}).get(tier)
 if prov is None:
     print('missing')
     raise SystemExit(0)
-if prov.get('base') != 'builtin:opencode':
+if prov.get('base') != 'builtin:claude':
     print('bad-base:' + str(prov.get('base')))
     raise SystemExit(0)
 if (prov.get('option_defaults') or {}).get('model') != model:
     print('bad-model:' + str((prov.get('option_defaults') or {}).get('model')))
     raise SystemExit(0)
-opts = [o for o in (prov.get('options_schema') or []) if o.get('key') == 'model']
-if not opts:
-    print('missing-model-option')
-    raise SystemExit(0)
-choice = next((c for c in (opts[0].get('choices') or []) if c.get('value') == model), None)
-if choice is None:
-    print('missing-model-choice')
-    raise SystemExit(0)
-if choice.get('flag_args') != ['--model', model]:
-    print('bad-flag-args:' + str(choice.get('flag_args')))
-    raise SystemExit(0)
 print('ok')
 PY
 )"
   case "$result" in
-    ok)                    pass "[providers.${tier}] opencode tier, model=${model}, choice carries --model flag_args" ;;
+    ok)                    pass "[providers.${tier}] claude tier, model=${model}" ;;
     missing)               fail "pack.toml missing [providers.${tier}]" ;;
-    missing-model-option)  fail "[providers.${tier}] must re-declare the model option (closed builtin catalog rejects the pin)" ;;
-    missing-model-choice)  fail "[providers.${tier}] model option lacks a choice for ${model}" ;;
-    bad-base:*|bad-model:*|bad-flag-args:*) fail "[providers.${tier}] ${result}" ;;
+    bad-base:*|bad-model:*) fail "[providers.${tier}] ${result}" ;;
     *)                     fail "[providers.${tier}] unexpected parse result: ${result}" ;;
   esac
 }
-check_provider_block cv-review-intensive "fireworks-ai/accounts/fireworks/models/kimi-k3"
-check_provider_block cv-review-standard "fireworks-ai/accounts/fireworks/models/glm-5p3-flash"
-check_provider_block cv-review-light "fireworks-ai/accounts/fireworks/models/minimax-m3"
+check_provider_block cv-review-intensive "opus"
+check_provider_block cv-review-standard "sonnet"
+check_provider_block cv-review-light "haiku"
 
 # ---------------------------------------------------------------------------
 start_case "the con-voyage-lookout order ships, city-scoped, with fallback pools wired"
@@ -160,6 +154,11 @@ else
     pass "order is city-scoped (one lookout per city, not per rig)"
   else
     fail "order must be scope = \"city\" — per-rig instances would duplicate handoffs"
+  fi
+  if grep -qE '^trigger *= *"manual"' "$ORDER"; then
+    pass "order defaults to trigger = \"manual\" (opt-in — a city overrides to \"cooldown\" to enable)"
+  else
+    fail "order must default to trigger = \"manual\" so the circuit breaker is opt-in, not default-on"
   fi
   if grep -qF 'CV_LOOKOUT_FALLBACK_LARGE_POOL = "kimi-k3"' "$ORDER"; then
     pass "large fallback pool default is kimi-k3 (opus-equivalent)"

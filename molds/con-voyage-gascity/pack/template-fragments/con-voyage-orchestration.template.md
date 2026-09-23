@@ -99,7 +99,7 @@ On "PR LANDED" the `con-voyage-finalize` monitor handles teardown within its coo
 2. Verify the convoy closed: `gc convoy status <convoy-id>`.
 3. Report to the user: PR link, review cycles, CI cycles.
 
-### Model tiers & the all-opencode fallback mode (con-voyage lookout)
+### Model tiers & the opt-in all-opencode fallback mode (con-voyage lookout)
 
 Work is tiered by complexity, with a claude ↔ opencode equivalency:
 
@@ -109,7 +109,13 @@ Work is tiered by complexity, with a claude ↔ opencode equivalency:
 | medium (standard) | sonnet | glm-5p3-flash | do-work / implementation workers, `cv-review-standard` lenses |
 | small (rudimentary) | haiku | minimax-m3 | `cv-review-light` lenses |
 
-Reviewers ride the pack's opencode tiers directly; you and the workers ride the city's claude providers. You don't manage any of that — but the **`con-voyage-lookout`** order watches every claude-backed session for you, and its mail is actionable:
+By default reviewers ride the same claude tiers you and the workers do (the
+pack's claude mode) — a city can opt into an opencode + fireworks mode for
+reviewers instead (see README.md "Model tiers"), a separate, static choice
+from the fallback mode below. You don't manage that choice — but if the city
+has also opted into the **`con-voyage-lookout`** order (it ships off by
+default; a city enables it by overriding its trigger), it watches every
+claude-backed session for you, and its mail is actionable:
 
 - **"circuit breaker OPEN — switch to all-opencode mode"** — one or more claude sessions is showing a usage/rate-limit signature. The lookout has already handed off the claude fleet (each session restarts with its context mail waiting). Your moves:
   1. **Re-sling in-flight claude beads to the fallback pools:** `gc sling <rig>/<pool> <bead> --nudge`, where `<pool>` is the tier's opencode equivalent named in the mail (default `kimi-k3` large / `glm-5p3-flash` medium / `minimax-m3` small).
