@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# con-voyage-lookout.test.sh — hermetic, offline test for the con-voyage
-# lookout (rate-limit circuit breaker + proactive context-compact handoff
-# monitor for claude-backed sessions).
+# con-voyage-rate-limit-lookout.test.sh — hermetic, offline test for the
+# pack's claude-fleet rate-limit circuit breaker + proactive
+# context-compaction handoff monitor.
 #
 # WHY THIS MONITOR EXISTS: claude-backed workers (mayor, do-work pools,
 # implementation workers) can silently stall when Claude Code hits a
@@ -23,7 +23,7 @@
 # the sandbox, so multi-invocation scenarios (throttles, reset windows)
 # genuinely persist state between runs.
 #
-# Run:  bash tests/con-voyage-lookout.test.sh   (exit 0 => all cases passed)
+# Run:  bash tests/con-voyage-rate-limit-lookout.test.sh   (exit 0 => all cases passed)
 
 set -uo pipefail
 
@@ -32,7 +32,7 @@ set -uo pipefail
 # ---------------------------------------------------------------------------
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOLD_DIR="$(cd "${TEST_DIR}/.." && pwd)"
-SCRIPT="${MOLD_DIR}/pack/assets/scripts/con-voyage-lookout.sh"
+SCRIPT="${MOLD_DIR}/pack/assets/scripts/con-voyage-rate-limit-lookout.sh"
 
 if [ ! -f "$SCRIPT" ]; then
   echo "FATAL: script under test not found at ${SCRIPT}" >&2

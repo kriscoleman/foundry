@@ -20,7 +20,7 @@
 #   3. The tier split is INTENTIONAL, not accidental — lens membership in
 #      each tier is pinned explicitly so a drive-by edit moving a lens
 #      across tiers is a visible, reviewable decision.
-#   4. The con-voyage-lookout order ships pointed at the lookout script but
+#   4. The con-voyage-rate-limit-lookout order ships pointed at its script but
 #      OPT-IN by default (trigger = "manual") — the circuit breaker only
 #      ever fires once a city deliberately overrides its trigger back to
 #      "cooldown". Fallback pools stay wired to the opencode equivalents of
@@ -139,16 +139,16 @@ check_provider_block cv-review-standard "sonnet"
 check_provider_block cv-review-light "haiku"
 
 # ---------------------------------------------------------------------------
-start_case "the con-voyage-lookout order ships, city-scoped, with fallback pools wired"
+start_case "the con-voyage-rate-limit-lookout order ships, city-scoped, with fallback pools wired"
 # ---------------------------------------------------------------------------
-ORDER="${PACK_DIR}/orders/con-voyage-lookout.toml"
+ORDER="${PACK_DIR}/orders/con-voyage-rate-limit-lookout.toml"
 if [ ! -f "$ORDER" ]; then
-  fail "orders/con-voyage-lookout.toml missing"
+  fail "orders/con-voyage-rate-limit-lookout.toml missing"
 else
-  if grep -qF 'exec = "$PACK_DIR/assets/scripts/con-voyage-lookout.sh"' "$ORDER"; then
+  if grep -qF 'exec = "$PACK_DIR/assets/scripts/con-voyage-rate-limit-lookout.sh"' "$ORDER"; then
     pass "order execs the lookout script"
   else
-    fail "order does not exec con-voyage-lookout.sh"
+    fail "order does not exec con-voyage-rate-limit-lookout.sh"
   fi
   if grep -qE '^scope *= *"city"' "$ORDER"; then
     pass "order is city-scoped (one lookout per city, not per rig)"
@@ -175,10 +175,10 @@ else
   else
     fail "small fallback pool default mismatch"
   fi
-  if [ -f "${PACK_DIR}/assets/scripts/con-voyage-lookout.sh" ]; then
+  if [ -f "${PACK_DIR}/assets/scripts/con-voyage-rate-limit-lookout.sh" ]; then
     pass "lookout script exists at the order's exec path"
   else
-    fail "lookout script missing at assets/scripts/con-voyage-lookout.sh"
+    fail "lookout script missing at assets/scripts/con-voyage-rate-limit-lookout.sh"
   fi
 fi
 

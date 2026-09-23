@@ -1,4 +1,5 @@
-# con-voyage-lookout — claude-fleet usage/context monitor.
+# con-voyage-rate-limit-lookout — claude-fleet rate-limit circuit breaker +
+# proactive context-compaction handoff monitor.
 #
 # OPT-IN, not default-on: trigger = "manual" below means the controller never
 # fires this order on its own. It only exists for a city to switch on. This
@@ -9,7 +10,7 @@
 # city already running opencode mode for its reviewers still needs claude for
 # the mayor/workers, so the breaker remains relevant there too. Opt in with:
 #   [[orders.overrides]]
-#   name = "con-voyage-lookout"
+#   name = "con-voyage-rate-limit-lookout"
 #   trigger = "cooldown"
 # (verified: a rigless override matches this city-scoped order and flips its
 # resolved trigger from "manual" to "cooldown" cleanly.)
@@ -29,7 +30,7 @@
 #
 # Every other knob is overridable per city via [[orders.overrides]] env, e.g.:
 #   [[orders.overrides]]
-#   name = "con-voyage-lookout"
+#   name = "con-voyage-rate-limit-lookout"
 #   trigger = "cooldown"
 #   [orders.overrides.env]
 #   CV_LOOKOUT_FALLBACK_LARGE_POOL = "my-opus-equivalent"
@@ -37,7 +38,7 @@
 description = "Watch claude-backed sessions for usage/rate limits and approaching context compaction: proactive handoff before compact, circuit breaker + mayor escalation to all-opencode fallback mode on limits. Opt-in — a city overrides trigger to \"cooldown\" to enable."
 trigger = "manual"
 interval = "5m"
-exec = "$PACK_DIR/assets/scripts/con-voyage-lookout.sh"
+exec = "$PACK_DIR/assets/scripts/con-voyage-rate-limit-lookout.sh"
 scope = "city"
 
 [order.env]
