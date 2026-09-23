@@ -26,6 +26,43 @@
 #
 # Requires: bash 4+, gc CLI, python3.
 
+# cv_default_state_dir — print the default CV_STATE_DIR base (each caller
+# appends "/.gc/cv-pr-watch" via this function's own output) for when the
+# caller does not set CV_STATE_DIR explicitly.
+#
+# fk-mr07: GC_CITY is the multi-rig CITY root, not any one rig's own root.
+# Defaulting CV_STATE_DIR's base to it silently pointed reads/writes at the
+# CITY-level .gc/cv-pr-watch instead of the owning rig's, in whichever
+# session/process context did not happen to have CV_STATE_DIR pre-scoped —
+# con-voyage's own publish step among them: PR #59's finalize record landed
+# at the city root this way and sat orphaned until moved by hand, while the
+# finalize monitor kept scanning the rig-level directory every cycle and
+# never saw it. Resolution order, most to least authoritative:
+#   1. GC_RIG_ROOT, when set — the rig root every gc-spawned session (role
+#      worker, order exec) already carries; unambiguous by construction.
+#   2. Walk up from cwd looking for a directory containing ".beads" (every
+#      rig checkout's own root marker) — covers a context that runs with cwd
+#      inside the rig checkout but does not export GC_RIG_ROOT.
+#   3. GC_CITY (or cwd) — the original default. Kept as a last-resort so an
+#      environment matching neither signal above degrades to prior behavior
+#      instead of failing closed.
+cv_default_state_dir() {
+  if [ -n "${GC_RIG_ROOT:-}" ]; then
+    printf '%s/.gc/cv-pr-watch' "$GC_RIG_ROOT"
+    return 0
+  fi
+  local dir="$PWD"
+  while :; do
+    if [ -d "${dir}/.beads" ]; then
+      printf '%s/.gc/cv-pr-watch' "$dir"
+      return 0
+    fi
+    [ "$dir" = "/" ] && break
+    dir="$(dirname "$dir")"
+  done
+  printf '%s/.gc/cv-pr-watch' "${GC_CITY:-.}"
+}
+
 # ---------------------------------------------------------------------------
 # Per-PR repair state record (fk-4o74 Fix 1; extended by Fix 2's watchdog,
 # fk-lfan's B1 round). File: "<CV_STATE_DIR>/<dedup_key>.state", plain
@@ -165,6 +202,10 @@ Routing from con-voyage-pr-watch (idempotency: ${idempotency_key})
 BODY
 }
 
+# shellcheck disable=SC2034  # ST_* globals are consumed by the sourcing
+# scripts (con-voyage-pr-watch.sh, con-voyage-repair-watchdog.sh), invisible
+# to shellcheck when this file is checked standalone (same posture as
+# finalize_read's FS_* disable below).
 state_read() {
   local dedup_key="$1"
   local state_file="${CV_STATE_DIR}/${dedup_key}.state"

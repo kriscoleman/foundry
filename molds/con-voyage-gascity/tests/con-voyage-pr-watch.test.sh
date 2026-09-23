@@ -2096,6 +2096,7 @@ assert_log_count "$GC_LOG" 'bd create .*--silent' 1 "cycle 2 creates NO addition
 assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair' 1 "cycle 2 issues NO duplicate ci-repair sling"
 assert_log_count "$GC_LOG" 'bd close va-osc1' 0 "cycle 2 never supersedes the still-open bead"
 assert_log_count "$GC_LOG" 'bd update va-osc1 --title Repair GitHub PR kriscoleman/foundry#11 .*checks_failed.*oscillating pr --set-metadata failure_kind=checks_failed' 1 "cycle 2 updates the tracked bead's title + failure_kind metadata in place"
+assert_log_count "$GC_LOG" '^bd update va-osc1 --title' 1 "fk-mr07: the in-flight update omits --city (va-osc1 is an existing, already-rig-prefixed bead — --city alone routes it to the CITY store and 'Issue not found's every cycle, the fk-7v3r bug class); relies on cwd auto-detection like every other already-fixed bd call in this pack"
 if printf '%s' "$OUT" | grep -q 'UPDATE kriscoleman/foundry#11 .* — repair still in-flight on va-osc1 .*failure_kind blocked -> checks_failed'; then
   pass "cycle 2 logs the in-place UPDATE for the blocked -> checks_failed flip"
 else

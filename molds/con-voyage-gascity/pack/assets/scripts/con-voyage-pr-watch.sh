@@ -112,7 +112,14 @@ set -euo pipefail
 GC="${GC:-gc}"
 GH="${GH:-gh}"
 GC_CITY="${GC_CITY:-.}"
-CV_STATE_DIR="${CV_STATE_DIR:-${GC_CITY}/.gc/cv-pr-watch}"
+
+# Sourced early (functions only, no side effects at source time — see the
+# file's own header) so cv_default_state_dir is available for CV_STATE_DIR's
+# default below.
+# shellcheck source=con-voyage-lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/con-voyage-lib.sh"
+
+CV_STATE_DIR="${CV_STATE_DIR:-$(cv_default_state_dir)}"
 CV_IMPLEMENTOR="${CV_IMPLEMENTOR:-gc.implementation-worker}"
 # Forwarded, NOT read for branching, by this script (see header) — declared
 # here with the other tunables rather than left as an inline ${..:-default}
@@ -198,15 +205,12 @@ echo "con-voyage-pr-watch: author-scoped to PRs authored by '${CV_PR_AUTHOR}' (a
 # Ensure state directory exists
 mkdir -p "$CV_STATE_DIR"
 
-# ---------------------------------------------------------------------------
 # Shared per-PR state/dispatch helpers (state_read, state_write, now_iso8601,
-# bead_status, implementor_alive, close_if_open) — see con-voyage-lib.sh for
-# the authoritative field-by-field state-record doc comment. Shared with
-# con-voyage-repair-watchdog.sh (fk-wgqp Fix 2), which reads and writes the
-# SAME state records.
-# ---------------------------------------------------------------------------
-# shellcheck source=con-voyage-lib.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/con-voyage-lib.sh"
+# bead_status, implementor_alive, close_if_open, cv_default_state_dir) were
+# sourced above, before CV_STATE_DIR's default was computed — see
+# con-voyage-lib.sh for the authoritative field-by-field state-record doc
+# comment. Shared with con-voyage-repair-watchdog.sh (fk-wgqp Fix 2), which
+# reads and writes the SAME state records.
 
 # ---------------------------------------------------------------------------
 # PART A: CI-failure repair (author-scoped)
@@ -549,7 +553,14 @@ print(author + SEP + ("1" if skip_awaiting_human else "0"))
         new_last_state="$st_last_state"
         if [ "$st_last_state" = "$a_failure_kind" ]; then
           echo "con-voyage-pr-watch: [PART A] SKIP ${a_full}#${a_num} @ ${a_sha} — repair genuinely in-flight (dedup: ${dedup_key}, last_handled_state=${st_last_state})"
-        elif "$GC" --city "$GC_CITY" bd update "$st_inflight" \
+        # $st_inflight is an EXISTING, already-rig-prefixed repair bead
+        # (minted below with --rig "$a_rig"), not a fresh id — the same
+        # fk-7v3r bug class con-voyage-lib.sh's helpers hit: `--city` alone
+        # (no `--rig`) routes an already-rig-prefixed id to the CITY store
+        # instead of its owning rig's, so `bd update` silently "Issue not
+        # found"s every cycle (fk-mr07). Rely on cwd auto-detection instead,
+        # matching every other already-fixed bd call in this pack.
+        elif "$GC" bd update "$st_inflight" \
           --title "$repair_title" \
           --set-metadata "failure_kind=${a_failure_kind}" \
           2>&1; then

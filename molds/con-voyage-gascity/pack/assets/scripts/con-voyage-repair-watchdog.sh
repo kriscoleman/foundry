@@ -149,7 +149,14 @@ set -uo pipefail
 GC="${GC:-gc}"
 GH="${GH:-gh}"
 GC_CITY="${GC_CITY:-.}"
-CV_STATE_DIR="${CV_STATE_DIR:-${GC_CITY}/.gc/cv-pr-watch}"
+
+# Sourced early (functions only, no side effects at source time — see the
+# file's own header) so cv_default_state_dir is available for CV_STATE_DIR's
+# default below.
+# shellcheck source=con-voyage-lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/con-voyage-lib.sh"
+
+CV_STATE_DIR="${CV_STATE_DIR:-$(cv_default_state_dir)}"
 CV_PR_AUTHOR="${CV_PR_AUTHOR:-}"
 CV_STALL_SECONDS="${CV_STALL_SECONDS:-900}"
 CV_MAX_ATTEMPTS="${CV_MAX_ATTEMPTS:-3}"
@@ -210,14 +217,12 @@ if [ -z "${CV_PR_AUTHOR// /}" ]; then
 fi
 echo "con-voyage-repair-watchdog: author-scoped to '${CV_PR_AUTHOR}'; stall=${CV_STALL_SECONDS}s max_attempts=${CV_MAX_ATTEMPTS} escalate_target=${CV_ESCALATE_TARGET}"
 
-# ---------------------------------------------------------------------------
 # Shared per-PR state/dispatch helpers (state_read, state_write, now_iso8601,
-# bead_status, implementor_alive, close_if_open) — see con-voyage-lib.sh for
-# the authoritative field-by-field state-record doc comment. Shared with
-# con-voyage-pr-watch.sh, which writes and reads the SAME state records.
-# ---------------------------------------------------------------------------
-# shellcheck source=con-voyage-lib.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/con-voyage-lib.sh"
+# bead_status, implementor_alive, close_if_open, cv_default_state_dir) were
+# sourced above, before CV_STATE_DIR's default was computed — see
+# con-voyage-lib.sh for the authoritative field-by-field state-record doc
+# comment. Shared with con-voyage-pr-watch.sh, which writes and reads the
+# SAME state records.
 
 # is_stale UPDATED_AT THRESHOLD_SECONDS — exit 0 if UPDATED_AT is more than
 # THRESHOLD_SECONDS in the past. A missing/unparseable UPDATED_AT fails SAFE

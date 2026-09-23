@@ -764,6 +764,33 @@ assert_log_count "$GC_LOG" 'bd close fk-c97' 1 "convoy close was attempted"
 assert_file_present "${STATE_DIR}/cv-finalize-kriscoleman-foundry-97.finalize" "record kept because the convoy close failed"
 
 # ===========================================================================
+# CASE 28 — fk-mr07: when CV_STATE_DIR is not provided, the script must
+#   default to GC_RIG_ROOT's state dir, NOT GC_CITY's. GC_CITY is the
+#   multi-rig city root; defaulting to it silently pointed the monitor at
+#   the wrong directory whenever it ran in a context where GC_CITY did not
+#   happen to equal the owning rig root (confirmed live: PR #59's finalize
+#   record landed at the city root and was never scanned). CITY_DIR here
+#   stands in for a deliberately WRONG/unrelated city root that must stay
+#   untouched; RIG_DIR is where the record actually lives and where
+#   GC_RIG_ROOT points.
+# ===========================================================================
+start_case "28: CV_STATE_DIR unset -> defaults to GC_RIG_ROOT, not GC_CITY (fk-mr07)"
+setup_case_env "28"
+RIG_DIR="${SANDBOX}/rig-28"
+mkdir -p "${RIG_DIR}/.gc/cv-pr-watch"
+write_finalize "${RIG_DIR}/.gc/cv-pr-watch" "cv-finalize-kriscoleman-foundry-98" \
+  "fk-w98" "fk-c98" "kriscoleman/foundry" "98" "kriscoleman" "foundry/impl-15" "awaiting_merge"
+run_script "${DEFAULT_ENV[@]}" \
+  CV_STATE_DIR="" \
+  GC_RIG_ROOT="$RIG_DIR" \
+  STUB_PR_MAP="kriscoleman/foundry|98|MERGED|2026-09-19T10:00:00Z|2026-09-19T10:00:00Z|||" \
+  STUB_BDSHOW_MAP=$'fk-w98|in_progress\nfk-c98|open'
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd close fk-w98 .*landed: PR #98 merged' 1 "finds and finalizes the record that lives under GC_RIG_ROOT, not GC_CITY"
+assert_file_absent "${RIG_DIR}/.gc/cv-pr-watch/cv-finalize-kriscoleman-foundry-98.finalize" "record removed from the RIG_ROOT-derived directory after finalize"
+assert_eq "0" "$(find "$CITY_DIR" -type f 2>/dev/null | wc -l | tr -d ' ')" "GC_CITY's own directory is never touched when GC_RIG_ROOT is available"
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 echo

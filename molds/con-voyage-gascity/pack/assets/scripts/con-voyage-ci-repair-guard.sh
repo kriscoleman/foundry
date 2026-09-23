@@ -167,10 +167,18 @@ retry() {
 # a bounded retry so a transient store lock can't leave a stranger's control
 # bead open. The `|| true` keeps a still-failing note from aborting the sweep,
 # but the close is what actually enforces the gate — hence its own retry.
+#
+# $step_id is an EXISTING, already-rig-prefixed step bead — the same fk-7v3r
+# bug class as con-voyage-lib.sh's helpers: `--city` alone (no `--rig`)
+# routes an already-rig-prefixed id to the CITY store instead of its owning
+# rig's, so `bd update`/`bd close` silently "Issue not found" every time —
+# meaning this gate's own enforcement action could silently no-op (fk-mr07).
+# Rely on cwd auto-detection instead, matching every other already-fixed bd
+# call in this pack.
 drop_bead() {
   local step_id="$1" notes="$2"
-  retry "$GC" --city "$GC_CITY" bd update "$step_id" --notes "$notes" >/dev/null 2>&1 || true
-  retry "$GC" --city "$GC_CITY" bd close  "$step_id" --reason "dropped: not authored by operator" >/dev/null 2>&1 || true
+  retry "$GC" bd update "$step_id" --notes "$notes" >/dev/null 2>&1 || true
+  retry "$GC" bd close  "$step_id" --reason "dropped: not authored by operator" >/dev/null 2>&1 || true
 }
 
 # ---------------------------------------------------------------------------
@@ -233,7 +241,9 @@ while IFS=$'\x1f' read -r step_id root_id; do
   [ -n "$step_id" ] || continue
   [ -n "$root_id" ] || continue
 
-  root_json=$("$GC" --city "$GC_CITY" bd show "$root_id" --json 2>/dev/null) || {
+  # $root_id is likewise an existing, already-rig-prefixed bead — same
+  # fk-mr07/fk-7v3r reasoning as drop_bead above.
+  root_json=$("$GC" bd show "$root_id" --json 2>/dev/null) || {
     echo "con-voyage-ci-repair-guard: WARNING: bd show failed for root ${root_id} (step ${step_id})" >&2
     root_json=""
   }
