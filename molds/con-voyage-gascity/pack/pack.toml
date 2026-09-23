@@ -33,18 +33,56 @@ schema = 2
 #   base = "builtin:opencode"
 #   [providers.cv-review-intensive.option_defaults]
 #   model = "some-other/provider-model-id"
+#
+# Each tier re-declares the `model` option (options_schema_merge = "by_key")
+# with its default model as an explicit choice carrying flag_args, because
+# gc's builtin opencode catalog is a closed choice list that only knows
+# opencode's own models — a pin outside it fails config validation ("not a
+# valid choice"). To pin a model NOT listed here on gc <open-options support,
+# declare it as another choice the same way (flag_template arrives in a later
+# gc and will make these options open-ended).
 # ---------------------------------------------------------------------------
 [providers.cv-review-light]
 base = "builtin:opencode"
+options_schema_merge = "by_key"
 [providers.cv-review-light.option_defaults]
 model = "fireworks-ai/accounts/fireworks/models/minimax-m3"
+[[providers.cv-review-light.options_schema]]
+key = "model"
+label = "Model"
+type = "select"
+default = "fireworks-ai/accounts/fireworks/models/minimax-m3"
+[[providers.cv-review-light.options_schema.choices]]
+value = "fireworks-ai/accounts/fireworks/models/minimax-m3"
+flag_args = ["--model", "fireworks-ai/accounts/fireworks/models/minimax-m3"]
+label = "MiniMax M3 (Fireworks)"
 
 [providers.cv-review-standard]
 base = "builtin:opencode"
+options_schema_merge = "by_key"
 [providers.cv-review-standard.option_defaults]
 model = "fireworks-ai/accounts/fireworks/models/glm-5p3-flash"
+[[providers.cv-review-standard.options_schema]]
+key = "model"
+label = "Model"
+type = "select"
+default = "fireworks-ai/accounts/fireworks/models/glm-5p3-flash"
+[[providers.cv-review-standard.options_schema.choices]]
+value = "fireworks-ai/accounts/fireworks/models/glm-5p3-flash"
+flag_args = ["--model", "fireworks-ai/accounts/fireworks/models/glm-5p3-flash"]
+label = "GLM 5.3 Flash (Fireworks)"
 
 [providers.cv-review-intensive]
 base = "builtin:opencode"
+options_schema_merge = "by_key"
 [providers.cv-review-intensive.option_defaults]
 model = "fireworks-ai/accounts/fireworks/models/kimi-k3"
+[[providers.cv-review-intensive.options_schema]]
+key = "model"
+label = "Model"
+type = "select"
+default = "fireworks-ai/accounts/fireworks/models/kimi-k3"
+[[providers.cv-review-intensive.options_schema.choices]]
+value = "fireworks-ai/accounts/fireworks/models/kimi-k3"
+flag_args = ["--model", "fireworks-ai/accounts/fireworks/models/kimi-k3"]
+label = "Kimi K3 (Fireworks)"
