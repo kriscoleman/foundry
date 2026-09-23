@@ -146,10 +146,113 @@ the pack to repair beads (instead of the default `mol-polecat-work`).
 > it). The script only ever acts on PRs authored by `CV_PR_AUTHOR`. See
 > [Author scoping](#author-scoping) below.
 
-> **Reviewer model:** The 16 `cv-*` reviewer agents now ship with `provider = "opus"`
-> in their `agent.toml` files (inside the pack). No `[[patches.agent]]` blocks in
-> `city.toml` are needed — the pack already sets opus as the default model for all
-> reviewer lenses.
+> **Reviewer models:** the 16 `cv-*` reviewer agents bind to three pack-shipped
+> provider tiers (`cv-review-light` / `cv-review-standard` / `cv-review-intensive`),
+> which default to opencode models. No `[[patches.agent]]` blocks are needed — but
+> the opencode fallback pools the lookout escalates to DO need city providers. See
+> [Model tiers](#model-tiers) below.
+
+---
+
+## Model tiers
+
+Con-voyage ranks all work by task complexity into **three tiers**, with a fixed
+claude ↔ opencode equivalency:
+
+| Tier | Kind of work | claude | opencode (pack default) |
+|---|---|---|---|
+| **small** | rudimentary (prose, hygiene, aesthetics) | haiku | `fireworks-ai/accounts/fireworks/models/minimax-m3` |
+| **medium** | standard (workers, structured judgment) | sonnet | `fireworks-ai/accounts/fireworks/models/glm-5p3-flash` |
+| **large** | critical / intensive (orchestration, deep code & security reasoning) | opus | `fireworks-ai/accounts/fireworks/models/kimi-k3` |
+
+**Who rides what, by default:**
+
+- **Mayor** → claude **opus** (city `[[patches.agent]]`).
+- **do-work / implementation workers** → claude **sonnet** (city `[agent_defaults]`;
+  the `gc.*` role agents are providerless and inherit it).
+- **Reviewers** → **opencode**, split across the three tiers. The pack ships the
+  tier providers itself (`[providers.cv-review-*]` in `pack/pack.toml`), so casting
+  the pack into any city yields working reviewers with no city changes:
+
+| Tier provider | Default model | Lenses |
+|---|---|---|
+| `cv-review-intensive` (large) | kimi-k3 | `cv-security-reviewer`, `cv-code-reviewer`, `cv-go-principal-engineer`, `cv-frontend-principal-engineer`, `cv-data-db-engineer`, `cv-api-platform-contract` |
+| `cv-review-standard` (medium) | glm-5p3-flash | `cv-qa-test-engineer`, `cv-sre-reliability`, `cv-compliance-privacy`, `cv-product-owner`, `cv-founder-cto`, `cv-dev-ex-reviewer` |
+| `cv-review-light` (small) | minimax-m3 | `cv-standards-janitor`, `cv-documentation`, `cv-marketing`, `cv-design-ux` |
+
+### Overriding tiers (everything is configurable)
+
+The shipped values are defaults. Because city providers load before pack
+providers, a city rebinds any tier by redeclaring the same provider name in
+`city.toml`:
+
+```toml
+# Move the intensive review tier to a different opencode model —
+# or back to claude — without touching the pack.
+[providers.cv-review-intensive]
+base = "builtin:opencode"
+[providers.cv-review-intensive.option_defaults]
+model = "some-provider/some-model"
+```
+
+Move a single lens across tiers with a patch:
+
+```toml
+[[patches.agent]]
+name = "cv-qa-test-engineer"
+provider = "cv-review-intensive"
+```
+
+### The `con-voyage-lookout` order (rate-limit circuit breaker + compact handoffs)
+
+The claude side of the split has two provider-side failure modes that bead-level
+watchdogs can't see: **usage/rate limits** (a Claude Code session at its cap looks
+alive but produces nothing) and **context auto-compaction** landing mid-task.
+The city-scoped **`con-voyage-lookout`** order (cooldown 5m) peeks every active
+claude-backed session and acts:
+
+- **Context compact approaching** (`auto-compact` ≤ 15% in the pane) → proactive
+  `gc handoff --target`, so the worker restarts fresh with its own handoff mail
+  waiting — a smooth transition instead of a mid-task compact. (gc's PreCompact
+  hook still covers compactions that land between lookout ticks.)
+- **Usage/rate limit observed** → the **circuit breaker opens**: every active
+  claude session is handed off (context preserved for when limits clear), and the
+  mayor gets a structured escalation naming the all-opencode fallback pools so it
+  can switch dispatch. While open, re-escalation is throttled
+  (`CV_LOOKOUT_BREAKER_REMIND_SECONDS`, default 30m).
+- **Limits clear** for a full reset window (`CV_LOOKOUT_BREAKER_RESET_SECONDS`,
+  default 1h) → the breaker closes with an all-clear mail.
+- Every run also aggregates the trailing hour of `.gc/usage.jsonl` model facts
+  into `.gc/con-voyage/lookout/usage-snapshot.txt`, and the summary rides along
+  in escalation mail so the mayor switches with the fleet's actual burn in hand.
+
+The fallback pools are the city's opencode providers — name them to match the
+lookout's defaults or override the lookout's env via `[[orders.overrides]]`:
+
+```toml
+# city.toml — opencode fallback pools, one per tier (claude equivalency)
+[providers.kimi-k3]       # large  <-> opus
+base = "builtin:opencode"
+[providers.kimi-k3.option_defaults]
+model = "fireworks-ai/accounts/fireworks/models/kimi-k3"
+
+[providers.glm-5p3-flash] # medium <-> sonnet
+base = "builtin:opencode"
+[providers.glm-5p3-flash.option_defaults]
+model = "fireworks-ai/accounts/fireworks/models/glm-5p3-flash"
+
+[providers.minimax-m3]    # small  <-> haiku
+base = "builtin:opencode"
+[providers.minimax-m3.option_defaults]
+model = "fireworks-ai/accounts/fireworks/models/minimax-m3"
+```
+
+Defining these providers also gives gc implicit pool agents per rig
+(`<rig>/kimi-k3`, …), which is what the mayor re-slings to while the breaker is
+open. All lookout knobs (`CV_LOOKOUT_*`: claude provider names, peek depth,
+compact threshold, cooldowns, reset/remind windows, escalate target, fallback
+pool names, usage window) are documented in the order file and the script
+header, and overridable per city via `[[orders.overrides]]` env.
 
 ---
 

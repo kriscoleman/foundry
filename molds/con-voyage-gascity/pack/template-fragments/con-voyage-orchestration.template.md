@@ -99,6 +99,25 @@ On "PR LANDED" the `con-voyage-finalize` monitor handles teardown within its coo
 2. Verify the convoy closed: `gc convoy status <convoy-id>`.
 3. Report to the user: PR link, review cycles, CI cycles.
 
+### Model tiers & the all-opencode fallback mode (con-voyage lookout)
+
+Work is tiered by complexity, with a claude ↔ opencode equivalency:
+
+| Tier | claude | opencode | Who runs on it |
+|---|---|---|---|
+| large (critical / intensive) | opus | kimi-k3 | you (the mayor), `cv-review-intensive` lenses |
+| medium (standard) | sonnet | glm-5p3-flash | do-work / implementation workers, `cv-review-standard` lenses |
+| small (rudimentary) | haiku | minimax-m3 | `cv-review-light` lenses |
+
+Reviewers ride the pack's opencode tiers directly; you and the workers ride the city's claude providers. You don't manage any of that — but the **`con-voyage-lookout`** order watches every claude-backed session for you, and its mail is actionable:
+
+- **"circuit breaker OPEN — switch to all-opencode mode"** — one or more claude sessions is showing a usage/rate-limit signature. The lookout has already handed off the claude fleet (each session restarts with its context mail waiting). Your moves:
+  1. **Re-sling in-flight claude beads to the fallback pools:** `gc sling <rig>/<pool> <bead> --nudge`, where `<pool>` is the tier's opencode equivalent named in the mail (default `kimi-k3` large / `glm-5p3-flash` medium / `minimax-m3` small).
+  2. **Prefer fallback pools for all new dispatches** until the all-clear: sling `<rig>/kimi-k3` where you would have used opus-class targets, `<rig>/glm-5p3-flash` for sonnet-class.
+  3. **Durable switch (long limits):** point `city.toml` `[agent_defaults].provider` at the medium pool and your own `[[patches.agent]] mayor` provider at the large pool, then tell the human you did. Providerless role agents (implementation workers, run-operators, synthesizers) follow `agent_defaults`; pooled work follows where you sling it.
+- **"breaker closed — claude tiers clear"** — the reset window passed with no limit signature. Resume normal claude-tier dispatch for new work (revert the durable switch if you made one). In-flight opencode work finishes where it is; don't churn it back.
+- **A lookout handoff mail addressed to you personally** (context-critical or fleet handoff): finish your current dispatch sentence, then `gc handoff` yourself so you resume fresh with this mail in hand. Don't postpone it past the task at hand — a compact mid-orchestration costs the roster, the convoy IDs, and the loop state you're holding.
+
 ### Red flags — STOP if you catch yourself
 
 | Rationalization | Reality |
@@ -109,6 +128,8 @@ On "PR LANDED" the `con-voyage-finalize` monitor handles teardown within its coo
 | "CI is green enough / that check is flaky" | All checks green. A red check is a finding, not noise. |
 | "Reviews passed, I'll merge it" | Never. A human merges or closes. That event ends the journey. |
 | "LOWs are fine, I'll accept them" | That call belongs to the human. Ask. |
+| "The limit mail is probably transient, I'll keep dispatching claude" | The lookout watches the whole fleet; you see one bead. Open breaker = all-opencode mode until the all-clear. |
+| "I'll restart a rate-limited worker to clear it" | The limit is account-side. Handoff preserves context; re-sling the work to a fallback pool instead. |
 | "Product-owner passed, docs can follow" | Not on a product-owner-gated change. The docs PR opens in draft and merges in lockstep. |
 | "I'll attribute the PR comment however" | Every agent comment leads with `[<rig>/<agent> — <lens>]` — always. |
 

@@ -2,3 +2,49 @@
 name = "con-voyage"
 version = "0.1.0"
 schema = 2
+
+# ---------------------------------------------------------------------------
+# Model tiers (see README.md "Model tiers" for the full contract)
+#
+# con-voyage ranks every lane by task complexity into three tiers and binds
+# each tier to a provider preset. Claude and opencode have a tier-for-tier
+# equivalency:
+#
+#   small  (rudimentary tasks)           claude haiku  <->  opencode minimax-m3
+#   medium (standard tasks)              claude sonnet <->  opencode glm-5p3-flash
+#   large  (critical / intensive tasks)  claude opus   <->  opencode kimi-k3
+#
+# The three REVIEWER tiers ship with this pack and default to opencode:
+#
+#   cv-review-light      prose/hygiene lenses            -> minimax-m3  (small)
+#   cv-review-standard   structured technical judgment   -> glm-5p3-flash (medium)
+#   cv-review-intensive  deep code/security reasoning    -> kimi-k3     (large)
+#
+# The claude side of the split (opus for the mayor, sonnet for do-work and
+# implementation workers) is CITY config, not pack config — the role agents
+# those workers run as are providerless and inherit the city's defaults.
+#
+# Every value here is a DEFAULT. A city overrides a tier by redeclaring the
+# same provider name in city.toml (city providers load before pack providers,
+# so the city wins) or with [[patches.providers]] — e.g. to move a tier to a
+# different opencode model, or back to claude:
+#
+#   [providers.cv-review-intensive]
+#   base = "builtin:opencode"
+#   [providers.cv-review-intensive.option_defaults]
+#   model = "some-other/provider-model-id"
+# ---------------------------------------------------------------------------
+[providers.cv-review-light]
+base = "builtin:opencode"
+[providers.cv-review-light.option_defaults]
+model = "fireworks-ai/accounts/fireworks/models/minimax-m3"
+
+[providers.cv-review-standard]
+base = "builtin:opencode"
+[providers.cv-review-standard.option_defaults]
+model = "fireworks-ai/accounts/fireworks/models/glm-5p3-flash"
+
+[providers.cv-review-intensive]
+base = "builtin:opencode"
+[providers.cv-review-intensive.option_defaults]
+model = "fireworks-ai/accounts/fireworks/models/kimi-k3"

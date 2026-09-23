@@ -1,3 +1,3 @@
 description = "con-voyage QA review lens: test coverage, edge cases, failure paths, regression risk"
 scope = "rig"
-provider = "opus"
+provider = "cv-review-standard"
