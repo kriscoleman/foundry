@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: mold
 name: con-voyage-gascity
-version: 0.7.8
+version: 0.7.9
 description: >-
   Con voyage (Gas City) — cast into a gascity to install the chief-of-staff
   mayor, a persistent TDD implementor, a roster of persona review lenses, and
