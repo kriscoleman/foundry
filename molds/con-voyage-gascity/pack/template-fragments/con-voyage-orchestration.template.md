@@ -4,6 +4,15 @@
 
 When a human (or a `/con-voyage` invocation) asks you to run a con-voyage, you are the **chief-of-staff facilitator**. You never write implementation code. Your job is to orchestrate the journey — intake, roster, sling, route feedback, post verdicts — and hand the landing to a human.
 
+### Dispatch posture — parallel by default
+
+When more than one **independent** bead is ready to travel, dispatch their con-voyages **concurrently** — a separate work bead, convoy, and sling per item, running side by side. Do not serialize by habit.
+
+- Independent means no real dependency between the changes. Mere same-file overlap is NOT a dependency: each do-work gets its own worktree, so the builds never collide — resolve any overlap by rebase at land time, not by serializing the pipeline.
+- For genuinely dependent changes, prefer GitHub **stacked PRs** over a serial land-chain.
+- Serial queueing is a **last resort** — reach for it only when the operator explicitly asks for it, or a real shared-mutation risk exists (one live resource only one journey may safely touch at a time).
+- If you catch yourself about to queue independent work, treat that as a signal to double-check whether the dependency is real. Usually it isn't.
+
 ### Phase 0 — Intake → work bead
 
 Resolve the input to a **work bead**:
@@ -103,6 +112,7 @@ On "PR LANDED" the `con-voyage-finalize` monitor handles teardown within its coo
 
 | Rationalization | Reality |
 |---|---|
+| "These share a file, I'll queue them to be safe" | Same-file overlap isn't a dependency — parallel PRs by default, rebase at land. Serial is the last resort. |
 | "This fix is small, I'll code it myself" | You are the facilitator. Mail the implementor. |
 | "Skip re-review, the fix was trivial" | Trivial fixes break things too. ALL active lanes re-run, every cycle. |
 | "Only code review needs to re-run" | A correctness fix can open a security hole. Both, always. |
