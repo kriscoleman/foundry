@@ -261,7 +261,7 @@ log_count() {
   local logfile="$1" pattern="$2"
   [ -f "$logfile" ] || { echo 0; return; }
   local n
-  n="$(grep -E -c "$pattern" "$logfile")"
+  n="$(grep -E -c -- "$pattern" "$logfile")"
   printf '%s' "${n:-0}"
 }
 
@@ -354,7 +354,22 @@ assert_log_count "$GC_LOG" 'bd update step-op'    0 "operator bead is never upda
 assert_log_count "$GC_LOG" 'bd close step-op'     0 "operator bead is never closed"
 assert_log_count "$GC_LOG" 'bd close step-other'  1 "non-operator bead #500 is closed exactly once"
 assert_log_count "$GC_LOG" 'bd update step-other' 1 "non-operator bead #500 gets a drop note"
-assert_log_count "$GC_LOG" '--city' 0 "fk-mr07: no bd call in this run passes --city (drop_bead's update/close and the per-root bd show all rely on cwd auto-detection instead — the fk-7v3r bug class: --city alone on an already-rig-prefixed id routes to the wrong store and silently no-ops)"
+# fk-mr07: drop_bead's update/close and the per-root bd show all rely on cwd
+# auto-detection instead of --city (the fk-7v3r bug class: --city alone on an
+# already-rig-prefixed id routes to the wrong store and silently no-ops).
+# Anchored to `^bd ...` rather than a blanket '--city' count across the whole
+# log: the sweep's own `bd list --city "$GC_CITY"` call (a legitimate
+# city-wide discovery query, deliberately left untouched) also contains the
+# literal string "--city", so a log-wide zero-count assertion is wrong on its
+# face — it would fail even on a correct implementation. Anchoring to the
+# start of the specific fixed call sites instead proves absence the same way
+# the sibling *.test.sh files in this diff already do (e.g.
+# review-watchdog.test.sh:345 `'^bd update fk-lane2 '`): if --city were still
+# prefixed, the logged line would start with "--city", not "bd", and these
+# patterns would report 0, not 1.
+assert_log_count "$GC_LOG" '^bd close step-other'  1 "drop close is cwd-routed (no --city)"
+assert_log_count "$GC_LOG" '^bd update step-other' 1 "drop note is cwd-routed (no --city)"
+assert_log_count "$GC_LOG" '^bd show root-other'   1 "per-root show is cwd-routed (no --city)"
 # The sweep must be unbounded: bd list defaults to 50 results, and silently
 # dropping beads past the 50th would defeat the whole point of this guard.
 assert_log_count "$GC_LOG" 'bd list .*--limit 0' 1 "bd list overrides the default 50-result limit"

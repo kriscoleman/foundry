@@ -144,31 +144,21 @@ gc bd set-state "$WORK_BEAD" cv=awaiting_merge --reason "con-voyage: PR opened, 
 #    the ONLY reliable work-bead<->PR map for a clean, review-approved PR (the
 #    repair .state records only exist for PRs with a CI failure).
 #
-#    Resolve the state dir's default the SAME way con-voyage-finalize.sh's
-#    cv_default_state_dir does (fk-mr07): GC_CITY is the multi-rig CITY root,
-#    not any one rig's own root, so defaulting to it here landed a finalize
-#    record at the city level while the monitor scanned the rig level —
-#    confirmed live, PR #59's record sat orphaned there until moved by hand.
-#    Prefer GC_RIG_ROOT (every gc-spawned session already carries it); else
-#    walk up from cwd for a ".beads" rig-root marker; else fall back to
-#    GC_CITY (prior behavior) so an unrecognized environment degrades instead
-#    of failing closed.
+#    Resolve the state dir's default by calling con-voyage-lib.sh's
+#    cv_default_state_dir() (fk-mr07) instead of hand-copying its
+#    GC_RIG_ROOT / .beads-walkup / GC_CITY-fallback algorithm inline: GC_CITY
+#    is the multi-rig CITY root, not any one rig's own root, so defaulting to
+#    it here previously landed a finalize record at the city level while the
+#    monitor scanned the rig level — confirmed live, PR #59's record sat
+#    orphaned there until moved by hand. This block is a single contiguous
+#    fenced ```bash block, so it CAN source a shell lib like the pack's other
+#    scripts do — no need to duplicate the resolver's algorithm here too.
 if [ -z "${CV_STATE_DIR:-}" ]; then
-  if [ -n "${GC_RIG_ROOT:-}" ]; then
-    CV_STATE_DIR="${GC_RIG_ROOT}/.gc/cv-pr-watch"
-  else
-    _cv_dir="$PWD"
-    CV_STATE_DIR=""
-    while :; do
-      if [ -d "${_cv_dir}/.beads" ]; then
-        CV_STATE_DIR="${_cv_dir}/.gc/cv-pr-watch"
-        break
-      fi
-      [ "$_cv_dir" = "/" ] && break
-      _cv_dir="$(dirname "$_cv_dir")"
-    done
-    [ -n "$CV_STATE_DIR" ] || CV_STATE_DIR="${GC_CITY:-.}/.gc/cv-pr-watch"
+  CV_LIB="$(command -v con-voyage-lib.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"
+  if [ -n "$CV_LIB" ]; then
+    CV_STATE_DIR="$(source "$CV_LIB" && cv_default_state_dir)"
   fi
+  [ -n "${CV_STATE_DIR:-}" ] || CV_STATE_DIR="${GC_CITY:-.}/.gc/cv-pr-watch"
 fi
 mkdir -p "$CV_STATE_DIR"
 owner="${REPO_FULL%%/*}"; repo="${REPO_FULL##*/}"
