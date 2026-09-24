@@ -50,18 +50,35 @@ trap cleanup EXIT
 
 # Recording `gc` stub: `bd list --all --metadata-field ... --json` echoes
 # STUB_BDLIST_JSON verbatim. Everything else no-ops (exit 0, empty output).
+# EVERY invocation is also appended to STUB_GC_LOG, one space-joined argv per
+# line, so the fk-t2fsa --city-omission case can assert on exactly what was
+# called (same convention as con-voyage-lib.test.sh/con-voyage-finalize.test.sh).
+#
+# fk-t2fsa: when STUB_CITY_SCOPE_EMPTY=1, a call carrying a leading --city
+# returns an empty list regardless of STUB_BDLIST_JSON — a faithful model of
+# the live bug (GC_CITY is the multi-rig CITY root, which has no store of its
+# own, so a --city-scoped query comes back empty even though the bead exists
+# in the owning rig's store). This lets CASE 9 prove the false-BLOCKED
+# behavior directly, not just assert on argv shape.
 cat > "${STUBDIR}/gc" <<'GC_STUB'
 #!/usr/bin/env bash
+{ line=""; for a in "$@"; do a="${a//$'\n'/ }"; line="${line}${a} "; done; printf '%s\n' "$line"; } >> "${STUB_GC_LOG:-/dev/null}"
 args=("$@")
 i=0
+had_city=0
 while :; do
   case "${args[$i]:-}" in
-    --city|--rig) i=$((i+2)) ;;
+    --city) had_city=1; i=$((i+2)) ;;
+    --rig) i=$((i+2)) ;;
     *) break ;;
   esac
 done
 if [ "${args[$i]:-}" = "bd" ] && [ "${args[$((i+1))]:-}" = "list" ]; then
-  printf '%s' "${STUB_BDLIST_JSON:-[]}"
+  if [ "$had_city" = "1" ] && [ "${STUB_CITY_SCOPE_EMPTY:-0}" = "1" ]; then
+    printf '[]'
+  else
+    printf '%s' "${STUB_BDLIST_JSON:-[]}"
+  fi
   exit 0
 fi
 exit 0
@@ -72,6 +89,10 @@ export GC="${STUBDIR}/gc"
 export GC_CITY="${SANDBOX}/city"
 mkdir -p "$GC_CITY"
 
+GC_LOG="${SANDBOX}/gc.log"
+: > "$GC_LOG"
+export STUB_GC_LOG="$GC_LOG"
+
 FAILURES=0
 CASE_NAME=""
 
@@ -80,6 +101,14 @@ pass() { echo "  PASS: $1"; }
 fail() { echo "  FAIL: $1" >&2; FAILURES=$((FAILURES+1)); }
 assert_eq() {
   if [ "$1" = "$2" ]; then pass "$3 (=$1)"; else fail "$3 (expected '$1', got '$2')"; fi
+}
+
+# assert_log_count PATTERN EXPECTED MESSAGE — counts lines in $GC_LOG matching
+# an extended regex (mirrors tests/con-voyage-lib.test.sh's helper).
+assert_log_count() {
+  local pattern="$1" expected="$2" msg="$3" n
+  n="$(grep -E -c -- "$pattern" "$GC_LOG")"
+  assert_eq "$expected" "${n:-0}" "$msg"
 }
 
 run_script() {
@@ -172,6 +201,30 @@ start_case "8: usage error when root-bead-id argument is missing"
 OUT="$(STUB_BDLIST_JSON="[]" "$SCRIPT" 2>&1)"
 RC=$?
 if [ "$RC" -ne 0 ]; then pass "exit non-zero with no arguments"; else fail "should fail with no arguments, got exit 0"; fi
+
+# ===========================================================================
+# CASE 9 — fk-t2fsa live regression: a genuinely approved review-loop must not
+# be false-BLOCKED by a city-scoped lookup in a multi-rig city.
+#
+# GC_CITY is the multi-rig CITY root, not any one rig's own root. Passing
+# `--city "$GC_CITY"` routed this metadata-filtered lookup at the city root
+# instead of the owning rig's store, so it silently found nothing even though
+# the review-loop sibling existed and was closed with gc.outcome=pass — a
+# false-BLOCKED publish in every multi-rig city (found live on PR #10494
+# round-4, review bead va-139b). Same fk-7v3r/fk-mr07 bug class as
+# con-voyage-lib.sh's bead lifecycle helpers: omitting --city/--rig entirely
+# lets gc's own cwd-based store auto-detection resolve the correct (rig-local)
+# store instead.
+# ===========================================================================
+start_case "9: fk-t2fsa — approved review-loop is not false-BLOCKED by a city-scoped lookup"
+: > "$GC_LOG"
+export STUB_CITY_SCOPE_EMPTY=1
+BEAD9="$(bead_json va-139b 'Run con-voyage review until approved' closed pass 2026-09-24T10:00:00Z)"
+run_script "[${BEAD9}]" root-9
+unset STUB_CITY_SCOPE_EMPTY
+assert_eq "0" "$RC" "a genuinely approved review-loop must not be false-BLOCKED by a city-scoped lookup"
+assert_log_count '--city' 0 "bd list is never called with --city"
+assert_log_count '^bd list ' 1 "bd list is still called exactly once, cwd-routed"
 
 # ===========================================================================
 # Summary

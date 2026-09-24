@@ -33,16 +33,26 @@
 #       publish — fails SAFE (blocks) rather than trusting graph dispatch.
 #
 # Environment:
-#   GC        gc binary to invoke (default: gc)
-#   GC_CITY   city directory passed to every --city call (default: .)
+#   GC   gc binary to invoke (default: gc)
 #
-# Requires: bash 4+, gc CLI (or a stub honoring the same --city bd list --json
+# Requires: bash 4+, gc CLI (or a stub honoring the same bd list --json
 # contract), python3.
+#
+# fk-t2fsa: this lookup deliberately omits --city/--rig. GC_CITY is the
+# multi-rig CITY root, not any one rig's own root, and this workflow instance
+# (identified by <root-bead-id>) always lives in exactly one rig's own store.
+# Passing --city "$GC_CITY" routed the query at the city root instead of the
+# owning rig's store, which has no beads of its own, so it silently found
+# nothing even when the review-loop sibling existed and was closed with
+# gc.outcome=pass — a false-BLOCKED publish in every multi-rig city. Every
+# caller's cwd is already inside the correct rig checkout when this script
+# runs, so omitting both flags lets gc's own cwd-based store auto-detection
+# resolve the right store instead (same fk-7v3r/fk-mr07 fix applied throughout
+# con-voyage-lib.sh's bead lifecycle helpers).
 
 set -uo pipefail
 
 GC="${GC:-gc}"
-GC_CITY="${GC_CITY:-.}"
 
 die() {
   echo "cv-verify-review-approved: BLOCKED — $*"
@@ -52,7 +62,7 @@ die() {
 ROOT_ID="${1:-}"
 [ -n "$ROOT_ID" ] || die "usage: cv-verify-review-approved.sh <root-bead-id>"
 
-MATCHES="$("$GC" --city "$GC_CITY" bd list --all --metadata-field "gc.root_bead_id=${ROOT_ID}" --json --limit=0 2>/dev/null || true)"
+MATCHES="$("$GC" bd list --all --metadata-field "gc.root_bead_id=${ROOT_ID}" --json --limit=0 2>/dev/null || true)"
 [ -n "$MATCHES" ] || die "bd list returned nothing for root ${ROOT_ID} — cannot verify the review outcome"
 
 RESULT="$(printf '%s' "$MATCHES" | python3 -c "

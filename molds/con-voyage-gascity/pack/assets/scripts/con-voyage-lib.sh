@@ -219,7 +219,7 @@ cv_bead_claim_non_routable() {
     echo "cv_bead_claim_non_routable: bead ${bead_id} already closed, skipping" >&2
     return 0
   fi
-  "$GC" --city "$GC_CITY" bd update "$bead_id" --assignee "$CV_WORK_BEAD_OWNER" --status in_progress >/dev/null 2>&1 \
+  "$GC" bd update "$bead_id" --assignee "$CV_WORK_BEAD_OWNER" --status in_progress >/dev/null 2>&1 \
     || echo "cv_bead_claim_non_routable: failed to claim ${bead_id}" >&2
   return 0
 }

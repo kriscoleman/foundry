@@ -395,13 +395,20 @@ assert_eq "" "$(first_alive_session_id_for_route "foundry-kc/gc.gap-analyst")" "
 
 # ---------------------------------------------------------------------------
 # --city omission (fk-7v3r): bead_status/close_if_open/cv_bead_mark_in_progress/
-# cv_bead_close/cv_resolve_work_bead must NOT pass --city on their bd calls —
-# passing --city alone routed an already-rig-prefixed bead id to the CITY
-# store instead of its owning rig's store, so bd show/close/update silently
-# no-op'd against the wrong store ("Issue not found", swallowed by each
-# helper's own fail-safe posture) and the bead never actually advanced.
-# Omitting --city/--rig entirely lets gc's own cwd-based store auto-detection
-# resolve the correct store instead (confirmed working in practice).
+# cv_bead_close/cv_resolve_work_bead/cv_bead_claim_non_routable must NOT pass
+# --city on their bd calls — passing --city alone routed an already-rig-
+# prefixed bead id to the CITY store instead of its owning rig's store, so bd
+# show/close/update silently no-op'd against the wrong store ("Issue not
+# found", swallowed by each helper's own fail-safe posture) and the bead
+# never actually advanced. Omitting --city/--rig entirely lets gc's own
+# cwd-based store auto-detection resolve the correct store instead (confirmed
+# working in practice).
+#
+# fk-t2fsa: cv_bead_claim_non_routable (added by the parallel fk-9f2n fix)
+# missed this file's own contract and shipped with --city still attached —
+# the exact same bug class recurring in code added after fk-mr07's sweep,
+# proving the contract needs a standing test per helper, not just a one-time
+# audit.
 # ---------------------------------------------------------------------------
 start_case "bead_status: omits --city"
 : > "$GC_LOG"
@@ -427,6 +434,11 @@ start_case "cv_resolve_work_bead: omits --city"
 : > "$GC_LOG"
 cv_resolve_work_bead "fk-2co" >/dev/null 2>/dev/null
 assert_log_count '--city' 0 "cv_resolve_work_bead never passes --city"
+
+start_case "cv_bead_claim_non_routable: omits --city"
+: > "$GC_LOG"
+cv_bead_claim_non_routable "rb-open" 2>/dev/null
+assert_log_count '--city' 0 "cv_bead_claim_non_routable never passes --city"
 
 # ---------------------------------------------------------------------------
 # close_if_open: CV_CLOSE_RC / exit-status handling (fk-7v3r COMPOUNDING fix —
