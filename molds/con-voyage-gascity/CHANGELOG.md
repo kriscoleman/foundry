@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.10](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.7.9...con-voyage-gascity-v0.7.10) (2026-09-24)
+
+
+### Bug Fixes
+
+* **con-voyage:** claim the WORK BEAD under a non-routable identity (fk-9f2n) ([381695a](https://github.com/kriscoleman/foundry/commit/381695ac54f5b0e8090a976750efec280e0e83cb))
+
 ## [0.7.9](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.7.8...con-voyage-gascity-v0.7.9) (2026-09-23)
 
 
