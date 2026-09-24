@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.11](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.7.10...con-voyage-gascity-v0.7.11) (2026-09-24)
+
+
+### Bug Fixes
+
+* **con-voyage:** scope cv-verify-review-approved.sh's bd list to the owning rig, not the city root (fk-t2fsa) ([f8b97b7](https://github.com/kriscoleman/foundry/commit/f8b97b7bff56c97de268134d3b517a1e437d94b4))
+
 ## [0.7.10](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.7.9...con-voyage-gascity-v0.7.10) (2026-09-24)
 
 
