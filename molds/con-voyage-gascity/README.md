@@ -250,6 +250,37 @@ strings above are verified present in opencode's live model catalog
 (`opencode models`) in the exact `provider/account/models/name` form its
 `--model` flag expects.
 
+### Recasting is safe — but city.toml is still the only copy
+
+Recasting the pack itself (`ailloy cast .../molds/con-voyage-gascity`, "Cast +
+wire" step 1 above) can never disturb whichever mode a city has chosen:
+ailloy cannot patch `city.toml` at all, not even to add to it, let alone
+overwrite it. Verified empirically — casting into a scratch city whose
+`city.toml` already carried a custom `cv-review-light` opencode override came
+out byte-for-byte identical afterward.
+
+That said, `city.toml` is still the **only** place this choice lives. The
+pack ships no record of which mode a city picked, by design — there's no
+cast-time "profile select" primitive to build one on top of (see above). So
+while a pack recast is safe, anything *else* that rewrites `city.toml`
+wholesale — a config-normalizing tool, a manual edit, a bad merge — has no
+way to know the three tier overrides mattered, and will drop them with zero
+warning. Reviewers don't error when that happens; they just silently start
+running on the pack's claude defaults instead of the mode the city thought
+it was in.
+
+Run this after any such city.toml change you're unsure about, or wire it
+into CI, to turn that silent drift into a loud, actionable failure instead:
+
+```bash
+packs/con-voyage/assets/scripts/cv-verify-model-mode.sh opencode   # or: claude
+```
+
+It queries `gc config explain --provider <tier> --json` for all three
+reviewer tiers and exits non-zero with the drifted or missing tier(s) named
+explicitly if any no longer resolve to the expected mode. Recovery is the
+same either way: re-paste the block for your mode from above.
+
 ### Overriding a single tier
 
 Both modes are pack-wide defaults — a city can also move just one tier
