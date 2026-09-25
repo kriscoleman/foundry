@@ -79,6 +79,16 @@
 #   cv-worktree-prep.sh guard <dir> [base-ref]
 #   cv-worktree-prep.sh dirty <dir>
 #   cv-worktree-prep.sh built <dir> [base-ref]
+#   cv-worktree-prep.sh resolve-base <dir> [explicit-base]
+#
+# resolve-base (fk-qppb4) — echoes guard's own base-resolution algorithm
+# (explicit arg -> origin/HEAD -> origin/main -> main -> empty-tree fail-safe)
+# as a public subcommand, so a caller that needs to know the SAME base guard
+# would use — before guard itself runs, or to feed a different base-branch
+# operation such as con-voyage-lib.sh's cv_resolve_base_branch /
+# cv_ensure_branch_based_on — never re-derives the resolution order
+# independently and risks disagreeing with guard about what "the default
+# base" means.
 #
 # Environment:
 #   CV_HYGIENE_PATTERNS   Space-separated gitignore-style patterns.
@@ -86,7 +96,8 @@
 #
 # Exit codes:
 #   0 — clean (exclude: written or already present; guard/dirty: nothing
-#       offending; built: HEAD is ahead of base)
+#       offending; built: HEAD is ahead of base; resolve-base: always — it
+#       never fails to produce SOME base, even the fail-safe empty-tree hash)
 #   1 — usage/validation error, OR (guard/dirty only) an offending path was
 #       found, OR (built only) HEAD is not ahead of base — the caller must
 #       NOT proceed to commit/push until a re-run reports clean (guard/dirty),
@@ -107,6 +118,7 @@ Usage:
   cv-worktree-prep.sh exclude <dir>
   cv-worktree-prep.sh guard <dir> [base-ref]
   cv-worktree-prep.sh dirty <dir>
+  cv-worktree-prep.sh resolve-base <dir> [explicit-base]
 USAGE
 }
 
@@ -254,6 +266,13 @@ cmd_guard() {
   [ "$any_offense" -eq 0 ]
 }
 
+cmd_resolve_base() {
+  local dir="$1" explicit="${2:-}"
+  require_git_dir "$dir" "resolve-base"
+  resolve_base "$dir" "$explicit"
+  printf '\n'
+}
+
 cmd_dirty() {
   local dir="$1"
   require_git_dir "$dir" "dirty"
@@ -326,8 +345,9 @@ case "$SUBCOMMAND" in
   guard) cmd_guard "${1:-}" "${2:-}" ;;
   dirty) cmd_dirty "${1:-}" ;;
   built) cmd_built "${1:-}" "${2:-}" ;;
+  resolve-base) cmd_resolve_base "${1:-}" "${2:-}" ;;
   *)
     usage
-    die "unknown subcommand '${SUBCOMMAND}' (expected exclude, guard, dirty, or built)"
+    die "unknown subcommand '${SUBCOMMAND}' (expected exclude, guard, dirty, built, or resolve-base)"
     ;;
 esac

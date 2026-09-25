@@ -45,6 +45,16 @@ assert_contains() {
   fi
 }
 
+assert_not_contains() {
+  local needle="$1" label="$2"
+  if grep -qF -- "$needle" "$PUBLISH_MD"; then
+    echo "  FAIL: $label (found verbatim in ${PUBLISH_MD}, expected it gone)" >&2
+    FAILURES=$((FAILURES+1))
+  else
+    echo "  PASS: $label"
+  fi
+}
+
 line_of() {
   grep -nF -- "$1" "$PUBLISH_MD" | head -1 | cut -d: -f1
 }
@@ -95,6 +105,49 @@ if [ -n "$mkdir_line" ] && [ -n "$write_line" ] && [ "$mkdir_line" -lt "$write_l
   echo "  PASS: mkdir -p \$CV_STATE_DIR (line ${mkdir_line}) precedes the .finalize write (line ${write_line})"
 else
   echo "  FAIL: expected mkdir -p \$CV_STATE_DIR to precede the .finalize write" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
+# ===========================================================================
+# CASE 4 — fk-qppb4 (GitHub stacked PRs): BASE_BRANCH is resolved via the
+#   shared cv_resolve_base_branch() helper, not a hand-filled placeholder
+#   that silently always meant "main".
+# ===========================================================================
+start_case "4: BASE_BRANCH is resolved via the shared cv_resolve_base_branch(), not a placeholder"
+assert_contains 'BASE_BRANCH="$(source "$CV_LIB" && cv_resolve_base_branch "$CONVOY_ID" "$(pwd)")"' "resolves BASE_BRANCH by sourcing con-voyage-lib.sh and calling cv_resolve_base_branch"
+assert_contains 'CONVOY_ID="{{convoy_id}}"' "resolves the journey's convoy id from the graph.v2 template var"
+assert_not_contains '<base-branch>' "no hand-filled <base-branch> placeholder remains anywhere in this file"
+
+# ===========================================================================
+# CASE 5 — the resolved $BASE_BRANCH, not a hardcoded main or placeholder,
+#   reaches both the hygiene guard's base-ref arg and the PR-create --base.
+# ===========================================================================
+start_case "5: the resolved \$BASE_BRANCH reaches the hygiene guard's base-ref argument"
+assert_contains '"$CV_GUARD" guard "$(pwd)" "origin/${BASE_BRANCH}"' "guard is called with origin/\${BASE_BRANCH}, not a hardcoded origin/main"
+
+start_case "6: the resolved \$BASE_BRANCH reaches the PR-create --base flag"
+assert_contains '--base "$BASE_BRANCH" --head <work-branch>' "cv-pr-comment.sh create receives --base \"\$BASE_BRANCH\""
+
+# ===========================================================================
+# CASE 7 — ordering: BASE_BRANCH must be resolved before either the guard
+#   call or the PR-create call consumes it.
+# ===========================================================================
+start_case "7: BASE_BRANCH resolution precedes both of its consumers"
+resolve_line="$(line_of 'BASE_BRANCH="$(source "$CV_LIB" && cv_resolve_base_branch "$CONVOY_ID" "$(pwd)")"')"
+guard_use_line="$(line_of '"$CV_GUARD" guard "$(pwd)" "origin/${BASE_BRANCH}"')"
+pr_create_line="$(line_of '--base "$BASE_BRANCH" --head <work-branch>')"
+
+if [ -n "$resolve_line" ] && [ -n "$guard_use_line" ] && [ "$resolve_line" -lt "$guard_use_line" ]; then
+  echo "  PASS: BASE_BRANCH resolution (line ${resolve_line}) precedes the guard call (line ${guard_use_line})"
+else
+  echo "  FAIL: expected BASE_BRANCH resolution to precede the guard call" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
+if [ -n "$resolve_line" ] && [ -n "$pr_create_line" ] && [ "$resolve_line" -lt "$pr_create_line" ]; then
+  echo "  PASS: BASE_BRANCH resolution (line ${resolve_line}) precedes the PR-create call (line ${pr_create_line})"
+else
+  echo "  FAIL: expected BASE_BRANCH resolution to precede the PR-create call" >&2
   FAILURES=$((FAILURES+1))
 fi
 

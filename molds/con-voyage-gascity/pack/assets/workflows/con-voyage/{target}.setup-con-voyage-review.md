@@ -38,13 +38,54 @@ if [ -z "$SOURCE_ANCHOR_WORK_DIR" ] || [ ! -d "$SOURCE_ANCHOR_WORK_DIR" ]; then
 fi
 ```
 
+## Resolve the journey's base branch and correct the worktree if needed (fk-qppb4 — GitHub stacked PRs)
+
+A con-voyage journey normally reviews against the repo's default branch. A
+stacked slice instead needs its work branch based on an earlier slice's own
+work branch (a GitHub stacked PR). Resolve the configured base — a
+facilitator sets it per journey with `gc convoy target <input-convoy-id>
+<base-branch>` before launching do-work/con-voyage; unset means "use today's
+default" and every step below is then a no-op, byte-identical to
+pre-fk-qppb4 behavior:
+
+```bash
+CONVOY_ID="{{convoy_id}}"
+CV_LIB="$(command -v con-voyage-lib.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"
+BASE_BRANCH="main"
+if [ -n "$CV_LIB" ]; then
+  BASE_BRANCH="$(source "$CV_LIB" && cv_resolve_base_branch "$CONVOY_ID" "$(pwd)")"
+fi
+echo "con-voyage setup: resolved base branch = ${BASE_BRANCH}"
+```
+
+The do-work/build-basic formula that cut this worktree lives outside this
+pack and always starts the implementation commit from the launcher
+checkout's current ref (effectively always the repo default), with no
+knowledge of a con-voyage journey's configured base — invasively forking
+that formula into this pack would duplicate core rather than fix it. Correct
+the boundary from here instead, now that the implementation commit already
+exists, by moving it onto the real base with one rebase:
+
+```bash
+if [ -n "$CV_LIB" ]; then
+  source "$CV_LIB" && cv_ensure_branch_based_on "$(pwd)" "$BASE_BRANCH" \
+    || { echo "could not base this worktree on ${BASE_BRANCH} — see the error above" >&2; exit 1; }
+fi
+```
+
+If this block fails (the base branch does not resolve, or the rebase hits a
+conflict), STOP here: mail the mayor with the exact output above, then close
+this setup bead with gc.outcome=fail and gc.failure_class=base_branch_conflict
+instead of proceeding to gather review context on a worktree that is not
+actually based on the journey's configured branch.
+
 Gather the requirements artifact, implementation plan, decomposition artifact,
 implementation summary, changed-file summaries, task evidence, and verification
 commands into one review context file under the build artifact root. Record that
 path on the workflow root as gc.build.code_review_context_path.
 
 Include:
-- The base branch and branch under review
+- The base branch ($BASE_BRANCH, resolved above) and branch under review
 - The full diff summary (files changed, lines added/removed)
 - The source anchor id (`$SOURCE_ANCHOR_ID`), its work_dir (`$SOURCE_ANCHOR_WORK_DIR`), changed files, commit id, and proof commands
 - The review roster that will run (floor lanes always; roster lanes active for this sling)
@@ -107,7 +148,7 @@ print(cid)
 gc bd update "$WORK_BEAD" --assignee "con-voyage:work-bead" --status in_progress || echo "note: could not claim work bead $WORK_BEAD (continuing)"
 gc bd set-state "$WORK_BEAD" cv=reviewing --reason "con-voyage: review started" \
   || echo "note: could not set cv=reviewing on $WORK_BEAD (continuing)"
-gc bd note "$WORK_BEAD" "con-voyage started — base <base-branch>, branch <branch-under-review>, PR target <owner/repo>. Review roster: floor (acceptance, test-evidence, simplicity, security, code) + <active roster lenses>. A human lands the PR; this bead closes automatically on merge/close via the con-voyage-finalize monitor." \
+gc bd note "$WORK_BEAD" "con-voyage started — base ${BASE_BRANCH}, branch <branch-under-review>, PR target <owner/repo>. Review roster: floor (acceptance, test-evidence, simplicity, security, code) + <active roster lenses>. A human lands the PR; this bead closes automatically on merge/close via the con-voyage-finalize monitor." \
   || echo "note: could not append review context to $WORK_BEAD (continuing)"
 ```
 
