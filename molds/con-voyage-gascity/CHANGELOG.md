@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.8.0](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.7.11...con-voyage-gascity-v0.8.0) (2026-09-25)
+
+
+### Features
+
+* **con-voyage:** add branch-completeness and blocking-work checks to code-lens hardening (fk-47a6q) ([f8509b2](https://github.com/kriscoleman/foundry/commit/f8509b2033241b013b15005816a11e6b13bd3c69))
+* **con-voyage:** fold the do-work build into con-voyage as its own first phase (fk-9aunv) ([e8324ca](https://github.com/kriscoleman/foundry/commit/e8324ca9577ac9815b078f0bb7f541f167ef5a6c))
+* **con-voyage:** harden review lens prompts to catch [#10494](https://github.com/kriscoleman/foundry/issues/10494)-class regressions (fk-7fego) ([be3f9e1](https://github.com/kriscoleman/foundry/commit/be3f9e12ba31f5335a23585d1c69c6f98a58986b))
+
+
+### Bug Fixes
+
+* set $GC before sourcing con-voyage-lib.sh; unnest build-summary schema from Fresh-bead section (review fk-sbr3z) ([204eede](https://github.com/kriscoleman/foundry/commit/204eedebc530cb7b77d13bf9ad9e5b4bbfaa2637))
+
 ## [0.7.11](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.7.10...con-voyage-gascity-v0.7.11) (2026-09-24)
 
 
