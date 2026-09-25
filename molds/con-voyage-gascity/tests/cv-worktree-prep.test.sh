@@ -520,6 +520,83 @@ pushed_content="$(git_c "$REPO22" show "origin/work:README.md")"
 assert_eq "fixed content" "$pushed_content" "the committed review fix reached the pushed remote ref"
 
 # ===========================================================================
+# CASE 23 — built reports NOT BUILT (exit 1) on a fresh worktree sitting
+#   exactly at the base tip (0 commits ahead) — the con-voyage build phase's
+#   short-circuit signal for "this source anchor needs its first TDD round"
+#   (fk-9aunv: fold the do-work build into con-voyage as its own first phase).
+# ===========================================================================
+start_case "23: built reports NOT BUILT on a fresh worktree with 0 commits ahead of base"
+REPO23="$(mk_repo repo23)"
+WT23="${SANDBOX}/repo23-worktree"
+git_c "$REPO23" worktree add -q --detach "$WT23" HEAD
+run_script built "$WT23" main
+if [ "$RC" -ne 0 ]; then pass "built exits non-zero (not built) on a fresh detached worktree"; else fail "expected built to report NOT BUILT on a fresh worktree"; fi
+
+# ===========================================================================
+# CASE 24 — built reports BUILT (exit 0) once the worktree has a commit ahead
+#   of base — the short-circuit signal for "reuse this pre-built branch,
+#   skip the initial TDD round" (backward compat with the existing
+#   pre-built-branch con-voyage path).
+# ===========================================================================
+start_case "24: built reports BUILT once a commit lands ahead of base"
+printf 'impl\n' > "${WT23}/feature.go"
+git_c "$WT23" add feature.go
+git_c "$WT23" commit -q -m "feat: first TDD round"
+run_script built "$WT23" main
+assert_eq "0" "$RC" "built exits 0 once HEAD is ahead of base"
+
+# ===========================================================================
+# CASE 25 — built resolves its base the same way guard does: explicit arg,
+#   then origin/HEAD, then origin/main, then main.
+# ===========================================================================
+start_case "25: built auto-derives base from origin/HEAD when no explicit base is given"
+UPSTREAM25="${SANDBOX}/repo25-upstream.git"
+git init -q -b main --bare "$UPSTREAM25"
+REPO25="$(mk_repo repo25)"
+git_c "$REPO25" remote add origin "$UPSTREAM25"
+git_c "$REPO25" push -q -u origin main
+git_c "$REPO25" remote set-head origin main
+WT25="${SANDBOX}/repo25-worktree"
+git_c "$REPO25" worktree add -q --detach "$WT25" HEAD
+run_script built "$WT25"   # NO explicit base — must auto-derive origin/main
+if [ "$RC" -ne 0 ]; then pass "built (auto-derived base) reports NOT BUILT on a fresh worktree"; else fail "expected built to report NOT BUILT with an auto-derived base"; fi
+printf 'impl\n' > "${WT25}/feature.go"
+git_c "$WT25" add feature.go
+git_c "$WT25" commit -q -m "feat: first TDD round"
+run_script built "$WT25"
+assert_eq "0" "$RC" "built (auto-derived base) reports BUILT once HEAD is ahead"
+
+# ===========================================================================
+# CASE 26 — built validates its arguments the same way exclude/guard/dirty do.
+# ===========================================================================
+start_case "26: built validates its arguments the same way exclude/guard/dirty do"
+run_script built "$NOTGIT"
+if [ "$RC" -ne 0 ]; then pass "built exits non-zero for a non-git directory"; else fail "expected non-zero exit for a non-git directory"; fi
+run_script built
+if [ "$RC" -ne 0 ]; then pass "built exits non-zero with no directory argument"; else fail "expected non-zero exit with no directory argument"; fi
+
+# ===========================================================================
+# CASE 27 — DOCUMENTED FALLBACK. When no base ref resolves at all (same
+#   degenerate case as guard's CASE 16), built fails SAFE toward "NOT BUILT"
+#   (do the build) rather than toward "BUILT" (skip it) — the safer default,
+#   since skipping a real TDD round is a worse failure than a redundant one.
+# ===========================================================================
+start_case "27: built fails SAFE toward NOT BUILT when no base ref resolves"
+REPO27="${SANDBOX}/repo27"
+mkdir -p "$REPO27"
+git_c "$REPO27" init -q -b trunk        # not 'main'; no remote at all
+printf 'placeholder\n' > "${REPO27}/README.md"
+git_c "$REPO27" add README.md
+git_c "$REPO27" commit -q -m "init"
+WT27="${SANDBOX}/repo27-worktree"
+git_c "$REPO27" worktree add -q --detach "$WT27" HEAD
+printf 'impl\n' > "${WT27}/feature.go"
+git_c "$WT27" add feature.go
+git_c "$WT27" commit -q -m "feat: some commits exist, but no base can resolve"
+run_script built "$WT27"   # no base arg, no origin, branch != main
+if [ "$RC" -ne 0 ]; then pass "built fails safe: reports NOT BUILT when no base resolves"; else fail "expected fail-safe NOT BUILT when no base resolves (rc=$RC)"; fi
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 echo

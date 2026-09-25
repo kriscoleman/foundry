@@ -26,8 +26,44 @@ description = "Run-target for the native-language code review floor lane. Overri
 default = "con-voyage.cv-go-principal-engineer"
 
 [vars.implementation_target]
-description = "Role target used to apply con-voyage review findings."
+description = "Role target used to apply con-voyage review findings, and to run the initial build phase's TDD round when the target bead has no pre-built branch yet."
 default = "gc.implementation-worker"
+
+# ---------------------------------------------------------------------------
+# Build phase — folds the do-work build in as con-voyage's own first phase
+# (fk-9aunv: "implement-then-escort — one-sling journey"), so a single sling
+# on a FRESH work bead builds, reviews, and publishes in one journey instead
+# of requiring a separate `gc sling ... --on do-work` first. Automatically
+# short-circuits when the target bead already has a pre-built branch (an
+# existing source-anchor work_dir with commits ahead of base) — backward
+# compatible with the existing pre-built-branch con-voyage path. The
+# short-circuit decision is a RUNTIME fact (does this bead already have a
+# branch?), not a sling-time var, so both steps below always run; prepare-build
+# resolves/creates the worktree and records whether it was already built, and
+# build itself either verifies the existing evidence (short-circuit) or runs
+# the first TDD round (fresh).
+# ---------------------------------------------------------------------------
+
+[[template]]
+id = "{target}.prepare-build"
+title = "Prepare con-voyage build worktree"
+metadata = { "gc.run_target" = "gc.run-operator" }
+description_file = "../assets/workflows/con-voyage/{target}.prepare-build.md"
+
+[[template]]
+id = "{target}.build"
+title = "Con-voyage: initial implementation (TDD)"
+needs = ["{target}.prepare-build"]
+metadata = { "gc.run_target" = "{implementation_target}", "gc.build.artifact_schema" = "gc.build.implementation-summary.v1", "gc.build.artifact_path_keys" = "gc.implementation.summary_path,gc.build.implementation_summary_path,gc.var.summary_path" }
+description_file = "../assets/workflows/con-voyage/{target}.build.md"
+
+[template.check]
+max_attempts = 3
+
+[template.check.check]
+mode = "exec"
+path = ".gc/scripts/checks/build-artifact-valid.sh"
+timeout = "5m"
 
 # ---------------------------------------------------------------------------
 # Setup step — gathers review context (reuses the build-basic-review pattern)
@@ -36,6 +72,7 @@ default = "gc.implementation-worker"
 [[template]]
 id = "{target}.setup-con-voyage-review"
 title = "Prepare con-voyage review context"
+needs = ["{target}.build"]
 metadata = { "gc.run_target" = "gc.run-operator" }
 description_file = "../assets/workflows/con-voyage/{target}.setup-con-voyage-review.md"
 

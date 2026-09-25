@@ -151,6 +151,34 @@ export STUB_BDSHOW_JSON_cv_notype='{"id":"cv-notype","issue_type":"convoy","meta
 assert_eq "wb-notype" "$(cv_resolve_work_bead "cv-notype")" "a dependency with an absent type still resolves (back-compat)"
 
 # ---------------------------------------------------------------------------
+# cv_bead_work_dir (fk-9aunv: fold the do-work build into con-voyage as its
+# own first phase). do-work's prepare-worktree step persists the resolved
+# worktree path as a bare `work_dir` metadata key (NOT `gc.`-namespaced) on
+# the source anchor bead — see do-work/prepare-worktree.md step 5. The new
+# con-voyage build phase reads it back the same way to detect a pre-built
+# branch and short-circuit its own initial TDD round.
+# ---------------------------------------------------------------------------
+start_case "cv_bead_work_dir: bead with work_dir metadata -> the path"
+export STUB_BDSHOW_JSON_fk_876om='{"id":"fk-876om","metadata":{"gc.synthetic":"true","work_dir":"/rig/worktrees/fk-876om"}}'
+assert_eq "/rig/worktrees/fk-876om" "$(cv_bead_work_dir "fk-876om")" "reads the bare work_dir metadata key"
+
+start_case "cv_bead_work_dir: bead with no work_dir metadata -> empty (never built yet)"
+export STUB_BDSHOW_JSON_fk_fresh='{"id":"fk-fresh","metadata":{"gc.synthetic":"true"}}'
+assert_eq "" "$(cv_bead_work_dir "fk-fresh")" "no work_dir set yet resolves empty, not an error"
+
+start_case "cv_bead_work_dir: bd show returns nothing -> empty (fail-safe)"
+assert_eq "" "$(cv_bead_work_dir "fk-unknown")" "unknown/failed bd show resolves empty"
+
+start_case "cv_bead_work_dir: empty input -> empty, no bd call"
+: > "$GC_LOG"
+assert_eq "" "$(cv_bead_work_dir "")" "empty bead id resolves empty"
+assert_log_count 'bd show' 0 "empty bead id never calls bd show"
+
+start_case "cv_bead_work_dir: unparseable JSON -> empty (fail-safe, never aborts)"
+export STUB_BDSHOW_JSON_fk_bad='not json'
+assert_eq "" "$(cv_bead_work_dir "fk-bad")" "unparseable bd show output resolves empty"
+
+# ---------------------------------------------------------------------------
 # cv_close_reason_for_pr
 # ---------------------------------------------------------------------------
 start_case "cv_close_reason_for_pr: canonical reasons"
@@ -434,6 +462,11 @@ start_case "cv_resolve_work_bead: omits --city"
 : > "$GC_LOG"
 cv_resolve_work_bead "fk-2co" >/dev/null 2>/dev/null
 assert_log_count '--city' 0 "cv_resolve_work_bead never passes --city"
+
+start_case "cv_bead_work_dir: omits --city"
+: > "$GC_LOG"
+cv_bead_work_dir "fk-876om" >/dev/null 2>/dev/null
+assert_log_count '--city' 0 "cv_bead_work_dir never passes --city"
 
 start_case "cv_bead_claim_non_routable: omits --city"
 : > "$GC_LOG"
