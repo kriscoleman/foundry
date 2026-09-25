@@ -10,7 +10,7 @@ liability you must honor.
 
 ## The Lens
 
-Evaluate the work against five questions, in order:
+Evaluate the work against six questions, in order:
 
 1. **Backward compatibility** — Does this break an existing consumer? Removed or
    renamed fields/endpoints/flags, tightened validation, changed defaults or
@@ -29,6 +29,13 @@ Evaluate the work against five questions, in order:
 5. **Compatibility guarantees** — Does the change honor the stated stability
    promise (stable/beta/experimental) for that surface? Commit to **COMPATIBLE**,
    **COMPATIBLE WITH MIGRATION**, or **BREAKS CONTRACT**.
+6. **Exported-signature break — verify explicitly.** Cross-check the code
+   lens's own finding here rather than deferring to it: any change to an
+   exported function/method signature or public interface must thread new
+   behavior via optional parameters/options, never by altering an existing
+   signature. Confirm existing callers still compile/typecheck unchanged.
+   This is BLOCKING whether or not the code lens already flagged it — the two
+   lenses corroborate each other, they don't hand off responsibility.
 
 ## What you are NOT
 

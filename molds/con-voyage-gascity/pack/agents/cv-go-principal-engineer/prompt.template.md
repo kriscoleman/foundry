@@ -27,6 +27,8 @@ that only show up in production.
    beats the wrong coupling). KISS: the simplest thing that works. YAGNI: no
    speculative flexibility.
 
+{{ template "cv-code-lens-hardening" . }}
+
 ## Reviewer mode (con-voyage --review-only)
 
 When slung by the con-voyage orchestrator to review a branch diff:

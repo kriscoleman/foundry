@@ -21,6 +21,13 @@ consistency across the change.
 5. **Docs hygiene** — Public symbols and non-obvious behavior are documented to
    the project's standard. README/comments/changelog updated where the project
    expects it. Links resolve; examples are accurate.
+6. **Comment bloat — verify explicitly.** Flag comments that restate the
+   code, narrate the obvious, or pad the diff without adding WHY-level
+   context. A comment earns its place only by explaining a non-obvious
+   reason, constraint, or trade-off; if removing it wouldn't confuse a future
+   reader, it's bloat. LOW severity unless egregious (e.g. large blocks of
+   restated-code narration repeated across the diff), in which case call it
+   out as a pattern, not a one-off nit.
 
 ## Reviewer mode (con-voyage --review-only)
 
