@@ -63,6 +63,41 @@ cv_default_state_dir() {
   printf '%s/.gc/cv-pr-watch' "${GC_CITY:-.}"
 }
 
+# cv_extra_rig_state_dirs PRIMARY_DIR — print one additional
+# "<rig-path>/.gc/cv-pr-watch" directory per rig registered in
+# "${GC_CITY:-.}/.gc/site.toml" ([[rig]] path = "..."), skipping any entry
+# that equals PRIMARY_DIR (already scanned via cv_default_state_dir). One
+# path per line; prints nothing if site.toml is missing/unparsable (fail
+# soft — a caller that can't enumerate rigs still scans its own primary
+# directory).
+#
+# fk-2c937: a monitor that runs as a CITY-scoped order (no GC_RIG_ROOT) has
+# its OWN cv_default_state_dir call walk up only from ITS OWN cwd, which
+# stops at the CITY's own ".beads" and never reaches any rig's
+# "<rig>/.gc/cv-pr-watch" — exactly where a DIFFERENT process (con-voyage's
+# publish step, running with cwd inside that rig's worktree) lands via the
+# very same function. Ancestor walk-up can only ever find an ancestor of the
+# caller's own cwd, never a sibling rig directory, so a city-root process
+# needs every registered rig named explicitly instead.
+cv_extra_rig_state_dirs() {
+  local primary="$1"
+  local site_toml="${GC_CITY:-.}/.gc/site.toml"
+  [ -f "$site_toml" ] || return 0
+  awk '
+    /^\[\[rig\]\]/ { in_block = 1; next }
+    in_block && /^\[/ { in_block = 0 }
+    in_block && /^[[:space:]]*path[[:space:]]*=/ {
+      val = $0
+      sub(/.*=[[:space:]]*"/, "", val)
+      sub(/".*/, "", val)
+      print val
+    }
+  ' "$site_toml" | while IFS= read -r rig_path; do
+    [ -n "${rig_path// /}" ] || continue
+    printf '%s/.gc/cv-pr-watch\n' "$rig_path"
+  done | awk -v skip="$primary" '$0 != skip'
+}
+
 # ---------------------------------------------------------------------------
 # GitHub-stacked-PR base branch (fk-qppb4). A con-voyage journey normally
 # targets the repo's default branch; a stacked slice instead needs the work
