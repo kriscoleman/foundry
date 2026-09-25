@@ -30,6 +30,14 @@
 # invocations of the script, exactly like the real bead metadata would. The
 # script under test honors GC= (default gc) so we point it at the stub.
 #
+# CASES 17-18 additionally exercise multi-store discovery (fk-jsdw2): the
+# stub also answers `rig list --json` (from STUB_RIGS_JSON, default
+# '{"rigs":[]}' so every pre-existing case above is unaffected) and, when a
+# `bd list` call carries `--rig <name>`, serves that rig's OWN fixture from
+# `${STUB_DB_DIR}/<name>.json` instead of the shared STUB_DB_FILE — so a lane
+# that exists ONLY in one rig's store can be proven discoverable independent
+# of the city store.
+#
 # CASE 16 additionally content-checks the PRIMARY half of this same fix — the
 # in-loop claim-verification/re-dispatch block added directly to
 # {target}.con-voyage-review-loop.md. That block runs inside the review-loop's
@@ -91,20 +99,40 @@ cat > "${STUBDIR}/gc" <<'GC_STUB'
 
 args=("$@")
 i=0
+stub_rig=""
 while :; do
   case "${args[$i]:-}" in
     --city) i=$((i+2)) ;;
-    --rig)  i=$((i+2)) ;;
+    --rig)  stub_rig="${args[$((i+1))]:-}"; i=$((i+2)) ;;
     *) break ;;
   esac
 done
 sub="${args[$i]:-}"
 
 case "$sub" in
+  rig)
+    rigsub="${args[$((i+1))]:-}"
+    if [ "$rigsub" = "list" ]; then
+      if [ -n "${STUB_RIGS_JSON:-}" ]; then
+        printf '%s' "$STUB_RIGS_JSON"
+      else
+        printf '{"rigs":[]}'
+      fi
+      exit 0
+    fi
+    exit 0
+    ;;
   bd)
     bdsub="${args[$((i+1))]:-}"
     if [ "$bdsub" = "list" ]; then
-      cat "${STUB_DB_FILE}" 2>/dev/null || printf '[]'
+      if [ -n "$stub_rig" ] && [ "$stub_rig" = "${STUB_RIG_LIST_FAIL_FOR:-}" ]; then
+        exit 1
+      fi
+      if [ -n "$stub_rig" ] && [ -n "${STUB_DB_DIR:-}" ]; then
+        cat "${STUB_DB_DIR}/${stub_rig}.json" 2>/dev/null || printf '[]'
+      else
+        cat "${STUB_DB_FILE}" 2>/dev/null || printf '[]'
+      fi
       exit 0
     fi
     if [ "$bdsub" = "update" ]; then
@@ -267,6 +295,7 @@ print(json.dumps([json.loads(x) for x in sys.argv[1:]]))
 
 CITY_DIR=""
 DB_FILE=""
+DB_DIR=""
 GC_LOG=""
 OUT=""
 RC=0
@@ -274,10 +303,19 @@ RC=0
 setup_case_env() {
   CITY_DIR="${SANDBOX}/city-${1}"
   DB_FILE="${SANDBOX}/db-${1}.json"
+  DB_DIR="${SANDBOX}/db-dir-${1}"
   GC_LOG="${SANDBOX}/gc-${1}.log"
-  mkdir -p "$CITY_DIR"
+  mkdir -p "$CITY_DIR" "$DB_DIR"
   printf '[]' > "$DB_FILE"
   : > "$GC_LOG"
+}
+
+# write_rig_db RIG_NAME LANE_JSON... — a rig-scoped fixture at
+# ${DB_DIR}/<rig-name>.json, served when the script queries `bd list --rig
+# <rig-name>` (as opposed to the shared city-level DB_FILE).
+write_rig_db() {
+  local rig_name="$1"; shift
+  write_db "${DB_DIR}/${rig_name}.json" "$@"
 }
 
 # run_script — invoke the script under test with the stub wired in.
@@ -288,6 +326,7 @@ run_script() {
       GC_CITY="$CITY_DIR" \
       STUB_GC_LOG="$GC_LOG" \
       STUB_DB_FILE="$DB_FILE" \
+      STUB_DB_DIR="$DB_DIR" \
       "$@" \
       bash "$SCRIPT" 2>&1
   )"
@@ -603,6 +642,43 @@ if grep -A3 'case "\$CV_LENS_MAX_REDISPATCH" in' "$REVIEW_LOOP_MD" | grep -q '\*
 else
   fail "expected a case \"\$CV_LENS_MAX_REDISPATCH\" in *[!0-9]*|'') CV_LENS_MAX_REDISPATCH=\"3\" ;; esac guard, mirroring con-voyage-review-watchdog.sh:98-100"
 fi
+
+# ===========================================================================
+# CASE 17 — fk-jsdw2: a stalled lane that exists ONLY in a non-HQ rig's own
+#   store (the city-level DB_FILE is empty) is still discovered and acted on.
+#   Reproduces the real 2026-09-25 replicated-docs incident: a lane routed to
+#   a rig-scoped review lens, pool fully drained -> immediate re-route. Also
+#   pins that the HQ rig entry is never queried a second time via --rig (its
+#   store is already covered by the plain --city query).
+# ===========================================================================
+start_case "17: a lane that lives only in a non-HQ rig's store is discovered and re-routed"
+setup_case_env "17"
+STUB_RIGS_JSON='{"rigs":[{"name":"repl-city","hq":true},{"name":"replicated-docs","hq":false}]}'
+write_rig_db "replicated-docs" \
+  "$(lane "rd-vfx" "open" "" "$(iso_ago 5000)" "replicated-docs/con-voyage.cv-documentation" "0" "0" "Con-voyage: documentation review")"
+run_script "${DEFAULT_ENV[@]}" STUB_RIGS_JSON="$STUB_RIGS_JSON" STUB_SESSION_LIST_JSON='{"sessions":[]}'
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'rig list --json' 1 "the watchdog enumerates registered rigs exactly once"
+assert_log_count "$GC_LOG" 'rig replicated-docs bd list' 1 "the non-HQ rig's own store is queried"
+assert_log_count "$GC_LOG" 'rig repl-city bd list' 0 "the HQ rig is never queried a second time via --rig — its store is already the plain --city query"
+assert_log_count "$GC_LOG" 'sling replicated-docs/con-voyage.cv-documentation rd-vfx --nudge' 1 "the rig-only lane is discovered and re-routed (pool fully drained)"
+assert_log_count "$GC_LOG" '^bd update rd-vfx ' 1 "fk-mr07/fk-7v3r: the attempt_count update for a rig-discovered lane still omits --city/--rig (rd-vfx is an existing, already-rig-prefixed lane bead); relies on cwd/prefix auto-detection like every other already-fixed bd call in this pack"
+
+# ===========================================================================
+# CASE 18 — fail-safe: one rig's `bd list` query fails outright (simulated),
+#   but that must never blind the watchdog to a stalled lane living in a
+#   DIFFERENT rig's store, nor abort the whole pass.
+# ===========================================================================
+start_case "18: one rig's failed list query does not blind discovery of another rig's stalled lane"
+setup_case_env "18"
+STUB_RIGS_JSON='{"rigs":[{"name":"repl-city","hq":true},{"name":"vandoor","hq":false},{"name":"replicated-docs","hq":false}]}'
+write_rig_db "replicated-docs" \
+  "$(lane "rd-lane2" "open" "" "$(iso_ago 5000)" "replicated-docs/con-voyage.cv-documentation" "0" "0" "Con-voyage: documentation review")"
+run_script "${DEFAULT_ENV[@]}" STUB_RIGS_JSON="$STUB_RIGS_JSON" STUB_RIG_LIST_FAIL_FOR="vandoor" STUB_SESSION_LIST_JSON='{"sessions":[]}'
+assert_eq "0" "$RC" "script exits 0 (one rig's failed query is non-fatal to the whole pass)"
+if printf '%s' "$OUT" | grep -q "WARNING.*vandoor"; then pass "logs a WARNING naming the unreachable rig"; else fail "expected a WARNING mentioning 'vandoor'"; fi
+assert_log_count "$GC_LOG" 'sling replicated-docs/con-voyage.cv-documentation rd-lane2 --nudge' 1 "the OTHER rig's stalled lane is still discovered and re-routed"
+assert_log_count "$GC_LOG" 'sling' 1 "exactly one re-route happened — the failed rig produced no phantom action"
 
 # ===========================================================================
 # Summary
