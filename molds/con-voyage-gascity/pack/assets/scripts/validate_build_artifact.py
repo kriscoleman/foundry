@@ -16,8 +16,37 @@ except ImportError:  # pragma: no cover
 
 
 FRONT_MATTER_RE = re.compile(r"\A---\n(?P<front>.*?)\n---(?:\n|\Z)(?P<body>.*)\Z", re.DOTALL)
-SCHEMA_ROOT = Path(__file__).resolve().parents[2] / "schemas" / "build"
 FORBIDDEN_REQUIRED_FIELD_NAMES = {"owner", "stage-owner", "stage_owner", "persona", "role"}
+
+
+def _resolve_schema_root() -> Path:
+    """Find schemas/build/ relative to this file's own location.
+
+    This script is deployed at two different depths from schemas/build/,
+    and the exact same file (copied byte-for-byte by
+    cv-ensure-build-artifact-validator.sh) must resolve correctly from
+    either one:
+
+    - shipped/cast-pack layout: <root>/assets/scripts/<this file>, schemas
+      at <root>/assets/schemas/build/ (mold source, or a rig's cast pack
+      cache) -- one directory above "scripts".
+    - seeded gate layout: <rig-root>/.gc/scripts/<this file>, schemas
+      self-seeded at <rig-root>/schemas/build/ (fk-ohoy) -- two
+      directories above "scripts".
+
+    Try both candidates and use whichever actually exists.
+    """
+    script_dir = Path(__file__).resolve().parent
+    shipped = script_dir.parent / "schemas" / "build"
+    seeded = script_dir.parent.parent / "schemas" / "build"
+    if shipped.is_dir():
+        return shipped
+    if seeded.is_dir():
+        return seeded
+    return seeded
+
+
+SCHEMA_ROOT = _resolve_schema_root()
 
 
 class ValidationError(Exception):
