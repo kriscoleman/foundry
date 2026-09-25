@@ -149,6 +149,23 @@ else
   echo "  SKIP: zsh not available in this environment — fk-qppb4 B2 zsh-parity check not run"
 fi
 
+start_case "cv_resolve_base_branch: no convoy target, origin default is NOT main -> delegation is actually exercised (review fk-hrbj7 B3: a main-default fixture can't tell a real delegation from the hardcoded-main fallback, since both produce 'main')"
+REPO1T="$(mk_repo repo1-trunk)"
+git_c "$REPO1T" checkout -q -b trunk
+UPSTREAM1T="${SANDBOX}/repo1-trunk-upstream.git"
+git init -q -b trunk --bare "$UPSTREAM1T"
+git_c "$REPO1T" remote add origin "$UPSTREAM1T"
+git_c "$REPO1T" push -q -u origin trunk
+git_c "$REPO1T" remote set-head origin trunk
+assert_eq "trunk" "$(cv_resolve_base_branch "cv-unknown" "$REPO1T")" "B1+B2 (bash) on a non-main default: delegates + strips origin/ -- 'main' here would mean the fallback fired instead of a real delegation"
+
+if command -v zsh >/dev/null 2>&1; then
+  zsh_trunk_out="$(GC="$GC" zsh -c 'source "'"$LIB"'" && cv_resolve_base_branch "cv-unknown" "'"$REPO1T"'"' 2>/dev/null)"
+  assert_eq "trunk" "$zsh_trunk_out" "B2 (zsh) on a non-main default: only a genuine delegation can produce 'trunk' here -- 'main' would mean the zsh fix regressed to the hardcoded fallback"
+else
+  echo "  SKIP: zsh not available in this environment — non-main-default zsh-parity check not run"
+fi
+
 start_case "cv_resolve_base_branch: no convoy target, no remote at all -> the empty-tree fail-safe degrades further to the literal 'main'"
 REPO2="${SANDBOX}/repo2"
 mkdir -p "$REPO2"
