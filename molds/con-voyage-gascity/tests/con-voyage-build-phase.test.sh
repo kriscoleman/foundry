@@ -112,6 +112,20 @@ assert_contains "$BUILD_MD" "SHORT_CIRCUIT" "reads short_circuited off the workf
 assert_contains "$BUILD_MD" "Short-circuit: a pre-built branch already exists" "documents the short-circuit path"
 assert_contains "$BUILD_MD" "Fresh bead: run the first TDD implementation round" "documents the fresh-build path"
 
+start_case "build.md: implementation-summary artifact section is NOT nested under 'Fresh bead' (regression guard for a heading-nesting defect)"
+if grep -qE '^## Write the implementation summary artifact[[:space:]]*$' "$BUILD_MD"; then
+  echo "  PASS: artifact-schema heading is a top-level '## ' section, not nested"
+else
+  echo "  FAIL: artifact-schema heading is missing or still nested under a '###' subsection in $BUILD_MD" >&2
+  FAILURES=$((FAILURES+1))
+fi
+if grep -qE '^### Write the implementation summary artifact[[:space:]]*$' "$BUILD_MD"; then
+  echo "  FAIL: artifact-schema heading is still a nested '###' subsection in $BUILD_MD (short-circuit path is told to skip the section that holds it)" >&2
+  FAILURES=$((FAILURES+1))
+else
+  echo "  PASS: artifact-schema heading is not a nested '###' subsection"
+fi
+
 start_case "build.md: fresh-build path resolves the REAL work bead, not the source anchor's own (empty) description"
 assert_contains "$BUILD_MD" "cv_resolve_work_bead" "resolves the real work bead via the shared lib helper"
 

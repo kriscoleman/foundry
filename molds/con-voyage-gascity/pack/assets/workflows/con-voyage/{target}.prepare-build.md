@@ -21,6 +21,8 @@ if [ -z "$CV_LIB" ] || [ -z "$CV_WT_PREP" ] || [ ! -x "$CV_WT_PREP" ]; then
   exit 1
 fi
 
+GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
+
 # A prior do-work (or con-voyage) run may have already built this exact
 # source anchor — do-work/prepare-worktree.md persists the resolved worktree
 # as a bare `work_dir` metadata key on the source anchor bead, which is this

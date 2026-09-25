@@ -49,7 +49,9 @@ existing branch was reused (see schema below for the required shape; the
 `## Verification` section's proof command is simply re-confirming
 `cv-worktree-prep.sh built "$WORKTREE"` still reports built), record its path
 as `gc.implementation.summary_path` on `$ROOT_ID`, and close this step with
-`gc.outcome=pass`. Skip the "Fresh bead" section entirely.
+`gc.outcome=pass`. Skip the TDD implementation round in the "Fresh bead"
+section below — but still write the artifact per "## Write the
+implementation summary artifact".
 
 ## Fresh bead: run the first TDD implementation round
 
@@ -58,6 +60,7 @@ anchor convoy itself typically carries no task content of its own — and treat
 its description as the requirement:
 
 ```bash
+GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
 CV_LIB="$(command -v con-voyage-lib.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"
 WORK_BEAD="$(source "$CV_LIB" && cv_resolve_work_bead "$CONVOY_ID")"
 gc bd show "$WORK_BEAD" --json
@@ -74,7 +77,7 @@ fi
 git commit -m "<conventional-commit message for the requested change>"
 ```
 
-### Write the implementation summary artifact
+## Write the implementation summary artifact
 
 Write or update the task summary with these schema-required body sections,
 using the exact `##` headings below in this order:
