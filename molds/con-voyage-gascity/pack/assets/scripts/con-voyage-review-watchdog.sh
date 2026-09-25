@@ -153,19 +153,34 @@ sys.exit(0 if age > threshold_s else 1)
 }
 
 # ---------------------------------------------------------------------------
-# Discovery: every open/in_progress review-lane bead across the city, in one
-# query. A lane bead is a graph.v2 template child of an active
-# con-voyage-review-loop scope: gc.ralph_step_id ends with
-# ".con-voyage-review-loop", gc.scope_role=member, and its title carries the
-# "Con-voyage: " floor/roster-lane prefix (this excludes sibling scope
-# members that are not lanes at all, e.g. "Apply con-voyage review findings"
-# and "Synthesize con-voyage review"). -n 0 disables the default 50-row cap —
-# a missed stalled lane defeats the entire point of this watchdog.
+# Discovery: every open/in_progress review-lane bead across the city AND
+# every registered rig, merged into one candidate set. A lane bead is a
+# graph.v2 template child of an active con-voyage-review-loop scope:
+# gc.ralph_step_id ends with ".con-voyage-review-loop", gc.scope_role=member,
+# and its title carries the "Con-voyage: " floor/roster-lane prefix (this
+# excludes sibling scope members that are not lanes at all, e.g. "Apply
+# con-voyage review findings" and "Synthesize con-voyage review"). -n 0
+# disables the default 50-row cap — a missed stalled lane defeats the entire
+# point of this watchdog.
+#
+# fk-jsdw2: `bd list` scoped only to --city (no --rig) queries the HQ/city
+# store alone. Review lanes for rig-routed lenses (e.g. a
+# replicated-docs/con-voyage.cv-documentation lane) live in THAT rig's own
+# store and were invisible to this watchdog entirely — it could never have
+# fired on them. `gc rig list --json` enumerates every registered rig; each
+# non-HQ rig's store (the HQ entry IS the city store already queried above)
+# is queried the same way via --rig. A failed or empty query for any one rig
+# is logged and skipped rather than aborting the whole pass — one
+# unreachable rig must never blind the watchdog to every other rig's (or the
+# city's own) stalled lanes.
 # ---------------------------------------------------------------------------
-LANES_JSON="$("$GC" --city "$GC_CITY" bd list --status open,in_progress --has-metadata-key gc.ralph_step_id -n 0 --json 2>/dev/null)"
-[ -n "$LANES_JSON" ] || LANES_JSON="[]"
 
-LANES_TSV="$(printf '%s' "$LANES_JSON" | python3 -c "
+# filter_lanes_json — read one `bd list --json` array from stdin, print
+# matching review-lane TSV rows (one per line, 0x1f-separated fields). Shared
+# across the city query and every per-rig query below so every store is
+# filtered identically.
+filter_lanes_json() {
+  python3 -c "
 import json, sys
 # Unit separator, not a tab: bash classifies tab as IFS whitespace and
 # collapses consecutive delimiters, silently merging away an empty field
@@ -201,7 +216,43 @@ for d in data:
         str(meta.get('gc.review_watchdog.escalated') or '0'),
     ]
     print(SEP.join(row))
+" 2>/dev/null
+}
+
+CITY_LANES_JSON="$("$GC" --city "$GC_CITY" bd list --status open,in_progress --has-metadata-key gc.ralph_step_id -n 0 --json 2>/dev/null)"
+[ -n "$CITY_LANES_JSON" ] || CITY_LANES_JSON="[]"
+LANES_TSV="$(printf '%s' "$CITY_LANES_JSON" | filter_lanes_json)"
+
+RIGS_JSON="$("$GC" --city "$GC_CITY" rig list --json 2>/dev/null)"
+[ -n "$RIGS_JSON" ] || RIGS_JSON='{"rigs":[]}'
+RIG_NAMES="$(printf '%s' "$RIGS_JSON" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+if not isinstance(data, dict):
+    raise SystemExit(0)
+for r in data.get('rigs') or []:
+    if isinstance(r, dict) and not r.get('hq') and r.get('name'):
+        print(r['name'])
 " 2>/dev/null)"
+
+while IFS= read -r rig_name; do
+  [ -n "$rig_name" ] || continue
+  rig_lanes_json="$("$GC" --city "$GC_CITY" --rig "$rig_name" bd list --status open,in_progress --has-metadata-key gc.ralph_step_id -n 0 --json 2>/dev/null)"
+  if [ -z "$rig_lanes_json" ]; then
+    echo "con-voyage-review-watchdog: WARNING: rig list query returned nothing for rig '${rig_name}'; skipping this rig for this cycle" >&2
+    continue
+  fi
+  rig_tsv="$(printf '%s' "$rig_lanes_json" | filter_lanes_json)"
+  [ -n "$rig_tsv" ] || continue
+  if [ -n "$LANES_TSV" ]; then
+    LANES_TSV="${LANES_TSV}"$'\n'"${rig_tsv}"
+  else
+    LANES_TSV="$rig_tsv"
+  fi
+done <<< "$RIG_NAMES"
 
 if [ -z "$LANES_TSV" ]; then
   echo "con-voyage-review-watchdog: no active review lanes found"
