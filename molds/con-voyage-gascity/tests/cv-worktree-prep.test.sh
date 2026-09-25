@@ -597,6 +597,49 @@ run_script built "$WT27"   # no base arg, no origin, branch != main
 if [ "$RC" -ne 0 ]; then pass "built fails safe: reports NOT BUILT when no base resolves"; else fail "expected fail-safe NOT BUILT when no base resolves (rc=$RC)"; fi
 
 # ===========================================================================
+# CASE 28 — `resolve-base` (fk-qppb4): exposes guard's own base-resolution
+#   algorithm as a public subcommand so con-voyage-lib.sh's
+#   cv_resolve_base_branch can reuse it verbatim instead of re-deriving
+#   origin/HEAD -> origin/main -> main independently and risking the two
+#   scripts disagreeing about what "the default base" means.
+# ===========================================================================
+start_case "28a: resolve-base echoes an explicit base-ref verbatim when it resolves"
+REPO23A="$(mk_repo repo23a)"
+git_c "$REPO23A" checkout -q -b work
+printf 'code\n' > "${REPO23A}/f.txt"
+git_c "$REPO23A" add f.txt
+git_c "$REPO23A" commit -q -m "feat: unrelated"
+run_script resolve-base "$REPO23A" main
+assert_eq "0" "$RC" "resolve-base exits 0 for an explicit resolving base-ref"
+assert_eq "main" "$OUT" "resolve-base echoes the explicit base-ref verbatim"
+
+start_case "28b: resolve-base auto-derives origin/main from origin/HEAD when no explicit base is given"
+UPSTREAM23B="${SANDBOX}/repo23b-upstream.git"
+git init -q -b main --bare "$UPSTREAM23B"
+REPO23B="$(mk_repo repo23b)"
+git_c "$REPO23B" remote add origin "$UPSTREAM23B"
+git_c "$REPO23B" push -q -u origin main
+git_c "$REPO23B" remote set-head origin main
+run_script resolve-base "$REPO23B"
+assert_eq "0" "$RC" "resolve-base exits 0 when origin/HEAD resolves"
+assert_eq "origin/main" "$OUT" "resolve-base auto-derives origin/main with no explicit base-ref"
+
+start_case "28c: resolve-base fails SAFE (empty-tree hash) when nothing resolves"
+REPO23C="${SANDBOX}/repo23c"
+mkdir -p "$REPO23C"
+git_c "$REPO23C" init -q -b trunk        # not 'main'; no remote at all
+printf 'placeholder\n' > "${REPO23C}/README.md"
+git_c "$REPO23C" add README.md
+git_c "$REPO23C" commit -q -m "init"
+run_script resolve-base "$REPO23C"
+assert_eq "0" "$RC" "resolve-base exits 0 even in the fail-safe case"
+assert_eq "4b825dc642cb6eb9a060e54bf8d69288fbee4904" "$OUT" "resolve-base falls back to the empty-tree hash when nothing resolves"
+
+start_case "28d: resolve-base validates its argument the same way exclude/guard/dirty do"
+run_script resolve-base
+assert_eq "1" "$RC" "resolve-base with no directory argument fails usage validation"
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 echo

@@ -211,6 +211,39 @@ On each 10-minute tick the order script:
    maintained via a state file keyed by `(repo, PR-number, max-comment-id)` so
    the same comment is never routed twice.
 
+### GitHub stacked PRs (fk-qppb4) — base-branch threading and its boundary
+
+A con-voyage journey can target a branch other than the repo default so slice
+N+1 stacks on slice N's own PR branch. Set it once per journey, before
+launching do-work/con-voyage against the journey's convoy — reusing the
+existing convoy-target primitive rather than a parallel formula var, since a
+convoy already carries exactly this field for child work beads to inherit:
+
+```bash
+gc convoy target <input-convoy-id> <base-branch>
+```
+
+`con-voyage-lib.sh`'s `cv_resolve_base_branch` reads this back (falling
+through to today's `origin/HEAD -> origin/main -> main` default when unset —
+byte-identical behavior for every non-stacked journey) and threads it through
+the setup step's worktree-base correction (`cv_ensure_branch_based_on`), the
+hygiene guard's base-ref, and the PR `--base` on create.
+
+**Known boundary — Part A (CI repair) does not see a stacked PR until its
+base is listed in `base_branches`.** Part A's actionable-PR discovery goes
+through the native `gc github pr backfill`, which only evaluates PRs whose
+base matches a configured `[[github.pr_monitor]].base_branches` entry — that
+matching happens inside `gc` itself, outside this pack's repo. Add every
+active stacked base branch to `base_branches` in `city.toml` (or add a second
+monitor block) before that slice's PR opens, or its CI failures will not get
+a repair bead. Part B (human comment routing) is unaffected — `gh pr list
+--author "$CV_PR_AUTHOR"` above already lists every open PR for that author
+regardless of base — and `con-voyage-finalize` is unaffected too, since it
+polls one specific PR number directly rather than filtering by base. A native
+`base_branches` glob/pattern match (so one config entry covers a whole family
+of stacked branches, instead of a per-slice manual `city.toml` edit) is
+tracked as follow-up core work outside this pack's repo, not forked in here.
+
 ### `con-voyage-ci-repair-guard` order (defense-in-depth author gate)
 
 A `con-voyage-ci-repair` bead is not only created by `con-voyage-pr-watch.sh`.

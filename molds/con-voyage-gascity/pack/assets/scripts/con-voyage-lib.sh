@@ -64,6 +64,149 @@ cv_default_state_dir() {
 }
 
 # ---------------------------------------------------------------------------
+# GitHub-stacked-PR base branch (fk-qppb4). A con-voyage journey normally
+# targets the repo's default branch; a stacked slice instead needs the work
+# branch cut from — and its PR opened against — an earlier slice's own work
+# branch. Reuses the EXISTING `gc convoy target` primitive (a convoy already
+# carries a target branch for child work beads to inherit) instead of a
+# parallel formula var, so there is exactly one place a facilitator sets this
+# per journey: `gc convoy target <input-convoy-id> <base-branch>` before
+# launching do-work/con-voyage against that convoy.
+# ---------------------------------------------------------------------------
+
+# cv_convoy_target CONVOY_ID — print the base branch stored on a convoy via
+# `gc convoy target`/`gc convoy create --target`. Empty output (never a
+# non-zero exit) if the convoy has no target set, the id is empty, or
+# gc/python3 fail — every caller has a safe default to fall through to.
+cv_convoy_target() {
+  local convoy_id="$1"
+  [ -n "${convoy_id// /}" ] || { printf ''; return 0; }
+  local json
+  json=$("$GC" convoy status "$convoy_id" --json 2>/dev/null) || json=""
+  [ -n "$json" ] || { printf ''; return 0; }
+  printf '%s' "$json" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print('')
+    raise SystemExit(0)
+if isinstance(data, list):
+    data = data[0] if data else {}
+if not isinstance(data, dict):
+    print('')
+    raise SystemExit(0)
+convoy = data.get('convoy')
+fields = convoy.get('fields') if isinstance(convoy, dict) else None
+target = fields.get('target') if isinstance(fields, dict) else None
+print(target or '')
+" 2>/dev/null || printf ''
+}
+
+# cv_resolve_base_branch CONVOY_ID WORKTREE_DIR — the single source of truth
+# every con-voyage step uses to answer "what branch is this journey stacked
+# on?". Resolution order:
+#   1. cv_convoy_target CONVOY_ID — an explicit `gc convoy target` set by the
+#      facilitator for a stacked slice. Short-circuits without ever touching
+#      WORKTREE_DIR.
+#   2. cv-worktree-prep.sh's own `resolve-base` (origin/HEAD -> origin/main ->
+#      main) — DELEGATED, not reimplemented, so the two scripts can never
+#      disagree about what "the default base" means.
+#   3. The literal "main", when even step 2 degrades to the empty-tree
+#      fail-safe hash (not a usable branch name for a PR --base/guard call).
+# Default (no `gc convoy target` set) is byte-identical to pre-fk-qppb4
+# behavior: this always falls through to step 2, the exact resolution
+# cv-worktree-prep.sh's `guard` already used unconditionally.
+cv_resolve_base_branch() {
+  local convoy_id="$1" worktree_dir="$2"
+  local target
+  target="$(cv_convoy_target "$convoy_id")"
+  if [ -n "${target// /}" ]; then
+    printf '%s' "$target"
+    return 0
+  fi
+
+  local script_dir prep_script default_base
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  prep_script="${script_dir}/cv-worktree-prep.sh"
+  default_base=""
+  if [ -x "$prep_script" ]; then
+    default_base="$(bash "$prep_script" resolve-base "$worktree_dir" 2>/dev/null)"
+  fi
+  case "$default_base" in
+    ""|"4b825dc642cb6eb9a060e54bf8d69288fbee4904") printf 'main' ;;
+    *) printf '%s' "$default_base" ;;
+  esac
+}
+
+# cv_ensure_branch_based_on DIR BASE_BRANCH — make DIR's current HEAD sit on
+# top of BASE_BRANCH (fk-qppb4 requirement 2: GitHub stacked PRs).
+#
+# WHY HERE, NOT AT WORKTREE CREATION: the worktree is cut by the shared
+# do-work/build-basic formula (a different, core pack, out of this repo),
+# which unconditionally runs `git worktree add --detach HEAD` against the
+# LAUNCHER checkout's current ref — it has no notion of a con-voyage
+# journey's base branch, and forking that formula into this pack would
+# duplicate core rather than fix it (the documented boundary in fk-qppb4
+# requirement 2). This is the con-voyage-level override instead: called from
+# {target}.setup-con-voyage-review.md once the implementation commit(s)
+# already exist, it moves them onto the real base with one
+# `git rebase --onto`, which is observably identical — for the diff a PR
+# opens with and the commits CI runs against — to "the work branch was cut
+# from the base branch" in the first place.
+#
+# BASE_BRANCH empty means "no override configured": returns immediately
+# without fetching or touching the worktree at all. This is the default path
+# and MUST stay byte-identical to pre-fk-qppb4 behavior.
+#
+# Fails (non-zero) if BASE_BRANCH cannot be resolved to a commit, or if the
+# rebase hits a conflict — a merge decision no automation should make
+# silently. A conflict always leaves DIR back on its pre-rebase HEAD (`git
+# rebase --abort`), never a half-finished rebase.
+cv_ensure_branch_based_on() {
+  local dir="$1" base_branch="${2:-}"
+
+  if [ -z "${base_branch// /}" ]; then
+    echo "cv-lib: no base-branch override configured — leaving ${dir} as prepare-worktree left it"
+    return 0
+  fi
+
+  if [ -z "$dir" ] || [ ! -d "$dir" ] \
+    || ! git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "cv-lib: ERROR cv_ensure_branch_based_on: '${dir}' is not inside a git working tree" >&2
+    return 1
+  fi
+
+  git -C "$dir" fetch -q origin "$base_branch" 2>/dev/null || true
+  local new_base="origin/${base_branch}"
+  git -C "$dir" rev-parse --verify --quiet "${new_base}^{commit}" >/dev/null 2>&1 || new_base="$base_branch"
+  if ! git -C "$dir" rev-parse --verify --quiet "${new_base}^{commit}" >/dev/null 2>&1; then
+    echo "cv-lib: ERROR base branch '${base_branch}' does not resolve to a commit in ${dir} (checked origin/${base_branch} and ${base_branch})" >&2
+    return 1
+  fi
+
+  if git -C "$dir" merge-base --is-ancestor "$new_base" HEAD 2>/dev/null; then
+    echo "cv-lib: ${dir} is already based on ${base_branch} — no rebase needed"
+    return 0
+  fi
+
+  local script_dir prep_script old_base
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  prep_script="${script_dir}/cv-worktree-prep.sh"
+  old_base=""
+  [ -x "$prep_script" ] && old_base="$(bash "$prep_script" resolve-base "$dir" 2>/dev/null)"
+  [ -n "$old_base" ] || old_base="main"
+
+  echo "cv-lib: rebasing ${dir} from ${old_base} onto ${new_base} (fk-qppb4 stacked-PR base threading)"
+  if ! git -C "$dir" rebase --onto "$new_base" "$old_base" >&2; then
+    git -C "$dir" rebase --abort >/dev/null 2>&1 || true
+    echo "cv-lib: ERROR rebase of ${dir} onto ${new_base} failed (conflict) — resolve manually before continuing" >&2
+    return 1
+  fi
+  echo "cv-lib: ${dir} is now based on ${base_branch}"
+}
+
+# ---------------------------------------------------------------------------
 # Per-PR repair state record (fk-4o74 Fix 1; extended by Fix 2's watchdog,
 # fk-lfan's B1 round). File: "<CV_STATE_DIR>/<dedup_key>.state", plain
 # key=value lines:

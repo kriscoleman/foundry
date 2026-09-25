@@ -50,6 +50,24 @@ this publish bead with gc.outcome=fail and
 gc.failure_class=review_not_approved instead of proceeding to the push/PR
 logic below.
 
+## Resolve the journey's base branch (fk-qppb4 — GitHub stacked PRs)
+
+Every base-branch reference below is the SAME resolved `$BASE_BRANCH` value —
+never a hand-filled guess that silently defaults to `main`. Resolve it once, from the
+same helper `{target}.setup-con-voyage-review.md` already used to seed the
+review context, so a stacked slice's PR is opened against (and guarded
+against) the branch it actually stacks on instead of always `main`:
+
+```bash
+CONVOY_ID="{{convoy_id}}"
+CV_LIB="$(command -v con-voyage-lib.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"
+BASE_BRANCH="main"
+if [ -n "$CV_LIB" ]; then
+  BASE_BRANCH="$(source "$CV_LIB" && cv_resolve_base_branch "$CONVOY_ID" "$(pwd)")"
+fi
+echo "con-voyage publish: resolved base branch = ${BASE_BRANCH}"
+```
+
 If push is true:
 - Before pushing, refuse to ship a worktree that still has uncommitted review
   fixes (fk-etw7): apply-review-findings commits its own edits, so anything
@@ -66,14 +84,14 @@ If push is true:
 - Then run the artifact-hygiene guard as a last line of defense — it fails
   loud if a local tooling path (`.beads/`, `.gc/`, `.claude/`, dolt data) is
   staged, or is committed AND was added by this work branch relative to its
-  base. Pass the same `<base-branch>` you use in the PR-create call below as
-  the 3rd argument: the guard flags only hygiene paths this branch
-  *introduced* on top of that base, so a repo that legitimately tracks e.g.
-  `.claude/` upstream is not a false positive:
+  base. Pass the resolved `$BASE_BRANCH` from above as the 3rd argument: the
+  guard flags only hygiene paths this branch *introduced* on top of that
+  base, so a repo that legitimately tracks e.g. `.claude/` upstream is not a
+  false positive:
 
   ```bash
   if [ -n "$CV_GUARD" ] && [ -x "$CV_GUARD" ]; then
-    "$CV_GUARD" guard "$(pwd)" "origin/<base-branch>" || { echo "hygiene violation detected — fix it before pushing" >&2; exit 1; }
+    "$CV_GUARD" guard "$(pwd)" "origin/${BASE_BRANCH}" || { echo "hygiene violation detected — fix it before pushing" >&2; exit 1; }
   fi
   ```
 - Push the work branch to origin using create-if-absent or lease-checked
@@ -90,7 +108,9 @@ If open_pr is true (requires push to have succeeded):
   other piece of text con-voyage writes to GitHub — it MUST lead with the
   machine-identity banner. Do NOT run raw `gh pr create` with an unbannered
   body. Assemble the body, then open the PR through `cv-pr-comment.sh create`
-  so the banner is guaranteed:
+  so the banner is guaranteed. Pass the SAME resolved `$BASE_BRANCH` as
+  `--base` — never a hardcoded `main` — so a stacked slice's PR targets the
+  slice it actually stacks on:
 
   ```bash
   CV_BIN="$(command -v cv-pr-comment.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name cv-pr-comment.sh 2>/dev/null | head -1)"
@@ -99,7 +119,7 @@ If open_pr is true (requires push to have succeeded):
     exit 1
   fi
   "$CV_BIN" create --repo <owner/repo> --title "<conventional-commit title>" \
-    --body-file <path to the assembled PR body> --base <base-branch> --head <work-branch> \
+    --body-file <path to the assembled PR body> --base "$BASE_BRANCH" --head <work-branch> \
     --formula con-voyage --agent "<rig>/gc.publisher"
   ```
 - Do not auto-merge. The PR is opened in ready state for human review only.
