@@ -5,7 +5,7 @@
 # The finalize monitor exercises finalize_read/_write, cv_close_reason_for_pr,
 # and pr_finalize_state end-to-end (con-voyage-finalize.test.sh). This suite
 # adds DIRECT coverage for cv_resolve_work_bead — the bead-id-chain resolver
-# that maps a con-voyage `{{convoy_id}}` (a synthetic input convoy) to the REAL
+# that maps a con-voyage `{convoy_id}` (a synthetic input convoy) to the REAL
 # work bead (its `tracks` dependency). That mapping is the crux of the whole
 # lifecycle and is also mirrored by the inline resolver snippet the workflow
 # steps run, so it is unit-tested here against the real bd-show JSON shapes.

@@ -539,10 +539,10 @@ if grep -q '## Verify review-lane claims and re-dispatch stalled lenses' "$REVIE
 else
   fail "expected a '## Verify review-lane claims and re-dispatch stalled lenses' section"
 fi
-if grep -q '{{cv_lens_claim_seconds}}' "$REVIEW_LOOP_MD" && grep -q '{{cv_lens_max_redispatch}}' "$REVIEW_LOOP_MD" && grep -q '{{cv_lens_escalate_target}}' "$REVIEW_LOOP_MD"; then
+if grep -q '{cv_lens_claim_seconds}' "$REVIEW_LOOP_MD" && grep -q '{cv_lens_max_redispatch}' "$REVIEW_LOOP_MD" && grep -q '{cv_lens_escalate_target}' "$REVIEW_LOOP_MD"; then
   pass "references all three cv_lens_* formula vars"
 else
-  fail "expected {{cv_lens_claim_seconds}}, {{cv_lens_max_redispatch}}, and {{cv_lens_escalate_target}} all present"
+  fail "expected {cv_lens_claim_seconds}, {cv_lens_max_redispatch}, and {cv_lens_escalate_target} all present"
 fi
 if grep -q -- '--include-dependents' "$REVIEW_LOOP_MD" && grep -q 'dependency_type.*tracks' "$REVIEW_LOOP_MD"; then
   pass "discovers active lanes from the claimed step bead's own tracks-dependents (not guessed)"

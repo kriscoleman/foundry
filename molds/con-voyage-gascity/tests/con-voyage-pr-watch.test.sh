@@ -625,7 +625,7 @@ JSON
     # Faithful stub of `gc sling` v2-formula validation (gc 1.4.1).
     #
     # This is the crux of the bug the fix addresses. Real gc 1.4.1 REJECTS a
-    # v2 formula that references {{convoy_id}} (like con-voyage-ci-repair) when
+    # v2 formula that references {convoy_id} (like con-voyage-ci-repair) when
     # it is inline-created with `--on <formula>` and no positional bead — it errors
     # with "inline text requires explicit target" and exits non-zero, so NO bead is
     # ever minted. The correct form supplies a PRE-CREATED bead as the positional:
@@ -903,7 +903,7 @@ assert_eq "0" "$RC" "script exits 0"
 assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair' 1 "exactly one ci-repair sling"
 assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*pr=11' 1 "ci-repair sling is for pr=11"
 # The sling is the wire that carries PART A's resolved author into Step 0's
-# {{cv_pr_author}} — if this var were dropped, typo'd, or wrong, no other
+# {cv_pr_author} — if this var were dropped, typo'd, or wrong, no other
 # assertion in this suite would catch it (con-voyage-ci-repair-guard.test.sh
 # covers the guard's own resolution, not this forwarding step).
 assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*pr=11.*cv_pr_author=kriscoleman' 1 "ci-repair sling forwards cv_pr_author"
@@ -945,7 +945,7 @@ assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*--title' 0 "mint 
 assert_log_count "$GC_LOG" 'sling vandoor/gc.implementation-worker va-newbead --on con-voyage-ci-repair .*pr=11 .*repo=kriscoleman/foundry .*branch=fix/con-voyage-author-scope-pr-monitor' 1 "mint forwards pr/repo/branch vars on the bead-positional sling"
 # 4a. fk-7mw7 FIX-A: the sling also forwards the pre-created bead's OWN id as
 #     --var repair_bead=<id>, so ci-repair.md's close steps have a KNOWN bead
-#     to close instead of inferring it from {{convoy_id}} (a different,
+#     to close instead of inferring it from {convoy_id} (a different,
 #     gc-internal work-item id) — the #1 driver of orphaned repair beads.
 assert_log_count "$GC_LOG" 'sling vandoor/gc.implementation-worker va-newbead --on con-voyage-ci-repair .*repair_bead=va-newbead' 1 "mint forwards repair_bead=<own id> (fk-7mw7)"
 # 5. The KEEP log names the minted bead id (operator-observable evidence).

@@ -58,7 +58,7 @@ synthesis can distinguish floor findings from persona findings.
 con-voyage now drives the WORK BEAD's own lifecycle so it moves on the dashboard
 and never sits open after its PR lands. The work bead is the bead this con-voyage
 delivers — NOT this setup step's own claimed bead. In this graph.v2 workflow the
-`{{convoy_id}}` token resolves to a synthetic input convoy that `tracks` the real
+`{convoy_id}` token resolves to a synthetic input convoy that `tracks` the real
 work bead; resolve it, then claim it and seed its body. Assign it to the fixed
 `con-voyage:work-bead` identity — NOT this session's own actor identity — because
 the work bead carries no graph.v2 step metadata (empty gc.root_bead_id/
@@ -69,10 +69,10 @@ resolution error it falls back to the convoy id, and every bd call is best-effor
 so a bd hiccup never blocks review):
 
 ```bash
-# Resolve the real work bead from {{convoy_id}} (synthetic input convoy ->
+# Resolve the real work bead from {convoy_id} (synthetic input convoy ->
 # its `tracks` dependency = the work bead; a non-convoy id is already the work
 # bead). Fail-safe: WORK_BEAD is never empty (falls back to the convoy id).
-CONVOY_ID="{{convoy_id}}"
+CONVOY_ID="{convoy_id}"
 WORK_BEAD="$(gc bd show "$CONVOY_ID" --json 2>/dev/null | python3 -c "
 import sys, json
 cid = sys.argv[1]

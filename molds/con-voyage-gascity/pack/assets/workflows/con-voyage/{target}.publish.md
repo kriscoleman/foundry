@@ -1,6 +1,6 @@
 Publish the con-voyage review result.
 
-Read push {{push}} and open_pr {{open_pr}} from the workflow vars.
+Read push {push} and open_pr {open_pr} from the workflow vars.
 
 Con-voyage posture: push=true causes the reviewed work branch to be pushed to
 the remote origin. open_pr=true causes a GitHub PR to be opened against the
@@ -110,14 +110,14 @@ Once the PR exists, record it on the WORK BEAD, flip its phase to
 `awaiting_merge`, and write the per-PR finalize record so the
 `con-voyage-finalize` monitor can close the work bead + convoy and release the
 implementor when a human lands (or abandons) the PR. The work bead is
-`$WORK_BEAD` from the review context (resolved from `{{convoy_id}}` at setup);
+`$WORK_BEAD` from the review context (resolved from `{convoy_id}` at setup);
 re-resolve it the same way if the context does not carry it. Run this block
 after a successful PR open, substituting the real values:
 
 ```bash
 # Inputs (fill from this run):
 WORK_BEAD="<work bead id from the review context>"   # NOT this step's bead
-CONVOY_ID="{{convoy_id}}"                             # the con-voyage convoy
+CONVOY_ID="{convoy_id}"                             # the con-voyage convoy
 PR_URL="<the https URL cv-pr-comment.sh create printed>"
 PR_NUMBER="<the PR number>"
 REPO_FULL="<owner/repo>"

@@ -799,21 +799,21 @@ fi
 #   `--with-lease`) must still never appear anywhere.
 # ---------------------------------------------------------------------------
 start_case "R7b: behind_base defaults to --force-with-lease; gh pr update-branch is opt-in only"
-if grep -q 'git push --force-with-lease origin {{branch}}' "$CI_REPAIR_MD"; then
+if grep -q 'git push --force-with-lease origin {branch}' "$CI_REPAIR_MD"; then
   pass "behind_base default path pushes with --force-with-lease"
 else
-  fail "expected behind_base default path to push with git push --force-with-lease origin {{branch}}"
+  fail "expected behind_base default path to push with git push --force-with-lease origin {branch}"
 fi
 # shellcheck disable=SC2016  # backticks below are literal markdown, not command substitution
 c_rebase_line=$(grep -n '^#### 4c Strategy: `rebase` (DEFAULT' "$CI_REPAIR_MD" | head -1 | cut -d: -f1)
 # shellcheck disable=SC2016  # backticks below are literal markdown, not command substitution
 c_merge_line=$(grep -n '^#### 4c Strategy: `merge` (EXPLICIT OPT-IN' "$CI_REPAIR_MD" | head -1 | cut -d: -f1)
-# Target the actual COMMAND example ("gh pr update-branch {{pr}} --repo
-# {{repo}}"), not the rebase sub-section's prose that explicitly FORBIDS it
+# Target the actual COMMAND example ("gh pr update-branch {pr} --repo
+# {repo}"), not the rebase sub-section's prose that explicitly FORBIDS it
 # ("`gh pr update-branch` ... are FORBIDDEN") — that prose mention is expected
 # and correct, and a bare substring match on "gh pr update-branch" would wrongly
 # flag it as a command usage.
-update_branch_cmd_line=$(grep -n 'gh pr update-branch {{pr}} --repo {{repo}}' "$CI_REPAIR_MD" | head -1 | cut -d: -f1)
+update_branch_cmd_line=$(grep -n 'gh pr update-branch {pr} --repo {repo}' "$CI_REPAIR_MD" | head -1 | cut -d: -f1)
 if [ -n "$c_rebase_line" ] && [ -n "$c_merge_line" ] && [ "$c_rebase_line" -lt "$c_merge_line" ]; then
   pass "4c's rebase (DEFAULT) heading precedes its merge (opt-in) heading"
 else
@@ -907,13 +907,13 @@ fi
 
 # ---------------------------------------------------------------------------
 # R7h (BLOCKING-2, fk-4xq) — Step 4 (4b/4c) is TOLD the conflict strategy via
-#   {{cv_conflict_strategy}} instead of guessing or hardcoding one.
+#   {cv_conflict_strategy} instead of guessing or hardcoding one.
 # ---------------------------------------------------------------------------
-start_case "R7h: 4b/4c reference {{cv_conflict_strategy}} instead of guessing"
-if grep -q '{{cv_conflict_strategy}}' "$CI_REPAIR_MD"; then
-  pass "ci-repair.md references {{cv_conflict_strategy}}"
+start_case "R7h: 4b/4c reference {cv_conflict_strategy} instead of guessing"
+if grep -q '{cv_conflict_strategy}' "$CI_REPAIR_MD"; then
+  pass "ci-repair.md references {cv_conflict_strategy}"
 else
-  fail "expected ci-repair.md to reference {{cv_conflict_strategy}}"
+  fail "expected ci-repair.md to reference {cv_conflict_strategy}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -939,14 +939,14 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# R7d — Step 4 is TOLD the state via {{failure_kind}} instead of guessing it
+# R7d — Step 4 is TOLD the state via {failure_kind} instead of guessing it
 #   from the failing-checks list (R3's labeling half).
 # ---------------------------------------------------------------------------
-start_case "R7d: Step 4 branches on {{failure_kind}} instead of guessing"
-if grep -q '{{failure_kind}}' "$CI_REPAIR_MD"; then
-  pass "ci-repair.md references {{failure_kind}}"
+start_case "R7d: Step 4 branches on {failure_kind} instead of guessing"
+if grep -q '{failure_kind}' "$CI_REPAIR_MD"; then
+  pass "ci-repair.md references {failure_kind}"
 else
-  fail "expected ci-repair.md to reference {{failure_kind}}"
+  fail "expected ci-repair.md to reference {failure_kind}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -1010,16 +1010,16 @@ if [ -n "$step0b_line" ] && [ -n "$step1_line" ]; then
     fail "expected Step 0b to gate on REVIEW_REQUIRED"
   fi
 
-  if printf '%s' "$step0b_body" | grep -q '{{failure_kind}}'; then
-    pass "Step 0b scopes itself to {{failure_kind}} (never suppresses a real defect)"
+  if printf '%s' "$step0b_body" | grep -q '{failure_kind}'; then
+    pass "Step 0b scopes itself to {failure_kind} (never suppresses a real defect)"
   else
-    fail "expected Step 0b to gate on {{failure_kind}}"
+    fail "expected Step 0b to gate on {failure_kind}"
   fi
 
-  if printf '%s' "$step0b_body" | grep -q 'gc bd close "{{convoy_id}}"'; then
+  if printf '%s' "$step0b_body" | grep -q 'gc bd close "{convoy_id}"'; then
     pass "Step 0b closes the bead on the awaiting-human path"
   else
-    fail "expected Step 0b to close \"{{convoy_id}}\" on the awaiting-human path"
+    fail "expected Step 0b to close \"{convoy_id}\" on the awaiting-human path"
   fi
 
   if printf '%s' "$step0b_body" | grep -qE 'gh pr comment|gh pr review|gc mail send'; then

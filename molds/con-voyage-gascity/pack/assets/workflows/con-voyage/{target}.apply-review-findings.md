@@ -28,7 +28,7 @@ git add -A
 if [ -n "$CV_GUARD" ] && [ -x "$CV_GUARD" ]; then
   "$CV_GUARD" guard "$(pwd)" || { echo "fix the reported hygiene violation, re-stage, and re-run the guard before committing" >&2; exit 1; }
 fi
-git commit -m "fix: <brief description of the review fix> (review {{convoy_id}})"
+git commit -m "fix: <brief description of the review fix> (review {convoy_id})"
 ```
 
 Commit ONLY when you actually changed files this pass — never an empty/no-op
