@@ -50,16 +50,17 @@ field names the inbound that donated the anchor — check that, not just the
 exit code, whenever the anchor matters. Use `--no-thread` to force a
 channel-level post, or `--reply-to <ts>` to anchor exactly where you mean.
 
-Do not reach for `--thread-current` as a substitute for the above: it
-**ignores** `--conversation-id` for its thread anchor and always threads
-under the session's latest inbound *from any bound conversation*, which
-can point at a thread belonging to a completely different conversation
-than the one you're posting to. That is a distinct, separately-verified
-failure mode with the opposite symptom from the same-channel drift above:
-Slack rejects the foreign anchor, the post falls back to top-level, and
-the result JSON reports it as undelivered rather than returning a
-`reply_to_message_id`. Trust the printed result, not just a zero exit
-code, whenever threading correctness matters.
+Do not reach for `--thread-current` as a substitute: it **ignores**
+`--conversation-id` and always anchors under the session's newest inbound
+*from any bound conversation* — the same-conversation guard above does
+not apply — so it can thread your reply under a message that lives in a
+different conversation than the one you're posting to. The result JSON's
+`reply_to_message_id` always names the anchor the command actually used
+(empty only for a true channel-level post), so compare it against the
+conversation you meant to reply in to catch a cross-conversation anchor.
+A hard delivery failure exits non-zero and prints `delivered=false` on
+stderr; for an exact anchor use `--reply-to <ts>`, and for a
+channel-level post use `--no-thread`.
 
 If your reminder was delivered in company-room mode (see "Two conversation
 models" below) it hands you an exact `--turn-ref <turn_ref>` — copy that
