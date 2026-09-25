@@ -52,7 +52,9 @@ pre-fk-qppb4 behavior:
 CONVOY_ID="{{convoy_id}}"
 CV_LIB="$(command -v con-voyage-lib.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"
 BASE_BRANCH="main"
+CONVOY_TARGET=""
 if [ -n "$CV_LIB" ]; then
+  CONVOY_TARGET="$(source "$CV_LIB" && cv_convoy_target "$CONVOY_ID")"
   BASE_BRANCH="$(source "$CV_LIB" && cv_resolve_base_branch "$CONVOY_ID" "$(pwd)")"
 fi
 echo "con-voyage setup: resolved base branch = ${BASE_BRANCH}"
@@ -68,10 +70,16 @@ exists, by moving it onto the real base with one rebase:
 
 ```bash
 if [ -n "$CV_LIB" ]; then
-  source "$CV_LIB" && cv_ensure_branch_based_on "$(pwd)" "$BASE_BRANCH" \
+  source "$CV_LIB" && cv_ensure_branch_based_on "$(pwd)" "$CONVOY_TARGET" \
     || { echo "could not base this worktree on ${BASE_BRANCH} — see the error above" >&2; exit 1; }
 fi
 ```
+
+`cv_ensure_branch_based_on` receives `$CONVOY_TARGET` (empty unless a facilitator set an explicit
+`gc convoy target`), not `$BASE_BRANCH` (which always resolves to a real branch name, for the
+echo above and for publish's later guard/PR-base use) — passing the always-resolved value here
+would fetch and could rebase even on an unconfigured, non-stacked journey, which is not
+byte-identical to pre-fk-qppb4 behavior (fk-qppb4 L3 review finding).
 
 If this block fails (the base branch does not resolve, or the rebase hits a
 conflict), STOP here: mail the mayor with the exact output above, then close

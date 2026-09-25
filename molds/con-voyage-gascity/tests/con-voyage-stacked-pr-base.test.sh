@@ -139,7 +139,15 @@ git init -q -b main --bare "$UPSTREAM1"
 git_c "$REPO1" remote add origin "$UPSTREAM1"
 git_c "$REPO1" push -q -u origin main
 git_c "$REPO1" remote set-head origin main
-assert_eq "origin/main" "$(cv_resolve_base_branch "cv-unknown" "$REPO1")" "falls back to cv-worktree-prep.sh's own origin/HEAD derivation"
+assert_eq "origin/main" "$(bash "$PREP_SCRIPT" resolve-base "$REPO1")" "sanity: cv-worktree-prep.sh's own resolve-base is unchanged (a remote-tracking ref, correct for guard's diff base)"
+assert_eq "main" "$(cv_resolve_base_branch "cv-unknown" "$REPO1")" "fk-qppb4 B1: strips the origin/ prefix so the result is a bare branch name gh pr create --base accepts"
+
+if command -v zsh >/dev/null 2>&1; then
+  zsh_out="$(GC="$GC" zsh -c 'source "'"$LIB"'" && cv_resolve_base_branch "cv-unknown" "'"$REPO1"'"' 2>/dev/null)"
+  assert_eq "main" "$zsh_out" "fk-qppb4 B2: sourced under zsh (BASH_SOURCE[0] is empty there), still delegates instead of silently falling back to a hardcoded main"
+else
+  echo "  SKIP: zsh not available in this environment — fk-qppb4 B2 zsh-parity check not run"
+fi
 
 start_case "cv_resolve_base_branch: no convoy target, no remote at all -> the empty-tree fail-safe degrades further to the literal 'main'"
 REPO2="${SANDBOX}/repo2"
@@ -282,11 +290,12 @@ md_line_of() {
 
 start_case "setup-con-voyage-review.md: resolves BASE_BRANCH and corrects the worktree before gathering review context"
 assert_md_contains 'BASE_BRANCH="$(source "$CV_LIB" && cv_resolve_base_branch "$CONVOY_ID" "$(pwd)")"' "resolves BASE_BRANCH via the shared cv_resolve_base_branch()"
-assert_md_contains 'source "$CV_LIB" && cv_ensure_branch_based_on "$(pwd)" "$BASE_BRANCH"' "calls cv_ensure_branch_based_on to correct the worktree's base"
+assert_md_contains 'CONVOY_TARGET="$(source "$CV_LIB" && cv_convoy_target "$CONVOY_ID")"' "resolves CONVOY_TARGET via the shared cv_convoy_target()"
+assert_md_contains 'source "$CV_LIB" && cv_ensure_branch_based_on "$(pwd)" "$CONVOY_TARGET"' "calls cv_ensure_branch_based_on with CONVOY_TARGET, not the always-resolved BASE_BRANCH, so an unconfigured journey stays a byte-identical no-op (fk-qppb4 L3)"
 assert_md_contains 'gc.failure_class=base_branch_conflict' "a failed rebase closes the step with a distinct, actionable failure_class"
 
 resolve_line="$(md_line_of 'BASE_BRANCH="$(source "$CV_LIB" && cv_resolve_base_branch "$CONVOY_ID" "$(pwd)")"')"
-rebase_line="$(md_line_of 'source "$CV_LIB" && cv_ensure_branch_based_on "$(pwd)" "$BASE_BRANCH"')"
+rebase_line="$(md_line_of 'source "$CV_LIB" && cv_ensure_branch_based_on "$(pwd)" "$CONVOY_TARGET"')"
 gather_line="$(md_line_of 'Gather the requirements artifact')"
 
 if [ -n "$resolve_line" ] && [ -n "$rebase_line" ] && [ "$resolve_line" -lt "$rebase_line" ]; then
