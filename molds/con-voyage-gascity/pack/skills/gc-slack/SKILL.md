@@ -38,13 +38,28 @@ on a session bound to more than one conversation (e.g. a channel and a DM),
 that scan can resolve the wrong one and answer a channel question into a DM.
 
 **Threading:** an inbound that was itself a thread reply is answered in the
-same thread by default. To force a specific thread, pass `--reply-to <ts>`.
-Do not reach for `--thread-current` as a substitute — it **ignores**
-`--conversation-id` for its thread anchor and always threads under the
-session's latest inbound *from any bound conversation*, which can silently
-anchor your reply to the wrong thread (Slack posts top-level, and the
-readback reports `Delivered:false`). Trust the printed JSON's `status` /
-`posted_ts`, not just a zero exit code.
+same thread by default — **including when `--conversation-id` names the
+same conversation explicitly**, not just when it's omitted. The anchor is
+always the *newest* inbound in that conversation: in a busy shared channel,
+a different thread that gets a new message between the one you're
+answering and your reply becomes the anchor instead, and **the reply still
+posts successfully** — so a non-zero exit code or a delivery failure will
+not catch it. When inheritance fires, `gc` prints `inheriting thread <ts>
+from inbound <mid>` on stderr, and the result JSON's `reply_to_message_id`
+field names the inbound that donated the anchor — check that, not just the
+exit code, whenever the anchor matters. Use `--no-thread` to force a
+channel-level post, or `--reply-to <ts>` to anchor exactly where you mean.
+
+Do not reach for `--thread-current` as a substitute for the above: it
+**ignores** `--conversation-id` for its thread anchor and always threads
+under the session's latest inbound *from any bound conversation*, which
+can point at a thread belonging to a completely different conversation
+than the one you're posting to. That is a distinct, separately-verified
+failure mode with the opposite symptom from the same-channel drift above:
+Slack rejects the foreign anchor, the post falls back to top-level, and
+the result JSON reports it as undelivered rather than returning a
+`reply_to_message_id`. Trust the printed result, not just a zero exit
+code, whenever threading correctness matters.
 
 If your reminder was delivered in company-room mode (see "Two conversation
 models" below) it hands you an exact `--turn-ref <turn_ref>` — copy that
