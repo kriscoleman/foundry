@@ -18,11 +18,21 @@ Casting this mold drops two things into the target city:
 A Gas City pack containing:
 
 - **`con-voyage` formula** — an `expansion`/`graph.v2` formula that runs the full
-  delivery pipeline: setup → parallel review lanes → synthesize → apply findings →
-  loop until approved → push branch → open PR. `push=true` and `open_pr=true` by
-  default; the work branch is pushed to origin and a PR is opened, but
-  `merge_queue="observe"` in `city.toml` prevents any auto-merge path. A human
-  must land the PR.
+  delivery pipeline: build (if needed) → setup → parallel review lanes →
+  synthesize → apply findings → loop until approved → push branch → open PR.
+  `push=true` and `open_pr=true` by default; the work branch is pushed to
+  origin and a PR is opened, but `merge_queue="observe"` in `city.toml`
+  prevents any auto-merge path. A human must land the PR.
+
+- **One-sling build phase (fk-9aunv)** — a single `gc sling <target> <bead>
+  --formula` on a FRESH bead (no pre-built branch yet) now builds it first: the
+  `{target}.prepare-build` / `{target}.build` steps run do-work's own first TDD
+  round as con-voyage's own first phase, before setup and the review loop. This
+  is fully automatic and backward compatible — a bead that already has a
+  pre-built branch (e.g. from a prior `gc sling ... --on do-work`) is detected
+  at runtime and the build phase short-circuits straight to setup, so the old
+  two-step (`do-work` then `con-voyage --force`) still works, it is just no
+  longer required.
 
 - **Work-bead lifecycle** — the formula now drives the *work bead* it delivers
   through its full lifecycle so it moves on the dashboard and never sits open

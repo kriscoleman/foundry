@@ -1,5 +1,43 @@
 Prepare the con-voyage review context.
 
+## Read the source anchor the build phase resolved
+
+The prepare-build/build steps that precede this one (fk-9aunv) already
+resolved — and, for a fresh work bead, built — the source anchor. Read their
+result off the workflow root instead of re-deriving it:
+
+```bash
+ROOT_ID="${GC_ROOT_BEAD_ID:-}"
+if [ -z "$ROOT_ID" ]; then
+  ROOT_ID="$(gc bd show "$GC_BEAD_ID" --json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    d = d[0] if isinstance(d, list) else d
+except Exception:
+    d = {}
+print((d.get('metadata') or {}).get('gc.root_bead_id') or '')
+" 2>/dev/null)"
+fi
+[ -n "$ROOT_ID" ] || ROOT_ID="$GC_BEAD_ID"
+
+read -r SOURCE_ANCHOR_ID SOURCE_ANCHOR_WORK_DIR <<< "$(gc bd show "$ROOT_ID" --json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    d = d[0] if isinstance(d, list) else d
+except Exception:
+    d = {}
+meta = d.get('metadata') or {}
+print(meta.get('gc.build.source_anchor_id') or '', meta.get('gc.build.source_anchor_work_dir') or '')
+" 2>/dev/null)"
+
+if [ -z "$SOURCE_ANCHOR_WORK_DIR" ] || [ ! -d "$SOURCE_ANCHOR_WORK_DIR" ]; then
+  echo "setup-con-voyage-review: no valid gc.build.source_anchor_work_dir on workflow root ${ROOT_ID} — the build phase did not run or failed silently; refusing to start a review with nothing to review" >&2
+  exit 1
+fi
+```
+
 Gather the requirements artifact, implementation plan, decomposition artifact,
 implementation summary, changed-file summaries, task evidence, and verification
 commands into one review context file under the build artifact root. Record that
@@ -8,7 +46,7 @@ path on the workflow root as gc.build.code_review_context_path.
 Include:
 - The base branch and branch under review
 - The full diff summary (files changed, lines added/removed)
-- The source anchor id, its work_dir, changed files, commit id, and proof commands
+- The source anchor id (`$SOURCE_ANCHOR_ID`), its work_dir (`$SOURCE_ANCHOR_WORK_DIR`), changed files, commit id, and proof commands
 - The review roster that will run (floor lanes always; roster lanes active for this sling)
 
 The floor review lanes (acceptance, test-evidence, simplicity, security, code) run

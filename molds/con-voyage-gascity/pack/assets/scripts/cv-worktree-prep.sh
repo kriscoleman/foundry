@@ -58,11 +58,27 @@
 #                   excluded from this check (that is `guard`'s job, and they
 #                   are expected local scratch state, not a sign of a missed
 #                   commit).
+#   built <dir> [base-ref]
+#                 — the con-voyage build-phase short-circuit signal (fk-9aunv:
+#                   fold the do-work build into con-voyage as its own first
+#                   phase, but skip it when the target bead already has a
+#                   pre-built branch). Exit 0 ("BUILT") when <dir>'s HEAD is
+#                   one or more commits ahead of the resolved base — a prior
+#                   implementation round already ran there. Exit 1 ("NOT
+#                   BUILT") when HEAD sits exactly at the base tip (a fresh
+#                   `git worktree add --detach HEAD`) — the build phase must
+#                   run its first TDD round. Base resolution mirrors `guard`
+#                   (explicit arg, then origin/HEAD, then origin/main, then
+#                   main), EXCEPT the fail-safe direction is reversed: when no
+#                   base ref resolves at all, `built` reports NOT BUILT (do
+#                   the build) rather than BUILT (skip it) — a redundant build
+#                   is far cheaper than silently skipping the only one.
 #
 # Usage:
 #   cv-worktree-prep.sh exclude <dir>
 #   cv-worktree-prep.sh guard <dir> [base-ref]
 #   cv-worktree-prep.sh dirty <dir>
+#   cv-worktree-prep.sh built <dir> [base-ref]
 #
 # Environment:
 #   CV_HYGIENE_PATTERNS   Space-separated gitignore-style patterns.
@@ -70,10 +86,11 @@
 #
 # Exit codes:
 #   0 — clean (exclude: written or already present; guard/dirty: nothing
-#       offending)
+#       offending; built: HEAD is ahead of base)
 #   1 — usage/validation error, OR (guard/dirty only) an offending path was
-#       found — the caller must NOT proceed to commit/push until a re-run
-#       reports clean.
+#       found, OR (built only) HEAD is not ahead of base — the caller must
+#       NOT proceed to commit/push until a re-run reports clean (guard/dirty),
+#       or must run the build (built).
 #
 # Requires: bash 4+, git.
 
@@ -272,6 +289,34 @@ cmd_dirty() {
   return 1
 }
 
+cmd_built() {
+  local dir="$1" base_arg="${2:-}"
+  require_git_dir "$dir" "built"
+
+  local base
+  base="$(resolve_base "$dir" "$base_arg")"
+
+  if [ "$base" = "$EMPTY_TREE" ]; then
+    echo "cv-worktree-prep: not built — no base ref resolved for ${dir}; failing safe toward NOT BUILT (run the build)"
+    return 1
+  fi
+
+  local mb
+  mb="$(git -C "$dir" merge-base "$base" HEAD 2>/dev/null || printf '%s' "$EMPTY_TREE")"
+  local ahead
+  ahead="$(git -C "$dir" rev-list --count "${mb}..HEAD" 2>/dev/null || echo 0)"
+  case "$ahead" in
+    ''|*[!0-9]*) ahead=0 ;;
+  esac
+
+  if [ "$ahead" -gt 0 ]; then
+    echo "cv-worktree-prep: built — HEAD is ${ahead} commit(s) ahead of ${base} in ${dir}"
+    return 0
+  fi
+  echo "cv-worktree-prep: not built — HEAD has no commits ahead of ${base} in ${dir}"
+  return 1
+}
+
 SUBCOMMAND="${1:-}"
 [ -n "$SUBCOMMAND" ] || { usage; die "missing subcommand"; }
 shift || true
@@ -280,8 +325,9 @@ case "$SUBCOMMAND" in
   exclude) cmd_exclude "${1:-}" ;;
   guard) cmd_guard "${1:-}" "${2:-}" ;;
   dirty) cmd_dirty "${1:-}" ;;
+  built) cmd_built "${1:-}" "${2:-}" ;;
   *)
     usage
-    die "unknown subcommand '${SUBCOMMAND}' (expected exclude, guard, or dirty)"
+    die "unknown subcommand '${SUBCOMMAND}' (expected exclude, guard, dirty, or built)"
     ;;
 esac

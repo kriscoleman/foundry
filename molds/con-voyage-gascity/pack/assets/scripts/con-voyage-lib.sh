@@ -662,6 +662,41 @@ print(convoy_id)
 " "$convoy_id" 2>/dev/null || printf '%s' "$convoy_id"
 }
 
+# cv_bead_work_dir BEAD_ID — print BEAD_ID's `work_dir` metadata value: the
+# absolute worktree path do-work's prepare-worktree step (and, for a fresh
+# con-voyage build, the con-voyage build phase itself — fk-9aunv) persists on
+# a source anchor bead via `bd update <id> --set-metadata work_dir=<path>`.
+# Note this is the BARE `work_dir` key, not `gc.`-namespaced — it must match
+# the key do-work/prepare-worktree.md writes so a prior do-work build on the
+# same convoy is discoverable.
+#
+# FAIL-SAFE: prints empty — never aborts the caller — for an empty BEAD_ID, a
+# bead unknown to `bd show`, unparseable JSON, or the field simply unset. An
+# empty result is itself meaningful ("no worktree resolved yet"), so callers
+# branch on it directly instead of treating it as an error.
+cv_bead_work_dir() {
+  local bead_id="$1"
+  [ -n "${bead_id// /}" ] || { printf ''; return 0; }
+  local json
+  json=$("$GC" bd show "$bead_id" --json 2>/dev/null) || json=""
+  [ -n "$json" ] || { printf ''; return 0; }
+  printf '%s' "$json" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+if isinstance(data, list):
+    data = data[0] if data else {}
+if not isinstance(data, dict):
+    raise SystemExit(0)
+meta = data.get('metadata') or {}
+val = meta.get('work_dir') or ''
+if isinstance(val, str):
+    print(val)
+" 2>/dev/null
+}
+
 # cv_close_reason_for_pr PR_STATE PR_NUMBER — canonical work-bead close reason
 # for a finalized PR. PR_STATE is the GitHub PR state ("MERGED" or "CLOSED",
 # case-insensitive). Any merged state -> "landed: PR #N merged"; a closed-

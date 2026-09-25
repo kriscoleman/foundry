@@ -78,10 +78,18 @@ Full orchestration detail lives in the `con-voyage-orchestration` template fragm
 ```
 Intake → work bead + convoy
   → SLING formula  (gc sling <target> <work-bead> --formula --var push=true --var open_pr=true --var enable_<lens>=true)
+  → BUILD (if needed)  (fresh bead: first TDD round runs automatically; a bead
+                         that already has a pre-built branch short-circuits
+                         straight to REVIEW LOOP — nothing to do on your end
+                         either way)
   → REVIEW LOOP   (floor lanes + chosen roster in parallel; blocking findings → fix → re-run)
   → branch pushed + PR opened (push=true, open_pr=true); merge_queue="observe" prevents auto-merge
   → HUMAN LANDS   (you push + open PR; a human merges or closes it)
 ```
+
+One sling is the whole journey — you never need to `gc sling ... --on do-work`
+first. The formula detects whether the target bead already has a branch and
+builds it itself when it does not.
 
 `push=true open_pr=true` is the correct posture — the branch is pushed to origin and a PR is opened, but auto-merge is blocked by `merge_queue="observe"` in `city.toml`. A human lands it.
 
