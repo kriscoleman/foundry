@@ -19,6 +19,12 @@
 # silently drops the include still fails here even if the fragment itself
 # looks correct.
 #
+# Items 5-6 (branch/deviation completeness, blocking work on a shared
+# execution context) were added from human PR review on this same PR
+# (kriscoleman/foundry#77 review comment PRRC_kwDOSSCwd87007RY): proactive
+# coverage for costly bug classes, added the same DRY way as 1-4, ahead of a
+# postmortem naming them.
+#
 # Run:  bash tests/cv-code-lens-hardening.test.sh
 
 set -uo pipefail
@@ -74,6 +80,18 @@ assert_contains "$FRAGMENT" "Cache-key completeness" \
   "fragment names cache-key completeness"
 assert_contains "$FRAGMENT" "missing an output-affecting input produces" \
   "fragment explains the consequence of an incomplete cache key"
+
+start_case "the fragment states failure mode 5 (branch and deviation completeness)"
+assert_contains "$FRAGMENT" "Branch and deviation completeness" \
+  "fragment names branch and deviation completeness"
+assert_contains "$FRAGMENT" "silently assumed away is BLOCKING" \
+  "fragment requires tracing branches yourself, not trusting the diff's own tests to have found them"
+
+start_case "the fragment states failure mode 6 (blocking work on a shared execution context)"
+assert_contains "$FRAGMENT" "Blocking work on a shared execution context" \
+  "fragment names blocking work on a shared execution context"
+assert_contains "$FRAGMENT" "established concurrency primitive" \
+  "fragment requires citing the codebase's own established concurrency primitive"
 
 start_case "all three code-lens variants include the shared fragment by reference (DRY, not pasted)"
 for lens in cv-go-principal-engineer cv-frontend-principal-engineer cv-code-reviewer; do
