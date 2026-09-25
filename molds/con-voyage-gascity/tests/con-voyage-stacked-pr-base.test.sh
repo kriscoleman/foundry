@@ -70,6 +70,16 @@ mk_repo() {
   local repo="${SANDBOX}/$1"
   mkdir -p "$repo"
   git_c "$repo" init -q -b main
+  # Persist identity into the repo's own config, not just as a per-invocation
+  # `-c` override: cv_ensure_branch_based_on (the code under test) calls git
+  # directly against this repo without going through git_c, and its rebase
+  # needs a committer identity to create the replayed commit. Falling back to
+  # ambient/global git config works on a dev machine but not on a bare CI
+  # runner, where git's own auto-derived identity can have an empty name and
+  # abort the rebase ("empty ident name ... not allowed") — this keeps the
+  # fixture hermetic regardless of the environment's ambient git config.
+  git_c "$repo" config user.email test@example.com
+  git_c "$repo" config user.name "Test"
   printf 'placeholder\n' > "$repo/README.md"
   git_c "$repo" add README.md
   git_c "$repo" commit -q -m "init"
