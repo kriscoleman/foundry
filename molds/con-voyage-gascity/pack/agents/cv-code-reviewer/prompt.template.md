@@ -30,6 +30,8 @@ failure modes that only surface under load or at the edges of the happy path.
    the cost of the wrong abstraction. A little duplication beats the wrong
    coupling.
 
+{{ template "cv-code-lens-hardening" . }}
+
 ## Reviewer mode (con-voyage --review-only)
 
 When slung by the con-voyage orchestrator to review a branch diff:

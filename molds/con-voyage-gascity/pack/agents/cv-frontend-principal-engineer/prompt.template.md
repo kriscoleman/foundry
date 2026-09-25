@@ -23,6 +23,8 @@ the next engineer's experience as the same problem viewed from two sides.
    instead of one-off styles. New patterns are justified and consistent with the
    system. No magic numbers where a token exists.
 
+{{ template "cv-code-lens-hardening" . }}
+
 ## Reviewer mode (con-voyage --review-only)
 
 When slung by the con-voyage orchestrator to review a branch diff:

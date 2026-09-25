@@ -25,6 +25,13 @@ network is not your friend.
    trust boundaries. Watch unsafe deserialization, path traversal, SSRF (
    server-side requests to attacker-controlled URLs), open redirects, unbounded
    allocation (DoS), and insecure defaults (TLS off, verification skipped).
+7. **Secret leak — verify explicitly (full-diff scan).** Scan the *entire*
+   diff — not just new lines in obviously security-relevant files — for
+   hidden, orphaned, or committed credentials, passwords, tokens, and keys.
+   This explicitly includes test fixtures, comments, and code that was
+   removed and then re-added (a secret can hide in a fixture, a debug
+   comment, or a revert that resurrects a previously-redacted value). Any hit
+   is BLOCKING regardless of whether the surrounding code looks like a test.
 
 ## Reviewer mode (con-voyage --review-only)
 
