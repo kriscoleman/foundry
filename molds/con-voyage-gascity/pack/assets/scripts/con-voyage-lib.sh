@@ -103,15 +103,51 @@ print(target or '')
 " 2>/dev/null || printf ''
 }
 
+# cv_worktree_prep_resolve_base DIR [EXPLICIT_BASE] — locate cv-worktree-prep.sh
+# and echo whatever its own `resolve-base` subcommand returns for DIR: a
+# remote-tracking ref, a bare branch name, or the empty-tree fail-safe hash
+# (see that script's own resolve_base doc comment for the exact order). Empty
+# output if the script cannot be found or is not executable.
+#
+# fk-qppb4 B2 (con-voyage review): both callers below used to locate the
+# sibling script via `script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" &&
+# pwd)"`. The `.md` workflow steps that use this lib `source` it directly in
+# the agent's own interactive shell, which per this pack's own shell-safety
+# contract may be bash OR zsh — and zsh leaves `${BASH_SOURCE[0]}` empty, so
+# `script_dir` silently resolved to the caller's cwd instead of this file's
+# directory, the executable check failed, and the delegation below was
+# skipped entirely (reproduced first-hand under zsh 5.9: the caller fell back
+# to the literal "main" instead of the real delegated "origin/main", for the
+# same unconfigured input that bash resolved correctly). Locate the script
+# the same PATH-then-bounded-find way the workflow `.md` snippets already
+# locate every other pack script instead — no shell-specific behavior.
+cv_worktree_prep_resolve_base() {
+  local dir="$1" explicit="${2:-}"
+  local prep_script
+  prep_script="$(command -v cv-worktree-prep.sh 2>/dev/null || true)"
+  if [ -z "$prep_script" ]; then
+    prep_script="$(find "${GC_CITY:-.}" -maxdepth 6 -name cv-worktree-prep.sh 2>/dev/null | head -1)"
+  fi
+  [ -n "$prep_script" ] && [ -x "$prep_script" ] || { printf ''; return 0; }
+  bash "$prep_script" resolve-base "$dir" "$explicit" 2>/dev/null
+}
+
 # cv_resolve_base_branch CONVOY_ID WORKTREE_DIR — the single source of truth
 # every con-voyage step uses to answer "what branch is this journey stacked
 # on?". Resolution order:
 #   1. cv_convoy_target CONVOY_ID — an explicit `gc convoy target` set by the
 #      facilitator for a stacked slice. Short-circuits without ever touching
 #      WORKTREE_DIR.
-#   2. cv-worktree-prep.sh's own `resolve-base` (origin/HEAD -> origin/main ->
-#      main) — DELEGATED, not reimplemented, so the two scripts can never
-#      disagree about what "the default base" means.
+#   2. cv_worktree_prep_resolve_base's own `resolve-base` (origin/HEAD ->
+#      origin/main -> main) — DELEGATED, not reimplemented, so the two
+#      scripts can never disagree about what "the default base" means. A
+#      leading "origin/" is stripped from that result: this function's return
+#      value is threaded into `gh pr create --base` (via cv-pr-comment.sh) and
+#      into this pack's hygiene guard call, both of which need a bare branch
+#      name — `gh` rejects an `origin/`-prefixed --base outright (fk-qppb4 B1
+#      review finding), and pre-fk-qppb4 this value was always the hand-filled
+#      bare "main", so stripping the prefix is what keeps the unconfigured
+#      default byte-identical to that behavior, not a new one.
 #   3. The literal "main", when even step 2 degrades to the empty-tree
 #      fail-safe hash (not a usable branch name for a PR --base/guard call).
 # Default (no `gc convoy target` set) is byte-identical to pre-fk-qppb4
@@ -126,13 +162,9 @@ cv_resolve_base_branch() {
     return 0
   fi
 
-  local script_dir prep_script default_base
-  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  prep_script="${script_dir}/cv-worktree-prep.sh"
-  default_base=""
-  if [ -x "$prep_script" ]; then
-    default_base="$(bash "$prep_script" resolve-base "$worktree_dir" 2>/dev/null)"
-  fi
+  local default_base
+  default_base="$(cv_worktree_prep_resolve_base "$worktree_dir")"
+  default_base="${default_base#origin/}"
   case "$default_base" in
     ""|"4b825dc642cb6eb9a060e54bf8d69288fbee4904") printf 'main' ;;
     *) printf '%s' "$default_base" ;;
@@ -177,7 +209,20 @@ cv_ensure_branch_based_on() {
     return 1
   fi
 
-  git -C "$dir" fetch -q origin "$base_branch" 2>/dev/null || true
+  # SECURITY (fk-qppb4 L4, defense-in-depth): reject a base branch beginning
+  # with '-' before it reaches git, where it would parse as an option (e.g.
+  # --upload-pack=<cmd>) instead of a refspec/revision.
+  case "$base_branch" in
+    -*)
+      echo "cv-lib: ERROR cv_ensure_branch_based_on: base branch '${base_branch}' begins with '-' — refusing to pass it to git" >&2
+      return 1
+      ;;
+  esac
+
+  # fk-qppb4 L2: an explicit refspec actually populates refs/remotes/origin/<b>
+  # (a bare branch-name refspec only writes FETCH_HEAD), so the rev-parse
+  # below can rely on this fetch instead of a pre-existing remote-tracking ref.
+  git -C "$dir" fetch -q origin "${base_branch}:refs/remotes/origin/${base_branch}" 2>/dev/null || true
   local new_base="origin/${base_branch}"
   git -C "$dir" rev-parse --verify --quiet "${new_base}^{commit}" >/dev/null 2>&1 || new_base="$base_branch"
   if ! git -C "$dir" rev-parse --verify --quiet "${new_base}^{commit}" >/dev/null 2>&1; then
@@ -190,11 +235,8 @@ cv_ensure_branch_based_on() {
     return 0
   fi
 
-  local script_dir prep_script old_base
-  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  prep_script="${script_dir}/cv-worktree-prep.sh"
-  old_base=""
-  [ -x "$prep_script" ] && old_base="$(bash "$prep_script" resolve-base "$dir" 2>/dev/null)"
+  local old_base
+  old_base="$(cv_worktree_prep_resolve_base "$dir")"
   [ -n "$old_base" ] || old_base="main"
 
   echo "cv-lib: rebasing ${dir} from ${old_base} onto ${new_base} (fk-qppb4 stacked-PR base threading)"
