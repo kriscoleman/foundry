@@ -55,8 +55,8 @@ for dep in (d.get('dependents') or []):
     print(dep.get('id') or '')
 " 2>/dev/null))
 
-CV_LENS_CLAIM_SECONDS="{{cv_lens_claim_seconds}}"
-CV_LENS_MAX_REDISPATCH="{{cv_lens_max_redispatch}}"
+CV_LENS_CLAIM_SECONDS="{cv_lens_claim_seconds}"
+CV_LENS_MAX_REDISPATCH="{cv_lens_max_redispatch}"
 # A malformed override must never silently break the claim-grace/re-dispatch-cap
 # checks below (a non-numeric CV_LENS_MAX_REDISPATCH would make `-ge` exit 2 —
 # treated as false — so the escalate-and-stop branch would never fire and a
@@ -69,7 +69,7 @@ esac
 case "$CV_LENS_MAX_REDISPATCH" in
   *[!0-9]*|'') CV_LENS_MAX_REDISPATCH="3" ;;
 esac
-CV_LENS_ESCALATE_TARGET="{{cv_lens_escalate_target}}"
+CV_LENS_ESCALATE_TARGET="{cv_lens_escalate_target}"
 declare -A CV_LENS_ATTEMPTS
 pending=("${LANE_BEAD_IDS[@]}")
 start_ts=$(date +%s)
@@ -150,7 +150,7 @@ do not let it block the rest of the cycle indefinitely.
 
 After each review cycle synthesizes, append a one-line summary to the work bead
 so the dashboard shows progress and the description stays current. The work bead
-is `$WORK_BEAD` recorded in the review context (resolved from `{{convoy_id}}` at
+is `$WORK_BEAD` recorded in the review context (resolved from `{convoy_id}` at
 setup); re-resolve it the same way if the context does not carry it. Keep the
 work bead in the `reviewing` phase for the whole loop — do NOT close it here
 (the publish step and the con-voyage-finalize monitor own the later phases and

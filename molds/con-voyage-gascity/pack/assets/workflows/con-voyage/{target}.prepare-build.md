@@ -2,16 +2,16 @@ Prepare the con-voyage build worktree (fk-9aunv: fold the do-work build into
 con-voyage as its own first phase, so one sling on a fresh work bead builds,
 reviews, and publishes — no separate `gc sling ... --on do-work` first).
 
-The `{{convoy_id}}` token is the source anchor for this journey — the same
+The `{convoy_id}` token is the source anchor for this journey — the same
 synthetic input convoy `cv_resolve_work_bead` and every other con-voyage step
 already resolve against. Unlike do-work, con-voyage never runs against a
-drain-unit convoy, so trust `{{convoy_id}}` directly; do not re-derive it from
+drain-unit convoy, so trust `{convoy_id}` directly; do not re-derive it from
 the workflow root.
 
 ## Resolve, or create, the build worktree
 
 ```bash
-CONVOY_ID="{{convoy_id}}"
+CONVOY_ID="{convoy_id}"
 DEFAULT_WORKTREE="$(pwd)/worktrees/${CONVOY_ID}"
 
 CV_LIB="$(command -v con-voyage-lib.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"
