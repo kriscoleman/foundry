@@ -215,9 +215,28 @@ print('repairing' if needs_repair else 'awaiting_merge')
 }
 
 # ---------------------------------------------------------------------------
-# Main loop: iterate every per-PR finalize record under CV_STATE_DIR. Glob-safe
-# against an empty/missing directory (same idiom as the other two scripts).
+# Resolve every state directory to scan: the primary CV_STATE_DIR plus one per
+# registered rig (fk-2c937 — see cv_extra_rig_state_dirs in con-voyage-lib.sh
+# for why this monitor, unlike con-voyage-pr-watch.sh/con-voyage-repair-
+# watchdog.sh, can't rely on cv_default_state_dir's single cwd-based result:
+# it reads records a DIFFERENT process — publish, running inside a rig
+# worktree — wrote via that same function, which for a CITY-scoped order's
+# own cwd never resolves to the same directory).
 # ---------------------------------------------------------------------------
+CV_STATE_DIR_PRIMARY="$CV_STATE_DIR"
+mapfile -t CV_STATE_DIRS_ALL < <(
+  printf '%s\n' "$CV_STATE_DIR_PRIMARY"
+  cv_extra_rig_state_dirs "$CV_STATE_DIR_PRIMARY"
+)
+
+# ---------------------------------------------------------------------------
+# Main loop: iterate every per-PR finalize record under every state directory
+# above (CV_STATE_DIR is reassigned per directory each outer iteration so
+# finalize_read/_write, which read that global, transparently target the
+# right one). Glob-safe against an empty/missing directory (same idiom as the
+# other two scripts).
+# ---------------------------------------------------------------------------
+for CV_STATE_DIR in "${CV_STATE_DIRS_ALL[@]}"; do
 for finalize_file in "${CV_STATE_DIR}"/*.finalize; do
   [ -f "$finalize_file" ] || continue
 
@@ -327,13 +346,17 @@ for finalize_file in "${CV_STATE_DIR}"/*.finalize; do
     echo "con-voyage-finalize: WARNING: ${label} — bd close failed (work_bead_rc=${work_bead_close_rc}, convoy_rc=${convoy_close_rc}); keeping finalize record for retry next cycle" >&2
   fi
 done
+done
 
 # ---------------------------------------------------------------------------
 # Repair-state sweep (fk-f1vp FIX-B) — see the REPAIR-STATE SWEEP header
 # comment above. Iterates the SAME per-PR ".state" records con-voyage-pr-
-# watch.sh/con-voyage-repair-watchdog.sh read and write. Glob-safe against an
-# empty/missing directory, same idiom as every loop in this pack.
+# watch.sh/con-voyage-repair-watchdog.sh read and write, across every state
+# directory resolved above (fk-2c937 — same blind spot as the ".finalize"
+# loop). Glob-safe against an empty/missing directory, same idiom as every
+# loop in this pack.
 # ---------------------------------------------------------------------------
+for CV_STATE_DIR in "${CV_STATE_DIRS_ALL[@]}"; do
 for state_file in "${CV_STATE_DIR}"/*.state; do
   [ -f "$state_file" ] || continue
 
@@ -427,6 +450,7 @@ for state_file in "${CV_STATE_DIR}"/*.state; do
   # (idempotent) close next cycle, same posture as the ".finalize" loop above.
   rm -f "$state_file"
   echo "con-voyage-finalize: done ${label} — repair .state record removed"
+done
 done
 
 echo "con-voyage-finalize: done"

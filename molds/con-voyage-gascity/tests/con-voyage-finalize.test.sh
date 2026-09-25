@@ -791,6 +791,66 @@ assert_file_absent "${RIG_DIR}/.gc/cv-pr-watch/cv-finalize-kriscoleman-foundry-9
 assert_eq "0" "$(find "$CITY_DIR" -type f 2>/dev/null | wc -l | tr -d ' ')" "GC_CITY's own directory is never touched when GC_RIG_ROOT is available"
 
 # ===========================================================================
+# CASE 29 — fk-2c937: this monitor runs as a CITY-scoped cooldown order (no
+#   GC_RIG_ROOT), so unlike case 28 it can't rely on GC_RIG_ROOT to find a
+#   rig's directory. con-voyage's publish step writes ".finalize" records with
+#   cwd inside the RIG's own worktree, so ITS cv_default_state_dir call lands
+#   at "<rig>/.gc/cv-pr-watch" via the ".beads" ancestor walk-up. This
+#   finalize order's own cv_default_state_dir call never walks INTO any rig
+#   (only up from its own cwd), so it must instead learn about every
+#   registered rig from "${GC_CITY}/.gc/site.toml" and check each one's
+#   ".gc/cv-pr-watch" explicitly. CV_STATE_DIR (STATE_DIR) here stands in for
+#   this order's own primary/default directory and must stay untouched —
+#   the fixture record lives ONLY under the registered rig's own directory.
+# ===========================================================================
+start_case "29: finalize record under a registered rig (not CV_STATE_DIR) is still found (fk-2c937)"
+setup_case_env "29"
+RIG_DIR="${SANDBOX}/rig-29"
+mkdir -p "${RIG_DIR}/.gc/cv-pr-watch" "${CITY_DIR}/.gc"
+cat > "${CITY_DIR}/.gc/site.toml" <<SITE_TOML
+workspace_name = "test-city"
+
+[[rig]]
+name = "foundry-kc"
+path = "${RIG_DIR}"
+SITE_TOML
+write_finalize "${RIG_DIR}/.gc/cv-pr-watch" "cv-finalize-kriscoleman-foundry-99" \
+  "fk-w99" "fk-c99" "kriscoleman/foundry" "99" "kriscoleman" "foundry/impl-16" "awaiting_merge"
+run_script "${DEFAULT_ENV[@]}" \
+  STUB_PR_MAP="kriscoleman/foundry|99|MERGED|2026-09-25T10:00:00Z|2026-09-25T10:00:00Z|||" \
+  STUB_BDSHOW_MAP=$'fk-w99|in_progress\nfk-c99|open'
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd close fk-w99 .*landed: PR #99 merged' 1 "finds and finalizes the record that lives under the registered rig's own dir, not CV_STATE_DIR"
+assert_file_absent "${RIG_DIR}/.gc/cv-pr-watch/cv-finalize-kriscoleman-foundry-99.finalize" "record removed from the rig-derived directory after finalize"
+assert_eq "0" "$(find "$STATE_DIR" -type f 2>/dev/null | wc -l | tr -d ' ')" "this order's own primary/default directory is never touched"
+
+# ===========================================================================
+# CASE 30 — fk-2c937: the repair ".state" sweep has the SAME blind spot as the
+#   ".finalize" loop in case 29 above — a record living under a registered
+#   rig's own state dir must also be found and swept once its PR lands.
+# ===========================================================================
+start_case "30: repair .state record under a registered rig is swept too (fk-2c937)"
+setup_case_env "30"
+RIG_DIR="${SANDBOX}/rig-30"
+mkdir -p "${RIG_DIR}/.gc/cv-pr-watch" "${CITY_DIR}/.gc"
+cat > "${CITY_DIR}/.gc/site.toml" <<SITE_TOML
+workspace_name = "test-city"
+
+[[rig]]
+name = "foundry-kc"
+path = "${RIG_DIR}"
+SITE_TOML
+write_state "${RIG_DIR}/.gc/cv-pr-watch" "cv-ci-repair-kriscoleman-foundry-100" \
+  "gc__impl-rc-3" "rw-bead100" "checks_failed" "kriscoleman" "vandoor/gc.implementation-worker" \
+  "kriscoleman/foundry" "100" "fix/x" "1" "0"
+run_script "${DEFAULT_ENV[@]}" \
+  STUB_PR_MAP="kriscoleman/foundry|100|MERGED|2026-09-25T10:00:00Z|2026-09-25T10:00:00Z|||" \
+  STUB_BDSHOW_MAP="rw-bead100|open"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd close rw-bead100 .*superseded: PR #100 merged' 1 "tracked repair bead under the registered rig closes (superseded)"
+assert_file_absent "${RIG_DIR}/.gc/cv-pr-watch/cv-ci-repair-kriscoleman-foundry-100.state" ".state record removed from the rig-derived directory"
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 echo
