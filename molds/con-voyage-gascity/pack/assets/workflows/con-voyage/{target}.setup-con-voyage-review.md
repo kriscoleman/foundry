@@ -49,7 +49,7 @@ default" and every step below is then a no-op, byte-identical to
 pre-fk-qppb4 behavior:
 
 ```bash
-CONVOY_ID="{{convoy_id}}"
+CONVOY_ID="{convoy_id}"
 CV_LIB="$(command -v con-voyage-lib.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"
 BASE_BRANCH="main"
 CONVOY_TARGET=""
