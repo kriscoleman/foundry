@@ -180,12 +180,14 @@ JSON
           fi
           # Return one human comment for the operator's PR, PLUS one bot-banner
           # comment authored by the operator's own login (kriscoleman) — exactly
-          # what cv-pr-comment.sh posts under the PAT. This proves PART B does
-          # not re-route the bot's own automated replies as new human feedback.
-          # reviewThreads is supplied separately by the `gh api graphql` stub
-          # below.
+          # what cv-pr-comment.sh posts under the PAT — PLUS one Netlify
+          # deploy-preview comment (login "netlify", no "[bot]" suffix). This
+          # proves PART B does not re-route the bot's own automated replies,
+          # nor Netlify's automated deploy-preview comments, as new human
+          # feedback (fk-5zc65). reviewThreads is supplied separately by the
+          # `gh api graphql` stub below.
           cat <<'JSON'
-{"reviews":[],"comments":[{"id":"IC_test_11","author":{"login":"a-human-reviewer"},"body":"please fix the null check"},{"id":"IC_test_bot","author":{"login":"kriscoleman"},"body":"🤖 **Automated con-voyage agent** (con-voyage-ci-repair / foundry-kc/worker)\n\nFixed a thing."}]}
+{"reviews":[],"comments":[{"id":"IC_test_11","author":{"login":"a-human-reviewer"},"body":"please fix the null check"},{"id":"IC_test_bot","author":{"login":"kriscoleman"},"body":"🤖 **Automated con-voyage agent** (con-voyage-ci-repair / foundry-kc/worker)\n\nFixed a thing."},{"id":"IC_test_netlify","author":{"login":"netlify"},"body":"Deploy Preview for replicated-docs ready!"}]}
 JSON
           exit 0
         fi
@@ -1014,7 +1016,15 @@ assert_log_count "$GH_LOG" 'pr view 500 .*reviews' 0 "no comment fetch for #500"
 # exactly how a bot's own automated reply gets mistaken for new human feedback
 # and re-routed forever.
 assert_log_count "$GC_LOG" 'Automated con-voyage agent' 0 "the bot's own bannered comment (IC_test_bot) is excluded from routed feedback"
-assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 1 "still exactly one comment-route sling (the bot comment adds no extra route)"
+
+# --- NETLIFY DEPLOY-PREVIEW COMMENT (regression guard for fk-5zc65) ---
+# The #11 fixture also carries a Netlify deploy-preview comment (IC_test_netlify,
+# authored by login "netlify" — no "[bot]" suffix). Netlify auto-comments on
+# every PR, so without "netlify" in BOT_LOGINS this masquerades as human
+# feedback and gets routed to the implementor on every docs PR (seen live on
+# replicatedhq/replicated-docs#4580).
+assert_log_count "$GC_LOG" 'Deploy Preview for replicated-docs ready' 0 "Netlify's deploy-preview comment (IC_test_netlify, login=netlify) is excluded from routed feedback"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 1 "still exactly one comment-route sling (the bot-banner and netlify comments add no extra routes)"
 
 # --- CORRECTED PART B FETCH INVOCATION (regression guard for the reviewThreads bug) ---
 # The bug: PART B fetched comments with `gh pr view <n> --json reviews,comments,reviewThreads`.

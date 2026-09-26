@@ -1029,7 +1029,7 @@ seen_ids   = set(line.strip() for line in sys.argv[1].splitlines() if line.strip
 agent_re   = re.compile(sys.argv[2])
 
 BOT_SUFFIXES = ["[bot]"]
-BOT_LOGINS   = {"github-actions", "dependabot", "renovate", "stale", "codecov"}
+BOT_LOGINS   = {"github-actions", "dependabot", "renovate", "stale", "codecov", "netlify"}
 
 def is_bot(login):
     ll = (login or "").lower()
