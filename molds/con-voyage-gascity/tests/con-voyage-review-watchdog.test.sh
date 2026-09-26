@@ -113,6 +113,9 @@ case "$sub" in
   rig)
     rigsub="${args[$((i+1))]:-}"
     if [ "$rigsub" = "list" ]; then
+      if [ "${STUB_RIG_LIST_FAIL:-0}" = "1" ]; then
+        exit 1
+      fi
       if [ -n "${STUB_RIGS_JSON:-}" ]; then
         printf '%s' "$STUB_RIGS_JSON"
       else
@@ -127,6 +130,12 @@ case "$sub" in
     if [ "$bdsub" = "list" ]; then
       if [ -n "$stub_rig" ] && [ "$stub_rig" = "${STUB_RIG_LIST_FAIL_FOR:-}" ]; then
         exit 1
+      fi
+      if [ -n "$stub_rig" ] && [ -n "${STUB_RIG_LIST_HANG_FOR:-}" ] && [ "$stub_rig" = "${STUB_RIG_LIST_HANG_FOR}" ]; then
+        sleep "${STUB_HANG_SECONDS:-20}"
+      fi
+      if [ -z "$stub_rig" ] && [ "${STUB_CITY_LIST_HANG:-0}" = "1" ]; then
+        sleep "${STUB_HANG_SECONDS:-20}"
       fi
       if [ -n "$stub_rig" ] && [ -n "${STUB_DB_DIR:-}" ]; then
         cat "${STUB_DB_DIR}/${stub_rig}.json" 2>/dev/null || printf '[]'
@@ -333,7 +342,7 @@ run_script() {
   RC=$?
 }
 
-DEFAULT_ENV=(CV_LENS_STALL_SECONDS="600" CV_LENS_MAX_ATTEMPTS="3" CV_LENS_ESCALATE_TARGET="human")
+DEFAULT_ENV=(CV_LENS_STALL_SECONDS="600" CV_LENS_MAX_ATTEMPTS="3" CV_LENS_ESCALATE_TARGET="human" CV_LENS_STORE_TIMEOUT_SECONDS="5")
 
 # ===========================================================================
 # CASE 1 — Empty candidate set: nothing to do, exits 0.
@@ -679,6 +688,138 @@ assert_eq "0" "$RC" "script exits 0 (one rig's failed query is non-fatal to the 
 if printf '%s' "$OUT" | grep -q "WARNING.*vandoor"; then pass "logs a WARNING naming the unreachable rig"; else fail "expected a WARNING mentioning 'vandoor'"; fi
 assert_log_count "$GC_LOG" 'sling replicated-docs/con-voyage.cv-documentation rd-lane2 --nudge' 1 "the OTHER rig's stalled lane is still discovered and re-routed"
 assert_log_count "$GC_LOG" 'sling' 1 "exactly one re-route happened — the failed rig produced no phantom action"
+
+# ===========================================================================
+# CASE 19 — fk-rri7q LOW-A (security, fk-ivure): a bead field containing an
+#   embedded newline+separator payload must never smuggle a second,
+#   attacker-controlled synthetic lane row into the TSV. Reproduces the exact
+#   chain the finding describes: a poisoned `assignee` field forges a
+#   complete phantom row (open+unassigned+stale, attacker-chosen lane id and
+#   route) that — if fields were not sanitized before SEP.join — causes a
+#   REAL `gc sling` call naming the attacker's own id and route.
+# ===========================================================================
+start_case "19: a forged newline+separator payload in a bead field cannot smuggle a phantom lane row"
+setup_case_env "19"
+STALE_TS="$(iso_ago 5000)"
+POISON_SEP=$'\x1f'
+POISON_ASSIGNEE="realassignee"$'\n'"fk-evil99${POISON_SEP}open${POISON_SEP}${POISON_SEP}${STALE_TS}${POISON_SEP}evil/route${POISON_SEP}0${POISON_SEP}0"
+write_db "$DB_FILE" "$(lane "fk-lane15" "open" "$POISON_ASSIGNEE" "$(iso_ago 5)" "foundry-kc/gc.gap-analyst" "0" "0")"
+run_script "${DEFAULT_ENV[@]}" STUB_SESSION_LIST_JSON='{"sessions":[]}'
+assert_eq "0" "$RC" "script exits 0 despite the poisoned field"
+assert_log_count "$GC_LOG" 'evil/route' 0 "the attacker-chosen route never reaches a gc call"
+assert_log_count "$GC_LOG" 'fk-evil99' 0 "the forged lane id never reaches a gc call"
+assert_log_count "$GC_LOG" 'sling' 0 "no phantom re-route fires from a poisoned field"
+
+# ===========================================================================
+# CASE 20 — fk-rri7q LOW-B (code-review, fk-yr4gj): the per-rig query-failure
+#   WARNING must name the command that actually failed (bd list --rig
+#   <name>), not the unrelated `gc rig list` enumeration call that already
+#   succeeded.
+# ===========================================================================
+start_case "20: the per-rig query-failure WARNING names bd list, not rig list"
+setup_case_env "20"
+STUB_RIGS_JSON='{"rigs":[{"name":"repl-city","hq":true},{"name":"vandoor","hq":false}]}'
+run_script "${DEFAULT_ENV[@]}" STUB_RIGS_JSON="$STUB_RIGS_JSON" STUB_RIG_LIST_FAIL_FOR="vandoor" STUB_SESSION_LIST_JSON='{"sessions":[]}'
+assert_eq "0" "$RC" "script exits 0"
+if printf '%s' "$OUT" | grep -q "WARNING: review-lane query (bd list --rig vandoor) returned nothing for rig 'vandoor'"; then
+  pass "the WARNING names the actual failing command (bd list --rig vandoor)"
+else
+  fail "expected the WARNING to name 'bd list --rig vandoor', not 'rig list query'"
+fi
+if printf '%s' "$OUT" | grep -q "rig list query returned nothing"; then
+  fail "the old, misleading wording ('rig list query returned nothing') must not reappear"
+else
+  pass "the old misleading wording is gone"
+fi
+
+# ===========================================================================
+# CASE 21 — fk-rri7q LOW-C (SRE reliability, fk-hdma1): `gc rig list --json`
+#   returning unparseable JSON must log a WARNING distinguishing this from a
+#   legitimate zero-rig city, and must not abort the pass — city-store lanes
+#   are still processed.
+# ===========================================================================
+start_case "21: unparseable 'gc rig list --json' output logs a WARNING, city lanes still processed"
+setup_case_env "21"
+write_db "$DB_FILE" "$(lane "fk-lane16" "open" "" "$(iso_ago 5000)" "foundry-kc/gc.gap-analyst" "0" "0")"
+run_script "${DEFAULT_ENV[@]}" STUB_RIGS_JSON='not-valid-json-at-all' STUB_SESSION_LIST_JSON='{"sessions":[]}'
+assert_eq "0" "$RC" "script exits 0 despite unparseable rig list output"
+if printf '%s' "$OUT" | grep -q "WARNING: 'gc rig list --json' returned nothing/unparseable"; then
+  pass "logs the rig-enumeration-failure WARNING"
+else
+  fail "expected a WARNING distinguishing unparseable rig list output from a legitimate zero-rig city"
+fi
+assert_log_count "$GC_LOG" 'sling foundry-kc/gc.gap-analyst fk-lane16 --nudge' 1 "the city-store lane is still discovered and acted on despite the rig-enumeration failure"
+
+# ===========================================================================
+# CASE 22 — fk-rri7q LOW-C: `gc rig list --json` failing outright (nothing on
+#   stdout) hits the SAME WARNING+fail-safe path as unparseable output (CASE
+#   21) — the two distinct code paths (empty output vs. parse failure) both
+#   surface the operator-facing signal.
+# ===========================================================================
+start_case "22: 'gc rig list --json' failing outright (empty output) also logs the WARNING"
+setup_case_env "22"
+run_script "${DEFAULT_ENV[@]}" STUB_RIG_LIST_FAIL=1 STUB_SESSION_LIST_JSON='{"sessions":[]}'
+assert_eq "0" "$RC" "script exits 0 despite the rig-list call failing outright"
+if printf '%s' "$OUT" | grep -q "WARNING: 'gc rig list --json' returned nothing/unparseable"; then
+  pass "logs the rig-enumeration-failure WARNING on an outright empty/failed call too"
+else
+  fail "expected the same rig-enumeration-failure WARNING when the call produces no output at all"
+fi
+
+# ===========================================================================
+# CASE 23 — fk-rri7q LOW-C negative control: a VALID `{"rigs":[]}` response (a
+#   genuinely single-rig/no-peer city) must NOT trigger the new WARNING —
+#   only a failed/unparseable enumeration should.
+# ===========================================================================
+start_case "23: a valid, legitimately empty rig list is not treated as a failure"
+setup_case_env "23"
+run_script "${DEFAULT_ENV[@]}" STUB_RIGS_JSON='{"rigs":[]}' STUB_SESSION_LIST_JSON='{"sessions":[]}'
+assert_eq "0" "$RC" "script exits 0"
+if printf '%s' "$OUT" | grep -q "WARNING: 'gc rig list --json' returned"; then
+  fail "a legitimately empty rig list must not log the enumeration-failure WARNING"
+else
+  pass "no false-alarm WARNING for a genuinely empty (but validly parsed) rig list"
+fi
+
+# ===========================================================================
+# CASE 24 — fk-rri7q LOW-D (SRE reliability, fk-hdma1): a hung per-rig store
+#   read is bounded by CV_LENS_STORE_TIMEOUT_SECONDS instead of stalling the
+#   whole cycle, and does not blind discovery of a DIFFERENT rig's stalled
+#   lane. The stub hangs for 20s; the test configures a 1s timeout and
+#   asserts the whole run finishes in well under 20s — proving a real kill
+#   happened, not just that the logic looks right on paper.
+# ===========================================================================
+start_case "24: a hung per-rig store read is bounded and does not blind other rigs"
+setup_case_env "24"
+STUB_RIGS_JSON='{"rigs":[{"name":"repl-city","hq":true},{"name":"vandoor","hq":false},{"name":"replicated-docs","hq":false}]}'
+write_rig_db "replicated-docs" \
+  "$(lane "rd-lane3" "open" "" "$(iso_ago 5000)" "replicated-docs/con-voyage.cv-documentation" "0" "0" "Con-voyage: documentation review")"
+START_TS=$(date +%s)
+run_script CV_LENS_STALL_SECONDS="600" CV_LENS_MAX_ATTEMPTS="3" CV_LENS_ESCALATE_TARGET="human" CV_LENS_STORE_TIMEOUT_SECONDS="1" \
+  STUB_RIGS_JSON="$STUB_RIGS_JSON" STUB_RIG_LIST_HANG_FOR="vandoor" STUB_HANG_SECONDS="20" STUB_SESSION_LIST_JSON='{"sessions":[]}'
+END_TS=$(date +%s)
+ELAPSED=$((END_TS - START_TS))
+assert_eq "0" "$RC" "script exits 0 despite a hung rig store"
+if [ "$ELAPSED" -lt 10 ]; then pass "the hung store was killed well before its own 20s hang finished (elapsed ${ELAPSED}s)"; else fail "the run took ${ELAPSED}s — the timeout did not actually bound the hung call"; fi
+assert_log_count "$GC_LOG" 'sling replicated-docs/con-voyage.cv-documentation rd-lane3 --nudge' 1 "the OTHER rig's stalled lane is still discovered and re-routed despite vandoor hanging"
+
+# ===========================================================================
+# CASE 25 — fk-rri7q LOW-D: a hung CITY store read is likewise bounded, and a
+#   per-rig lane is still discovered even though the city query itself hung.
+# ===========================================================================
+start_case "25: a hung CITY store read is bounded and per-rig discovery still proceeds"
+setup_case_env "25"
+STUB_RIGS_JSON='{"rigs":[{"name":"repl-city","hq":true},{"name":"replicated-docs","hq":false}]}'
+write_rig_db "replicated-docs" \
+  "$(lane "rd-lane4" "open" "" "$(iso_ago 5000)" "replicated-docs/con-voyage.cv-documentation" "0" "0" "Con-voyage: documentation review")"
+START_TS=$(date +%s)
+run_script CV_LENS_STALL_SECONDS="600" CV_LENS_MAX_ATTEMPTS="3" CV_LENS_ESCALATE_TARGET="human" CV_LENS_STORE_TIMEOUT_SECONDS="1" \
+  STUB_RIGS_JSON="$STUB_RIGS_JSON" STUB_CITY_LIST_HANG="1" STUB_HANG_SECONDS="20" STUB_SESSION_LIST_JSON='{"sessions":[]}'
+END_TS=$(date +%s)
+ELAPSED=$((END_TS - START_TS))
+assert_eq "0" "$RC" "script exits 0 despite a hung city store"
+if [ "$ELAPSED" -lt 10 ]; then pass "the hung city query was killed well before its own 20s hang finished (elapsed ${ELAPSED}s)"; else fail "the run took ${ELAPSED}s — the timeout did not bound the city call"; fi
+assert_log_count "$GC_LOG" 'sling replicated-docs/con-voyage.cv-documentation rd-lane4 --nudge' 1 "the rig-store lane is still discovered even though the city query hung"
 
 # ===========================================================================
 # Summary
