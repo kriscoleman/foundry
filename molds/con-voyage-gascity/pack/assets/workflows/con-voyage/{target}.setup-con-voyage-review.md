@@ -177,12 +177,19 @@ still treats it as satisfied — silently converting "review never ran" into
 exist BEFORE the review loop is ever dispatched, not after:
 
 ```bash
+CV_LIB="$(command -v con-voyage-lib.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"
+RIG_ROOT=""
+if [ -n "$CV_LIB" ]; then
+  RIG_ROOT="$(source "$CV_LIB" && cv_default_rig_root)"
+fi
+[ -n "${RIG_ROOT:-}" ] || RIG_ROOT="${GC_CITY:-.}"
+
 CV_ENSURE_GATE_SCRIPTS="$(command -v cv-ensure-gate-scripts.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name cv-ensure-gate-scripts.sh 2>/dev/null | head -1)"
 if [ -z "$CV_ENSURE_GATE_SCRIPTS" ] || [ ! -x "$CV_ENSURE_GATE_SCRIPTS" ]; then
   echo "cv-ensure-gate-scripts.sh not found under ${GC_CITY:-.} — the con-voyage pack may not be imported correctly on this rig" >&2
   exit 1
 fi
-"$CV_ENSURE_GATE_SCRIPTS" "${GC_CITY:-.}" || { echo "gate check script seeding failed — refusing to start a review loop that would quarantine" >&2; exit 1; }
+"$CV_ENSURE_GATE_SCRIPTS" "$RIG_ROOT" || { echo "gate check script seeding failed — refusing to start a review loop that would quarantine" >&2; exit 1; }
 ```
 
 If this block fails for any reason, do NOT proceed to dispatch the review
@@ -205,12 +212,19 @@ actually validating anything. Guarantee both exist BEFORE the workflow-finalize
 gate is ever evaluated:
 
 ```bash
+CV_LIB="$(command -v con-voyage-lib.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"
+RIG_ROOT=""
+if [ -n "$CV_LIB" ]; then
+  RIG_ROOT="$(source "$CV_LIB" && cv_default_rig_root)"
+fi
+[ -n "${RIG_ROOT:-}" ] || RIG_ROOT="${GC_CITY:-.}"
+
 CV_ENSURE_VALIDATOR="$(command -v cv-ensure-build-artifact-validator.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name cv-ensure-build-artifact-validator.sh 2>/dev/null | head -1)"
 if [ -z "$CV_ENSURE_VALIDATOR" ] || [ ! -x "$CV_ENSURE_VALIDATOR" ]; then
   echo "cv-ensure-build-artifact-validator.sh not found under ${GC_CITY:-.} — the con-voyage pack may not be imported correctly on this rig" >&2
   exit 1
 fi
-"$CV_ENSURE_VALIDATOR" "${GC_CITY:-.}" || { echo "build-artifact validator seeding failed — refusing to proceed toward a workflow-finalize gate that would fail confusingly" >&2; exit 1; }
+"$CV_ENSURE_VALIDATOR" "$RIG_ROOT" || { echo "build-artifact validator seeding failed — refusing to proceed toward a workflow-finalize gate that would fail confusingly" >&2; exit 1; }
 ```
 
 If this block fails for any reason, do NOT proceed. Instead, mail the mayor

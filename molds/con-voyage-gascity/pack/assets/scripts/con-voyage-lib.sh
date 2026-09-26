@@ -47,20 +47,35 @@
 #      environment matching neither signal above degrades to prior behavior
 #      instead of failing closed.
 cv_default_state_dir() {
+  printf '%s/.gc/cv-pr-watch' "$(cv_default_rig_root)"
+}
+
+# cv_default_rig_root — print the resolved rig root using the exact same
+# resolution order cv_default_state_dir applies before appending its own
+# "/.gc/cv-pr-watch" suffix. Callers that need the bare rig root itself as an
+# argument (fk-4jdeh: cv-ensure-gate-scripts.sh and
+# cv-ensure-build-artifact-validator.sh both take a positional <rig-root> and
+# write to <rig-root>/.gc/... themselves) call this directly instead of
+# stripping cv_default_state_dir's suffix back off or hand-copying the
+# GC_RIG_ROOT/.beads-walkup/GC_CITY algorithm a third time. See
+# cv_default_state_dir's own history (fk-mr07) for why GC_CITY -- the
+# multi-rig CITY root -- is a last resort, not the default: it previously let
+# a rig-scoped write silently land at the city level instead.
+cv_default_rig_root() {
   if [ -n "${GC_RIG_ROOT:-}" ]; then
-    printf '%s/.gc/cv-pr-watch' "$GC_RIG_ROOT"
+    printf '%s' "$GC_RIG_ROOT"
     return 0
   fi
   local dir="$PWD"
   while :; do
     if [ -d "${dir}/.beads" ]; then
-      printf '%s/.gc/cv-pr-watch' "$dir"
+      printf '%s' "$dir"
       return 0
     fi
     [ "$dir" = "/" ] && break
     dir="$(dirname "$dir")"
   done
-  printf '%s/.gc/cv-pr-watch' "${GC_CITY:-.}"
+  printf '%s' "${GC_CITY:-.}"
 }
 
 # cv_extra_rig_state_dirs PRIMARY_DIR — print one additional
