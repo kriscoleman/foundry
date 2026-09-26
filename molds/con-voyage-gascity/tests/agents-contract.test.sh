@@ -55,6 +55,11 @@ if [ -z "${CV_SHELL_SAFETY_REMINDER:-}" ]; then
   exit 2
 fi
 
+if [ -z "${CV_NO_INTERACTIVE_PROMPT_REMINDER:-}" ]; then
+  echo "FATAL: CV_NO_INTERACTIVE_PROMPT_REMINDER is not defined by ${LIB}" >&2
+  exit 2
+fi
+
 FAILURES=0
 start_case() { echo; echo "=== CASE: $1 ==="; }
 
@@ -87,6 +92,8 @@ for formula in "${MOLD_DIR}"/pack/formulas/*.toml; do
       "$(basename "$formula"): $(basename "$rel_path") (communal duty)"
     assert_contains "${formula_dir}/${rel_path}" "$CV_SHELL_SAFETY_REMINDER" \
       "$(basename "$formula"): $(basename "$rel_path") (shell safety)"
+    assert_contains "${formula_dir}/${rel_path}" "$CV_NO_INTERACTIVE_PROMPT_REMINDER" \
+      "$(basename "$formula"): $(basename "$rel_path") (no interactive prompts)"
   done < <(grep -oE 'description_file *= *"[^"]+"' "$formula" | sed -E 's/description_file *= *"([^"]+)"/\1/')
 done
 
@@ -113,6 +120,13 @@ if declare -f cv_build_pr_feedback_body >/dev/null 2>&1; then
       echo "  PASS: cv_build_pr_feedback_body output includes the shell-safety reminder" ;;
     *)
       echo "  FAIL: cv_build_pr_feedback_body output is missing the shell-safety reminder" >&2
+      FAILURES=$((FAILURES+1)) ;;
+  esac
+  case "$sample_body" in
+    *"${CV_NO_INTERACTIVE_PROMPT_REMINDER}"*)
+      echo "  PASS: cv_build_pr_feedback_body output includes the no-interactive-prompts reminder" ;;
+    *)
+      echo "  FAIL: cv_build_pr_feedback_body output is missing the no-interactive-prompts reminder" >&2
       FAILURES=$((FAILURES+1)) ;;
   esac
 else

@@ -324,6 +324,29 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# cv_text_has_interactive_prompt_stall (fk-6kvnt item 2/3: a fixture pane
+# frame carrying the AskUserQuestion prompt footer must be detected, and a
+# normal frame must not).
+# ---------------------------------------------------------------------------
+start_case "cv_text_has_interactive_prompt_stall: detects the AskUserQuestion footer in a captured pane fixture"
+PANE_FIXTURE_STALLED=$'? Proceed now?\n\n  1. Yes\n  2. No\n\nEnter to select · ↑/↓ to navigate'
+if cv_text_has_interactive_prompt_stall "$PANE_FIXTURE_STALLED"; then
+  echo "  PASS: stalled pane fixture is detected"
+else
+  echo "  FAIL: stalled pane fixture was NOT detected" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
+start_case "cv_text_has_interactive_prompt_stall: a normal pane frame is never a false positive"
+PANE_FIXTURE_NORMAL=$'Running tests...\n5 passed, 0 failed\n$ '
+if cv_text_has_interactive_prompt_stall "$PANE_FIXTURE_NORMAL"; then
+  echo "  FAIL: normal pane fixture was incorrectly detected as stalled" >&2
+  FAILURES=$((FAILURES+1))
+else
+  echo "  PASS: normal pane fixture is not detected"
+fi
+
+# ---------------------------------------------------------------------------
 # finalize_read / finalize_write round-trip
 # ---------------------------------------------------------------------------
 start_case "finalize_write/read round-trip"
