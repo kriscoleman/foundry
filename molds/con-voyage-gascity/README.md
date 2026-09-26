@@ -29,10 +29,20 @@ A Gas City pack containing:
   `{target}.prepare-build` / `{target}.build` steps run do-work's own first TDD
   round as con-voyage's own first phase, before setup and the review loop. This
   is fully automatic and backward compatible — a bead that already has a
-  pre-built branch (e.g. from a prior `gc sling ... --on do-work`) is detected
-  at runtime and the build phase short-circuits straight to setup, so the old
-  two-step (`do-work` then `con-voyage --force`) still works, it is just no
-  longer required.
+  pre-built branch is detected at runtime and the build phase short-circuits
+  straight to setup, so the old two-step (`do-work` then `con-voyage --force`)
+  still works, it is just no longer required. Detection checks two places, not
+  one: the current sling's own input convoy (a bead re-slung onto the same
+  convoy without ever closing it), and — since every `gc sling ... --on
+  con-voyage` creates a BRAND NEW input convoy and do-work closes its own
+  source anchor on completion, so that state never carries onto the new one —
+  the work bead's other `tracks` dependents (its past source anchors, closed
+  or still open), picking the newest one with a build already ahead of base
+  (fk-ki8je fixed a 0.8.0 regression where only the first check ran, so the
+  normal `do-work` → `con-voyage --force` handoff never actually
+  short-circuited). A reused anchor left on a detached HEAD by an older
+  `do-work` run gets a stable branch created on it at this point, so publish
+  has something to push.
 
 - **Work-bead lifecycle** — the formula now drives the *work bead* it delivers
   through its full lifecycle so it moves on the dashboard and never sits open

@@ -98,6 +98,14 @@ start_case "prepare-build.md: detects a pre-built branch via cv_bead_work_dir + 
 assert_contains "$PREPARE_BUILD_MD" "cv_bead_work_dir" "reads the existing work_dir via the shared lib helper"
 assert_contains "$PREPARE_BUILD_MD" '"$CV_WT_PREP" built' "checks the existing worktree with cv-worktree-prep.sh built"
 
+start_case "prepare-build.md (fk-ki8je): when THIS convoy has no work_dir, falls back to the work bead's earlier source anchors instead of building fresh immediately"
+assert_contains "$PREPARE_BUILD_MD" 'cv_resolve_work_bead "$CONVOY_ID"' "actually CALLS cv_resolve_work_bead on this convoy (not just the pre-existing doc-comment mention of the function's name), so it can look at the work bead's other source anchors"
+assert_contains "$PREPARE_BUILD_MD" "cv_find_prior_built_anchor" "checks the work bead's other tracked source anchors for one with a finished build"
+
+start_case "prepare-build.md (fk-ki8je): a reused prior anchor left on a detached HEAD gets a stable branch before review (fk-tazxl overlap)"
+assert_contains "$PREPARE_BUILD_MD" 'branch --show-current' "detects a detached HEAD on the reused anchor"
+assert_contains "$PREPARE_BUILD_MD" "checkout -q -b" "creates a stable branch on the reused anchor so publish has something to push"
+
 start_case "prepare-build.md: fresh-bead path creates the worktree the same way do-work does"
 assert_contains "$PREPARE_BUILD_MD" 'git worktree add "$WORKTREE" --detach HEAD' "creates the worktree with the do-work convention"
 assert_contains "$PREPARE_BUILD_MD" 'gc bd update "$CONVOY_ID" --set-metadata "work_dir=' "persists work_dir on the source anchor the same key do-work uses"

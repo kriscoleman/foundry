@@ -882,6 +882,122 @@ if isinstance(val, str):
 " 2>/dev/null
 }
 
+# cv_find_prior_built_anchor WORK_BEAD_ID EXCLUDE_CONVOY_ID — among every
+# convoy that already `tracks` WORK_BEAD_ID (excluding EXCLUDE_CONVOY_ID —
+# normally the CURRENT sling's own fresh input convoy), find the newest one
+# that both carries a `work_dir` metadata value and has `cv-worktree-prep.sh
+# built` confirm that worktree's HEAD is ahead of its base. Prints "<anchor_id>
+# <work_dir>" (space-separated, one line) for the first such match, or
+# nothing if none qualify.
+#
+# fk-ki8je: a fresh `gc sling ... --on con-voyage` always creates a NEW input
+# convoy with no work_dir of its own — do-work closes ITS OWN source anchor
+# when it finishes, so that state never carries onto the fresh convoy, and
+# {target}.prepare-build.md's short-circuit (which only ever checked THIS
+# convoy's own work_dir via cv_bead_work_dir) never fired for the normal
+# do-work -> con-voyage handoff. This is the missing half: the work bead's
+# OTHER `tracks` dependents — its past source anchors, closed or still open —
+# are exactly where that finished state actually lives.
+#
+# Sort key is each candidate's own `created_at`; bd's ISO-8601 UTC timestamps
+# compare correctly as plain strings, so no date parsing is needed. When
+# several candidates qualify, this picks the newest and logs every candidate
+# it rejects along the way (to stderr) plus the one it finally chooses.
+#
+# FAIL-SAFE: prints nothing (never aborts) for an empty WORK_BEAD_ID, a `bd
+# show` failure, no qualifying dependents, or a missing/non-executable
+# cv-worktree-prep.sh — every fail-safe outcome means "build fresh instead",
+# never a hard error. Does not itself check `EXCLUDE_CONVOY_ID`'s own
+# work_dir — that is cv_bead_work_dir's job, left to the caller exactly as
+# prepare-build.md already does it, so this function only ever answers "is
+# there an EARLIER anchor to reuse".
+cv_find_prior_built_anchor() {
+  local work_bead_id="$1" exclude_id="${2:-}"
+  [ -n "${work_bead_id// /}" ] || return 0
+
+  local prep_script
+  prep_script="$(command -v cv-worktree-prep.sh 2>/dev/null || true)"
+  if [ -z "$prep_script" ]; then
+    prep_script="$(find "${GC_CITY:-.}" -maxdepth 6 -name cv-worktree-prep.sh 2>/dev/null | head -1)"
+  fi
+  if [ -z "$prep_script" ] || [ ! -x "$prep_script" ]; then
+    echo "cv-lib: cv_find_prior_built_anchor: cv-worktree-prep.sh not found — skipping prior-anchor reuse" >&2
+    return 0
+  fi
+
+  local json
+  json=$("$GC" bd show "$work_bead_id" --json --include-dependents 2>/dev/null) || json=""
+  [ -n "$json" ] || return 0
+
+  local ids
+  ids="$(printf '%s' "$json" | python3 -c '
+import sys, json
+exclude_id = sys.argv[1] if len(sys.argv) > 1 else ""
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+if isinstance(data, list):
+    data = data[0] if data else {}
+if not isinstance(data, dict):
+    raise SystemExit(0)
+for dep in (data.get("dependents") or []):
+    if not isinstance(dep, dict):
+        continue
+    dep_id = dep.get("id") or ""
+    dtype = dep.get("dependency_type") or ""
+    if dep_id and dep_id != exclude_id and dtype == "tracks":
+        print(dep_id)
+' "$exclude_id" 2>/dev/null)"
+  [ -n "$ids" ] || return 0
+
+  # Enrich each candidate id with its own created_at + work_dir via a direct
+  # bd show (the --include-dependents summary above does not reliably carry
+  # per-dependent timestamps). A plain command substitution around the whole
+  # loop captures its stdout correctly regardless of bash/zsh pipeline-subshell
+  # differences — no variable needs to survive past the loop itself.
+  local rows
+  rows="$(
+    printf '%s\n' "$ids" | while IFS= read -r cand_id; do
+      [ -n "$cand_id" ] || continue
+      cjson=$("$GC" bd show "$cand_id" --json 2>/dev/null) || continue
+      [ -n "$cjson" ] || continue
+      printf '%s' "$cjson" | python3 -c '
+import sys, json
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+if isinstance(data, list):
+    data = data[0] if data else {}
+if not isinstance(data, dict):
+    raise SystemExit(0)
+meta = data.get("metadata") or {}
+work_dir = meta.get("work_dir") or ""
+created = data.get("created_at") or ""
+bead_id = data.get("id") or ""
+if work_dir and bead_id:
+    print("%s\t%s\t%s" % (created, bead_id, work_dir))
+'
+    done
+  )"
+  [ -n "$rows" ] || return 0
+
+  local created cand_id work_dir
+  while IFS=$'\t' read -r created cand_id work_dir; do
+    [ -n "$cand_id" ] || continue
+    if [ -d "$work_dir" ] && "$prep_script" built "$work_dir" >&2; then
+      echo "cv-lib: cv_find_prior_built_anchor: chose ${cand_id} at ${work_dir} (created ${created})" >&2
+      printf '%s %s\n' "$cand_id" "$work_dir"
+      return 0
+    fi
+    echo "cv-lib: cv_find_prior_built_anchor: candidate ${cand_id} at ${work_dir:-<unset>} is not usable (missing dir or not ahead of base) — checking older candidates" >&2
+  done < <(printf '%s\n' "$rows" | LC_ALL=C sort -r)
+
+  echo "cv-lib: cv_find_prior_built_anchor: no qualifying prior anchor found for ${work_bead_id}" >&2
+  return 0
+}
+
 # cv_close_reason_for_pr PR_STATE PR_NUMBER — canonical work-bead close reason
 # for a finalized PR. PR_STATE is the GitHub PR state ("MERGED" or "CLOSED",
 # case-insensitive). Any merged state -> "landed: PR #N merged"; a closed-
