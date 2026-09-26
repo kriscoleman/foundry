@@ -2,3 +2,71 @@
 name = "con-voyage"
 version = "0.1.0"
 schema = 2
+
+# ---------------------------------------------------------------------------
+# Model tiers (see README.md "Model tiers" for the full contract)
+#
+# con-voyage ranks every lane by task complexity into three tiers and binds
+# each tier to a provider preset. Claude and opencode have a tier-for-tier
+# equivalency:
+#
+#   small  (rudimentary tasks)           claude haiku  <->  opencode minimax-m3
+#   medium (standard tasks)              claude sonnet <->  opencode glm-5p3-flash
+#   large  (critical / intensive tasks)  claude opus   <->  opencode kimi-k3
+#
+# The three REVIEWER tiers ship with this pack and default to CLAUDE — claude
+# and codex are more widely adopted than opencode, so a pack that "just works"
+# on cast, with no opencode account required, is the friction-free default:
+#
+#   cv-review-light      prose/hygiene lenses            -> haiku  (small)
+#   cv-review-standard   structured technical judgment   -> sonnet (medium)
+#   cv-review-intensive  deep code/security reasoning    -> opus   (large)
+#
+# A city that wants the opencode + fireworks mode instead (lower cost per
+# token, higher throughput) opts in wholesale by pasting the ready-made
+# provider block from README.md "Model tiers" into its own city.toml — city
+# providers load before pack providers, so the city wins.
+#
+# The claude side of the mayor/do-work/implementation-worker split (opus for
+# the mayor, sonnet for workers) is CITY config, not pack config — those role
+# agents are providerless and inherit the city's defaults regardless of which
+# mode the reviewer tiers above are in.
+#
+# Every value here is a DEFAULT. A city overrides a single tier the same way,
+# by redeclaring the provider name in city.toml or with [[patches.providers]]
+# — e.g. to move just one tier to opencode while leaving the rest on claude:
+#
+#   [providers.cv-review-intensive]
+#   base = "builtin:opencode"
+#   options_schema_merge = "by_key"
+#   [providers.cv-review-intensive.option_defaults]
+#   model = "fireworks-ai/accounts/fireworks/models/kimi-k3"
+#   [[providers.cv-review-intensive.options_schema]]
+#   key = "model"
+#   type = "select"
+#   default = "fireworks-ai/accounts/fireworks/models/kimi-k3"
+#   [[providers.cv-review-intensive.options_schema.choices]]
+#   value = "fireworks-ai/accounts/fireworks/models/kimi-k3"
+#   flag_args = ["--model", "fireworks-ai/accounts/fireworks/models/kimi-k3"]
+#
+# The options_schema re-declaration (options_schema_merge = "by_key") is only
+# needed for opencode pins: gc's builtin opencode catalog is a closed choice
+# list that only knows opencode's own models, so a fireworks model id outside
+# it fails config validation ("not a valid choice") without an explicit
+# choice carrying flag_args. builtin:claude's haiku/sonnet/opus aliases are
+# already known choices, so the claude defaults below need no such dance.
+# ---------------------------------------------------------------------------
+[providers.cv-review-light]
+base = "builtin:claude"
+[providers.cv-review-light.option_defaults]
+model = "haiku"
+
+[providers.cv-review-standard]
+base = "builtin:claude"
+[providers.cv-review-standard.option_defaults]
+model = "sonnet"
+
+[providers.cv-review-intensive]
+base = "builtin:claude"
+[providers.cv-review-intensive.option_defaults]
+model = "opus"

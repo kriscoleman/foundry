@@ -1,0 +1,55 @@
+# con-voyage-rate-limit-lookout — claude-fleet rate-limit circuit breaker +
+# proactive context-compaction handoff monitor.
+#
+# OPT-IN, not default-on: trigger = "manual" below means the controller never
+# fires this order on its own. It only exists for a city to switch on. This
+# monitor only matters to cities running claude-backed mayor/do-work/
+# implementation-worker sessions who want an automatic failover to opencode
+# when claude rate-limits — a city on the pack's default claude mode that
+# hasn't hit that problem yet shouldn't pay a 5-minute poll for it, and a
+# city already running opencode mode for its reviewers still needs claude for
+# the mayor/workers, so the breaker remains relevant there too. Opt in with:
+#   [[orders.overrides]]
+#   name = "con-voyage-rate-limit-lookout"
+#   trigger = "cooldown"
+# (verified: a rigless override matches this city-scoped order and flips its
+# resolved trigger from "manual" to "cooldown" cleanly.)
+#
+# Once enabled, peeks every active claude-backed session (mayor, do-work
+# pools, implementation workers) for two provider-side events:
+#   - context auto-compact approaching -> proactive `gc handoff --target`
+#     (smooth restart with the worker's own handoff mail waiting)
+#   - usage/rate limit observed        -> circuit breaker OPENS: fleet-wide
+#     handoff + structured escalation to the mayor so it can switch dispatch
+#     to the all-opencode fallback pools; auto-closes (all-clear mail) after
+#     a limit-free reset window.
+#
+# scope = "city" is deliberate: sessions span rigs, so one lookout instance
+# watches the whole fleet — per-rig instances would duplicate handoffs and
+# escalation mail.
+#
+# Every other knob is overridable per city via [[orders.overrides]] env, e.g.:
+#   [[orders.overrides]]
+#   name = "con-voyage-rate-limit-lookout"
+#   trigger = "cooldown"
+#   [orders.overrides.env]
+#   CV_LOOKOUT_FALLBACK_LARGE_POOL = "my-opus-equivalent"
+[order]
+description = "Watch claude-backed sessions for usage/rate limits and approaching context compaction: proactive handoff before compact, circuit breaker + mayor escalation to all-opencode fallback mode on limits. Opt-in — a city overrides trigger to \"cooldown\" to enable."
+trigger = "manual"
+interval = "5m"
+exec = "$PACK_DIR/assets/scripts/con-voyage-rate-limit-lookout.sh"
+scope = "city"
+
+[order.env]
+CV_LOOKOUT_CLAUDE_PROVIDERS = "claude,opus,sonnet"
+CV_LOOKOUT_PEEK_LINES = "80"
+CV_LOOKOUT_COMPACT_HANDOFF_PERCENT = "15"
+CV_LOOKOUT_HANDOFF_COOLDOWN_SECONDS = "1800"
+CV_LOOKOUT_BREAKER_RESET_SECONDS = "3600"
+CV_LOOKOUT_BREAKER_REMIND_SECONDS = "1800"
+CV_LOOKOUT_ESCALATE_TARGET = "mayor"
+CV_LOOKOUT_FALLBACK_LARGE_POOL = "kimi-k3"
+CV_LOOKOUT_FALLBACK_MEDIUM_POOL = "glm-5p3-flash"
+CV_LOOKOUT_FALLBACK_SMALL_POOL = "minimax-m3"
+CV_LOOKOUT_USAGE_WINDOW_MINUTES = "60"
