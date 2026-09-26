@@ -154,7 +154,11 @@ if isinstance(d, dict):
 # header — the mayor legitimately uses interactive prompts itself).
 # ---------------------------------------------------------------------------
 SESSIONS_JSON="$(cv_with_timeout "$CV_ASKQ_STORE_TIMEOUT_SECONDS" "$GC" --city "$GC_CITY" session list --state active --json 2>/dev/null)"
-[ -n "$SESSIONS_JSON" ] || SESSIONS_JSON='{"sessions":[]}'
+SESSIONS_RC=$?
+if [ "$SESSIONS_RC" -ne 0 ] || [ -z "$SESSIONS_JSON" ]; then
+  echo "con-voyage-askuserquestion-watchdog: WARNING: session list unavailable (gc call failed/timed out)" >&2
+  exit 1
+fi
 
 # filter_sessions_json — read one `session list --json` object from stdin,
 # print candidate TSV rows (one per line, 0x1f-separated fields: id, name,
@@ -203,6 +207,12 @@ while IFS=$'\x1f' read -r sess_id sess_name sess_template sess_session_name sess
   [ -n "$sess_id" ] || continue
 
   PEEK_JSON="$(cv_with_timeout "$CV_ASKQ_STORE_TIMEOUT_SECONDS" "$GC" --city "$GC_CITY" session peek "$sess_id" --json --lines "$CV_ASKQ_PEEK_LINES" 2>/dev/null)"
+  PEEK_RC=$?
+  if [ "$PEEK_RC" -ne 0 ] || [ -z "$PEEK_JSON" ]; then
+    echo "con-voyage-askuserquestion-watchdog: WARNING: session peek ${sess_id} unavailable (gc call failed/timed out); leaving tracked state untouched" >&2
+    continue
+  fi
+
   pane_text="$(printf '%s' "$PEEK_JSON" | python3 -c "
 import json, sys
 try:
