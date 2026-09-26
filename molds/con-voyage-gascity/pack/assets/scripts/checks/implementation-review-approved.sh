@@ -39,10 +39,31 @@ fi
 
 MATCHES="$(bd list --all --metadata-field "gc.root_bead_id=$PARENT_ROOT" --json --limit=0 2>/dev/null || printf '[]')"
 
-VERDICT="$(printf '%s\n' "$MATCHES" | jq -r --arg attempt "$ATTEMPT" '
+# code_review.verdict is written by two independent producers under the same
+# key: apply-review-findings owns it with the done|iterate vocabulary (its
+# contract), but the review-loop's own per-iteration body bead (this
+# attempt's ROOT_ID/STEP_ID bead itself, always present in MATCHES) separately
+# ends up carrying a same-named code_review.verdict using the approve|iterate
+# lane-rollup vocabulary. Without scoping to the apply-review-findings bead
+# specifically, "last" over an unordered bd list result can pick either one —
+# picking the rollup let a real no-op approval ("done") get shadowed by
+# "approve", which this script does not recognize, dispatching a whole extra
+# iteration. Derive the sibling apply-review-findings step id from this
+# bead's own step id ("<target>.con-voyage-review-loop" ->
+# "<target>.apply-review-findings") and require an exact match so only that
+# bead's value is ever considered.
+STEP_PREFIX="${STEP_ID%.con-voyage-review-loop}"
+if [ "$STEP_PREFIX" != "$STEP_ID" ]; then
+  APPLY_STEP_ID="${STEP_PREFIX}.apply-review-findings"
+else
+  APPLY_STEP_ID=""
+fi
+
+VERDICT="$(printf '%s\n' "$MATCHES" | jq -r --arg attempt "$ATTEMPT" --arg apply_step "$APPLY_STEP_ID" '
   [
     .[]
     | select((.metadata["gc.attempt"] // "") == $attempt)
+    | select($apply_step != "" and (.metadata["gc.step_id"] // "") == $apply_step)
     | select((.metadata["code_review.verdict"] // "") != "")
     | .metadata["code_review.verdict"]
   ] | last // ""
