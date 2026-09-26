@@ -69,10 +69,10 @@ count_of() {
 # Counts occurrences of $1 on a line immediately followed by a line equal to
 # $2. Used instead of a bare whole-file count_of for the CV_LIB lookup idiom:
 # fk-qppb4's base-branch resolution block (unrelated to RIG_ROOT) reuses the
-# exact same command-v/find idiom for its own CV_LIB lookup, so a raw
-# occurrence count drifts upward as other blocks adopt it. Pairing with the
-# RIG_ROOT="" line that only this fix's two blocks emit keeps the assertion
-# scoped to what CASE 2 actually verifies.
+# exact same deterministic cv_pack_root idiom (fk-q2pon) for its own CV_LIB
+# lookup, so a raw occurrence count drifts upward as other blocks adopt it.
+# Pairing with the RIG_ROOT="" line that only this fix's two blocks emit
+# keeps the assertion scoped to what CASE 2 actually verifies.
 count_of_adjacent_pair() {
   local first="$1" second="$2" prev="" line count=0
   while IFS= read -r line || [ -n "$line" ]; do
@@ -87,9 +87,11 @@ count_of_adjacent_pair() {
 # ===========================================================================
 # CASE 1 — Neither ensure-script invocation still passes the CITY root where
 #   a rig root is required. This is the actual bug: ${GC_CITY:-.} is a
-#   legitimate *search root* for locating a not-yet-seeded script via `find`
-#   (kept, see CASE 2), but never the value passed AS <rig-root> to a script
-#   that writes rig-scoped output.
+#   legitimate *last-resort fallback* for locating a not-yet-seeded script
+#   (cv_pack_root, see CASE 2 -- fk-q2pon replaced the old find-based search
+#   with a deterministic git-toplevel-first resolution, kept here as the
+#   GC_CITY-cast fallback), but never the value passed AS <rig-root> to a
+#   script that writes rig-scoped output.
 # ===========================================================================
 start_case "1: neither ensure-script call still receives \${GC_CITY:-.} as its <rig-root> argument"
 assert_not_contains '"$CV_ENSURE_GATE_SCRIPTS" "${GC_CITY:-.}"' "cv-ensure-gate-scripts.sh no longer invoked with the CITY root as <rig-root>"
@@ -102,11 +104,15 @@ assert_not_contains '"$CV_ENSURE_VALIDATOR" "${GC_CITY:-.}"' "cv-ensure-build-ar
 #   otherwise undisturbed.
 # ===========================================================================
 start_case "2: RIG_ROOT resolution calls the shared cv_default_rig_root(), not a duplicate"
-assert_contains 'CV_LIB="$(command -v con-voyage-lib.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"' "locates con-voyage-lib.sh via the same command-v/find idiom as this file's CV_ENSURE_GATE_SCRIPTS/CV_ENSURE_VALIDATOR"
+# fk-q2pon: con-voyage-lib.sh resolution no longer uses the command-v/find
+# idiom (that nondeterministic search is gone everywhere in this pack) --
+# each block now resolves it via the same git-toplevel-first, GC_CITY-cast-
+# fallback snippet as this file's CV_ENSURE_GATE_SCRIPTS/CV_ENSURE_VALIDATOR.
+assert_contains 'CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"' "locates con-voyage-lib.sh via the same deterministic cv_pack_root idiom as this file's CV_ENSURE_GATE_SCRIPTS/CV_ENSURE_VALIDATOR"
 assert_contains 'RIG_ROOT="$(source "$CV_LIB" && cv_default_rig_root)"' "sources the lib and calls cv_default_rig_root() for the resolved value"
 assert_contains '[ -n "${RIG_ROOT:-}" ] || RIG_ROOT="${GC_CITY:-.}"' "falls back to GC_CITY when CV_LIB is empty or the source+call produced nothing"
 
-lib_lookup_count="$(count_of_adjacent_pair 'CV_LIB="$(command -v con-voyage-lib.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"' 'RIG_ROOT=""')"
+lib_lookup_count="$(count_of_adjacent_pair '[ -f "$CV_LIB" ] || CV_LIB=""' 'RIG_ROOT=""')"
 resolve_count="$(count_of 'RIG_ROOT="$(source "$CV_LIB" && cv_default_rig_root)"')"
 if [ "$lib_lookup_count" -eq 2 ] && [ "$resolve_count" -eq 2 ]; then
   echo "  PASS: both the gate-scripts block and the validator block resolve RIG_ROOT independently (each fenced block is self-contained, matching this file's existing per-block re-derivation idiom)"

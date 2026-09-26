@@ -1138,10 +1138,7 @@ cv_find_prior_built_anchor() {
   [ -n "${work_bead_id// /}" ] || return 0
 
   local prep_script
-  prep_script="$(command -v cv-worktree-prep.sh 2>/dev/null || true)"
-  if [ -z "$prep_script" ]; then
-    prep_script="$(find "${GC_CITY:-.}" -maxdepth 6 -name cv-worktree-prep.sh 2>/dev/null | head -1)"
-  fi
+  prep_script="$(cv_pack_script cv-worktree-prep.sh)"
   if [ -z "$prep_script" ] || [ ! -x "$prep_script" ]; then
     echo "cv-lib: cv_find_prior_built_anchor: cv-worktree-prep.sh not found — skipping prior-anchor reuse" >&2
     return 0
