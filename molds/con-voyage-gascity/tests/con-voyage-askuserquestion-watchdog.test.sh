@@ -78,6 +78,10 @@ case "$sub" in
   session)
     sessub="${args[$((i+1))]:-}"
     if [ "$sessub" = "list" ]; then
+      if [ "${STUB_SESSION_LIST_FAIL:-0}" = "1" ]; then
+        echo "gc session list: simulated failure" >&2
+        exit 1
+      fi
       if [ -n "${STUB_SESSION_LIST_JSON:-}" ]; then
         printf '%s' "$STUB_SESSION_LIST_JSON"
       else
@@ -86,6 +90,10 @@ case "$sub" in
       exit 0
     fi
     if [ "$sessub" = "peek" ]; then
+      if [ "${STUB_PEEK_FAIL:-0}" = "1" ]; then
+        echo "gc session peek: simulated failure" >&2
+        exit 1
+      fi
       python3 -c "
 import json, os
 print(json.dumps({'output': os.environ.get('STUB_PEEK_OUTPUT', ''), 'ok': True}))
@@ -183,6 +191,13 @@ setup_case_env() {
   GC_LOG="${SANDBOX}/gc-${1}.log"
   mkdir -p "$CITY_DIR"
   : > "$GC_LOG"
+}
+
+# askq_state_path SESSION_ID — on-disk dedup state file path for a session,
+# mirroring the script's own default CV_ASKQ_STATE_DIR layout (this suite
+# never overrides CV_ASKQ_STATE_DIR, so it always resolves under GC_CITY).
+askq_state_path() {
+  printf '%s/.gc/cv-askuserquestion-watchdog/%s.state' "$CITY_DIR" "$1"
 }
 
 # run_script — invoke the script under test with the stub wired in.
@@ -310,6 +325,120 @@ run_script "${DEFAULT_ENV[@]}" STUB_SESSION_LIST_JSON="$SESSIONS_7" STUB_PEEK_OU
 assert_eq "0" "$RC" "script exits 0"
 assert_log_count "$GC_LOG" 'mail send' 2 "question B's second consecutive sighting sends its own, independent mail"
 assert_log_count "$GC_LOG" '.none known.' 2 "with no bd fixture configured, both alerts' bead field falls back to a safe placeholder rather than failing"
+
+# ===========================================================================
+# CASE 8 — A failed/timed-out `gc session list` must never be treated as a
+#   genuinely idle city: the watchdog logs a WARNING and exits non-zero (so
+#   the order controller retries next cooldown, per this script's own
+#   documented exit-code contract) instead of silently completing as if
+#   zero sessions were found.
+# ===========================================================================
+start_case "8: a failed session list is a WARNING + non-zero exit, not a false all-clear"
+setup_case_env "8"
+run_script "${DEFAULT_ENV[@]}" STUB_SESSION_LIST_FAIL=1
+assert_eq "1" "$RC" "script exits non-zero so the order controller retries next cycle"
+assert_log_count "$GC_LOG" 'session peek|mail send' 0 "no downstream peek/mail calls are attempted when discovery itself failed"
+if printf '%s' "$OUT" | grep -q 'WARNING: session list unavailable'; then
+  pass "logs a WARNING distinguishing this from a genuinely idle city"
+else
+  fail "expected a WARNING that session list itself failed"
+fi
+if printf '%s' "$OUT" | grep -q 'no active sessions found'; then
+  fail "must not print the same message a genuinely idle city would print"
+else
+  pass "does not print the idle-city message on a real discovery failure"
+fi
+
+# ===========================================================================
+# CASE 9 — A failed/timed-out `gc session peek` for one session must not be
+#   classified "not stuck": the watchdog logs a WARNING and leaves that
+#   session's tracked state untouched, so a real stall whose peek keeps
+#   failing is never cleared and rendered invisible. Once peek recovers,
+#   the preserved first sighting still counts toward the two-consecutive-
+#   sightings gate.
+# ===========================================================================
+start_case "9: a failed peek logs a WARNING and does not clear tracked state"
+setup_case_env "9"
+SESSIONS_9="$(write_sessions "$(session_json rc-9 'foundry-kc/gc.implementation-worker-9' 'foundry-kc/gc.implementation-worker' 'gc__implementation-worker-rc-9' 'foundry-kc')")"
+STATE_9="$(askq_state_path rc-9)"
+run_script "${DEFAULT_ENV[@]}" STUB_SESSION_LIST_JSON="$SESSIONS_9" STUB_PEEK_OUTPUT="$STUCK_TEXT_A"
+if [ -f "$STATE_9" ]; then pass "first sighting recorded tracked state"; else fail "expected tracked state to exist after the first sighting"; fi
+run_script "${DEFAULT_ENV[@]}" STUB_SESSION_LIST_JSON="$SESSIONS_9" STUB_PEEK_FAIL=1
+assert_eq "0" "$RC" "script exits 0 overall (one session's peek failure is not fatal to the whole cycle)"
+assert_log_count "$GC_LOG" 'mail send' 0 "no mail fires off a failed peek"
+if printf '%s' "$OUT" | grep -q 'WARNING: session peek rc-9 unavailable'; then
+  pass "logs a WARNING naming the session whose peek failed"
+else
+  fail "expected a WARNING for the failed peek"
+fi
+if [ -f "$STATE_9" ]; then
+  pass "tracked state from the first sighting is preserved (not cleared) when the next peek merely fails"
+else
+  fail "the failed peek incorrectly cleared this session's tracked state"
+fi
+run_script "${DEFAULT_ENV[@]}" STUB_SESSION_LIST_JSON="$SESSIONS_9" STUB_PEEK_OUTPUT="$STUCK_TEXT_A"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'mail send' 1 "the preserved first sighting plus this real second sighting of the same frame still alerts once, despite the failed peek in between"
+
+# ===========================================================================
+# CASE 10 — Mail-delivery-failure retry path: a mail send failure on the
+#   second consecutive sighting must NOT mark this (session, frame) alerted
+#   — otherwise a transient mail outage would permanently suppress the
+#   alert for a stall nobody was ever actually told about. Mirrors
+#   con-voyage-repair-watchdog.test.sh CASE 13's shape.
+# ===========================================================================
+start_case "10: a failed alert mail is retried next cycle (no false alerted=1)"
+setup_case_env "10"
+SESSIONS_10="$(write_sessions "$(session_json rc-10 'foundry-kc/gc.implementation-worker-10' 'foundry-kc/gc.implementation-worker' 'gc__implementation-worker-rc-10' 'foundry-kc')")"
+STATE_10="$(askq_state_path rc-10)"
+run_script "${DEFAULT_ENV[@]}" STUB_SESSION_LIST_JSON="$SESSIONS_10" STUB_PEEK_OUTPUT="$STUCK_TEXT_A"
+run_script "${DEFAULT_ENV[@]}" STUB_SESSION_LIST_JSON="$SESSIONS_10" STUB_PEEK_OUTPUT="$STUCK_TEXT_A" STUB_MAIL_SEND_FAIL=1
+assert_eq "0" "$RC" "script exits 0 (a failed alert mail is non-fatal to the whole run)"
+assert_log_count "$GC_LOG" 'mail send' 1 "the alert mail was attempted on the second sighting"
+assert_eq "0" "$(grep -o 'alerted=.*' "$STATE_10" 2>/dev/null | cut -d= -f2)" "alerted stays 0 when the alert mail itself failed to send"
+if printf '%s' "$OUT" | grep -q 'WARNING'; then
+  pass "logs a WARNING for the failed alert mail"
+else
+  fail "expected a WARNING for the failed alert mail"
+fi
+run_script "${DEFAULT_ENV[@]}" STUB_SESSION_LIST_JSON="$SESSIONS_10" STUB_PEEK_OUTPUT="$STUCK_TEXT_A"
+assert_eq "0" "$RC" "script exits 0 on the retry cycle"
+assert_log_count "$GC_LOG" 'mail send' 2 "the retry cycle attempts the alert mail again (now succeeding)"
+assert_eq "1" "$(grep -o 'alerted=.*' "$STATE_10" 2>/dev/null | cut -d= -f2)" "alerted flips to 1 once the retried mail actually succeeds"
+
+# ===========================================================================
+# CASE 11 — Robustness: a malformed CV_ASKQ_PEEK_LINES override must never
+#   crash the script or silently disable the peek-lines bound — coerced to
+#   its documented default (50), same fail-safe posture as every other
+#   malformed-field guard in this pack (con-voyage-repair-watchdog.sh's
+#   CV_STALL_SECONDS/CV_MAX_ATTEMPTS, covered by
+#   con-voyage-review-watchdog.test.sh CASE 14).
+# ===========================================================================
+start_case "11: a non-numeric CV_ASKQ_PEEK_LINES is coerced to its default, not fatal"
+setup_case_env "11"
+run_script CV_ASKQ_MAIL_TARGET="mayor" CV_ASKQ_PEEK_LINES="not-a-number" CV_ASKQ_STORE_TIMEOUT_SECONDS="5" \
+  STUB_SESSION_LIST_JSON='{"sessions":[]}'
+assert_eq "0" "$RC" "script exits 0 (a malformed CV_ASKQ_PEEK_LINES does not crash the run)"
+if printf '%s' "$OUT" | grep -q 'peek_lines=50'; then
+  pass "the startup banner shows the coerced default (50) took effect downstream"
+else
+  fail "expected the startup banner to show peek_lines=50 after coercion"
+fi
+
+# ===========================================================================
+# CASE 12 — Same guard, empty-string form of the override (the case
+#   statement's other branch: `*[!0-9]*|''`).
+# ===========================================================================
+start_case "12: an empty CV_ASKQ_PEEK_LINES is also coerced to its default"
+setup_case_env "12"
+run_script CV_ASKQ_MAIL_TARGET="mayor" CV_ASKQ_PEEK_LINES="" CV_ASKQ_STORE_TIMEOUT_SECONDS="5" \
+  STUB_SESSION_LIST_JSON='{"sessions":[]}'
+assert_eq "0" "$RC" "script exits 0 (an empty CV_ASKQ_PEEK_LINES does not crash the run)"
+if printf '%s' "$OUT" | grep -q 'peek_lines=50'; then
+  pass "an empty override also coerces to the default (50)"
+else
+  fail "expected an empty CV_ASKQ_PEEK_LINES to coerce to peek_lines=50"
+fi
 
 # ===========================================================================
 # Summary
