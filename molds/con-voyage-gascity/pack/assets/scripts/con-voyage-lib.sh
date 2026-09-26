@@ -1748,7 +1748,10 @@ for dep in (data.get('dependencies') or []):
 # cv_bead_metadata BEAD_ID KEY — print BEAD_ID's metadata[KEY] value (a string
 # printed as-is; any other JSON type re-encoded as JSON), or empty when the
 # bead is unknown, bd show fails, the JSON is unparseable, or KEY is absent.
-# Fail-safe: never aborts the caller.
+# Fail-safe: never aborts the caller. Also defaults $GC to "gc" itself (fk-4q6ib
+# BLOCKING-2) rather than trusting every caller to set it first — a caller-side
+# omission (main.publish.md did not) silently resolved this to an empty binary
+# name and made the whole call a no-op.
 #
 # WHY THIS EXISTS (fk-4q6ib): a `{var}`-style token in a description_file only
 # gets substituted when gc inlines that file's content into the bead body —
@@ -1766,8 +1769,9 @@ for dep in (data.get('dependencies') or []):
 cv_bead_metadata() {
   local bead_id="$1" key="$2"
   [ -n "${bead_id// /}" ] || { printf ''; return 0; }
+  local gc_bin="${GC:-gc}"
   local json
-  json=$("$GC" bd show "$bead_id" --json 2>/dev/null) || json=""
+  json=$("$gc_bin" bd show "$bead_id" --json 2>/dev/null) || json=""
   [ -n "$json" ] || { printf ''; return 0; }
   printf '%s' "$json" | python3 -c "
 import sys, json

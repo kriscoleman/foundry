@@ -28,7 +28,7 @@ set -uo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOLD_DIR="$(cd "${TEST_DIR}/.." && pwd)"
-SETUP_REVIEW_MD="${MOLD_DIR}/pack/assets/workflows/con-voyage/{target}.setup-con-voyage-review.md"
+SETUP_REVIEW_MD="${MOLD_DIR}/pack/assets/workflows/con-voyage/main.setup-con-voyage-review.md"
 
 if [ ! -f "$SETUP_REVIEW_MD" ]; then
   echo "FATAL: workflow file under test not found at ${SETUP_REVIEW_MD}" >&2
