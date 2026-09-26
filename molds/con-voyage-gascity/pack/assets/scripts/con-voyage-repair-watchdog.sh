@@ -9,15 +9,18 @@
 # # `pr_author` is the single configured user CV_PR_AUTHOR. It takes no      #
 # # action — not even a read of the tracked bead — on any other record.      #
 # #                                                                          #
-# # Unlike con-voyage-pr-watch.sh and con-voyage-ci-repair-guard.sh, this    #
-# # script makes NO GitHub API calls of its own (see Task 0 spike notes      #
-# # below): its only signal is the local per-PR state record that           #
-# # con-voyage-pr-watch.sh already wrote under CV_STATE_DIR, which already   #
-# # carries the resolved `pr_author` from THAT script's own author-scoped    #
-# # dispatch. Checking it again here is defense in depth, not the primary    #
-# # gate — see the design rationale in con-voyage-pr-watch.sh's HARD         #
-# # INVARIANT banner for why an earlier unscoped monitor got the operator    #
-# # removed from an org.                                                    #
+# # Author-scoping itself is decided PURELY from the local per-PR state      #
+# # record that con-voyage-pr-watch.sh already wrote under CV_STATE_DIR,     #
+# # which already carries the resolved `pr_author` from THAT script's own    #
+# # author-scoped dispatch — NEVER from a fresh GitHub call. Checking it     #
+# # again here is defense in depth, not the primary gate — see the design    #
+# # rationale in con-voyage-pr-watch.sh's HARD INVARIANT banner for why an   #
+# # earlier unscoped monitor got the operator removed from an org.          #
+# #                                                                          #
+# # This script now makes exactly ONE GitHub call, and only ever AFTER a     #
+# # record has already cleared the author-scoping gate above (Fix 3,        #
+# # fk-htx5p — see below): a pre-dispatch recheck of that SAME record's own  #
+# # repo/PR. It can neither relax nor bypass this invariant.                 #
 # ############################################################################
 #
 # Fix 1 (con-voyage-pr-watch.sh, landed as con-voyage-gascity 0.5.1) keeps
@@ -69,8 +72,10 @@
 #      `gc sling <repair_route> <bead> --on con-voyage-ci-repair --var ...`
 #      (the exact fallback shape con-voyage-pr-watch.sh already uses).
 #   3. State enumeration: this script iterates `CV_STATE_DIR/*.state` directly
-#      — it never calls `gc github pr backfill` or any `gh` command for its
-#      core logic (only the optional CV_PR_AUTHOR auto-resolve fallback does).
+#      — it never calls `gc github pr backfill` for its core logic. It DOES
+#      call `gh pr view` in exactly one place (Fix 3, fk-htx5p, below): a
+#      pre-dispatch recheck of the PR's own current CI/state, immediately
+#      before acting on a record that already looks dead/stalled.
 #      The per-PR attempt counter is a new field on that SAME state record
 #      (`attempt_count`, plus `escalated`) — see con-voyage-pr-watch.sh's
 #      state_read/state_write, which this script's copies below match
@@ -129,14 +134,52 @@
 #      even within a single (now-serialized) run: the bead-less reuse case has
 #      no bead to reclaim and is not subject to this recheck.
 #
+# Fix 3 (fk-htx5p): SEEN LIVE 2026-09-26 during and after a multi-hour usage
+# freeze — every worker was frozen, so con-voyage-pr-watch.sh's own 10-minute
+# backfill cycle could not run either, and its ST_LAST_STATE/ST_INFLIGHT
+# records went stale while the PRs they described actually finished (checks
+# went green, or the PR was merged/closed) out of band. This watchdog kept
+# re-dispatching against that stale state every cycle: 5 duplicate ci-repair
+# runs across #93/#94/#96, all created AFTER their PRs were already green.
+# ci-repair's own Step 0b does not catch these on re-entry (foundry PRs carry
+# an empty reviewDecision, which that guard's own author/review gate does not
+# treat as "already done"). Two related problems, one fix:
+#
+#   DEFECT 1: a watchdog-minted fallback bead (`new_bead_id` below) was never
+#   forwarded to the ci-repair formula as `--var repair_bead=...`. Without it,
+#   the workflow's `{repair_bead}` placeholder resolves empty, so
+#   cv_bead_mark_in_progress/cv_bead_close (con-voyage-lib.sh, fk-7mw7 FIX-A)
+#   silently no-op on every terminal exit and the tracked bead orphans forever
+#   unless a human notices. Fixed by forwarding `repair_bead=${new_bead_id}`
+#   on every fallback sling, exactly like con-voyage-pr-watch.sh's own mint
+#   already does (fk-7mw7).
+#
+#   DEFECT 2: nothing rechecked the PR's OWN current state before acting on a
+#   dead/stalled classification derived purely from the (possibly stale)
+#   tracked record. Fixed by `pr_ci_resolved` below: immediately before acting
+#   on any record with a tracked bead (`ST_INFLIGHT` non-empty), one bounded
+#   `gh pr view --json statusCheckRollup,state` call (wrapped in
+#   `cv_with_timeout` — this Mac has no `timeout(1)` binary, same rationale as
+#   con-voyage-review-watchdog.sh's own CV_LENS_STORE_TIMEOUT_SECONDS) checks
+#   whether the PR is already merged/closed or its checks are not currently
+#   failing. If so, the tracked bead is closed as a no-op — no fallback bead
+#   is minted, no implementor is re-notified — instead of re-dispatching.
+#   FAIL-SAFE: any gh error, timeout, or unparsable response is treated as
+#   "cannot tell" and falls through to this script's PRE-Fix-3 behavior — an
+#   inability to check must never suppress a real re-dispatch.
+#
 # Environment / configuration (all optional with sane defaults):
 #
 #   GC                Path to the gc binary (default: gc)
-#   GH                Path to the gh binary (default: gh) — ONLY ever invoked
-#                     to resolve the CV_PR_AUTHOR default (see below); this
-#                     script makes no other GitHub calls, so gh need not even
-#                     be installed when CV_PR_AUTHOR is set explicitly (it
-#                     always is in the shipped order — see the .toml).
+#   GH                Path to the gh binary (default: gh) — invoked to resolve
+#                     the CV_PR_AUTHOR default (see below), and (Fix 3,
+#                     fk-htx5p) for one pre-dispatch PR CI/state recheck per
+#                     acted-on record with a tracked bead. gh remaining
+#                     absent/erroring/timing out is still fail-safe: the
+#                     recheck (pr_ci_resolved) then reports "cannot tell" and
+#                     this script falls through to its pre-Fix-3 re-dispatch
+#                     behavior, so gh is never a hard dependency even though
+#                     it is now consulted more often than just CV_PR_AUTHOR.
 #   GC_CITY           City root passed to gc (default: current directory)
 #   CV_STATE_DIR      Directory holding the per-PR state records this script
 #                     reads (default: .gc/cv-pr-watch — MUST match
@@ -168,6 +211,8 @@
 #                     any fallback bead it mints via --var
 #                     cv_conflict_strategy=..., same as
 #                     con-voyage-pr-watch.sh. Default: rebase.
+#   CV_GH_TIMEOUT_SECONDS  Wall-clock bound (via cv_with_timeout) on the Fix 3
+#                     pre-dispatch `gh pr view` recheck. Default: 20.
 #
 # Exit codes:
 #   0 — completed (some, all, or none of the tracked records needed action)
@@ -199,6 +244,7 @@ CV_STALL_SECONDS="${CV_STALL_SECONDS:-900}"
 CV_MAX_ATTEMPTS="${CV_MAX_ATTEMPTS:-3}"
 CV_ESCALATE_TARGET="${CV_ESCALATE_TARGET:-human}"
 CV_LOCK_STALE_SECONDS="${CV_LOCK_STALE_SECONDS:-300}"
+CV_GH_TIMEOUT_SECONDS="${CV_GH_TIMEOUT_SECONDS:-20}"
 # Forwarded, NOT read, by this script (see header) — declared here with the
 # other tunables rather than left as an inline ${..:-default} at each use
 # site, so every configuration knob resolves in one place.
@@ -221,6 +267,9 @@ case "$CV_MAX_ATTEMPTS" in
 esac
 case "$CV_LOCK_STALE_SECONDS" in
   *[!0-9]*|'') CV_LOCK_STALE_SECONDS="300" ;;
+esac
+case "$CV_GH_TIMEOUT_SECONDS" in
+  *[!0-9]*|'') CV_GH_TIMEOUT_SECONDS="20" ;;
 esac
 
 # ---------------------------------------------------------------------------
@@ -293,6 +342,53 @@ except Exception:
     sys.exit(1)
 sys.exit(0 if age > threshold_s else 1)
 " "$updated_at" "$threshold"
+}
+
+# pr_ci_resolved REPO PR_NUMBER — Fix 3 (fk-htx5p): exit 0 when REPO#PR_NUMBER
+# is already merged/closed, or its checks are not currently failing (green);
+# exit 1 otherwise, INCLUDING "cannot tell" (empty REPO/PR_NUMBER, a gh error,
+# a timeout, or an unparsable response). Same is_bad() conclusion/state
+# classification con-voyage-finalize.sh's pr_live_phase already uses for
+# statusCheckRollup, narrowed to just the failing-vs-not signal this watchdog
+# needs (mergeable/mergeStateStatus are pr_live_phase's own concern, not
+# this one's). FAIL-SAFE: every "cannot tell" path returns 1 (not resolved),
+# same posture as is_stale's own missing-data guard — an inability to check
+# must never be read as "safe to skip a real re-dispatch".
+pr_ci_resolved() {
+  local repo="$1" pr_number="$2"
+  [ -n "${repo// /}" ] || return 1
+  case "$pr_number" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  local json
+  json="$(cv_with_timeout "$CV_GH_TIMEOUT_SECONDS" "$GH" pr view "$pr_number" --repo "$repo" \
+    --json statusCheckRollup,state 2>/dev/null)" || return 1
+  [ -n "$json" ] || return 1
+  printf '%s' "$json" | python3 -c "
+import sys, json
+
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+if not isinstance(d, dict):
+    sys.exit(1)
+
+if (d.get('state') or '').upper() in ('MERGED', 'CLOSED'):
+    sys.exit(0)
+
+def is_bad(c):
+    conclusion = c.get('conclusion')
+    if conclusion is not None:
+        return str(conclusion).upper() in ('FAILURE', 'CANCELLED', 'TIMED_OUT', 'ACTION_REQUIRED', 'STARTUP_FAILURE')
+    state = c.get('state')
+    if state is not None:
+        return str(state).upper() in ('FAILURE', 'ERROR')
+    return False
+
+checks = d.get('statusCheckRollup') or []
+sys.exit(1 if any(is_bad(c) for c in checks) else 0)
+"
 }
 
 # ---------------------------------------------------------------------------
@@ -472,6 +568,22 @@ process_state_record() {
       echo "con-voyage-repair-watchdog: SKIP ${label} — tracked bead ${ST_INFLIGHT} was claimed/updated since evaluation (${tracked_updated_at} -> ${recheck_updated_at}); yielding, not re-dispatching"
       return
     fi
+
+    # Fix 3 (fk-htx5p DEFECT 2): re-check the PR's OWN current CI/state right
+    # before acting — same "recheck right before acting" posture as the
+    # fk-11yuv block above, but against GitHub instead of the tracked bead's
+    # own updated_at. A PR that already went green (or merged/closed) since
+    # con-voyage-pr-watch.sh's last cycle wrote ST_LAST_STATE means the rework
+    # already succeeded or is moot; re-dispatching would be a duplicate no-op
+    # repair, not "catching up a stalled repair" (SEEN LIVE: 5 duplicate
+    # ci-repair runs across #93/#94/#96 during a usage freeze that also froze
+    # con-voyage-pr-watch.sh's own backfill). Close the tracked bead as a
+    # no-op instead of superseding it into a fresh lineage or re-notifying.
+    if pr_ci_resolved "$ST_REPO_FULL" "$ST_PR_NUMBER"; then
+      echo "con-voyage-repair-watchdog: SKIP ${label} — PR is already green/merged/closed; closing tracked bead ${ST_INFLIGHT} as no-op instead of re-dispatching"
+      close_if_open "$ST_INFLIGHT" "no-op: PR already green/merged/closed, watchdog re-dispatch not needed" "" "$recheck_status"
+      return
+    fi
   fi
 
   new_attempt_count=$((ST_ATTEMPT_COUNT + 1))
@@ -517,6 +629,7 @@ process_state_record() {
       --var "cv_pr_author=${CV_PR_AUTHOR}" \
       --var "cv_author_gate=${CV_AUTHOR_GATE}" \
       --var "cv_conflict_strategy=${CV_CONFLICT_STRATEGY}" \
+      --var "repair_bead=${new_bead_id}" \
       2>&1; then
       state_write "$dedup_key" "" "$new_bead_id" "$ST_LAST_STATE" \
         "$ST_PR_AUTHOR" "$ST_REPAIR_ROUTE" "$ST_REPO_FULL" "$ST_PR_NUMBER" "$ST_BRANCH" \

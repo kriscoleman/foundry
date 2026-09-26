@@ -57,8 +57,9 @@ print((datetime.now(timezone.utc) - timedelta(seconds=int('$1'))).strftime('%Y-%
 }
 
 # ---------------------------------------------------------------------------
-# The `gh` stub. Only ever consulted for the CV_PR_AUTHOR auto-resolve
-# fallback (this script makes no other GitHub calls — see its header).
+# The `gh` stub. Consulted for the CV_PR_AUTHOR auto-resolve fallback, and
+# (fk-htx5p Fix 3) for the pre-dispatch PR CI/state recheck — see the script's
+# header.
 # ---------------------------------------------------------------------------
 cat > "${STUBDIR}/gh" <<'GH_STUB'
 #!/usr/bin/env bash
@@ -70,6 +71,19 @@ case "$sub" in
     fi
     if [ -n "${STUB_GH_USER_LOGIN:-}" ]; then
       printf '%s\n' "${STUB_GH_USER_LOGIN}"
+    fi
+    exit 0
+    ;;
+  pr)
+    prsub="${2:-}"
+    if [ "$prsub" = "view" ]; then
+      if [ "${STUB_GH_PRVIEW_FAIL:-0}" = "1" ]; then
+        exit 1
+      fi
+      if [ -n "${STUB_GH_PRVIEW_JSON:-}" ]; then
+        printf '%s' "${STUB_GH_PRVIEW_JSON}"
+      fi
+      exit 0
     fi
     exit 0
     ;;
@@ -416,12 +430,78 @@ assert_log_count "$GC_LOG" 'bd close wd-bead80 .*superseded' 1 "the dead impleme
 assert_log_count "$GC_LOG" '\-\-rig vandoor bd create' 1 "a fresh fallback bead is minted in the target rig"
 assert_log_count "$GC_LOG" 'sling vandoor/gc.implementation-worker wd-bead80b --on con-voyage-ci-repair' 1 "the fresh bead is routed via the con-voyage-ci-repair formula"
 assert_log_count "$GC_LOG" 'sling vandoor/gc.implementation-worker wd-bead80b --on con-voyage-ci-repair .*pr=80 .*repo=kriscoleman/foundry .*branch=fix/thing .*failure_kind=merge_conflict' 1 "the re-dispatch forwards pr/repo/branch/failure_kind vars"
+# fk-htx5p DEFECT 1: the re-dispatch sling MUST forward its OWN freshly-minted
+# bead id as --var repair_bead=<id>, exactly like con-voyage-pr-watch.sh's own
+# fallback mint (fk-7mw7) — otherwise the ci-repair workflow's {repair_bead}
+# placeholder resolves empty, cv_bead_mark_in_progress/cv_bead_close silently
+# no-op, and the tracked bead is orphaned forever.
+assert_log_count "$GC_LOG" 'sling vandoor/gc.implementation-worker wd-bead80b --on con-voyage-ci-repair .*repair_bead=wd-bead80b' 1 "mint forwards repair_bead=<own id> (fk-htx5p DEFECT 1)"
 assert_log_count "$GC_LOG" 'mail send' 0 "the dead-implementor path never mails a dead session"
 assert_eq "wd-bead80b" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-80" "inflight_rework")" "state now tracks the freshly-minted fallback bead"
 assert_eq "" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-80" "implementor_session")" "the new fallback bead has no known implementor yet"
 assert_eq "1" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-80" "attempt_count")" "attempt_count increments to 1 on the first re-dispatch"
 assert_eq "0" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-80" "escalated")" "not escalated after only one attempt"
 assert_eq "merge_conflict" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-80" "last_handled_state")" "last_handled_state is unchanged by a watchdog re-dispatch"
+
+# ===========================================================================
+# CASE 8c — fk-htx5p DEFECT 2: same as CASE 8 (dead implementor, tracked bead
+#   stale) but the PR itself is already green/merged/closed — SEEN LIVE during
+#   a multi-hour usage freeze, where con-voyage-pr-watch.sh's own 10-minute
+#   backfill also could not run, so ST_LAST_STATE stayed "checks_failed" long
+#   after the PRs actually went green. Re-dispatching here would be a
+#   duplicate no-op repair; the correct action is closing the tracked bead
+#   and minting NOTHING.
+# ===========================================================================
+start_case "8c: dead implementor but PR already green -> closes tracked bead, mints nothing"
+setup_case_env "8c"
+write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-80c" \
+  "gc__impl-rc-dead" "wd-bead80c" "checks_failed" "kriscoleman" "vandoor/gc.implementation-worker" \
+  "kriscoleman/foundry" "80" "fix/thing" "0" "0"
+run_script "${DEFAULT_ENV[@]}" STUB_BDSHOW_MAP="wd-bead80c|open|$(iso_ago 30)" \
+  STUB_SESSION_LIST_JSON='{"sessions":[]}' \
+  STUB_GH_PRVIEW_JSON='{"state":"OPEN","statusCheckRollup":[{"conclusion":"SUCCESS"}]}'
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd create' 0 "no fallback bead is minted for an already-green PR"
+assert_log_count "$GC_LOG" 'sling' 0 "no re-dispatch for an already-green PR"
+assert_log_count "$GC_LOG" 'mail send' 0 "no escalation/notification mail either"
+assert_log_count "$GC_LOG" 'bd close wd-bead80c .*no-op' 1 "the tracked repair bead is closed as no-op, not superseded-and-replaced"
+
+# ===========================================================================
+# CASE 8d — fk-htx5p DEFECT 2 regression guard: the PR's checks are genuinely
+#   still failing (not merged/closed) — pr_ci_resolved must return "not
+#   resolved" and the normal fallback re-dispatch must still fire. This pins
+#   the real JSON-parsing branch, not just the fail-safe "gh said nothing"
+#   default every other case in this file relies on.
+# ===========================================================================
+start_case "8d: PR checks genuinely still failing -> normal re-dispatch still fires"
+setup_case_env "8d"
+write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-80d" \
+  "gc__impl-rc-dead" "wd-bead80d" "checks_failed" "kriscoleman" "vandoor/gc.implementation-worker" \
+  "kriscoleman/foundry" "80" "fix/thing" "0" "0"
+run_script "${DEFAULT_ENV[@]}" STUB_BDSHOW_MAP="wd-bead80d|open|$(iso_ago 30)" \
+  STUB_SESSION_LIST_JSON='{"sessions":[]}' \
+  STUB_BD_CREATE_ID="wd-bead80dX" \
+  STUB_GH_PRVIEW_JSON='{"state":"OPEN","statusCheckRollup":[{"conclusion":"FAILURE"}]}'
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling vandoor/gc.implementation-worker wd-bead80dX --on con-voyage-ci-repair' 1 "a genuinely-still-failing PR still gets re-dispatched"
+assert_log_count "$GC_LOG" 'bd close wd-bead80d .*superseded' 1 "the stale bead is superseded (not closed as no-op)"
+
+# ===========================================================================
+# CASE 8e — fk-htx5p DEFECT 2 fail-safe: a gh error while checking the PR's CI
+#   must never be treated as "safe to skip" — it falls through to the SAME
+#   re-dispatch behavior this script had before Fix 3.
+# ===========================================================================
+start_case "8e: gh error while checking PR CI is fail-safe -> normal re-dispatch still fires"
+setup_case_env "8e"
+write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-80e" \
+  "gc__impl-rc-dead" "wd-bead80e" "checks_failed" "kriscoleman" "vandoor/gc.implementation-worker" \
+  "kriscoleman/foundry" "80" "fix/thing" "0" "0"
+run_script "${DEFAULT_ENV[@]}" STUB_BDSHOW_MAP="wd-bead80e|open|$(iso_ago 30)" \
+  STUB_SESSION_LIST_JSON='{"sessions":[]}' \
+  STUB_BD_CREATE_ID="wd-bead80eX" \
+  STUB_GH_PRVIEW_FAIL="1"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling vandoor/gc.implementation-worker wd-bead80eX --on con-voyage-ci-repair' 1 "a gh error checking CI never suppresses a real re-dispatch (fail-safe)"
 
 # ===========================================================================
 # CASE 9 — Acceptance: "Rework stalled past threshold, implementor alive ->
@@ -448,6 +528,25 @@ assert_eq "gc__impl-rc-1" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-
 assert_eq "1" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-90" "attempt_count")" "attempt counter increments"
 
 # ===========================================================================
+# CASE 9b — fk-htx5p DEFECT 2: same as CASE 9 (stalled-but-alive implementor)
+#   but the PR is already merged. Re-notifying the implementor to "keep
+#   working" on a PR that already landed is pointless; closing the tracked
+#   bead as no-op is correct, and nothing is minted or mailed.
+# ===========================================================================
+start_case "9b: stalled-but-alive implementor, but PR already merged -> closes tracked bead, no re-notify"
+setup_case_env "9b"
+write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-90b" \
+  "gc__impl-rc-1" "wd-bead90b" "checks_failed" "kriscoleman" "vandoor/gc.implementation-worker" \
+  "kriscoleman/foundry" "90" "fix/thing" "0" "0"
+run_script "${DEFAULT_ENV[@]}" STUB_BDSHOW_MAP="wd-bead90b|open|$(iso_ago 1800)" \
+  STUB_SESSION_LIST_JSON='{"sessions":[{"id":"gc__impl-rc-1","state":"active"}]}' \
+  STUB_GH_PRVIEW_JSON='{"state":"MERGED","statusCheckRollup":[]}'
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'mail send' 0 "no re-notify — the PR is already merged"
+assert_log_count "$GC_LOG" 'sling' 0 "no sling"
+assert_log_count "$GC_LOG" 'bd close wd-bead90b .*no-op' 1 "the tracked repair bead is closed as no-op"
+
+# ===========================================================================
 # CASE 10 — No known implementor yet (fallback bead unclaimed) AND it has been
 #   open past the stall threshold: this is "stalled" too (nobody ever picked
 #   it up) and needs the SAME fallback re-dispatch as a dead implementor.
@@ -463,6 +562,25 @@ assert_eq "0" "$RC" "script exits 0"
 assert_log_count "$GC_LOG" 'bd close wd-bead100 .*superseded' 1 "the never-claimed stale bead is superseded"
 assert_log_count "$GC_LOG" 'sling vandoor/gc.implementation-worker wd-bead100b --on con-voyage-ci-repair' 1 "a fresh fallback bead is dispatched"
 assert_eq "1" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-100" "attempt_count")" "attempt counter increments"
+
+# ===========================================================================
+# CASE 10b — fk-htx5p DEFECT 2: same as CASE 10 (never-claimed fallback bead
+#   stalled past threshold) but the PR's checks are already green. This is
+#   the literal repro shape from the bug report: a stalled repair for an
+#   already-green PR must close no-op and mint nothing, not re-dispatch a
+#   duplicate lineage.
+# ===========================================================================
+start_case "10b: never-claimed fallback bead stalled, but PR already green -> closes no-op, mints nothing"
+setup_case_env "10b"
+write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-100b" \
+  "" "wd-bead100b" "blocked" "kriscoleman" "vandoor/gc.implementation-worker" \
+  "kriscoleman/foundry" "100" "fix/thing" "0" "0"
+run_script "${DEFAULT_ENV[@]}" STUB_BDSHOW_MAP="wd-bead100b|open|$(iso_ago 5000)" \
+  STUB_GH_PRVIEW_JSON='{"state":"OPEN","statusCheckRollup":[{"state":"SUCCESS"}]}'
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd create' 0 "no fallback bead is minted"
+assert_log_count "$GC_LOG" 'sling' 0 "no re-dispatch"
+assert_log_count "$GC_LOG" 'bd close wd-bead100b .*no-op' 1 "the never-claimed bead is closed as no-op instead of re-dispatched"
 
 # ===========================================================================
 # CASE 11 — No known implementor yet, but the fallback bead is still FRESH
