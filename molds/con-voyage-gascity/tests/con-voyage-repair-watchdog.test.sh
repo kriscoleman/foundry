@@ -839,6 +839,80 @@ fi
 assert_eq "1" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-220" "attempt_count")" "attempt_count advances by exactly 1 across both concurrent runs, not 2"
 
 # ===========================================================================
+# CASE 23 — review fk-uxj98 BLOCKING-1: the stale-lock STEAL itself must be
+#   atomic. CASE 22 only proves mutual exclusion for a lock a live holder just
+#   created (it starts with no lock at all, so no steal is ever exercised).
+#   This case pre-creates an ALREADY-stale lock — as a crashed/frozen holder
+#   would leave behind (CV_LOCK_STALE_SECONDS default 300s; this lock's mtime
+#   is forced to epoch 0) — and launches several real concurrent invocations
+#   that all observe the same stale lock and race to steal it. Against the
+#   pre-fix `rm -rf` + `mkdir` steal this is a genuine race, not a guaranteed
+#   failure: code-review's own reproduction measured a ~55% double-acquire
+#   rate across 60 trials of 8 concurrent stealers on one stale lock, so any
+#   SINGLE trial can pass clean by luck. This case therefore repeats the
+#   8-way race across several independent trials (fresh sandbox each time)
+#   and fails immediately if ANY trial produces more than one winner — the
+#   atomic rename-based claim is not probabilistic; every trial must show
+#   exactly one winner.
+# ===========================================================================
+N23=8
+TRIALS23=5
+for ((t = 1; t <= TRIALS23; t++)); do
+  start_case "23.${t}: BLOCKING-1 — concurrent stale-lock steal produces ONE lineage, not ${N23} (trial ${t}/${TRIALS23})"
+  setup_case_env "23-${t}"
+  write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-230" \
+    "" "wd-bead230" "blocked" "kriscoleman" "vandoor/gc.implementation-worker" \
+    "kriscoleman/foundry" "230" "fix/thing" "0" "0"
+  STALE_TS_230="$(iso_ago 5000)"
+
+  LOCK_230="${STATE_DIR}/.locks/cv-ci-repair-kriscoleman-foundry-230.lock"
+  mkdir -p "$LOCK_230"
+  printf '99999\n' > "${LOCK_230}/pid"
+  python3 -c "import os; os.utime('${LOCK_230}', (0, 0))"
+
+  PIDS_230=()
+  for ((i = 1; i <= N23; i++)); do
+    env GH="${STUBDIR}/gh" GC="${STUBDIR}/gc" GC_CITY="$CITY_DIR" \
+      CV_STATE_DIR="$STATE_DIR" STUB_GC_LOG="${SANDBOX}/gc-23-${t}-${i}.log" \
+      "${DEFAULT_ENV[@]}" STUB_BDSHOW_MAP="wd-bead230|open|${STALE_TS_230}" \
+      STUB_BD_CREATE_ID="wd-bead230-${t}-${i}" \
+      bash "$SCRIPT" > "${SANDBOX}/out-23-${t}-${i}.log" 2>&1 &
+    PIDS_230+=("$!")
+  done
+
+  fail_count=0
+  for pid in "${PIDS_230[@]}"; do
+    wait "$pid" || fail_count=$((fail_count + 1))
+  done
+  assert_eq "0" "$fail_count" "all $N23 concurrent invocations exit 0"
+
+  total_create=0; total_sling=0; total_close=0; total_lock_skip=0
+  for ((i = 1; i <= N23; i++)); do
+    total_create=$((total_create + $(log_count "${SANDBOX}/gc-23-${t}-${i}.log" 'bd create')))
+    total_sling=$((total_sling + $(log_count "${SANDBOX}/gc-23-${t}-${i}.log" 'sling')))
+    total_close=$((total_close + $(log_count "${SANDBOX}/gc-23-${t}-${i}.log" 'bd close wd-bead230 .*superseded')))
+    total_lock_skip=$((total_lock_skip + $(log_count "${SANDBOX}/out-23-${t}-${i}.log" 'locked by a concurrent watchdog run')))
+  done
+
+  assert_eq "1" "$total_create" "exactly ONE fallback bead is minted across $N23 concurrent stale-lock stealers, not $N23"
+  assert_eq "1" "$total_sling" "exactly ONE re-dispatch sling across $N23 concurrent stale-lock stealers"
+  assert_eq "1" "$total_close" "the never-claimed bead is superseded exactly once, not $N23 times"
+  assert_eq "$((N23 - 1))" "$total_lock_skip" "the other $((N23 - 1)) invocations each yield a lock-contention SKIP, none silently double-acquire"
+  assert_eq "1" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-230" "attempt_count")" "attempt_count advances by exactly 1 across all $N23 concurrent stealers, not $N23"
+  # 0 or 1, never more: a race where the eventual sole winner happens to take
+  # the plain top-level `mkdir` branch (because it landed in the momentary gap
+  # of some other contender's losing steal attempt) legitimately logs no
+  # NOTICE at all — still exactly one winner overall (checked above) — while
+  # 2+ would mean two processes both believed they completed the steal.
+  notice_count_230="$(grep -l 'NOTICE: stole stale lock' "${SANDBOX}"/out-23-"${t}"-*.log 2>/dev/null | wc -l | tr -d ' ')"
+  if [ "$notice_count_230" -le 1 ]; then
+    pass "at most one run logs the stale-lock steal NOTICE (=${notice_count_230})"
+  else
+    fail "at most one run logs the stale-lock steal NOTICE (expected <=1, got ${notice_count_230})"
+  fi
+done
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 echo

@@ -312,6 +312,20 @@ acquire_lock() {
     printf '%s\n' "$$" > "${lockdir}/pid" 2>/dev/null || true
     return 0
   fi
+  # Held already (or a crashed holder's leftover). A stale-looking lock can't
+  # be reclaimed by "check mtime, then rm -rf + mkdir" (or even a single
+  # atomic `mv` of it): a slow straggler's OWN staleness read can still be
+  # acted on after a faster stealer has already replaced the lock with a
+  # fresh one — mv/mkdir don't know the thing now at this path is a different
+  # instance than the one the straggler judged stale. So steal ATTEMPTS are
+  # serialized behind a second, fixed-path mkdir mutex that (unlike lockdir)
+  # is never removed and recreated by the swap below, and only the winner of
+  # that mutex checks staleness — fresh, right then, with no other swapper
+  # able to race it — before ever touching lockdir.
+  local steal_mutex="${lockdir}.stealing"
+  if ! mkdir "$steal_mutex" 2>/dev/null; then
+    return 1
+  fi
   if python3 -c "
 import os, sys, time
 try:
@@ -323,9 +337,12 @@ sys.exit(0 if age > float(sys.argv[2]) else 1)
     rm -rf "$lockdir" 2>/dev/null
     if mkdir "$lockdir" 2>/dev/null; then
       printf '%s\n' "$$" > "${lockdir}/pid" 2>/dev/null || true
+      echo "con-voyage-repair-watchdog: NOTICE: stole stale lock for ${dedup_key} (>${CV_LOCK_STALE_SECONDS}s; prior holder presumed dead)" >&2
+      rm -rf "$steal_mutex" 2>/dev/null
       return 0
     fi
   fi
+  rm -rf "$steal_mutex" 2>/dev/null
   return 1
 }
 
