@@ -329,7 +329,10 @@ fi
 # normal frame must not).
 # ---------------------------------------------------------------------------
 start_case "cv_text_has_interactive_prompt_stall: detects the AskUserQuestion footer in a captured pane fixture"
-PANE_FIXTURE_STALLED=$'? Proceed now?\n\n  1. Yes\n  2. No\n\nEnter to select · ↑/↓ to navigate'
+# Real footer text/order verified against the installed claude binary
+# (v2.1.282): "to navigate" always precedes "Enter to select" — the reverse
+# of this fixture's previous (buggy-matcher-derived) order.
+PANE_FIXTURE_STALLED=$'? Proceed now?\n\n  1. Yes\n  2. No\n\n↑/↓ to navigate · Enter to select · Esc to close'
 if cv_text_has_interactive_prompt_stall "$PANE_FIXTURE_STALLED"; then
   echo "  PASS: stalled pane fixture is detected"
 else
