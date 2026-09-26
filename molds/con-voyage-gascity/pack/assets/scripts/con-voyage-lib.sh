@@ -65,11 +65,15 @@ cv_default_state_dir() {
 
 # cv_extra_rig_state_dirs PRIMARY_DIR — print one additional
 # "<rig-path>/.gc/cv-pr-watch" directory per rig registered in
-# "${GC_CITY:-.}/.gc/site.toml" ([[rig]] path = "..."), skipping any entry
-# that equals PRIMARY_DIR (already scanned via cv_default_state_dir). One
-# path per line; prints nothing if site.toml is missing/unparsable (fail
-# soft — a caller that can't enumerate rigs still scans its own primary
-# directory).
+# "${GC_CITY:-.}/.gc/site.toml" ([[rig]] path = "..." or path = '...'),
+# skipping any entry that equals PRIMARY_DIR (already scanned via
+# cv_default_state_dir). One path per line; prints nothing if site.toml is
+# missing (fail soft — a caller that can't enumerate rigs still scans its own
+# primary directory). If site.toml EXISTS but no [[rig]] path entry parses at
+# all, that is a silent-degradation signal (a future format change, or hand
+# corruption) rather than the ordinary "not configured yet" case, so it is
+# logged to stderr (review fk-2c937 SRE LOW-1) instead of staying silent —
+# the fail-soft return value is unchanged either way.
 #
 # fk-2c937: a monitor that runs as a CITY-scoped order (no GC_RIG_ROOT) has
 # its OWN cv_default_state_dir call walk up only from ITS OWN cwd, which
@@ -83,19 +87,30 @@ cv_extra_rig_state_dirs() {
   local primary="$1"
   local site_toml="${GC_CITY:-.}/.gc/site.toml"
   [ -f "$site_toml" ] || return 0
-  awk '
+  local sq="'"
+  awk -v skip="$primary" -v sq="$sq" -v site="$site_toml" '
     /^\[\[rig\]\]/ { in_block = 1; next }
     in_block && /^\[/ { in_block = 0 }
     in_block && /^[[:space:]]*path[[:space:]]*=/ {
-      val = $0
-      sub(/.*=[[:space:]]*"/, "", val)
-      sub(/".*/, "", val)
-      print val
+      line = $0
+      sub(/^[[:space:]]*path[[:space:]]*=[[:space:]]*/, "", line)
+      q = substr(line, 1, 1)
+      if (q != "\"" && q != sq) next
+      line = substr(line, 2)
+      idx = index(line, q)
+      if (idx == 0) next
+      val = substr(line, 1, idx - 1)
+      if (val ~ /^[[:space:]]*$/) next
+      raw_matches++
+      dir = val "/.gc/cv-pr-watch"
+      if (dir != skip) print dir
     }
-  ' "$site_toml" | while IFS= read -r rig_path; do
-    [ -n "${rig_path// /}" ] || continue
-    printf '%s/.gc/cv-pr-watch\n' "$rig_path"
-  done | awk -v skip="$primary" '$0 != skip'
+    END {
+      if (raw_matches == 0) {
+        print "con-voyage-lib: WARNING: " site " present but no [[rig]] path entries were parsed (missing [[rig]] blocks, or path values not in a recognized quoted form) -- falling back to the primary state dir only" > "/dev/stderr"
+      }
+    }
+  ' "$site_toml"
 }
 
 # ---------------------------------------------------------------------------
@@ -956,10 +971,20 @@ cv_repair_close_reason_for_pr() {
 # pr_finalize_state REPO PR_NUMBER — resolve a PR's terminal state via ONE
 # `gh pr view`. Prints "<state><0x1f><merged_at><0x1f><closed_at>" where state
 # is one of MERGED | CLOSED | OPEN | "" (unknown/error). merged_at/closed_at are
-# the raw ISO timestamps (empty when absent). A gh failure or unparseable body
-# yields an empty state (SEP-only) so the caller FAILS SAFE — never treats an
-# unknown PR as merged/closed. GitHub reports a merged PR as state=CLOSED with a
-# non-null mergedAt, so this normalizes that to MERGED for the caller.
+# the raw ISO timestamps (empty when absent). A gh failure, timeout, or
+# unparseable body yields an empty state (SEP-only) so the caller FAILS SAFE —
+# never treats an unknown PR as merged/closed. GitHub reports a merged PR as
+# state=CLOSED with a non-null mergedAt, so this normalizes that to MERGED for
+# the caller.
+#
+# fk-2c937 review (SRE LOW-2): the gh call is bounded by CV_GH_TIMEOUT_SECONDS
+# (default 30) via whichever of `timeout`/`gtimeout` is installed, so one
+# stalled poll (GitHub partition, gh auth re-prompt, rate-limit stall) can't
+# block an entire sweep — and, since fk-2c937 now runs this once per
+# registered rig in a single pass, can't stall every rig at once either. A
+# host with neither binary (e.g. stock macOS) degrades to the prior unwrapped
+# call — fail soft, matching this file's posture elsewhere, not a hard
+# dependency.
 pr_finalize_state() {
   local repo="$1" pr_number="$2"
   local SEP=$'\x1f'
@@ -968,8 +993,17 @@ pr_finalize_state() {
   case "$pr_number" in
     ''|*[!0-9]*) printf '%s%s' "$SEP" "$SEP"; return 0 ;;
   esac
-  local json
-  json=$("$GH" pr view "$pr_number" --repo "$repo" --json state,mergedAt,closedAt 2>/dev/null) || json=""
+  local json timeout_bin=""
+  if command -v timeout >/dev/null 2>&1; then
+    timeout_bin="timeout"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    timeout_bin="gtimeout"
+  fi
+  if [ -n "$timeout_bin" ]; then
+    json=$("$timeout_bin" "${CV_GH_TIMEOUT_SECONDS:-30}" "$GH" pr view "$pr_number" --repo "$repo" --json state,mergedAt,closedAt 2>/dev/null) || json=""
+  else
+    json=$("$GH" pr view "$pr_number" --repo "$repo" --json state,mergedAt,closedAt 2>/dev/null) || json=""
+  fi
   if [ -z "$json" ]; then printf '%s%s' "$SEP" "$SEP"; return 0; fi
   printf '%s' "$json" | python3 -c "
 import sys, json

@@ -851,6 +851,33 @@ assert_log_count "$GC_LOG" 'bd close rw-bead100 .*superseded: PR #100 merged' 1 
 assert_file_absent "${RIG_DIR}/.gc/cv-pr-watch/cv-ci-repair-kriscoleman-foundry-100.state" ".state record removed from the rig-derived directory"
 
 # ===========================================================================
+# CASE 31 — fk-2c937 review (SRE LOW-1): log the resolved multi-rig scan set
+#   so an operator can tell a healthy N-directory scan from a silent
+#   single-directory degradation (e.g. a missing/unparsable site.toml) —
+#   before this, the scan set was resolved but never logged anywhere.
+# ===========================================================================
+start_case "31: logs the resolved state-dir scan set, naming every directory (fk-2c937 SRE LOW-1)"
+setup_case_env "31"
+RIG_31A="${SANDBOX}/rig-31a"
+RIG_31B="${SANDBOX}/rig-31b"
+mkdir -p "${RIG_31A}/.gc/cv-pr-watch" "${RIG_31B}/.gc/cv-pr-watch" "${CITY_DIR}/.gc"
+cat > "${CITY_DIR}/.gc/site.toml" <<SITE_TOML
+[[rig]]
+name = "rig-31a"
+path = "${RIG_31A}"
+
+[[rig]]
+name = "rig-31b"
+path = "${RIG_31B}"
+SITE_TOML
+run_script "${DEFAULT_ENV[@]}"
+assert_eq "0" "$RC" "script exits 0 with no finalize records to act on"
+assert_out_contains "con-voyage-finalize: scanning 3 state dir" "logs the resolved scan-set count (primary + 2 registered rigs)"
+assert_out_contains "${STATE_DIR}" "scan-set log names this order's own primary directory"
+assert_out_contains "${RIG_31A}/.gc/cv-pr-watch" "scan-set log names the first registered rig's directory"
+assert_out_contains "${RIG_31B}/.gc/cv-pr-watch" "scan-set log names the second registered rig's directory"
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 echo
