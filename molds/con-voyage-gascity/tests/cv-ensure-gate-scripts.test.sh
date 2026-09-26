@@ -16,9 +16,11 @@
 #   cv-ensure-gate-scripts.sh <rig-root>
 #   - Seeds any MISSING `.gc/scripts/checks/<name>.sh` in <rig-root> from this
 #     script's own sibling `checks/` assets directory, setting the exec bit.
-#   - NEVER overwrites a script that already exists at the destination — a rig
-#     may have deliberately customized its local copy (`.gc/` is documented as
-#     a local, rig-specific override point).
+#   - "Ensure" means present AND current (fk-6z17l): a STALE destination
+#     script (content differs from the pack's current copy) is replaced
+#     atomically, with the previous content backed up to `<name>.sh.prev`.
+#     A destination whose content already matches the pack is left
+#     untouched and gets no backup file.
 #   - Fails loudly (exit 1, no partial writes) if the source assets are
 #     missing/empty (a broken pack) or <rig-root> is not a directory, instead
 #     of silently doing nothing and letting the gate fail later with a
@@ -83,38 +85,60 @@ for f in build-artifact-valid.sh implementation-review-approved.sh; do
 done
 
 # ===========================================================================
-# CASE 2 — rig with customized scripts already in place: never overwritten.
+# CASE 2 — rig with a STALE seeded script (differs from the pack's current
+# content): replaced, with the previous content backed up (fk-6z17l).
+# "Ensure" means "present AND current" — a pack upgrade must reach a rig that
+# was seeded once, not be silently stuck at whatever version first landed.
 # ===========================================================================
-start_case "2: existing rig-local scripts are never clobbered (override point)"
+start_case "2: a stale seeded script is replaced, previous content backed up"
 RIG2="${SANDBOX}/rig2"
 mkdir -p "${RIG2}/.gc/scripts/checks"
-printf '#!/usr/bin/env bash\necho "custom override"\n' > "${RIG2}/.gc/scripts/checks/implementation-review-approved.sh"
+STALE_CONTENT='#!/usr/bin/env bash
+echo "stale pre-fk-w31l7 copy"
+'
+printf '%s' "$STALE_CONTENT" > "${RIG2}/.gc/scripts/checks/implementation-review-approved.sh"
 chmod +x "${RIG2}/.gc/scripts/checks/implementation-review-approved.sh"
 run_script "$RIG2"
-assert_eq "0" "$RC" "exit 0 when a customized script already exists"
-CONTENT="$(cat "${RIG2}/.gc/scripts/checks/implementation-review-approved.sh")"
-if printf '%s' "$CONTENT" | grep -q "custom override"; then
-  pass "customized implementation-review-approved.sh was left untouched"
+assert_eq "0" "$RC" "exit 0 when a stale script already exists"
+if diff -q "${SOURCE_CHECKS_DIR}/implementation-review-approved.sh" "${RIG2}/.gc/scripts/checks/implementation-review-approved.sh" >/dev/null 2>&1; then
+  pass "stale implementation-review-approved.sh was replaced with the current pack content"
 else
-  fail "customized implementation-review-approved.sh was overwritten"
+  fail "stale implementation-review-approved.sh was NOT replaced"
+fi
+if [ -x "${RIG2}/.gc/scripts/checks/implementation-review-approved.sh" ]; then
+  pass "replaced implementation-review-approved.sh is executable"
+else
+  fail "replaced implementation-review-approved.sh is NOT executable"
+fi
+BACKUP2="${RIG2}/.gc/scripts/checks/implementation-review-approved.sh.prev"
+if [ -f "$BACKUP2" ] && printf '%s' "$STALE_CONTENT" | cmp -s - "$BACKUP2"; then
+  pass "the stale content was backed up to implementation-review-approved.sh.prev before replacement"
+else
+  fail "no correct .prev backup of the stale content was kept"
 fi
 if [ -f "${RIG2}/.gc/scripts/checks/build-artifact-valid.sh" ]; then
   pass "the OTHER missing script (build-artifact-valid.sh) was still seeded"
 else
-  fail "build-artifact-valid.sh was not seeded alongside the customized one"
+  fail "build-artifact-valid.sh was not seeded alongside the stale-replaced one"
 fi
 
 # ===========================================================================
-# CASE 3 — partial seed: only the missing script is added.
+# CASE 3 — partial seed: a stale script is replaced, a missing one is added,
+# neither disturbs the other.
 # ===========================================================================
-start_case "3: partial seed — only missing scripts are added"
+start_case "3: partial seed — a stale script is replaced, a missing one is added"
 RIG3="${SANDBOX}/rig3"
 mkdir -p "${RIG3}/.gc/scripts/checks"
 printf 'placeholder\n' > "${RIG3}/.gc/scripts/checks/build-artifact-valid.sh"
 run_script "$RIG3"
 assert_eq "0" "$RC" "exit 0 on partial seed"
-PLACEHOLDER="$(cat "${RIG3}/.gc/scripts/checks/build-artifact-valid.sh")"
-assert_eq "placeholder" "$PLACEHOLDER" "pre-existing build-artifact-valid.sh left untouched"
+if diff -q "${SOURCE_CHECKS_DIR}/build-artifact-valid.sh" "${RIG3}/.gc/scripts/checks/build-artifact-valid.sh" >/dev/null 2>&1; then
+  pass "stale build-artifact-valid.sh was replaced with the current pack content"
+else
+  fail "stale build-artifact-valid.sh was NOT replaced"
+fi
+BACKUP3="${RIG3}/.gc/scripts/checks/build-artifact-valid.sh.prev"
+assert_eq "placeholder" "$(cat "$BACKUP3" 2>/dev/null)" "the stale placeholder was backed up to build-artifact-valid.sh.prev"
 if diff -q "${SOURCE_CHECKS_DIR}/implementation-review-approved.sh" "${RIG3}/.gc/scripts/checks/implementation-review-approved.sh" >/dev/null 2>&1; then
   pass "missing implementation-review-approved.sh was seeded from pack source"
 else
@@ -122,9 +146,11 @@ else
 fi
 
 # ===========================================================================
-# CASE 4 — second run against an already-fully-seeded rig is a clean no-op.
+# CASE 4 — second run against an already-fully-seeded, up-to-date rig is a
+# clean no-op: content matches source, so nothing is replaced and no backup
+# file is created (backups only happen when content actually changes).
 # ===========================================================================
-start_case "4: idempotent — re-running against a fully seeded rig changes nothing"
+start_case "4: idempotent — re-running against an up-to-date rig changes nothing, writes no backup"
 run_script "$RIG1"
 assert_eq "0" "$RC" "exit 0 on idempotent re-run"
 for f in build-artifact-valid.sh implementation-review-approved.sh; do
@@ -132,6 +158,11 @@ for f in build-artifact-valid.sh implementation-review-approved.sh; do
     pass "${f} still matches pack source after re-run"
   else
     fail "${f} drifted from pack source after re-run"
+  fi
+  if [ -e "${DEST1}/${f}.prev" ]; then
+    fail "${f}.prev backup should not exist when content already matched"
+  else
+    pass "no ${f}.prev backup was created for an already-current file"
   fi
 done
 
