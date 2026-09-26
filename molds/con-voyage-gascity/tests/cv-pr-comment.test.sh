@@ -420,6 +420,246 @@ run_script STUB_GH_EXIT=7
 assert_eq "7" "$RC" "script propagates gh's non-zero exit code"
 
 # ===========================================================================
+# CASE 18 — comment-aggregate: happy path structure. One surface line (with
+#   the con-voyage identity + overall verdict + optional extra line), a hidden
+#   round marker, and one <details> block per entry with the
+#   [<rig>/<agent> — <lens>] identity inside each <summary>. Per the fix
+#   spec's "(LOW list first)" ordering, the synthesis block is rendered
+#   BEFORE the per-lane blocks — the human sees the actionable summary first,
+#   full lane reports below it for provenance.
+# ===========================================================================
+start_case "18: comment-aggregate happy path — surface line, marker, synthesis-first details, identity in each summary"
+setup_case_env "18"
+printf 'Security lane report.\nNo blocking findings found here.\n' > "${SANDBOX}/lane-security.md"
+printf 'Simplicity lane report.\nOne LOW finding about duplication.\n' > "${SANDBOX}/lane-simplicity.md"
+printf 'Synthesis: 0 BLOCKING, 2 LOW findings.\nLOW #1 ...\nLOW #2 ...\n' > "${SANDBOX}/synthesis.md"
+MANIFEST="${SANDBOX}/manifest-18.json"
+cat > "$MANIFEST" <<JSON
+{
+  "rig": "foundry-kc",
+  "root_bead_id": "fk-testroot",
+  "round": 1,
+  "overall_line": "Approved: 2 lanes, 0 blocking, 2 low.",
+  "extra_line": "LOWs for the human reviewer below.",
+  "lanes": [
+    {"agent": "reviewer-3", "lens": "security", "verdict": "approve", "findings": 0, "body_file": "${SANDBOX}/lane-security.md"},
+    {"agent": "reviewer-4", "lens": "simplicity", "verdict": "approve", "findings": 1, "body_file": "${SANDBOX}/lane-simplicity.md"}
+  ],
+  "synthesis": {"agent": "gc.review-synthesizer", "lens": "synthesis", "verdict": "approve", "findings": 2, "body_file": "${SANDBOX}/synthesis.md"}
+}
+JSON
+ARGS=(comment-aggregate 42 --repo kriscoleman/foundry --manifest "$MANIFEST" --formula con-voyage --agent foundry-kc/gc.publisher)
+run_script
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GH_LOG" '^pr comment 42 --repo kriscoleman/foundry --body-file <BODY_FILE_PATH>' 1 "gh invoked as a single root-level pr comment"
+first_line="$(head -1 "$BODY_LOG")"
+case "$first_line" in
+  "${BANNER_PREFIX}"*) pass "aggregate body still leads with the structural identity banner" ;;
+  *) fail "aggregate body does not lead with the banner (got: ${first_line})" ;;
+esac
+if grep -qF '**[foundry-kc/con-voyage — review]** Approved: 2 lanes, 0 blocking, 2 low.' "$BODY_LOG"; then
+  pass "surface line has the con-voyage identity and overall verdict"
+else
+  fail "surface line missing or malformed"
+fi
+if grep -qF 'LOWs for the human reviewer below.' "$BODY_LOG"; then
+  pass "extra surface line included"
+else
+  fail "extra surface line missing"
+fi
+if grep -qF '<!-- con-voyage-review:fk-testroot round=1 -->' "$BODY_LOG"; then
+  pass "hidden round marker present with the correct root bead id and round number"
+else
+  fail "hidden round marker missing or wrong"
+fi
+assert_log_count "$BODY_LOG" '<details>' 3 "one details block per lane plus one for the synthesis (3 total)"
+if grep -qF '<summary>[foundry-kc/gc.review-synthesizer — synthesis] approve · 2 findings</summary>' "$BODY_LOG"; then
+  pass "synthesis details summary carries identity, verdict, and finding count"
+else
+  fail "synthesis details summary missing or malformed"
+fi
+if grep -qF '<summary>[foundry-kc/reviewer-3 — security] approve · 0 findings</summary>' "$BODY_LOG"; then
+  pass "security lane details summary carries identity, verdict, and finding count"
+else
+  fail "security lane details summary missing or malformed"
+fi
+if grep -qF 'Security lane report.' "$BODY_LOG" && grep -qF 'Simplicity lane report.' "$BODY_LOG" && grep -qF 'Synthesis: 0 BLOCKING' "$BODY_LOG"; then
+  pass "every entry's full report content is present in the posted body"
+else
+  fail "one or more entries' report content missing from the posted body"
+fi
+synth_line="$(grep -n 'gc.review-synthesizer' "$BODY_LOG" | head -1 | cut -d: -f1)"
+security_line="$(grep -n 'reviewer-3 — security' "$BODY_LOG" | head -1 | cut -d: -f1)"
+if [ -n "$synth_line" ] && [ -n "$security_line" ] && [ "$synth_line" -lt "$security_line" ]; then
+  pass "synthesis details block is ordered before the per-lane details blocks (LOW list first)"
+else
+  fail "synthesis details block is not ordered first (synth line ${synth_line:-?}, security line ${security_line:-?})"
+fi
+
+# ===========================================================================
+# CASE 19 — comment-aggregate: each review round posts a brand-new root-level
+#   comment. There is no edit/update mode — round 2 must never touch round
+#   1's already-posted content. GH_LOG deliberately spans both calls (not
+#   reset between them) so we can prove exactly two independent posts happen,
+#   with no edit-shaped gh invocation anywhere in between.
+# ===========================================================================
+start_case "19: comment-aggregate round 2 posts a NEW comment; round 1 is never edited"
+GH_LOG_19="${SANDBOX}/gh-19.log"
+BODY_LOG_R1="${SANDBOX}/body-19-r1.md"
+BODY_LOG_R2="${SANDBOX}/body-19-r2.md"
+: > "$GH_LOG_19"
+printf 'Round 1 lane report.\n' > "${SANDBOX}/lane-19.md"
+MANIFEST_R1="${SANDBOX}/manifest-19-r1.json"
+cat > "$MANIFEST_R1" <<JSON
+{
+  "rig": "foundry-kc", "root_bead_id": "fk-testroot", "round": 1,
+  "overall_line": "Approved: 1 lane, 0 blocking, 0 low.",
+  "lanes": [{"agent": "reviewer-3", "lens": "security", "verdict": "approve", "findings": 0, "body_file": "${SANDBOX}/lane-19.md"}]
+}
+JSON
+MANIFEST_R2="${SANDBOX}/manifest-19-r2.json"
+cat > "$MANIFEST_R2" <<JSON
+{
+  "rig": "foundry-kc", "root_bead_id": "fk-testroot", "round": 2,
+  "overall_line": "Approved: 1 lane, 0 blocking, 0 low.",
+  "lanes": [{"agent": "reviewer-3", "lens": "security", "verdict": "approve", "findings": 0, "body_file": "${SANDBOX}/lane-19.md"}]
+}
+JSON
+RC1=0; RC2=0
+OUT="$(env GH="${STUBDIR}/gh" STUB_GH_LOG="$GH_LOG_19" STUB_BODY_LOG="$BODY_LOG_R1" bash "$SCRIPT" comment-aggregate 42 --repo kriscoleman/foundry --manifest "$MANIFEST_R1" --formula con-voyage --agent foundry-kc/gc.publisher 2>&1)" || true
+RC1=$?
+OUT="$(env GH="${STUBDIR}/gh" STUB_GH_LOG="$GH_LOG_19" STUB_BODY_LOG="$BODY_LOG_R2" bash "$SCRIPT" comment-aggregate 42 --repo kriscoleman/foundry --manifest "$MANIFEST_R2" --formula con-voyage --agent foundry-kc/gc.publisher 2>&1)" || true
+RC2=$?
+assert_eq "0" "$RC1" "round 1 comment-aggregate exits 0"
+assert_eq "0" "$RC2" "round 2 comment-aggregate exits 0"
+assert_log_count "$GH_LOG_19" '^pr comment 42 --repo kriscoleman/foundry --body-file <BODY_FILE_PATH>' 2 "two independent NEW root-level comments posted, one per round"
+assert_log_count "$GH_LOG_19" 'edit' 0 "no gh invocation ever attempts to edit an existing comment"
+if grep -qF 'round=1' "$BODY_LOG_R1"; then pass "round 1's posted body carries the round=1 marker"; else fail "round 1 body missing round=1 marker"; fi
+if grep -qF 'round=2' "$BODY_LOG_R2"; then pass "round 2's posted body carries the round=2 marker"; else fail "round 2 body missing round=2 marker"; fi
+if grep -qF 'round=2' "$BODY_LOG_R1"; then fail "round 1's captured body was mutated to mention round=2"; else pass "round 1's captured body is untouched by round 2's call"; fi
+
+# ===========================================================================
+# CASE 20 — comment-aggregate: an oversized lane report truncates INSIDE its
+#   own details block with a pointer to the full report, to stay under
+#   GitHub's 65536-char comment limit. Sibling entries (synthesis and the
+#   normal-sized lane) are left completely untouched.
+# ===========================================================================
+start_case "20: comment-aggregate truncates an oversized lane report inside its details block, leaves siblings untouched"
+setup_case_env "20"
+python3 -c "print('LINEFULLOFCONTENT_' * 4200)" > "${SANDBOX}/huge-lane.md"
+printf 'NORMALSIZE_SENTINEL lane report, fully intact.\n' > "${SANDBOX}/normal-lane.md"
+printf 'SYNTHESIS_SENTINEL: 0 BLOCKING, 1 LOW.\n' > "${SANDBOX}/synthesis-20.md"
+MANIFEST="${SANDBOX}/manifest-20.json"
+cat > "$MANIFEST" <<JSON
+{
+  "rig": "foundry-kc", "root_bead_id": "fk-testroot", "round": 1,
+  "overall_line": "Approved: 2 lanes, 0 blocking, 1 low.",
+  "lanes": [
+    {"agent": "reviewer-huge", "lens": "code-review", "verdict": "approve", "findings": 0, "body_file": "${SANDBOX}/huge-lane.md"},
+    {"agent": "reviewer-normal", "lens": "security", "verdict": "approve", "findings": 0, "body_file": "${SANDBOX}/normal-lane.md"}
+  ],
+  "synthesis": {"agent": "gc.review-synthesizer", "lens": "synthesis", "verdict": "approve", "findings": 1, "body_file": "${SANDBOX}/synthesis-20.md"}
+}
+JSON
+ARGS=(comment-aggregate 42 --repo kriscoleman/foundry --manifest "$MANIFEST" --formula con-voyage --agent foundry-kc/gc.publisher)
+run_script
+assert_eq "0" "$RC" "script exits 0 even with an oversized lane report"
+posted_size="$(wc -c < "$BODY_LOG" | tr -d ' ')"
+if [ "$posted_size" -le 65536 ]; then
+  pass "posted body stays within GitHub's 65536-char comment limit (size ${posted_size})"
+else
+  fail "posted body exceeds GitHub's 65536-char comment limit (size ${posted_size})"
+fi
+if grep -q 'truncated.*full report at' "$BODY_LOG"; then
+  pass "oversized lane's details block carries a pointer to the full report"
+else
+  fail "truncation pointer missing from the oversized lane's details block"
+fi
+if grep -qF 'NORMALSIZE_SENTINEL lane report, fully intact.' "$BODY_LOG"; then
+  pass "sibling normal-sized lane report is left fully intact"
+else
+  fail "sibling normal-sized lane report was altered or dropped"
+fi
+if grep -qF 'SYNTHESIS_SENTINEL: 0 BLOCKING, 1 LOW.' "$BODY_LOG"; then
+  pass "synthesis content is left fully intact"
+else
+  fail "synthesis content was altered or dropped"
+fi
+
+# ===========================================================================
+# CASE 21 — comment-aggregate: hygiene scan rewrites a local city-root path
+#   to the neutral placeholder <city-root> before posting, so an internal
+#   filesystem layout never leaks into an enterprise-visible PR comment.
+# ===========================================================================
+start_case "21: comment-aggregate hygiene scan rewrites local city-root paths"
+setup_case_env "21"
+printf 'See /fake/city/rigs/foundry-kc/worktrees/fk-x for details.\n' > "${SANDBOX}/lane-path.md"
+MANIFEST="${SANDBOX}/manifest-21.json"
+cat > "$MANIFEST" <<JSON
+{
+  "rig": "foundry-kc", "root_bead_id": "fk-testroot", "round": 1,
+  "overall_line": "Approved: 1 lane, 0 blocking, 0 low.",
+  "lanes": [{"agent": "reviewer-3", "lens": "security", "verdict": "approve", "findings": 0, "body_file": "${SANDBOX}/lane-path.md"}]
+}
+JSON
+ARGS=(comment-aggregate 42 --repo kriscoleman/foundry --manifest "$MANIFEST" --city-root /fake/city --formula con-voyage --agent foundry-kc/gc.publisher)
+run_script
+assert_eq "0" "$RC" "script exits 0"
+if grep -qF '<city-root>/rigs/foundry-kc/worktrees/fk-x' "$BODY_LOG"; then
+  pass "local city-root path rewritten to the <city-root> placeholder"
+else
+  fail "local city-root path was not rewritten"
+fi
+if grep -qF '/fake/city' "$BODY_LOG"; then
+  fail "raw city-root path still present in the posted body"
+else
+  pass "raw city-root path no longer present in the posted body"
+fi
+
+# ===========================================================================
+# CASE 22 — comment-aggregate: hygiene scan BLOCKS (refuses to post, gh never
+#   invoked) when a lane report contains a token-shaped string, rather than
+#   trying to redact it and risking a wrong redaction shipping to GitHub.
+# ===========================================================================
+start_case "22: comment-aggregate hygiene scan blocks posting when a token shape is present"
+setup_case_env "22"
+printf 'Found a leaked credential: ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA in the diff.\n' > "${SANDBOX}/lane-token.md"
+MANIFEST="${SANDBOX}/manifest-22.json"
+cat > "$MANIFEST" <<JSON
+{
+  "rig": "foundry-kc", "root_bead_id": "fk-testroot", "round": 1,
+  "overall_line": "Approved: 1 lane, 0 blocking, 0 low.",
+  "lanes": [{"agent": "reviewer-3", "lens": "security", "verdict": "approve", "findings": 0, "body_file": "${SANDBOX}/lane-token.md"}]
+}
+JSON
+ARGS=(comment-aggregate 42 --repo kriscoleman/foundry --manifest "$MANIFEST")
+run_script
+if [ "$RC" -ne 0 ]; then pass "script exits non-zero when a token shape is detected"; else fail "expected non-zero exit when a token shape is present"; fi
+assert_log_count "$GH_LOG" '.' 0 "gh is never invoked when the hygiene scan blocks on a token shape"
+
+# ===========================================================================
+# CASE 23 — comment-aggregate: missing --manifest is a hard error; gh never
+#   invoked (mirrors the missing --body-file validation for other modes).
+# ===========================================================================
+start_case "23: comment-aggregate without --manifest is rejected before invoking gh"
+setup_case_env "23"
+ARGS=(comment-aggregate 42 --repo kriscoleman/foundry)
+run_script
+if [ "$RC" -ne 0 ]; then pass "script exits non-zero"; else fail "expected non-zero exit for missing --manifest"; fi
+assert_log_count "$GH_LOG" '.' 0 "gh is never invoked when --manifest is missing"
+
+# ===========================================================================
+# CASE 24 — comment-aggregate: --manifest pointing at a nonexistent file is a
+#   hard error; gh never invoked.
+# ===========================================================================
+start_case "24: comment-aggregate with a nonexistent --manifest is rejected before invoking gh"
+setup_case_env "24"
+ARGS=(comment-aggregate 42 --repo kriscoleman/foundry --manifest "${SANDBOX}/does-not-exist.json")
+run_script
+if [ "$RC" -ne 0 ]; then pass "script exits non-zero"; else fail "expected non-zero exit for a nonexistent manifest file"; fi
+assert_log_count "$GH_LOG" '.' 0 "gh is never invoked when the manifest file does not exist"
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 echo

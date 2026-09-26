@@ -77,13 +77,46 @@ All feedback — blocking review findings, CI failures, human PR comments — go
 
 Re-run mechanics: before each cycle (1) reopen the completed review bead — `gc bd reopen <review-bead>` — and (2) pass the force flag to the re-sling to burn the stale molecule bonded from the prior cycle. Do not create new review beads per cycle.
 
-### Phase 4 — Post reviewer verdicts to the PR
+### Phase 4 — Post ONE aggregated review comment per round
 
-After each review round, post each reviewer's final mailed report as a PR comment — even if the reviewer polecat is gone, you post for posterity. Every comment MUST lead with the identity prefix:
+Reviewers never comment on the PR themselves. Each review round produces
+**exactly one NEW** agent comment, posted by you (or by the equivalent
+downstream step on a later round) via `cv-pr-comment.sh comment-aggregate` —
+never a separate comment per lane, and never an edit of an earlier round's
+comment (there is no edit mode; a fresh comment every round is more intuitive
+for implementors and reliably re-triggers notifications, the same posture
+Doomer uses).
 
-**`[<rig>/<agent> — <lens>]`** → e.g. `**[foundry/reviewer-3 — security]**`
+Build the manifest from that round's lane reports and the synthesis, then
+call the script once:
 
-This lets a human tell which agent spoke and, crucially, distinguish agent comments from their own (unprefixed) comments. That asymmetry is the signal. You inject the concrete prefix at post time.
+```bash
+cv-pr-comment.sh comment-aggregate <pr> --repo <owner/repo> \
+  --manifest <path to the assembled JSON manifest> \
+  --formula con-voyage --agent "<rig>/<your agent>"
+```
+
+The rendered comment is minimal at the surface — like Doomer's single-line
+run summary — with every detail collapsed:
+
+- **Surface:** the identity prefix plus ONE line, e.g. `**[<rig>/con-voyage —
+  review]** Approved: 7 lanes, 0 blocking, 9 low.` (or `Changes requested: 2
+  blocking, …`). At most one more short line: a link, or "LOWs for the human
+  reviewer below."
+- **Then** one `<details><summary>[<rig>/<agent> — <lens>] <verdict> · <n>
+  findings</summary> … full report … </details>` per lane, plus one for the
+  synthesis (rendered first — the actionable LOW list ahead of the per-lane
+  detail). Keep the `[<rig>/<agent> — <lens>]` identity inside each
+  `<summary>`: it's the agent-vs-human signal.
+- A hidden marker (`<!-- con-voyage-review:<root> round=<n> -->`) identifies
+  agent comments (e.g. so pr-watch can skip them) — it is never used to edit.
+- Stays under GitHub's 65536-char comment limit: an oversized lane report
+  truncates inside its own `<details>` block with a pointer to the full
+  report, never across the surface.
+
+This applies to every agent-authored PR comment, not just review verdicts:
+ci-repair status, pr-watch notices, and publish notes are each their own
+single NEW minimal comment per event — never edited in place.
 
 ### Phase 5 — Lockstep docs PR (product-owner gate)
 
@@ -149,12 +182,16 @@ claude-backed session for you, and its mail is actionable:
 | "The limit mail is probably transient, I'll keep dispatching claude" | The lookout watches the whole fleet; you see one bead. Open breaker = all-opencode mode until the all-clear. |
 | "I'll restart a rate-limited worker to clear it" | The limit is account-side. Handoff preserves context; re-sling the work to a fallback pool instead. |
 | "Product-owner passed, docs can follow" | Not on a product-owner-gated change. The docs PR opens in draft and merges in lockstep. |
-| "I'll attribute the PR comment however" | Every agent comment leads with `[<rig>/<agent> — <lens>]` — always. |
+| "I'll attribute the PR comment however" | Every agent comment leads with `[<rig>/<agent> — <lens>]` — always, inside its `<details><summary>` for a review round. |
+| "I'll post each lane's report as its own comment" | One aggregated comment per round via `cv-pr-comment.sh comment-aggregate`. Lanes never comment individually — an enterprise PR is not the place for 8 separate bot comments. |
+| "I'll just edit the earlier round's comment" | Never. Always a NEW comment per round; edits don't reliably notify and Doomer doesn't do it either. |
 
 ## Reporting & identity (con-voyage contract)
 - Report a verdict: PASS or CHANGES REQUIRED.
 - Tag every finding BLOCKING or LOW, with file:line and a concrete fix.
 - You must not commit, push, or modify any code.
-- Any comment you post to the PR MUST lead with `[<rig>/<agent> — <lens>]`
-  (a human's comments are never prefixed — that asymmetry is the signal).
+- Any comment posted to the PR MUST lead with `[<rig>/<agent> — <lens>]`
+  (a human's comments are never prefixed — that asymmetry is the signal),
+  and MUST go through `cv-pr-comment.sh` — `comment-aggregate` for a review
+  round's one aggregated comment, or `comment`/`review` for anything else.
 {{ end }}

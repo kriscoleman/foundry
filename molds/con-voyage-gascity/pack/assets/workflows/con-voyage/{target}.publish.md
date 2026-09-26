@@ -153,6 +153,50 @@ If open_pr is true (requires push to have succeeded):
   ```
 - Do not auto-merge. The PR is opened in ready state for human review only.
 
+### Post the round's ONE aggregated review comment (fk-9boht)
+
+Review lanes never comment on the PR themselves (they only write to
+`.gc/build/${ROOT_ID}/*-review.md`); posting the round's result to the PR is
+this step's job, and it is always exactly ONE new comment via
+`cv-pr-comment.sh comment-aggregate` — never a separate comment per lane,
+never an edit of an earlier round's comment. Do this right after the PR
+above opens (skip entirely when open_pr is false — there is no PR to comment
+on):
+
+1. Build a JSON manifest from what this cycle already produced:
+   - `rig` / `root_bead_id` — this journey's rig and `$ROOT_ID`.
+   - `round` — `1` (publish posts the first aggregated comment for this PR;
+     a later re-review cycle after the PR is already open, if one runs, is
+     responsible for incrementing this on its own equivalent call).
+   - `overall_line` — one line, e.g. `"Approved: 6 lanes, 0 blocking, 4
+     low."`, derived from `review-synthesis.md`'s own verdict/counts.
+   - `extra_line` — omit, or `"LOWs for the human reviewer below."` when any
+     LOW findings were surfaced to the human.
+   - `lanes[]` — one entry per lane in the active roster (`review-context.md`
+     Section 6: floor lanes + any active roster lenses), each
+     `{agent, lens, verdict, findings, body_file}`, where `body_file` is that
+     lane's own `.gc/build/${ROOT_ID}/<lane>-review.md`.
+   - `synthesis` — `{agent, lens: "synthesis", verdict, findings, body_file:
+     ".gc/build/${ROOT_ID}/review-synthesis.md"}`, `findings` being the total
+     LOW count (BLOCKING is always 0 by the time publish runs).
+2. Post it once:
+
+   ```bash
+   CV_BIN="$(command -v cv-pr-comment.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name cv-pr-comment.sh 2>/dev/null | head -1)"
+   [ -n "$CV_BIN" ] && [ -x "$CV_BIN" ] || { echo "cv-pr-comment.sh not found — skipping the aggregated review comment (PR body already carries the verdict)" >&2; }
+   if [ -n "$CV_BIN" ] && [ -x "$CV_BIN" ]; then
+     "$CV_BIN" comment-aggregate "$PR_NUMBER" --repo "$REPO_FULL" \
+       --manifest <path to the assembled JSON manifest> \
+       --city-root "${GC_CITY:-.}" \
+       --formula con-voyage --agent "<rig>/gc.publisher"
+   fi
+   ```
+
+A failure here (script missing, or the hygiene scan blocking on a
+token-shaped string) must never fail the publish step itself or block the
+PR — the PR body already carries the verdict; the aggregated comment is a
+posterity convenience on top of it. Log the failure and continue.
+
 ### After the PR opens — update the WORK BEAD and arm the finalize monitor
 
 Once the PR exists, record it on the WORK BEAD, flip its phase to

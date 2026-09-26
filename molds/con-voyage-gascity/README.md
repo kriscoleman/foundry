@@ -1142,6 +1142,7 @@ cv-pr-comment.sh comment <pr> --repo <owner/repo> --body-file <path> [--formula 
 cv-pr-comment.sh review <pr> --repo <owner/repo> (--comment|--approve|--request-changes) --body-file <path> [--formula <name>] [--agent <rig/agent>]
 cv-pr-comment.sh create --repo <owner/repo> --title <title> --body-file <path> [--base <branch>] [--head <branch>] [--draft] [--formula <name>] [--agent <rig/agent>]
 cv-pr-comment.sh reply-thread <pr> --repo <owner/repo> --comment-id <db_id> --body-file <path> [--formula <name>] [--agent <rig/agent>]
+cv-pr-comment.sh comment-aggregate <pr> --repo <owner/repo> --manifest <path.json> [--city-root <path>] [--formula <name>] [--agent <rig/agent>]
 ```
 
 `comment` posts at ROOT level (general/summary feedback); `reply-thread` posts a
@@ -1154,6 +1155,21 @@ reading the body from the file (`-F body=@<file>`) so — like every other mode 
 the body never round-trips through argv. `con-voyage-pr-watch.sh` PART B surfaces
 that reply target per inline item as `[reply-thread comment-id:<db_id> @
 <path>:<line>]` in the feedback it routes.
+
+`comment-aggregate` renders and posts the **one** PR comment a con-voyage
+review round is allowed to produce: a minimal, Doomer-style surface line
+(`**[<rig>/con-voyage — review]** Approved: 6 lanes, 0 blocking, 4 low.`) with
+every lane's full report — plus the synthesis, rendered first — collapsed
+into its own `<details>` block, built from a JSON manifest (see the script's
+own header comment for the exact shape). Review lanes never comment
+individually; `{target}.publish.md` calls this once per PR, and any later
+re-review step does the same. There is no edit mode anywhere in this script —
+every round is a brand-new comment, never a rewrite of an earlier one. A
+built-in hygiene pass rewrites any `--city-root`-rooted path to `<city-root>`
+and refuses to post at all (gh never invoked) if a token-shaped string turns
+up in a lane's report; an oversized lane report truncates inside its own
+`<details>` block (with a pointer to the full report) to stay under GitHub's
+65536-char comment limit.
 
 Every posted body leads with:
 

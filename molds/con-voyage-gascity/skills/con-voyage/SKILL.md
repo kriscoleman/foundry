@@ -93,4 +93,4 @@ builds it itself when it does not.
 
 `push=true open_pr=true` is the correct posture — the branch is pushed to origin and a PR is opened, but auto-merge is blocked by `merge_queue="observe"` in `city.toml`. A human lands it.
 
-Consult the `con-voyage-orchestration` fragment for the full phase-by-phase runbook: intake, convoy creation, roster rules, Phase 2 sling, feedback routing, PR posterity comments, lockstep docs PR, and landing protocol.
+Consult the `con-voyage-orchestration` fragment for the full phase-by-phase runbook: intake, convoy creation, roster rules, Phase 2 sling, feedback routing, one aggregated minimal review comment per round (never per-lane, never edited), lockstep docs PR, and landing protocol.
