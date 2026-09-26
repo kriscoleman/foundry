@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.9.1](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.9.0...con-voyage-gascity-v0.9.1) (2026-09-26)
+
+
+### Bug Fixes
+
+* **con-voyage:** harden review-watchdog TSV parsing, warnings, and multi-store timeouts (fk-rri7q) ([27f7065](https://github.com/kriscoleman/foundry/commit/27f70657ccd5140c4eb0befd665c934a4e9b1262))
+* **con-voyage:** re-review the fix, not just trust done, after a BLOCKING finding (fk-w31l7) ([f0e2b3c](https://github.com/kriscoleman/foundry/commit/f0e2b3c70f09bcce0aa74a394b4dbc919003d458))
+* **con-voyage:** scope setup-review test's CV_LIB count to RIG_ROOT blocks (fk-4jdeh) ([e73be13](https://github.com/kriscoleman/foundry/commit/e73be13bc2621b4758ee371db3e628abb3f80695))
+* **con-voyage:** seed gate/validator scripts to the rig root, not the city root (fk-4jdeh) ([8024ea2](https://github.com/kriscoleman/foundry/commit/8024ea2df1acca363ec32cd7638be1a91c464837))
+
 ## [0.9.0](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.8.0...con-voyage-gascity-v0.9.0) (2026-09-26)
 
 
