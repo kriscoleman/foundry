@@ -57,6 +57,7 @@ if [ "$STEP_PREFIX" != "$STEP_ID" ]; then
   APPLY_STEP_ID="${STEP_PREFIX}.apply-review-findings"
 else
   APPLY_STEP_ID=""
+  echo "implementation-review-approved: gc.step_id '$STEP_ID' does not match expected *.con-voyage-review-loop suffix; falling back to LANE_STATUS" >&2
 fi
 
 VERDICT="$(printf '%s\n' "$MATCHES" | jq -r --arg attempt "$ATTEMPT" --arg apply_step "$APPLY_STEP_ID" '
