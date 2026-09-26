@@ -115,7 +115,7 @@ fi
 # ===========================================================================
 start_case "4: BASE_BRANCH is resolved via the shared cv_resolve_base_branch(), not a placeholder"
 assert_contains 'BASE_BRANCH="$(source "$CV_LIB" && cv_resolve_base_branch "$CONVOY_ID" "$(pwd)")"' "resolves BASE_BRANCH by sourcing con-voyage-lib.sh and calling cv_resolve_base_branch"
-assert_contains 'CONVOY_ID="{{convoy_id}}"' "resolves the journey's convoy id from the graph.v2 template var"
+assert_contains 'CONVOY_ID="{convoy_id}"' "resolves the journey's convoy id from the graph.v2 template var"
 assert_not_contains '<base-branch>' "no hand-filled <base-branch> placeholder remains anywhere in this file"
 
 # ===========================================================================
