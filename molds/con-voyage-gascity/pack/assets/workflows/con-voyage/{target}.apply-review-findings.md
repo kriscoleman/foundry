@@ -29,14 +29,28 @@ if [ -n "$CV_GUARD" ] && [ -x "$CV_GUARD" ]; then
   "$CV_GUARD" guard "$(pwd)" || { echo "fix the reported hygiene violation, re-stage, and re-run the guard before committing" >&2; exit 1; }
 fi
 git commit -m "fix: <brief description of the review fix> (review {convoy_id})"
+FIX_COMMIT_SHA="$(git rev-parse HEAD)"
 ```
 
 Commit ONLY when you actually changed files this pass — never an empty/no-op
 commit when all lanes already approved and nothing needed fixing.
 
-Set code_review.verdict=done only when acceptance, test-evidence, simplicity,
-security, and code review (plus any active roster lanes) all approve after this
-pass. Set code_review.verdict=iterate when BLOCKING findings remain.
+### Setting code_review.verdict
+
+Set code_review.verdict=done ONLY on a genuine no-op pass: every active lane
+had already approved before this pass ran, and you changed nothing. In every
+other case — you fixed one or more BLOCKING findings and committed a change
+this pass — set code_review.verdict=iterate instead, even if you believe every
+finding raised this cycle is now addressed. The lanes that reported those
+BLOCKING findings reviewed the OLD diff, not your fix; nobody has reviewed the
+new commit yet, so the loop must run one more full iteration (every active
+lane again) against it before the fix can be trusted as done. Never set done
+in the same pass that committed a fix.
+
+When you commit a fix this pass, also record code_review.fix_commit=<sha>
+(the `$FIX_COMMIT_SHA` captured above) so the loop's exit check can
+independently confirm no lane has reviewed it yet. Leave code_review.fix_commit
+unset on a no-op pass.
 
 Always close with gc.outcome=pass, code_review.verdict=done|iterate,
 code_review.report_path=<review summary path>, and
@@ -44,12 +58,22 @@ code_review.output_path=<review summary path>.
 
 Use the exact claimed bead id when updating metadata:
 
+  # No-op pass — every lane already approved, nothing changed:
   bd update "$CLAIMED_BEAD_ID" \
     --set-metadata 'gc.outcome=pass' \
     --set-metadata 'code_review.verdict=done' \
     --set-metadata 'code_review.report_path=<review summary path>' \
     --set-metadata 'code_review.output_path=<review summary path>'
   bd close "$CLAIMED_BEAD_ID" --reason 'Con-voyage review approved.'
+
+  # Fix pass — you changed files and committed a fix this pass:
+  bd update "$CLAIMED_BEAD_ID" \
+    --set-metadata 'gc.outcome=pass' \
+    --set-metadata 'code_review.verdict=iterate' \
+    --set-metadata "code_review.fix_commit=$FIX_COMMIT_SHA" \
+    --set-metadata 'code_review.report_path=<review summary path>' \
+    --set-metadata 'code_review.output_path=<review summary path>'
+  bd close "$CLAIMED_BEAD_ID" --reason 'Con-voyage review fix applied; another iteration required.'
 
 Commit fixes locally as described above, but do not push or open a PR. The
 formula controls push and PR via the push and open_pr vars. You are the

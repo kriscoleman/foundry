@@ -223,6 +223,7 @@ run_check loop-5 5
 assert_eq "0" "$RC" "exit 0 with a single unambiguous verdict=done"
 
 # ===========================================================================
+# ===========================================================================
 # CASE 4 — THE FALSE-APPROVAL DIRECTION (fk-hrbj7 LOW-2): the loop body's own
 # code_review.verdict rollup says "done" while the real apply-review-findings
 # bead says "iterate" (BLOCKING work still outstanding). CASE 2 above only
@@ -290,6 +291,71 @@ run_check loop-7 7
 assert_eq "1" "$RC" "exit 1 from LANE_STATUS fallback, not a false approval via apply-review-findings' own verdict=done"
 if printf '%s' "$OUT" | grep -qi "does not match expected"; then pass "diagnostic logged for step-id fallback"; else fail "missing step-id fallback diagnostic: $OUT"; fi
 if printf '%s' "$OUT" | grep -qi 'another iteration'; then pass "output reports another iteration needed from LANE_STATUS"; else fail "output does not report another iteration needed: $OUT"; fi
+
+# ===========================================================================
+# CASE 6 — THE BUG (fk-w31l7): apply-review-findings closed this attempt
+# verdict=done, but a sibling lane bead (the code-review floor lane added by
+# con-voyage, not one of the 3 build-basic-review lanes) still carries
+# code_review.code_verdict=iterate from THIS SAME attempt — i.e. a stale
+# BLOCKING that was never re-reviewed after the fix. Must NOT approve: a
+# lane's own recorded verdict this attempt overrides a "done" self-report.
+# [reproduces root fk-h6u6n: apply step fk-g6lfv wrote verdict=done after
+# fixing BLOCKING-1, loop fk-9ptjq closed gc.outcome=pass with code_review.
+# code_verdict still "iterate" and no iteration 2]
+# ===========================================================================
+start_case "6: verdict=done blocked by a stale iterate lane verdict this same attempt"
+ROOT6="$(bead_json wfroot-6 '{}')"
+BODY6="$(bead_json loop-8 '{
+  "gc.root_bead_id": "wfroot-6",
+  "gc.step_id": "main.con-voyage-review-loop",
+  "gc.attempt": "8",
+  "gc.scope_role": "body"
+}')"
+APPLY6="$(bead_json apply-8 '{
+  "gc.root_bead_id": "wfroot-6",
+  "gc.attempt": "8",
+  "gc.step_id": "main.apply-review-findings",
+  "code_review.verdict": "done",
+  "code_review.report_path": "/fake/review-fix-summary.md"
+}')"
+CODE_LANE6="$(bead_json code-lane-8 '{
+  "gc.root_bead_id": "wfroot-6",
+  "gc.attempt": "8",
+  "gc.ralph_step_id": "main.con-voyage-review-loop",
+  "gc.step_id": "main.code-review",
+  "code_review.code_verdict": "iterate"
+}')"
+write_fixtures "$ROOT6" "$BODY6" "$BODY6" "$APPLY6" "$CODE_LANE6"
+run_check loop-8 8
+if [ "$RC" -ne 0 ]; then pass "exit non-zero when a lane still shows iterate despite apply-review-findings claiming done"; else fail "should require another iteration when a lane verdict is stale/iterate, got exit 0"; fi
+
+# ===========================================================================
+# CASE 7 — THE BUG (fk-w31l7), second half: apply-review-findings closed this
+# attempt verdict=done AND recorded a fix commit it made THIS SAME attempt.
+# Lanes run before apply-review-findings within a cycle, so no lane could
+# possibly have reviewed a commit apply-review-findings itself just made —
+# a same-attempt fix commit must never be trusted as done regardless of what
+# any lane verdict says.
+# ===========================================================================
+start_case "7: verdict=done blocked by its own recorded fix commit this attempt"
+ROOT7="$(bead_json wfroot-7 '{}')"
+BODY7="$(bead_json loop-9 '{
+  "gc.root_bead_id": "wfroot-7",
+  "gc.step_id": "main.con-voyage-review-loop",
+  "gc.attempt": "9",
+  "gc.scope_role": "body"
+}')"
+APPLY7="$(bead_json apply-9 '{
+  "gc.root_bead_id": "wfroot-7",
+  "gc.attempt": "9",
+  "gc.step_id": "main.apply-review-findings",
+  "code_review.verdict": "done",
+  "code_review.fix_commit": "aa1a000",
+  "code_review.report_path": "/fake/review-fix-summary.md"
+}')"
+write_fixtures "$ROOT7" "$BODY7" "$BODY7" "$APPLY7"
+run_check loop-9 9
+if [ "$RC" -ne 0 ]; then pass "exit non-zero when apply-review-findings recorded a fix commit this attempt despite verdict=done"; else fail "should require another iteration when a fix commit was recorded this attempt, got exit 0"; fi
 
 # ===========================================================================
 # Summary
