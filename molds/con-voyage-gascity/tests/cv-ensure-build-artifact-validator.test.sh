@@ -19,8 +19,11 @@
 #     exec bit.
 #   - Seeds any MISSING <rig-root>/schemas/build/<name>.yaml from this
 #     script's own sibling ../schemas/build/ assets directory.
-#   - NEVER overwrites a file that already exists at the destination — same
-#     local-override policy as cv-ensure-gate-scripts.sh.
+#   - "Ensure" means present AND current (fk-6z17l): a STALE destination file
+#     (content differs from the pack's current copy) is replaced atomically,
+#     with the previous content backed up to `<name>.prev` — same policy as
+#     cv-ensure-gate-scripts.sh. A destination whose content already matches
+#     the pack is left untouched and gets no backup file.
 #   - Fails loudly (exit 1, no partial writes) if the source assets are
 #     missing/empty (a broken pack) or <rig-root> is not a directory.
 #
@@ -99,26 +102,47 @@ for src in "${SOURCE_SCHEMA_FILES[@]}"; do
 done
 
 # ===========================================================================
-# CASE 2 — rig with a customized validator and one customized schema already
-# in place: never overwritten, everything else still seeded.
+# CASE 2 — rig with a STALE validator and one stale schema already in place:
+# both replaced (with a .prev backup each), everything else still seeded
+# (fk-6z17l: "ensure" means present AND current, not stuck at first-seed
+# version forever).
 # ===========================================================================
-start_case "2: existing rig-local files are never clobbered (override point)"
+start_case "2: a stale validator and a stale schema are replaced, previous content backed up"
 RIG2="${SANDBOX}/rig2"
 mkdir -p "${RIG2}/.gc/scripts" "${RIG2}/schemas/build"
-printf '#!/usr/bin/env python3\nprint("custom override")\n' > "${RIG2}/.gc/scripts/validate_build_artifact.py"
+STALE_VALIDATOR='#!/usr/bin/env python3
+print("stale pre-upgrade validator")
+'
+printf '%s' "$STALE_VALIDATOR" > "${RIG2}/.gc/scripts/validate_build_artifact.py"
 FIRST_SCHEMA_NAME="$(basename "${SOURCE_SCHEMA_FILES[0]}")"
-printf 'custom: true\n' > "${RIG2}/schemas/build/${FIRST_SCHEMA_NAME}"
+printf 'stale: true\n' > "${RIG2}/schemas/build/${FIRST_SCHEMA_NAME}"
 run_script "$RIG2"
-assert_eq "0" "$RC" "exit 0 when customized files already exist"
+assert_eq "0" "$RC" "exit 0 when stale files already exist"
 
-VALIDATOR_CONTENT="$(cat "${RIG2}/.gc/scripts/validate_build_artifact.py")"
-if printf '%s' "$VALIDATOR_CONTENT" | grep -q "custom override"; then
-  pass "customized validate_build_artifact.py was left untouched"
+if diff -q "$SOURCE_VALIDATOR" "${RIG2}/.gc/scripts/validate_build_artifact.py" >/dev/null 2>&1; then
+  pass "stale validate_build_artifact.py was replaced with the current pack content"
 else
-  fail "customized validate_build_artifact.py was overwritten"
+  fail "stale validate_build_artifact.py was NOT replaced"
 fi
-SCHEMA_CONTENT="$(cat "${RIG2}/schemas/build/${FIRST_SCHEMA_NAME}")"
-assert_eq "custom: true" "$SCHEMA_CONTENT" "customized ${FIRST_SCHEMA_NAME} left untouched"
+if [ -x "${RIG2}/.gc/scripts/validate_build_artifact.py" ]; then
+  pass "replaced validate_build_artifact.py is executable"
+else
+  fail "replaced validate_build_artifact.py is NOT executable"
+fi
+VALIDATOR_BACKUP="${RIG2}/.gc/scripts/validate_build_artifact.py.prev"
+if [ -f "$VALIDATOR_BACKUP" ] && printf '%s' "$STALE_VALIDATOR" | cmp -s - "$VALIDATOR_BACKUP"; then
+  pass "the stale validator content was backed up to validate_build_artifact.py.prev"
+else
+  fail "no correct .prev backup of the stale validator was kept"
+fi
+
+if diff -q "${SOURCE_SCHEMAS_DIR}/${FIRST_SCHEMA_NAME}" "${RIG2}/schemas/build/${FIRST_SCHEMA_NAME}" >/dev/null 2>&1; then
+  pass "stale ${FIRST_SCHEMA_NAME} was replaced with the current pack content"
+else
+  fail "stale ${FIRST_SCHEMA_NAME} was NOT replaced"
+fi
+SCHEMA_BACKUP="${RIG2}/schemas/build/${FIRST_SCHEMA_NAME}.prev"
+assert_eq "stale: true" "$(cat "$SCHEMA_BACKUP" 2>/dev/null)" "the stale ${FIRST_SCHEMA_NAME} content was backed up to ${FIRST_SCHEMA_NAME}.prev"
 
 MISSING_COUNT=0
 for src in "${SOURCE_SCHEMA_FILES[@]}"; do
@@ -126,19 +150,24 @@ for src in "${SOURCE_SCHEMA_FILES[@]}"; do
   [ "$name" = "$FIRST_SCHEMA_NAME" ] && continue
   if [ ! -f "${RIG2}/schemas/build/${name}" ]; then MISSING_COUNT=$((MISSING_COUNT+1)); fi
 done
-assert_eq "0" "$MISSING_COUNT" "every other schema file was still seeded alongside the customized one"
+assert_eq "0" "$MISSING_COUNT" "every other schema file was still seeded alongside the stale-replaced one"
 
 # ===========================================================================
-# CASE 3 — partial seed: only the missing pieces are added.
+# CASE 3 — partial seed: a stale validator is replaced, missing schemas are
+# added, neither disturbs the other.
 # ===========================================================================
-start_case "3: partial seed — only missing files are added"
+start_case "3: partial seed — a stale validator is replaced, missing schemas are added"
 RIG3="${SANDBOX}/rig3"
 mkdir -p "${RIG3}/.gc/scripts"
 printf 'placeholder\n' > "${RIG3}/.gc/scripts/validate_build_artifact.py"
 run_script "$RIG3"
 assert_eq "0" "$RC" "exit 0 on partial seed"
-PLACEHOLDER="$(cat "${RIG3}/.gc/scripts/validate_build_artifact.py")"
-assert_eq "placeholder" "$PLACEHOLDER" "pre-existing validate_build_artifact.py left untouched"
+if diff -q "$SOURCE_VALIDATOR" "${RIG3}/.gc/scripts/validate_build_artifact.py" >/dev/null 2>&1; then
+  pass "stale validate_build_artifact.py was replaced with the current pack content"
+else
+  fail "stale validate_build_artifact.py was NOT replaced"
+fi
+assert_eq "placeholder" "$(cat "${RIG3}/.gc/scripts/validate_build_artifact.py.prev" 2>/dev/null)" "the stale placeholder was backed up to validate_build_artifact.py.prev"
 ALL_SEEDED=1
 for src in "${SOURCE_SCHEMA_FILES[@]}"; do
   name="$(basename "$src")"
@@ -147,9 +176,10 @@ done
 assert_eq "1" "$ALL_SEEDED" "all schema files were seeded from pack source even though only schemas/ was missing"
 
 # ===========================================================================
-# CASE 4 — second run against a fully seeded rig is a clean no-op.
+# CASE 4 — second run against a fully seeded, up-to-date rig is a clean
+# no-op: nothing replaced, no .prev backup files created.
 # ===========================================================================
-start_case "4: idempotent — re-running against a fully seeded rig changes nothing"
+start_case "4: idempotent — re-running against an up-to-date rig changes nothing, writes no backup"
 run_script "$RIG1"
 assert_eq "0" "$RC" "exit 0 on idempotent re-run"
 if diff -q "$SOURCE_VALIDATOR" "$DEST1_VALIDATOR" >/dev/null 2>&1; then
@@ -157,12 +187,22 @@ if diff -q "$SOURCE_VALIDATOR" "$DEST1_VALIDATOR" >/dev/null 2>&1; then
 else
   fail "validator drifted from pack source after re-run"
 fi
+if [ -e "${DEST1_VALIDATOR}.prev" ]; then
+  fail "validate_build_artifact.py.prev backup should not exist when content already matched"
+else
+  pass "no validate_build_artifact.py.prev backup was created for an already-current file"
+fi
 for src in "${SOURCE_SCHEMA_FILES[@]}"; do
   name="$(basename "$src")"
   if diff -q "$src" "${DEST1_SCHEMAS}/${name}" >/dev/null 2>&1; then
     pass "${name} still matches pack source after re-run"
   else
     fail "${name} drifted from pack source after re-run"
+  fi
+  if [ -e "${DEST1_SCHEMAS}/${name}.prev" ]; then
+    fail "${name}.prev backup should not exist when content already matched"
+  else
+    pass "no ${name}.prev backup was created for an already-current file"
   fi
 done
 

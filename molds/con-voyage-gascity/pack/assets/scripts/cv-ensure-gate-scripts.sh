@@ -16,10 +16,15 @@
 # this fix). Seeding the scripts before the gate is ever evaluated closes the
 # root cause: the path always resolves.
 #
-# `.gc/` is a local, non-committed, rig-specific runtime directory (documented
-# elsewhere in this pack as the override point for rig-local behavior), so
-# this script NEVER overwrites a script that already exists at the
-# destination — a rig may have deliberately customized its local copy.
+# "Ensure" means present AND current (fk-6z17l): a rig seeded once used to
+# keep that exact copy forever, so a pack upgrade (e.g. fk-w31l7's rewrite of
+# implementation-review-approved.sh) never reached it. If a destination
+# script's content differs from the pack's current copy, this script backs
+# the old content up alongside it (`<name>.sh.prev`) and replaces it
+# atomically (write to a temp file in the same directory, then rename). A
+# destination whose content already matches is left untouched (and gets no
+# backup file) — this is what makes re-running this script a true no-op on
+# an already-current rig.
 #
 # Usage:
 #   cv-ensure-gate-scripts.sh <rig-root>
@@ -29,9 +34,9 @@
 # identically whether run from the mold source or a cast pack copy.
 #
 # Exit codes:
-#   0 — every shipped check script is now present at
-#       <rig-root>/.gc/scripts/checks/ (freshly seeded, already present, or a
-#       mix of both), each executable.
+#   0 — every shipped check script is now present AND current at
+#       <rig-root>/.gc/scripts/checks/ (freshly seeded, already current,
+#       updated from a stale copy, or a mix of these), each executable.
 #   1 — usage error (missing/invalid rig-root), or the pack itself ships no
 #       check scripts (source checks/ dir missing or empty) — fails loud with
 #       NO partial writes, rather than silently leaving a gate to fail later
@@ -71,13 +76,24 @@ DEST_DIR="${RIG_ROOT}/.gc/scripts/checks"
 mkdir -p "$DEST_DIR" || die "could not create ${DEST_DIR}"
 
 seeded=0
+updated=0
 present=0
 for src in "${SOURCE_SCRIPTS[@]}"; do
   name="$(basename "$src")"
   dest="${DEST_DIR}/${name}"
   if [ -e "$dest" ]; then
-    echo "cv-ensure-gate-scripts: ${name} already present at ${dest} — left untouched"
-    present=$((present+1))
+    if cmp -s "$src" "$dest"; then
+      echo "cv-ensure-gate-scripts: ${name} already present and current at ${dest} — left untouched"
+      present=$((present+1))
+      continue
+    fi
+    cp "$dest" "${dest}.prev" || die "could not back up stale ${dest} to ${dest}.prev"
+    tmp="${dest}.tmp.$$"
+    cp "$src" "$tmp" || die "could not stage ${src} to ${tmp}"
+    chmod +x "$tmp" || die "could not set the exec bit on ${tmp}"
+    mv -f "$tmp" "$dest" || die "could not move ${tmp} to ${dest}"
+    echo "cv-ensure-gate-scripts: ${name} was stale — replaced at ${dest} (previous copy backed up to ${dest}.prev)"
+    updated=$((updated+1))
     continue
   fi
   cp "$src" "$dest" || die "could not copy ${src} to ${dest}"
@@ -86,4 +102,4 @@ for src in "${SOURCE_SCRIPTS[@]}"; do
   seeded=$((seeded+1))
 done
 
-echo "cv-ensure-gate-scripts: done (${seeded} seeded, ${present} already present, ${#SOURCE_SCRIPTS[@]} total)"
+echo "cv-ensure-gate-scripts: done (${seeded} seeded, ${updated} updated, ${present} already present and current, ${#SOURCE_SCRIPTS[@]} total)"
