@@ -67,6 +67,11 @@
 #   CV_LENS_ESCALATE_TARGET  Mail recipient when a lane exhausts
 #                          CV_LENS_MAX_ATTEMPTS. Default: the reserved
 #                          `human` alias.
+#   CV_LENS_STORE_TIMEOUT_SECONDS  Wall-clock bound on each fanned-out city/
+#                          per-rig store read (this host has no `timeout(1)`;
+#                          see cv_with_timeout in con-voyage-lib.sh). A hung
+#                          store hits the same empty-result WARNING+skip path
+#                          as an outright query failure. Default: 30.
 #
 # Exit codes:
 #   0 — completed (some, all, or none of the candidate lanes needed action)
@@ -87,6 +92,7 @@ GC_CITY="${GC_CITY:-.}"
 CV_LENS_STALL_SECONDS="${CV_LENS_STALL_SECONDS:-600}"
 CV_LENS_MAX_ATTEMPTS="${CV_LENS_MAX_ATTEMPTS:-3}"
 CV_LENS_ESCALATE_TARGET="${CV_LENS_ESCALATE_TARGET:-human}"
+CV_LENS_STORE_TIMEOUT_SECONDS="${CV_LENS_STORE_TIMEOUT_SECONDS:-30}"
 
 # A malformed override must never silently break the staleness/escalation
 # checks that gate this watchdog's core behavior — same fail-safe posture as
@@ -97,6 +103,9 @@ case "$CV_LENS_STALL_SECONDS" in
 esac
 case "$CV_LENS_MAX_ATTEMPTS" in
   *[!0-9]*|'') CV_LENS_MAX_ATTEMPTS="3" ;;
+esac
+case "$CV_LENS_STORE_TIMEOUT_SECONDS" in
+  *[!0-9]*|'') CV_LENS_STORE_TIMEOUT_SECONDS="30" ;;
 esac
 
 # ---------------------------------------------------------------------------
@@ -215,34 +224,55 @@ for d in data:
         str(meta.get('gc.review_watchdog.attempt_count') or '0'),
         str(meta.get('gc.review_watchdog.escalated') or '0'),
     ]
+    # SECURITY (defense-in-depth): every field above is bead-derived, untrusted
+    # text. A forged embedded newline or SEP could otherwise smuggle a second,
+    # attacker-controlled synthetic row into the TSV (or corrupt this row's own
+    # field alignment), steering a later gc sling/session nudge/bd update at an
+    # attacker-chosen id — strip both before joining so a field can never widen
+    # into a phantom row or column.
+    row = [f.replace('\n', ' ').replace('\r', ' ').replace(SEP, ' ') for f in row]
     print(SEP.join(row))
 " 2>/dev/null
 }
 
-CITY_LANES_JSON="$("$GC" --city "$GC_CITY" bd list --status open,in_progress --has-metadata-key gc.ralph_step_id -n 0 --json 2>/dev/null)"
+CITY_LANES_JSON="$(cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" "$GC" --city "$GC_CITY" bd list --status open,in_progress --has-metadata-key gc.ralph_step_id -n 0 --json 2>/dev/null)"
 [ -n "$CITY_LANES_JSON" ] || CITY_LANES_JSON="[]"
 LANES_TSV="$(printf '%s' "$CITY_LANES_JSON" | filter_lanes_json)"
 
+# fk-hdma1 LOW-C: distinguish "gc rig list --json failed/returned nothing" and
+# "returned something unparseable" (both real failures — multi-rig discovery
+# is disabled for this cycle, degrading back to the pre-fk-jsdw2 city-only
+# blindness with no signal) from "parsed fine, this city genuinely has no
+# other registered rigs" (not a failure at all — RIG_LIST_FAILED must stay 0).
 RIGS_JSON="$("$GC" --city "$GC_CITY" rig list --json 2>/dev/null)"
-[ -n "$RIGS_JSON" ] || RIGS_JSON='{"rigs":[]}'
+RIG_LIST_FAILED=0
+if [ -z "$RIGS_JSON" ]; then
+  RIG_LIST_FAILED=1
+  RIGS_JSON='{"rigs":[]}'
+fi
 RIG_NAMES="$(printf '%s' "$RIGS_JSON" | python3 -c "
 import json, sys
 try:
     data = json.load(sys.stdin)
 except Exception:
-    raise SystemExit(0)
+    raise SystemExit(1)
 if not isinstance(data, dict):
-    raise SystemExit(0)
+    raise SystemExit(1)
 for r in data.get('rigs') or []:
     if isinstance(r, dict) and not r.get('hq') and r.get('name'):
         print(r['name'])
 " 2>/dev/null)"
+[ "$?" -eq 0 ] || RIG_LIST_FAILED=1
+if [ "$RIG_LIST_FAILED" -eq 1 ]; then
+  echo "con-voyage-review-watchdog: WARNING: 'gc rig list --json' returned nothing/unparseable; multi-rig lane discovery disabled this cycle, city store only" >&2
+  RIG_NAMES=""
+fi
 
 while IFS= read -r rig_name; do
   [ -n "$rig_name" ] || continue
-  rig_lanes_json="$("$GC" --city "$GC_CITY" --rig "$rig_name" bd list --status open,in_progress --has-metadata-key gc.ralph_step_id -n 0 --json 2>/dev/null)"
+  rig_lanes_json="$(cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" "$GC" --city "$GC_CITY" --rig "$rig_name" bd list --status open,in_progress --has-metadata-key gc.ralph_step_id -n 0 --json 2>/dev/null)"
   if [ -z "$rig_lanes_json" ]; then
-    echo "con-voyage-review-watchdog: WARNING: rig list query returned nothing for rig '${rig_name}'; skipping this rig for this cycle" >&2
+    echo "con-voyage-review-watchdog: WARNING: review-lane query (bd list --rig ${rig_name}) returned nothing for rig '${rig_name}'; skipping this rig for this cycle" >&2
     continue
   fi
   rig_tsv="$(printf '%s' "$rig_lanes_json" | filter_lanes_json)"

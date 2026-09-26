@@ -708,6 +708,61 @@ unset STUB_BDCLOSE_FAIL_rb_open
 assert_eq "0" "$rc" "close_if_open's own return code stays 0 even on a bd close failure (con-voyage-pr-watch.sh calls this under set -e as a bare statement)"
 
 # ---------------------------------------------------------------------------
+# cv_with_timeout (fk-rri7q LOW-D): portable poll+kill call bound for hosts
+# with no `timeout(1)` binary. CASE "kill" uses a REAL sleep and a REAL
+# wall-clock measurement — proving an actual process was actually killed,
+# not just that the logic looks right on paper. The hung fixture is a plain
+# `sleep` (not `sh -c 'sleep N; ...'`): every real caller in this pack wraps a
+# single external binary directly, matching cv_with_timeout's own documented
+# grandchild-process limitation, and a shell-wrapped grandchild would still
+# outlive the kill regardless of what this test is trying to prove here.
+# ---------------------------------------------------------------------------
+start_case "cv_with_timeout: a command that finishes within the bound passes through output and exit status"
+out="$(cv_with_timeout 5 sh -c 'printf ok; exit 3')"
+rc=$?
+assert_eq "ok" "$out" "stdout passes through unchanged"
+assert_eq "3" "$rc" "the command's own exit status passes through unchanged"
+
+start_case "cv_with_timeout: a hung command is killed at the bound, not left to run to completion"
+t0=$(date +%s)
+out="$(cv_with_timeout 1 sleep 20)"
+rc=$?
+t1=$(date +%s)
+elapsed=$((t1 - t0))
+assert_eq "124" "$rc" "a killed command reports 124 (matching the timeout(1) convention)"
+if [ "$elapsed" -lt 10 ]; then
+  echo "  PASS: returned in ${elapsed}s — well before the hung command's own 20s sleep (real kill, not just correct-looking logic)"
+else
+  echo "  FAIL: took ${elapsed}s — the bound did not actually cut the hung command short" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
+start_case "cv_with_timeout: a malformed SECONDS runs the command with no bound (fail-open on bad config)"
+out="$(cv_with_timeout not-a-number echo hi)"
+assert_eq "hi" "$out" "a non-numeric bound still runs the command and returns its output"
+
+start_case "cv_with_timeout: an empty SECONDS runs the command with no bound"
+out="$(cv_with_timeout '' echo hi)"
+assert_eq "hi" "$out" "an empty bound still runs the command and returns its output"
+
+start_case "cv_with_timeout: a zero/negative SECONDS runs the command with no bound"
+out="$(cv_with_timeout 0 echo hi)"
+assert_eq "hi" "$out" "a zero bound still runs the command and returns its output"
+
+start_case "cv_with_timeout: a fast command returns promptly, not after the full bound"
+t0=$(date +%s)
+out="$(cv_with_timeout 20 echo fast)"
+t1=$(date +%s)
+elapsed=$((t1 - t0))
+assert_eq "fast" "$out" "output passes through"
+if [ "$elapsed" -lt 5 ]; then
+  echo "  PASS: returned in ${elapsed}s — did not wait for the full 20s bound"
+else
+  echo "  FAIL: took ${elapsed}s — a fast command should not be held up by the polling bound" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
+# ---------------------------------------------------------------------------
 # zsh portability (fk-k14n REWORK — operator PR comment + new bug report):
 # `status` is a special/read-only parameter in zsh (it mirrors `$?`), so
 # `local status` followed by an assignment (`status="$x"` or
@@ -784,6 +839,24 @@ path = "${ZRIG_B}"
 SITE_TOML
   zsh_result="$(GC_CITY="$ZSH_CITY" zsh -c "source '$LIB'; cv_extra_rig_state_dirs '${ZRIG_B}/.gc/cv-pr-watch'" 2>/dev/null | sort)"
   assert_eq "${ZRIG_A}/.gc/cv-pr-watch" "$zsh_result" "under zsh: rig-a's dir is printed, rig-b's is skipped as the passed-in primary"
+
+  start_case "cv_with_timeout under zsh: passes through output/status and actually kills a hung command"
+  zsh_out="$(zsh -c "source '$LIB'; cv_with_timeout 5 sh -c 'printf ok; exit 3'")"
+  zsh_rc=$?
+  assert_eq "ok" "$zsh_out" "cv_with_timeout under zsh passes through stdout"
+  assert_eq "3" "$zsh_rc" "cv_with_timeout under zsh passes through the command's exit status"
+  zsh_t0=$(date +%s)
+  zsh -c "source '$LIB'; cv_with_timeout 1 sleep 20" >/dev/null 2>&1
+  zsh_rc2=$?
+  zsh_t1=$(date +%s)
+  zsh_elapsed=$((zsh_t1 - zsh_t0))
+  assert_eq "124" "$zsh_rc2" "cv_with_timeout under zsh reports 124 on a real kill"
+  if [ "$zsh_elapsed" -lt 10 ]; then
+    echo "  PASS: cv_with_timeout under zsh returned in ${zsh_elapsed}s, not the hung command's full 20s"
+  else
+    echo "  FAIL: cv_with_timeout under zsh took ${zsh_elapsed}s — the bound did not actually apply" >&2
+    FAILURES=$((FAILURES+1))
+  fi
 fi
 
 echo

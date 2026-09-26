@@ -1272,3 +1272,80 @@ finalize_write() {
     printf 'last_phase=%s\n' "$last_phase"
   } > "$f"
 }
+
+# ===========================================================================
+# PORTABLE CALL TIMEOUT (fk-rri7q LOW-D follow-up to fk-jsdw2)
+#
+# Several hosts running this pack have no `timeout(1)` binary at all (this is
+# a real, observed environment, not a hypothetical), so a fanned-out external
+# call (one `gc ... bd list` per registered rig, in con-voyage-review-
+# watchdog.sh) had no way to bound a single hung store — one stuck NFS mount
+# or long writer lock could stall an entire discovery cycle. cv_with_timeout
+# is a minimal background+kill reimplementation for those hosts.
+# ===========================================================================
+
+# cv_with_timeout SECONDS CMD [ARGS...] — run CMD with a wall-clock bound.
+# CMD's stdout/stderr pass through unchanged. Returns CMD's own exit status if
+# it finishes within SECONDS; if it has to be killed, returns 124 (the same
+# convention GNU coreutils' `timeout` uses for its own kill case, so a caller
+# already familiar with that tool reads this the same way) — this is a
+# best-effort mapping, not full parity with the real tool: a command that
+# happens to die from an unrelated signal of its own is also reported as 124,
+# since this cannot tell the two apart.
+#
+# FAIL-SAFE: a malformed or non-positive SECONDS runs CMD with NO timeout at
+# all (fail-open on bad config — a caller cannot be given a bound it did not
+# actually ask for) rather than guessing at a default the caller never chose;
+# each caller (e.g. con-voyage-review-watchdog.sh's CV_LENS_STORE_TIMEOUT_SECONDS)
+# owns coercing its own env var to a sane default before calling this.
+#
+# KNOWN LIMITATION: this signals CMD's own PID plus its DIRECT children (via
+# `pgrep -P`, when available) — not a full process-group/tree kill. A CMD that
+# forks a child which itself forks further descendants of its own (a
+# grandchild two levels down from CMD) can still outlive the bound. Every real
+# caller in this pack wraps a single external binary directly (the `gc` CLI)
+# expected to make at most one level of internal subprocess call, so this is
+# not a hypothetical gap being papered over — it is what this function's own
+# tests exercise directly (a stub that forks `sleep` as a real child, the same
+# shape as anything that shells out once internally).
+#
+# Portable poll+kill implementation (no `timeout(1)`, no background "watcher"
+# process of its own — an earlier version used a sibling `sleep`-then-kill
+# subshell, but killing that subshell while ITS OWN sleep was still active
+# left the sleep as an orphan holding the caller's command-substitution pipe
+# open for however long was left of the bound, which reproduces as a real,
+# multi-second hang, not just a theoretical one). Polling in THIS function's
+# own shell instead means every `sleep 1` here always completes on its own
+# before the next check — nothing of this function's own ever gets killed
+# mid-sleep, so it can never orphan anything itself. Works identically under
+# bash and zsh (`kill -0`/`wait`/`sleep` are POSIX, not bash-only).
+cv_with_timeout() {
+  local secs="$1"; shift
+  case "$secs" in
+    *[!0-9]*|'') secs="" ;;
+  esac
+  if [ -z "$secs" ] || [ "$secs" -le 0 ]; then
+    "$@"
+    return "$?"
+  fi
+  "$@" &
+  local cmd_pid=$!
+  local waited=0
+  while kill -0 "$cmd_pid" 2>/dev/null; do
+    if [ "$waited" -ge "$secs" ]; then
+      if command -v pgrep >/dev/null 2>&1; then
+        local child_pid
+        for child_pid in $(pgrep -P "$cmd_pid" 2>/dev/null); do
+          kill -TERM "$child_pid" 2>/dev/null
+        done
+      fi
+      kill -TERM "$cmd_pid" 2>/dev/null
+      wait "$cmd_pid" 2>/dev/null
+      return 124
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  wait "$cmd_pid" 2>/dev/null
+  return "$?"
+}
