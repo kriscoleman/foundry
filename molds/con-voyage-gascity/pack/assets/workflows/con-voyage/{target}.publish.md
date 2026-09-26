@@ -94,6 +94,19 @@ If push is true:
     "$CV_GUARD" guard "$(pwd)" "origin/${BASE_BRANCH}" || { echo "hygiene violation detected — fix it before pushing" >&2; exit 1; }
   fi
   ```
+- A source-anchor worktree can still reach this step on a detached HEAD
+  (fk-tazxl: build's own `ensure-branch` call may predate this fix on an
+  older worktree, or a non-con-voyage path fed this one) — there is no ref to
+  push otherwise. Attach a branch now, using the same `con-voyage/<convoy-id>`
+  convention `{target}.build.md` uses, or fail loud rather than silently push
+  nothing:
+
+  ```bash
+  if [ -n "$CV_GUARD" ] && [ -x "$CV_GUARD" ]; then
+    "$CV_GUARD" ensure-branch "$(pwd)" "con-voyage/${CONVOY_ID}" \
+      || { echo "worktree is on a detached HEAD and no branch could be attached — refusing to push nothing" >&2; exit 1; }
+  fi
+  ```
 - Push the work branch to origin using create-if-absent or lease-checked
   semantics. Fail closed if the remote cannot enforce atomic or lease-safe
   push.

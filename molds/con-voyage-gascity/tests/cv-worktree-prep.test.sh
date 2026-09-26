@@ -640,6 +640,77 @@ run_script resolve-base
 assert_eq "1" "$RC" "resolve-base with no directory argument fails usage validation"
 
 # ===========================================================================
+# CASE 29 — `ensure-branch` (fk-tazxl): con-voyage's build phase commits in a
+#   freshly `git worktree add --detach HEAD` worktree (see prepare-build.md)
+#   and never attaches a branch, so publish later finds a detached HEAD and
+#   silently pushes nothing. `ensure-branch <dir> [branch-name]` is the fix
+#   primitive both build.md (root cause) and publish.md (backstop) call:
+#   attach a branch at the current commit when detached, no-op when already
+#   on one, and fail loud rather than silently move an existing same-named
+#   branch that points somewhere else.
+# ===========================================================================
+start_case "29a: ensure-branch creates and attaches a branch on a fresh detached worktree"
+REPO29="$(mk_repo repo29)"
+WT29="${SANDBOX}/repo29-worktree"
+git_c "$REPO29" worktree add -q --detach "$WT29" HEAD
+head_commit_29="$(git_c "$WT29" rev-parse HEAD)"
+run_script ensure-branch "$WT29" "con-voyage/fk-test1"
+assert_eq "0" "$RC" "ensure-branch exits 0 on a fresh detached worktree"
+assert_eq "con-voyage/fk-test1" "$(git_c "$WT29" branch --show-current)" "the requested branch is now checked out"
+assert_eq "$head_commit_29" "$(git_c "$WT29" rev-parse HEAD)" "HEAD's commit is unchanged by attaching the branch"
+
+start_case "29b: ensure-branch derives a default name from the directory basename when none is given"
+REPO29B="$(mk_repo repo29b)"
+WT29B="${SANDBOX}/worktrees/fk-derived"
+mkdir -p "$(dirname "$WT29B")"
+git_c "$REPO29B" worktree add -q --detach "$WT29B" HEAD
+run_script ensure-branch "$WT29B"
+assert_eq "0" "$RC" "ensure-branch with no name argument still exits 0"
+assert_eq "con-voyage/fk-derived" "$(git_c "$WT29B" branch --show-current)" "default branch name is con-voyage/<basename of dir>"
+
+start_case "29c: ensure-branch is a no-op when the worktree is already on a branch"
+REPO29C="$(mk_repo repo29c)"
+git_c "$REPO29C" checkout -q -b existing-work
+run_script ensure-branch "$REPO29C" "con-voyage/should-not-be-used"
+assert_eq "0" "$RC" "ensure-branch exits 0 when already on a branch"
+assert_eq "existing-work" "$(git_c "$REPO29C" branch --show-current)" "the pre-existing branch is left checked out, not swapped for the requested name"
+
+start_case "29d: ensure-branch reattaches an existing same-named branch that already points at HEAD's commit"
+REPO29D="$(mk_repo repo29d)"
+WT29D="${SANDBOX}/repo29d-worktree"
+git_c "$REPO29D" worktree add -q --detach "$WT29D" HEAD
+same_commit="$(git_c "$WT29D" rev-parse HEAD)"
+git_c "$REPO29D" branch "con-voyage/repo29d-worktree" "$same_commit"
+run_script ensure-branch "$WT29D" "con-voyage/repo29d-worktree"
+assert_eq "0" "$RC" "ensure-branch exits 0 reattaching a same-commit existing branch"
+assert_eq "con-voyage/repo29d-worktree" "$(git_c "$WT29D" branch --show-current)" "the existing branch is checked out"
+
+start_case "29e: ensure-branch fails loud rather than move an existing same-named branch pointing elsewhere"
+REPO29E="$(mk_repo repo29e)"
+WT29E="${SANDBOX}/repo29e-worktree"
+git_c "$REPO29E" worktree add -q --detach "$WT29E" HEAD
+git_c "$REPO29E" checkout -q -b "con-voyage/taken"
+printf 'other work\n' > "${REPO29E}/other.go"
+git_c "$REPO29E" add other.go
+git_c "$REPO29E" commit -q -m "feat: unrelated work on the taken branch name"
+git_c "$REPO29E" checkout -q main
+head_before_29e="$(git_c "$WT29E" rev-parse HEAD)"
+run_script ensure-branch "$WT29E" "con-voyage/taken"
+if [ "$RC" -ne 0 ]; then pass "ensure-branch exits non-zero when the requested name is taken by a different commit"; else fail "expected ensure-branch to fail loud on a name collision"; fi
+if [ -z "$(git_c "$WT29E" branch --show-current)" ]; then
+  pass "the worktree is left detached, not silently moved onto the wrong branch"
+else
+  fail "ensure-branch should not have attached the worktree to any branch on a collision"
+fi
+assert_eq "$head_before_29e" "$(git_c "$WT29E" rev-parse HEAD)" "HEAD's commit is unchanged after the failed attempt"
+
+start_case "29f: ensure-branch validates its arguments the same way exclude/guard/dirty/built do"
+run_script ensure-branch "$NOTGIT" "con-voyage/x"
+if [ "$RC" -ne 0 ]; then pass "ensure-branch exits non-zero for a non-git directory"; else fail "expected non-zero exit for a non-git directory"; fi
+run_script ensure-branch
+if [ "$RC" -ne 0 ]; then pass "ensure-branch exits non-zero with no directory argument"; else fail "expected non-zero exit with no directory argument"; fi
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 echo

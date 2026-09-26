@@ -143,6 +143,37 @@ assert_contains "$BUILD_MD" "TDD: a failing test first, then the code to pass it
 start_case "build.md: never pushes or opens a PR (that is publish's job only)"
 assert_contains "$BUILD_MD" "Do not push or open a PR from this step" "explicitly defers push/PR to the publish step"
 
+start_case "build.md: fresh-build path attaches a named branch after committing (fk-tazxl: detached HEAD -> publish silently pushes nothing)"
+assert_contains "$BUILD_MD" '"$CV_GUARD" ensure-branch "$WORKTREE" "con-voyage/${CONVOY_ID}"' "calls cv-worktree-prep.sh ensure-branch with the deterministic con-voyage/<convoy-id> name"
+assert_contains "$BUILD_MD" "publish would find a detached HEAD and silently push nothing" "fails loud (does not silently continue) when ensure-branch itself fails"
+
+start_case "build.md: the ensure-branch call runs AFTER the TDD commit, not before"
+# Two ensure-branch call sites exist by design (short-circuit and fresh-build
+# sections), so scope this to the occurrence strictly after the commit line
+# rather than "the first occurrence in the file" (which would be the
+# short-circuit section's, sitting earlier in the file).
+commit_line="$(grep -n 'git commit -m "<conventional-commit message for the requested change>"' "$BUILD_MD" | head -1 | cut -d: -f1)"
+ensure_branch_line="$(awk -v start="${commit_line:-0}" 'NR>start && /"\$CV_GUARD" ensure-branch "\$WORKTREE"/{print NR; exit}' "$BUILD_MD")"
+if [ -n "$commit_line" ] && [ -n "$ensure_branch_line" ]; then
+  echo "  PASS: ensure-branch call (line ${ensure_branch_line}) comes after the TDD commit (line ${commit_line})"
+else
+  echo "  FAIL: expected an ensure-branch call after the TDD commit line" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
+start_case "build.md: short-circuit path also ensures a named branch (a reused pre-built worktree can still be detached)"
+assert_contains "$BUILD_MD" "attach a named branch to the pre-built commit" "short-circuit path calls ensure-branch on the reused worktree, not just the fresh-build path"
+short_circuit_heading_line="$(grep -n '^## Short-circuit: a pre-built branch already exists' "$BUILD_MD" | head -1 | cut -d: -f1)"
+short_circuit_ensure_line="$(grep -n 'attach a named branch to the pre-built commit' "$BUILD_MD" | head -1 | cut -d: -f1)"
+fresh_heading_line="$(grep -n '^## Fresh bead: run the first TDD implementation round' "$BUILD_MD" | head -1 | cut -d: -f1)"
+if [ -n "$short_circuit_heading_line" ] && [ -n "$short_circuit_ensure_line" ] && [ -n "$fresh_heading_line" ] \
+  && [ "$short_circuit_heading_line" -lt "$short_circuit_ensure_line" ] && [ "$short_circuit_ensure_line" -lt "$fresh_heading_line" ]; then
+  echo "  PASS: the short-circuit ensure-branch call sits inside the Short-circuit section, before Fresh bead"
+else
+  echo "  FAIL: expected the short-circuit ensure-branch call between the Short-circuit and Fresh bead headings" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
 start_case "setup-con-voyage-review.md: reads the build phase's resolution instead of assuming a branch already exists"
 assert_contains "$SETUP_MD" "gc.build.source_anchor_id" "reads source_anchor_id from the workflow root"
 assert_contains "$SETUP_MD" "gc.build.source_anchor_work_dir" "reads source_anchor_work_dir from the workflow root"
