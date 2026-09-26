@@ -71,11 +71,43 @@ A Gas City pack containing:
   implementor, posting reviewer verdicts to the PR with `[<rig>/<agent> — <lens>]`
   identity prefixes, and enforcing the never-merge posture.
 
+- **`gc-slack` shared skill** (`packs/con-voyage/skills/gc-slack/`) — a
+  binding-qualified skill (`con-voyage.gc-slack` once the pack is imported)
+  teaching any agent in the city — not just the mayor — how to send and read
+  Slack messages through an imported Slack pack's `gc slack` CLI: replying,
+  reacting, posting proactively, and delegating, plus the CLI's sharp edges
+  (session id vs. alias, `--conversation-id` on multi-binding sessions,
+  `--thread-current` vs. `--reply-to`, etc). See "Pack-shared skills vs. the
+  Claude Code skill" below for how this differs from item 2.
+
 ### 2. A thin `/con-voyage` Claude Code skill (`.claude/skills/con-voyage/`)
 
 An ergonomic `/con-voyage <issue|bead|"desc"> <rig>` launcher for human Claude Code
 sessions and the mayor itself. It verifies the pack is imported, does intake, helps
 select the roster, and slings the formula. All heavy orchestration lives in the pack.
+
+### Pack-shared skills vs. the Claude Code skill
+
+Two different directories in this mold are both named `skills/`, and they
+reach completely different audiences:
+
+- **`pack/skills/<name>/SKILL.md`** (inside the pack) casts to
+  `packs/con-voyage/skills/<name>/`. Once the pack is imported
+  (`gc import add ./packs/con-voyage`), `gc` materializes it to every agent's
+  provider skill directory as a binding-qualified shared skill
+  (`con-voyage.<name>`) — the same mechanism the bundled `core` pack uses for
+  `core.gc-mail` / `core.gc-work`. Use this location for anything any agent
+  in the city should be able to reach.
+- **Mold-root `skills/<name>/SKILL.md`** (sibling to `pack/`, mapped by
+  `flux.yaml`'s `output.skills.dest: .claude/skills`) casts straight to
+  `.claude/skills/<name>/` in the target city root. It is never part of the
+  imported pack, so it only ever reaches human Claude Code sessions (including
+  the mayor's own Claude Code session) — never a worker or reviewer-lens
+  agent running under a different provider. The `/con-voyage` launcher above
+  is the only skill of this kind today.
+
+Run `gc skill list` from inside a target city to see both: city pack skills,
+and imported pack shared skills under their binding-qualified name.
 
 ### Never-merge posture
 
