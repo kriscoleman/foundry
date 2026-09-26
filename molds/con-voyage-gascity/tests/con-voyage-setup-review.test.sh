@@ -66,6 +66,24 @@ count_of() {
   grep -cF -- "$1" "$SETUP_REVIEW_MD"
 }
 
+# Counts occurrences of $1 on a line immediately followed by a line equal to
+# $2. Used instead of a bare whole-file count_of for the CV_LIB lookup idiom:
+# fk-qppb4's base-branch resolution block (unrelated to RIG_ROOT) reuses the
+# exact same command-v/find idiom for its own CV_LIB lookup, so a raw
+# occurrence count drifts upward as other blocks adopt it. Pairing with the
+# RIG_ROOT="" line that only this fix's two blocks emit keeps the assertion
+# scoped to what CASE 2 actually verifies.
+count_of_adjacent_pair() {
+  local first="$1" second="$2" prev="" line count=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ "$prev" = "$first" ] && [ "$line" = "$second" ]; then
+      count=$((count+1))
+    fi
+    prev="$line"
+  done < "$SETUP_REVIEW_MD"
+  printf '%s' "$count"
+}
+
 # ===========================================================================
 # CASE 1 — Neither ensure-script invocation still passes the CITY root where
 #   a rig root is required. This is the actual bug: ${GC_CITY:-.} is a
@@ -88,7 +106,7 @@ assert_contains 'CV_LIB="$(command -v con-voyage-lib.sh 2>/dev/null || find "${G
 assert_contains 'RIG_ROOT="$(source "$CV_LIB" && cv_default_rig_root)"' "sources the lib and calls cv_default_rig_root() for the resolved value"
 assert_contains '[ -n "${RIG_ROOT:-}" ] || RIG_ROOT="${GC_CITY:-.}"' "falls back to GC_CITY when CV_LIB is empty or the source+call produced nothing"
 
-lib_lookup_count="$(count_of 'CV_LIB="$(command -v con-voyage-lib.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"')"
+lib_lookup_count="$(count_of_adjacent_pair 'CV_LIB="$(command -v con-voyage-lib.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"' 'RIG_ROOT=""')"
 resolve_count="$(count_of 'RIG_ROOT="$(source "$CV_LIB" && cv_default_rig_root)"')"
 if [ "$lib_lookup_count" -eq 2 ] && [ "$resolve_count" -eq 2 ]; then
   echo "  PASS: both the gate-scripts block and the validator block resolve RIG_ROOT independently (each fenced block is self-contained, matching this file's existing per-block re-derivation idiom)"
