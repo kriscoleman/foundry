@@ -94,6 +94,12 @@
 #                   operator's default) or merge (explicit opt-in only). This
 #                   is a rig-level config knob — set it once in
 #                   con-voyage-pr-watch.toml's [order.env], not per invocation.
+#   CV_LOCK_STALE_SECONDS  Seconds after which a held per-dedup_key lock is
+#                   presumed abandoned (crashed holder) and stolen rather than
+#                   left to wedge that PR's record forever. Default: 300 (5
+#                   minutes) — same default and semantics as
+#                   con-voyage-repair-watchdog.sh, which shares this lock
+#                   implementation (con-voyage-lib.sh).
 #
 # Exit codes:
 #   0 — completed (some or all monitors may have had no actionable PRs)
@@ -126,6 +132,7 @@ CV_IMPLEMENTOR="${CV_IMPLEMENTOR:-gc.implementation-worker}"
 # at each use site, so every configuration knob resolves in one place.
 CV_AUTHOR_GATE="${CV_AUTHOR_GATE:-enabled}"
 CV_CONFLICT_STRATEGY="${CV_CONFLICT_STRATEGY:-rebase}"
+CV_LOCK_STALE_SECONDS="${CV_LOCK_STALE_SECONDS:-300}"
 
 # AUTHOR SCOPING (see HARD INVARIANT in the header). The single GitHub login
 # whose PRs this monitor may act on. Defaults to the authenticated gh login.
@@ -146,6 +153,16 @@ CV_PR_AUTHOR="${CV_PR_AUTHOR:-}"
 # with the BANNER prefix cv-pr-comment.sh actually emits — see that script's
 # own copy of this same literal string.
 CV_AGENT_PREFIX_PATTERN='^🤖 \*\*Automated con-voyage agent\*\*'
+
+# A malformed CV_LOCK_STALE_SECONDS override must never silently break the
+# stale-lock steal check in acquire_lock (con-voyage-lib.sh) — a non-numeric
+# value already fails safe there (the python age comparison never matches, so
+# a stale lock is simply never stolen), but coercing to the documented default
+# here keeps this script's posture identical to
+# con-voyage-repair-watchdog.sh, which shares the same lock implementation.
+case "$CV_LOCK_STALE_SECONDS" in
+  *[!0-9]*|'') CV_LOCK_STALE_SECONDS="300" ;;
+esac
 
 # ---------------------------------------------------------------------------
 # Preflight checks
@@ -211,6 +228,339 @@ mkdir -p "$CV_STATE_DIR"
 # con-voyage-lib.sh for the authoritative field-by-field state-record doc
 # comment. Shared with con-voyage-repair-watchdog.sh (fk-wgqp Fix 2), which
 # reads and writes the SAME state records.
+
+# process_pr_record — evaluate and, if needed, act on exactly one backfill
+# result (clean or actionable) from PART A's current cycle. Reads the a_*
+# fields the main loop just parsed as globals (a_owner, a_repo, a_num,
+# a_title, a_branch, a_sha, a_route, a_failure_kind, a_actionable, a_full,
+# a_dedup_key) and this PR's per-dedup_key state record. Called with that
+# record's lock already held (fk-8b5fl: two concurrent pr-watch cycles could
+# both read the same state record before either wrote back, and both mint a
+# fallback repair bead for the same PR — acquire_lock/release_lock now live
+# in con-voyage-lib.sh, lifted from the same fk-11yuv mechanism
+# con-voyage-repair-watchdog.sh already used, so both scripts share ONE lock
+# implementation instead of each keeping a copy). Every early-out below is a
+# `return` (not `continue` — this now runs inside a function, not the loop
+# body directly) so the caller's lock release always runs regardless of which
+# path this takes.
+process_pr_record() {
+  # CLEAN (non-actionable) PR (Task 5, re-detection, req 4): refresh the
+  # per-PR state record to last_handled_state=clean so a LATER re-conflict
+  # is detected as a real change instead of being compared against stale
+  # pre-clean bookkeeping forever. No bead/comment is ever created here —
+  # this is local bookkeeping only, so it is not author-gated. Skip the
+  # write once already recorded clean (avoids a `bd show`/write every
+  # cycle for a long-stable clean PR).
+  if [ "$a_actionable" != "1" ]; then
+    state_read "$a_dedup_key"
+    if [ "$ST_LAST_STATE" != "clean" ]; then
+      clean_implementor="$ST_IMPLEMENTOR"
+      if [ -n "${ST_INFLIGHT// /}" ]; then
+        # Req 2 parity (finding #4, fk-4o74 Fix-1 round 1): adopt a
+        # fallback bead's claimant as the implementor here too, same as
+        # the main dispatch path below — otherwise a PR that goes clean
+        # in the same window a pool worker claimed its fallback bead
+        # drops that claimant's identity, costing one extra needless
+        # fallback on a later re-conflict.
+        IFS=$'\x1f' read -r _ clean_tracked_assignee <<< "$(bead_status "$ST_INFLIGHT" assignee)"
+        if [ -z "${clean_implementor// /}" ] && [ -n "${clean_tracked_assignee// /}" ]; then
+          clean_implementor="$clean_tracked_assignee"
+        fi
+        close_if_open "$ST_INFLIGHT" "superseded: ${a_full}#${a_num} is now clean" "${a_full}#${a_num} is now clean"
+      fi
+      # Clean means no in-flight rework, so the redispatch-context fields
+      # (repair_route/repo_full/pr_number/branch) and the watchdog's own
+      # attempt_count/escalated bookkeeping are irrelevant — reset them
+      # rather than carrying stale values forward. pr_author is left
+      # empty too: this branch never resolves it (no `gh pr view` call),
+      # and it is meaningless without an in-flight rework to guard.
+      state_write "$a_dedup_key" "$clean_implementor" "" "clean" "" "" "" "" "" "0" "0" ""
+    fi
+    return
+  fi
+
+  if [ -z "$a_failure_kind" ]; then
+    echo "con-voyage-pr-watch: [PART A] WARNING: ${a_full}#${a_num} is actionable but its state/failed_checks did not classify into a known failure_kind (checks_failed|merge_conflict|behind_base|blocked); skipping rather than minting an undifferentiated bead" >&2
+    return
+  fi
+
+  # Resolve the PR author AND the review/mergeability signals needed for
+  # the ACTIONABLE FILTER (C6) below, in ONE gh call. The report JSON has
+  # none of these fields, so we always ask gh directly.
+  pr_view_json=$("$GH" pr view "$a_num" --repo "$a_full" \
+    --json author,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup 2>/dev/null || echo "")
+
+  # shellcheck disable=SC2016
+  _PY_REVIEW_GATE='
+import sys, json
+
+SEP = "\x1f"
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = {}
+if not isinstance(d, dict):
+    d = {}
+
+author = (d.get("author") or {}).get("login", "") or ""
+review_decision = d.get("reviewDecision", "") or ""
+mergeable = d.get("mergeable", "") or ""
+merge_state_status = d.get("mergeStateStatus", "") or ""
+checks = d.get("statusCheckRollup") or []
+
+def is_green(c):
+    conclusion = c.get("conclusion")
+    if conclusion is not None:
+        return str(conclusion).upper() in ("SUCCESS", "NEUTRAL", "SKIPPED")
+    state = c.get("state")
+    if state is not None:
+        return str(state).upper() == "SUCCESS"
+    return False
+
+checks_green = all(is_green(c) for c in checks)
+
+skip_awaiting_human = (
+    review_decision == "REVIEW_REQUIRED"
+    and mergeable == "MERGEABLE"
+    and merge_state_status != "BEHIND"
+    and checks_green
+)
+
+print(author + SEP + ("1" if skip_awaiting_human else "0"))
+'
+  pr_view_fields=$(printf '%s' "$pr_view_json" | python3 -c "$_PY_REVIEW_GATE" 2>/dev/null || printf '\x1f0')
+  IFS=$'\x1f' read -r pr_author skip_awaiting_human <<< "$pr_view_fields"
+
+  # AUTHOR FILTER — the airtight gate. Anything that is not exactly
+  # CV_PR_AUTHOR (including an unresolved/empty author) is dropped.
+  if [ "$pr_author" != "$CV_PR_AUTHOR" ]; then
+    echo "con-voyage-pr-watch: [PART A] DROP ${a_full}#${a_num} (author='${pr_author:-<unresolved>}' != '${CV_PR_AUTHOR}') — no repair bead created"
+    return
+  fi
+
+  # ACTIONABLE FILTER (C6): con-voyage PRs never auto-merge, so once every
+  # real defect is resolved (CI green, mergeable, branch up to date) a PR
+  # ends in reviewDecision=REVIEW_REQUIRED forever — that is a human-review
+  # wait state, not something a machine can fix (live incident: #10494, 48
+  # green checks + MERGEABLE, blocked solely on REVIEW_REQUIRED). Gate on
+  # failure_kind == "blocked" only: checks_failed/merge_conflict/
+  # behind_base already mean a real defect exists and must still be
+  # repaired regardless of review state (review state alone must never
+  # suppress a real defect).
+  if [ "$a_failure_kind" = "blocked" ] && [ "$skip_awaiting_human" = "1" ]; then
+    echo "con-voyage-pr-watch: [PART A] SKIP ${a_full}#${a_num} — awaiting human review only (CI green, MERGEABLE, branch up to date, reviewDecision=REVIEW_REQUIRED); not a repair"
+    return
+  fi
+
+  # Survivor: author matches and there is a real defect to repair. Create
+  # ONE deduped repair bead. The title is
+  # state-aware (names the classified failure_kind) so the bead is
+  # self-describing without opening it (R5.5).
+  repair_title="Repair GitHub PR ${a_full}#${a_num} (${a_failure_kind}): ${a_title}"
+  dedup_key="$a_dedup_key"
+
+  if [ -z "$a_route" ]; then
+    echo "con-voyage-pr-watch: [PART A] WARNING: ${a_full}#${a_num} has no repair_route in backfill result; cannot create bead safely; skipping" >&2
+    return
+  fi
+
+  # Load this PR's per-PR repair state (Task 1/2, fk-4o74 Fix 1):
+  # implementor_session (the worker mail send --notify should reach directly),
+  # inflight_rework (a tracked bead id, when the last dispatch used the
+  # pool fallback), last_handled_state (the failure_kind — or "clean" —
+  # this monitor last reacted to for this PR).
+  state_read "$dedup_key"
+  st_implementor="$ST_IMPLEMENTOR"
+  st_inflight="$ST_INFLIGHT"
+  st_last_state="$ST_LAST_STATE"
+
+  tracked_status=""
+  tracked_assignee=""
+  if [ -n "${st_inflight// /}" ]; then
+    IFS=$'\x1f' read -r tracked_status tracked_assignee <<< "$(bead_status "$st_inflight" assignee)"
+  fi
+
+  # Req 2 ("the new worker becomes the implementor"): once a fallback-slung
+  # bead's claimant becomes known (gc sets `assignee` once a pool worker
+  # claims it — confirmed live, see Task 0 findings), adopt it as this
+  # PR's implementor so future cycles reuse it instead of falling back
+  # again.
+  if [ -z "${st_implementor// /}" ] && [ -n "${tracked_assignee// /}" ]; then
+    st_implementor="$tracked_assignee"
+  fi
+
+  # DE-DUPLICATION + RE-DETECTION (Task 4/5, fk-4o74 Fix 1; PR-NUMBER-ONLY
+  # keying, FIX-C fk-zyh5): a repair is genuinely in-flight while the
+  # tracked bead (if any) is still open — status alone gates it, NOT
+  # assignee and NOT failure_kind. A pool-slung bead sits with an EMPTY
+  # assignee for an unbounded time before a worker claims it (confirmed
+  # live: vandoor #10494 — see the design doc and Task 0 findings), so
+  # requiring a live assignee here is exactly the bug that made the
+  # monitor re-mint every cycle.
+  #
+  # A failure_kind CHANGE while the tracked bead is still open no longer
+  # supersedes+re-mints — that behavior implicitly keyed the in-flight
+  # check on (PR-number, failure_kind), and turned kots#6067's
+  # blocked<->checks_failed oscillation (a ~10min classifier cooldown)
+  # into one new orphaned bead per flip. The SAME bead is now updated in
+  # place (title + failure_kind metadata) so it reflects the current
+  # classification without spawning a second implementor for one PR.
+  # Mint fresh ONLY when no open repair bead is tracked for this PR.
+  tracked_open=0
+  if [ -n "${st_inflight// /}" ] && [ -n "$tracked_status" ] && [ "$tracked_status" != "closed" ]; then
+    tracked_open=1
+  fi
+
+  if [ "$tracked_open" -eq 1 ]; then
+    new_last_state="$st_last_state"
+    if [ "$st_last_state" = "$a_failure_kind" ]; then
+      echo "con-voyage-pr-watch: [PART A] SKIP ${a_full}#${a_num} @ ${a_sha} — repair genuinely in-flight (dedup: ${dedup_key}, last_handled_state=${st_last_state})"
+    # $st_inflight is an EXISTING, already-rig-prefixed repair bead
+    # (minted below with --rig "$a_rig"), not a fresh id — the same
+    # fk-7v3r bug class con-voyage-lib.sh's helpers hit: `--city` alone
+    # (no `--rig`) routes an already-rig-prefixed id to the CITY store
+    # instead of its owning rig's, so `bd update` silently "Issue not
+    # found"s every cycle (fk-mr07). Rely on cwd auto-detection instead,
+    # matching every other already-fixed bd call in this pack.
+    elif "$GC" bd update "$st_inflight" \
+      --title "$repair_title" \
+      --set-metadata "failure_kind=${a_failure_kind}" \
+      2>&1; then
+      echo "con-voyage-pr-watch: [PART A] UPDATE ${a_full}#${a_num} @ ${a_sha} — repair still in-flight on ${st_inflight} (dedup: ${dedup_key}); failure_kind ${st_last_state} -> ${a_failure_kind}"
+      new_last_state="$a_failure_kind"
+    else
+      echo "con-voyage-pr-watch: [PART A] WARNING: failed to update ${st_inflight} with the new failure_kind for ${a_full}#${a_num}; will retry next cycle" >&2
+    fi
+    # Persist the write-back (if any) even on a skip/update cycle, so a
+    # known implementor is not silently lost/re-derived every cycle. The
+    # tracked bead/implementor never change here — last_handled_state only
+    # advances once the update actually lands (a failed update is retried
+    # next cycle, mirroring the mint-failure discipline elsewhere in this
+    # loop). The extended fields (pr_author/repair_route/repo_full/
+    # pr_number/branch) and the watchdog's own attempt_count/escalated
+    # bookkeeping are carried forward unchanged from the state_read above
+    # — never reset here.
+    state_write "$dedup_key" "$st_implementor" "$st_inflight" "$new_last_state" \
+      "$ST_PR_AUTHOR" "$ST_REPAIR_ROUTE" "$ST_REPO_FULL" "$ST_PR_NUMBER" "$ST_BRANCH" \
+      "$ST_ATTEMPT_COUNT" "$ST_ESCALATED" "$ST_LAST_DISPATCH_AT"
+    return
+  fi
+
+  # Not in-flight (no tracked bead, or it is closed): sweep any leftover
+  # markers from the old per-head-sha scheme for this same PR (glob is
+  # dash-delimited so e.g. PR 1's marker never matches PR 11's), so
+  # orphans never pile up across the dedup-scheme upgrade from the old
+  # per-head-sha keying.
+  for stale_marker in "${CV_STATE_DIR}/${dedup_key}"-*.minted; do
+    [ -f "$stale_marker" ] || continue
+    stale_bead_id="$(cat "$stale_marker" 2>/dev/null || true)"
+    close_if_open "$stale_bead_id" "superseded: re-armed by a fresh PR-scoped repair mint for ${a_full}#${a_num}" "SUPERSEDE ${a_full}#${a_num}"
+    rm -f "$stale_marker"
+  done
+
+  echo "con-voyage-pr-watch: [PART A] KEEP ${a_full}#${a_num} (author='${pr_author}') — dispatching repair (dedup: ${dedup_key})"
+
+  # DISPATCH (Task 3, fk-4o74 Fix 1): every open con-voyage PR has exactly
+  # one live implementor responsible for it. Reuse it — mail + notify,
+  # the same durable-plus-wake path con-voyage already uses for review/CI
+  # feedback — while it is alive; NO new pool workflow in that case. Only
+  # when it is gone (or never known) do we fall back to spawning a fresh
+  # implementor via the pool con-voyage-ci-repair formula, which then
+  # becomes the PR's implementor once it claims the bead (see the
+  # write-back above).
+  dispatched=0
+  new_inflight=""
+  new_implementor="$st_implementor"
+  if [ -n "${st_implementor// /}" ] && implementor_alive "$st_implementor"; then
+    if "$GC" --city "$GC_CITY" mail send "$st_implementor" \
+      -s "Repair needed: ${a_full}#${a_num} (${a_failure_kind})" \
+      -m "PR ${a_full}#${a_num} (branch ${a_branch}) needs rework: ${a_failure_kind}. cv_pr_author=${CV_PR_AUTHOR} cv_author_gate=${CV_AUTHOR_GATE} cv_conflict_strategy=${CV_CONFLICT_STRATEGY}. ${a_title}" \
+      --notify 2>&1; then
+      dispatched=1
+      echo "con-voyage-pr-watch: [PART A] ${a_full}#${a_num}: routed rework to existing implementor ${st_implementor} (mail+notify, no new pool worker)"
+    else
+      echo "con-voyage-pr-watch: [PART A] WARNING: mail to implementor ${st_implementor} failed for ${a_full}#${a_num}; will retry next cycle" >&2
+    fi
+  else
+    # CROSS-RIG MINT GUARD (fk-4o74 Fix-1 round 1, finding #1): derive the
+    # target rig from the repair_route (the part BEFORE the first "/",
+    # e.g. "vandoor" from "vandoor/gc.implementation-worker") HERE,
+    # immediately before the fallback bd create — not up front. Only this
+    # fallback path mints a bead, and it MUST land in that rig so its
+    # prefix matches the sling target; otherwise gc rejects the sling
+    # with a "cross-rig routing" error (see PART A header). The
+    # reuse-dispatch path above (mail+notify to a live implementor) never
+    # mints a bead, so it never needed a rig — gating the whole PR on
+    # rig-derivation before even trying that path dropped mail delivery
+    # to a live implementor whenever repair_route happened to have no
+    # "<rig>/" prefix. A route with NO "/" gives us no rig to derive, so
+    # — mirroring the empty-a_route guard above — we skip the fallback
+    # mint with a WARNING rather than mis-home a bead in the city store
+    # that could never route.
+    a_rig="${a_route%%/*}"
+    if [ "$a_rig" = "$a_route" ] || [ -z "$a_rig" ]; then
+      echo "con-voyage-pr-watch: [PART A] WARNING: ${a_full}#${a_num} repair_route '${a_route}' has no '<rig>/' prefix; cannot derive a target rig; skipping fallback dispatch (would mis-home the repair bead and fail cross-rig routing)" >&2
+    else
+      # v2-formula mint (gc 1.4.1): con-voyage-ci-repair is a v2 workflow formula
+      # that references {{convoy_id}} (the repair bead id). Such a formula CANNOT
+      # be inline-created via `gc sling --on <formula> --title <text>` — gc rejects
+      # that with "inline text requires explicit target", because {{convoy_id}}
+      # has no bead to resolve against. The required form is:
+      #   gc sling <target> <BEAD> --on <formula> --var ...
+      # where <BEAD> is a PRE-CREATED bead. So we create the repair bead first,
+      # capture its id, then attach the formula to it and route it. {{convoy_id}}
+      # then resolves to that bead id inside the ci-repair prompt.
+      #
+      # --rig "$a_rig" is MANDATORY (see CROSS-RIG MINT GUARD above): it mints the
+      # bead in the target agent's rig so its prefix matches the sling target. With
+      # NO --rig the bead lands in the CITY store (prefix "rc") and the subsequent
+      # sling to a rig agent fails the cross-rig gate — the runtime bug this fixes.
+      # (--rig is a TOP-LEVEL gc flag; it must precede the `bd` subcommand.)
+      repair_bead_id=$("$GC" --city "$GC_CITY" --rig "$a_rig" bd create "$repair_title" \
+        --priority 1 \
+        --silent 2>/dev/null || true)
+
+      if [ -z "${repair_bead_id// /}" ]; then
+        echo "con-voyage-pr-watch: [PART A] WARNING: failed to create repair bead for ${a_full}#${a_num}; will retry next cycle" >&2
+      elif "$GC" --city "$GC_CITY" sling "$a_route" "$repair_bead_id" \
+        --on con-voyage-ci-repair \
+        --var "title=${a_title}" \
+        --var "pr=${a_num}" \
+        --var "repo=${a_full}" \
+        --var "branch=${a_branch}" \
+        --var "failure_kind=${a_failure_kind}" \
+        --var "cv_pr_author=${CV_PR_AUTHOR}" \
+        --var "cv_author_gate=${CV_AUTHOR_GATE}" \
+        --var "cv_conflict_strategy=${CV_CONFLICT_STRATEGY}" \
+        --var "repair_bead=${repair_bead_id}" \
+        2>&1; then
+        dispatched=1
+        new_inflight="$repair_bead_id"
+        new_implementor=""
+        echo "con-voyage-pr-watch: [PART A] ${a_full}#${a_num}: repair bead ${repair_bead_id} created/attached and routed to ${a_route} (fallback — no live implementor)"
+      else
+        echo "con-voyage-pr-watch: [PART A] WARNING: repair-bead sling failed for ${a_full}#${a_num} (bead ${repair_bead_id}); will retry next cycle" >&2
+        # Non-fatal: continue to next PR / Part B.
+      fi
+    fi
+  fi
+
+  # Record the state ONLY after a successful dispatch, so a failed
+  # mail/sling is retried next cycle rather than being silently suppressed.
+  # This is a FRESH problem cycle (a state change or a superseded prior
+  # attempt), so the watchdog's own bookkeeping resets: attempt_count=0,
+  # escalated=0. pr_author/a_route/a_full/a_num/a_branch are all resolved
+  # in THIS iteration (the only place this script has them), so this is
+  # also the only call site that ever populates the redispatch-context
+  # fields with real values. last_dispatch_at is stamped fresh here too
+  # (fk-lfan B1): for the mail-only reuse path (new_inflight empty), this
+  # is the ONLY staleness signal con-voyage-repair-watchdog.sh has — there
+  # is no tracked bead whose updated_at it can key on instead.
+  if [ "$dispatched" -eq 1 ]; then
+    state_write "$dedup_key" "$new_implementor" "$new_inflight" "$a_failure_kind" \
+      "$pr_author" "$a_route" "$a_full" "$a_num" "$a_branch" "0" "0" "$(now_iso8601)"
+  fi
+}
 
 # ---------------------------------------------------------------------------
 # PART A: CI-failure repair (author-scoped)
@@ -382,322 +732,14 @@ print("\x1f".join(str(f).replace("\x1f", " ").replace("\n", " ") for f in fields
       a_full="${a_owner}/${a_repo}"
       a_dedup_key="cv-ci-repair-${a_owner}-${a_repo}-${a_num}"
 
-      # CLEAN (non-actionable) PR (Task 5, re-detection, req 4): refresh the
-      # per-PR state record to last_handled_state=clean so a LATER re-conflict
-      # is detected as a real change instead of being compared against stale
-      # pre-clean bookkeeping forever. No bead/comment is ever created here —
-      # this is local bookkeeping only, so it is not author-gated. Skip the
-      # write once already recorded clean (avoids a `bd show`/write every
-      # cycle for a long-stable clean PR).
-      if [ "$a_actionable" != "1" ]; then
-        state_read "$a_dedup_key"
-        if [ "$ST_LAST_STATE" != "clean" ]; then
-          clean_implementor="$ST_IMPLEMENTOR"
-          if [ -n "${ST_INFLIGHT// /}" ]; then
-            # Req 2 parity (finding #4, fk-4o74 Fix-1 round 1): adopt a
-            # fallback bead's claimant as the implementor here too, same as
-            # the main dispatch path below — otherwise a PR that goes clean
-            # in the same window a pool worker claimed its fallback bead
-            # drops that claimant's identity, costing one extra needless
-            # fallback on a later re-conflict.
-            IFS=$'\x1f' read -r _ clean_tracked_assignee <<< "$(bead_status "$ST_INFLIGHT" assignee)"
-            if [ -z "${clean_implementor// /}" ] && [ -n "${clean_tracked_assignee// /}" ]; then
-              clean_implementor="$clean_tracked_assignee"
-            fi
-            close_if_open "$ST_INFLIGHT" "superseded: ${a_full}#${a_num} is now clean" "${a_full}#${a_num} is now clean"
-          fi
-          # Clean means no in-flight rework, so the redispatch-context fields
-          # (repair_route/repo_full/pr_number/branch) and the watchdog's own
-          # attempt_count/escalated bookkeeping are irrelevant — reset them
-          # rather than carrying stale values forward. pr_author is left
-          # empty too: this branch never resolves it (no `gh pr view` call),
-          # and it is meaningless without an in-flight rework to guard.
-          state_write "$a_dedup_key" "$clean_implementor" "" "clean" "" "" "" "" "" "0" "0" ""
-        fi
+      if ! acquire_lock "$a_dedup_key"; then
+        echo "con-voyage-pr-watch: [PART A] SKIP ${a_full}#${a_num} — locked by a concurrent pr-watch run (dedup: ${a_dedup_key})"
         continue
       fi
 
-      if [ -z "$a_failure_kind" ]; then
-        echo "con-voyage-pr-watch: [PART A] WARNING: ${a_full}#${a_num} is actionable but its state/failed_checks did not classify into a known failure_kind (checks_failed|merge_conflict|behind_base|blocked); skipping rather than minting an undifferentiated bead" >&2
-        continue
-      fi
+      process_pr_record
 
-      # Resolve the PR author AND the review/mergeability signals needed for
-      # the ACTIONABLE FILTER (C6) below, in ONE gh call. The report JSON has
-      # none of these fields, so we always ask gh directly.
-      pr_view_json=$("$GH" pr view "$a_num" --repo "$a_full" \
-        --json author,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup 2>/dev/null || echo "")
-
-      # shellcheck disable=SC2016
-      _PY_REVIEW_GATE='
-import sys, json
-
-SEP = "\x1f"
-try:
-    d = json.load(sys.stdin)
-except Exception:
-    d = {}
-if not isinstance(d, dict):
-    d = {}
-
-author = (d.get("author") or {}).get("login", "") or ""
-review_decision = d.get("reviewDecision", "") or ""
-mergeable = d.get("mergeable", "") or ""
-merge_state_status = d.get("mergeStateStatus", "") or ""
-checks = d.get("statusCheckRollup") or []
-
-def is_green(c):
-    conclusion = c.get("conclusion")
-    if conclusion is not None:
-        return str(conclusion).upper() in ("SUCCESS", "NEUTRAL", "SKIPPED")
-    state = c.get("state")
-    if state is not None:
-        return str(state).upper() == "SUCCESS"
-    return False
-
-checks_green = all(is_green(c) for c in checks)
-
-skip_awaiting_human = (
-    review_decision == "REVIEW_REQUIRED"
-    and mergeable == "MERGEABLE"
-    and merge_state_status != "BEHIND"
-    and checks_green
-)
-
-print(author + SEP + ("1" if skip_awaiting_human else "0"))
-'
-      pr_view_fields=$(printf '%s' "$pr_view_json" | python3 -c "$_PY_REVIEW_GATE" 2>/dev/null || printf '\x1f0')
-      IFS=$'\x1f' read -r pr_author skip_awaiting_human <<< "$pr_view_fields"
-
-      # AUTHOR FILTER — the airtight gate. Anything that is not exactly
-      # CV_PR_AUTHOR (including an unresolved/empty author) is dropped.
-      if [ "$pr_author" != "$CV_PR_AUTHOR" ]; then
-        echo "con-voyage-pr-watch: [PART A] DROP ${a_full}#${a_num} (author='${pr_author:-<unresolved>}' != '${CV_PR_AUTHOR}') — no repair bead created"
-        continue
-      fi
-
-      # ACTIONABLE FILTER (C6): con-voyage PRs never auto-merge, so once every
-      # real defect is resolved (CI green, mergeable, branch up to date) a PR
-      # ends in reviewDecision=REVIEW_REQUIRED forever — that is a human-review
-      # wait state, not something a machine can fix (live incident: #10494, 48
-      # green checks + MERGEABLE, blocked solely on REVIEW_REQUIRED). Gate on
-      # failure_kind == "blocked" only: checks_failed/merge_conflict/
-      # behind_base already mean a real defect exists and must still be
-      # repaired regardless of review state (review state alone must never
-      # suppress a real defect).
-      if [ "$a_failure_kind" = "blocked" ] && [ "$skip_awaiting_human" = "1" ]; then
-        echo "con-voyage-pr-watch: [PART A] SKIP ${a_full}#${a_num} — awaiting human review only (CI green, MERGEABLE, branch up to date, reviewDecision=REVIEW_REQUIRED); not a repair"
-        continue
-      fi
-
-      # Survivor: author matches and there is a real defect to repair. Create
-      # ONE deduped repair bead. The title is
-      # state-aware (names the classified failure_kind) so the bead is
-      # self-describing without opening it (R5.5).
-      repair_title="Repair GitHub PR ${a_full}#${a_num} (${a_failure_kind}): ${a_title}"
-      dedup_key="$a_dedup_key"
-
-      if [ -z "$a_route" ]; then
-        echo "con-voyage-pr-watch: [PART A] WARNING: ${a_full}#${a_num} has no repair_route in backfill result; cannot create bead safely; skipping" >&2
-        continue
-      fi
-
-      # Load this PR's per-PR repair state (Task 1/2, fk-4o74 Fix 1):
-      # implementor_session (the worker mail send --notify should reach directly),
-      # inflight_rework (a tracked bead id, when the last dispatch used the
-      # pool fallback), last_handled_state (the failure_kind — or "clean" —
-      # this monitor last reacted to for this PR).
-      state_read "$dedup_key"
-      st_implementor="$ST_IMPLEMENTOR"
-      st_inflight="$ST_INFLIGHT"
-      st_last_state="$ST_LAST_STATE"
-
-      tracked_status=""
-      tracked_assignee=""
-      if [ -n "${st_inflight// /}" ]; then
-        IFS=$'\x1f' read -r tracked_status tracked_assignee <<< "$(bead_status "$st_inflight" assignee)"
-      fi
-
-      # Req 2 ("the new worker becomes the implementor"): once a fallback-slung
-      # bead's claimant becomes known (gc sets `assignee` once a pool worker
-      # claims it — confirmed live, see Task 0 findings), adopt it as this
-      # PR's implementor so future cycles reuse it instead of falling back
-      # again.
-      if [ -z "${st_implementor// /}" ] && [ -n "${tracked_assignee// /}" ]; then
-        st_implementor="$tracked_assignee"
-      fi
-
-      # DE-DUPLICATION + RE-DETECTION (Task 4/5, fk-4o74 Fix 1; PR-NUMBER-ONLY
-      # keying, FIX-C fk-zyh5): a repair is genuinely in-flight while the
-      # tracked bead (if any) is still open — status alone gates it, NOT
-      # assignee and NOT failure_kind. A pool-slung bead sits with an EMPTY
-      # assignee for an unbounded time before a worker claims it (confirmed
-      # live: vandoor #10494 — see the design doc and Task 0 findings), so
-      # requiring a live assignee here is exactly the bug that made the
-      # monitor re-mint every cycle.
-      #
-      # A failure_kind CHANGE while the tracked bead is still open no longer
-      # supersedes+re-mints — that behavior implicitly keyed the in-flight
-      # check on (PR-number, failure_kind), and turned kots#6067's
-      # blocked<->checks_failed oscillation (a ~10min classifier cooldown)
-      # into one new orphaned bead per flip. The SAME bead is now updated in
-      # place (title + failure_kind metadata) so it reflects the current
-      # classification without spawning a second implementor for one PR.
-      # Mint fresh ONLY when no open repair bead is tracked for this PR.
-      tracked_open=0
-      if [ -n "${st_inflight// /}" ] && [ -n "$tracked_status" ] && [ "$tracked_status" != "closed" ]; then
-        tracked_open=1
-      fi
-
-      if [ "$tracked_open" -eq 1 ]; then
-        new_last_state="$st_last_state"
-        if [ "$st_last_state" = "$a_failure_kind" ]; then
-          echo "con-voyage-pr-watch: [PART A] SKIP ${a_full}#${a_num} @ ${a_sha} — repair genuinely in-flight (dedup: ${dedup_key}, last_handled_state=${st_last_state})"
-        # $st_inflight is an EXISTING, already-rig-prefixed repair bead
-        # (minted below with --rig "$a_rig"), not a fresh id — the same
-        # fk-7v3r bug class con-voyage-lib.sh's helpers hit: `--city` alone
-        # (no `--rig`) routes an already-rig-prefixed id to the CITY store
-        # instead of its owning rig's, so `bd update` silently "Issue not
-        # found"s every cycle (fk-mr07). Rely on cwd auto-detection instead,
-        # matching every other already-fixed bd call in this pack.
-        elif "$GC" bd update "$st_inflight" \
-          --title "$repair_title" \
-          --set-metadata "failure_kind=${a_failure_kind}" \
-          2>&1; then
-          echo "con-voyage-pr-watch: [PART A] UPDATE ${a_full}#${a_num} @ ${a_sha} — repair still in-flight on ${st_inflight} (dedup: ${dedup_key}); failure_kind ${st_last_state} -> ${a_failure_kind}"
-          new_last_state="$a_failure_kind"
-        else
-          echo "con-voyage-pr-watch: [PART A] WARNING: failed to update ${st_inflight} with the new failure_kind for ${a_full}#${a_num}; will retry next cycle" >&2
-        fi
-        # Persist the write-back (if any) even on a skip/update cycle, so a
-        # known implementor is not silently lost/re-derived every cycle. The
-        # tracked bead/implementor never change here — last_handled_state only
-        # advances once the update actually lands (a failed update is retried
-        # next cycle, mirroring the mint-failure discipline elsewhere in this
-        # loop). The extended fields (pr_author/repair_route/repo_full/
-        # pr_number/branch) and the watchdog's own attempt_count/escalated
-        # bookkeeping are carried forward unchanged from the state_read above
-        # — never reset here.
-        state_write "$dedup_key" "$st_implementor" "$st_inflight" "$new_last_state" \
-          "$ST_PR_AUTHOR" "$ST_REPAIR_ROUTE" "$ST_REPO_FULL" "$ST_PR_NUMBER" "$ST_BRANCH" \
-          "$ST_ATTEMPT_COUNT" "$ST_ESCALATED" "$ST_LAST_DISPATCH_AT"
-        continue
-      fi
-
-      # Not in-flight (no tracked bead, or it is closed): sweep any leftover
-      # markers from the old per-head-sha scheme for this same PR (glob is
-      # dash-delimited so e.g. PR 1's marker never matches PR 11's), so
-      # orphans never pile up across the dedup-scheme upgrade from the old
-      # per-head-sha keying.
-      for stale_marker in "${CV_STATE_DIR}/${dedup_key}"-*.minted; do
-        [ -f "$stale_marker" ] || continue
-        stale_bead_id="$(cat "$stale_marker" 2>/dev/null || true)"
-        close_if_open "$stale_bead_id" "superseded: re-armed by a fresh PR-scoped repair mint for ${a_full}#${a_num}" "SUPERSEDE ${a_full}#${a_num}"
-        rm -f "$stale_marker"
-      done
-
-      echo "con-voyage-pr-watch: [PART A] KEEP ${a_full}#${a_num} (author='${pr_author}') — dispatching repair (dedup: ${dedup_key})"
-
-      # DISPATCH (Task 3, fk-4o74 Fix 1): every open con-voyage PR has exactly
-      # one live implementor responsible for it. Reuse it — mail + notify,
-      # the same durable-plus-wake path con-voyage already uses for review/CI
-      # feedback — while it is alive; NO new pool workflow in that case. Only
-      # when it is gone (or never known) do we fall back to spawning a fresh
-      # implementor via the pool con-voyage-ci-repair formula, which then
-      # becomes the PR's implementor once it claims the bead (see the
-      # write-back above).
-      dispatched=0
-      new_inflight=""
-      new_implementor="$st_implementor"
-      if [ -n "${st_implementor// /}" ] && implementor_alive "$st_implementor"; then
-        if "$GC" --city "$GC_CITY" mail send "$st_implementor" \
-          -s "Repair needed: ${a_full}#${a_num} (${a_failure_kind})" \
-          -m "PR ${a_full}#${a_num} (branch ${a_branch}) needs rework: ${a_failure_kind}. cv_pr_author=${CV_PR_AUTHOR} cv_author_gate=${CV_AUTHOR_GATE} cv_conflict_strategy=${CV_CONFLICT_STRATEGY}. ${a_title}" \
-          --notify 2>&1; then
-          dispatched=1
-          echo "con-voyage-pr-watch: [PART A] ${a_full}#${a_num}: routed rework to existing implementor ${st_implementor} (mail+notify, no new pool worker)"
-        else
-          echo "con-voyage-pr-watch: [PART A] WARNING: mail to implementor ${st_implementor} failed for ${a_full}#${a_num}; will retry next cycle" >&2
-        fi
-      else
-        # CROSS-RIG MINT GUARD (fk-4o74 Fix-1 round 1, finding #1): derive the
-        # target rig from the repair_route (the part BEFORE the first "/",
-        # e.g. "vandoor" from "vandoor/gc.implementation-worker") HERE,
-        # immediately before the fallback bd create — not up front. Only this
-        # fallback path mints a bead, and it MUST land in that rig so its
-        # prefix matches the sling target; otherwise gc rejects the sling
-        # with a "cross-rig routing" error (see PART A header). The
-        # reuse-dispatch path above (mail+notify to a live implementor) never
-        # mints a bead, so it never needed a rig — gating the whole PR on
-        # rig-derivation before even trying that path dropped mail delivery
-        # to a live implementor whenever repair_route happened to have no
-        # "<rig>/" prefix. A route with NO "/" gives us no rig to derive, so
-        # — mirroring the empty-a_route guard above — we skip the fallback
-        # mint with a WARNING rather than mis-home a bead in the city store
-        # that could never route.
-        a_rig="${a_route%%/*}"
-        if [ "$a_rig" = "$a_route" ] || [ -z "$a_rig" ]; then
-          echo "con-voyage-pr-watch: [PART A] WARNING: ${a_full}#${a_num} repair_route '${a_route}' has no '<rig>/' prefix; cannot derive a target rig; skipping fallback dispatch (would mis-home the repair bead and fail cross-rig routing)" >&2
-        else
-          # v2-formula mint (gc 1.4.1): con-voyage-ci-repair is a v2 workflow formula
-          # that references {{convoy_id}} (the repair bead id). Such a formula CANNOT
-          # be inline-created via `gc sling --on <formula> --title <text>` — gc rejects
-          # that with "inline text requires explicit target", because {{convoy_id}}
-          # has no bead to resolve against. The required form is:
-          #   gc sling <target> <BEAD> --on <formula> --var ...
-          # where <BEAD> is a PRE-CREATED bead. So we create the repair bead first,
-          # capture its id, then attach the formula to it and route it. {{convoy_id}}
-          # then resolves to that bead id inside the ci-repair prompt.
-          #
-          # --rig "$a_rig" is MANDATORY (see CROSS-RIG MINT GUARD above): it mints the
-          # bead in the target agent's rig so its prefix matches the sling target. With
-          # NO --rig the bead lands in the CITY store (prefix "rc") and the subsequent
-          # sling to a rig agent fails the cross-rig gate — the runtime bug this fixes.
-          # (--rig is a TOP-LEVEL gc flag; it must precede the `bd` subcommand.)
-          repair_bead_id=$("$GC" --city "$GC_CITY" --rig "$a_rig" bd create "$repair_title" \
-            --priority 1 \
-            --silent 2>/dev/null || true)
-
-          if [ -z "${repair_bead_id// /}" ]; then
-            echo "con-voyage-pr-watch: [PART A] WARNING: failed to create repair bead for ${a_full}#${a_num}; will retry next cycle" >&2
-          elif "$GC" --city "$GC_CITY" sling "$a_route" "$repair_bead_id" \
-            --on con-voyage-ci-repair \
-            --var "title=${a_title}" \
-            --var "pr=${a_num}" \
-            --var "repo=${a_full}" \
-            --var "branch=${a_branch}" \
-            --var "failure_kind=${a_failure_kind}" \
-            --var "cv_pr_author=${CV_PR_AUTHOR}" \
-            --var "cv_author_gate=${CV_AUTHOR_GATE}" \
-            --var "cv_conflict_strategy=${CV_CONFLICT_STRATEGY}" \
-            --var "repair_bead=${repair_bead_id}" \
-            2>&1; then
-            dispatched=1
-            new_inflight="$repair_bead_id"
-            new_implementor=""
-            echo "con-voyage-pr-watch: [PART A] ${a_full}#${a_num}: repair bead ${repair_bead_id} created/attached and routed to ${a_route} (fallback — no live implementor)"
-          else
-            echo "con-voyage-pr-watch: [PART A] WARNING: repair-bead sling failed for ${a_full}#${a_num} (bead ${repair_bead_id}); will retry next cycle" >&2
-            # Non-fatal: continue to next PR / Part B.
-          fi
-        fi
-      fi
-
-      # Record the state ONLY after a successful dispatch, so a failed
-      # mail/sling is retried next cycle rather than being silently suppressed.
-      # This is a FRESH problem cycle (a state change or a superseded prior
-      # attempt), so the watchdog's own bookkeeping resets: attempt_count=0,
-      # escalated=0. pr_author/a_route/a_full/a_num/a_branch are all resolved
-      # in THIS iteration (the only place this script has them), so this is
-      # also the only call site that ever populates the redispatch-context
-      # fields with real values. last_dispatch_at is stamped fresh here too
-      # (fk-lfan B1): for the mail-only reuse path (new_inflight empty), this
-      # is the ONLY staleness signal con-voyage-repair-watchdog.sh has — there
-      # is no tracked bead whose updated_at it can key on instead.
-      if [ "$dispatched" -eq 1 ]; then
-        state_write "$dedup_key" "$new_implementor" "$new_inflight" "$a_failure_kind" \
-          "$pr_author" "$a_route" "$a_full" "$a_num" "$a_branch" "0" "0" "$(now_iso8601)"
-      fi
+      release_lock "$a_dedup_key"
     done <<< "$all_prs"
   fi
 fi

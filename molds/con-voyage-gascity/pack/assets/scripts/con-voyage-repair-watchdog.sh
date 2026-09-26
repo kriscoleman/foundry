@@ -108,15 +108,16 @@
 # the same thing again for the same PR before the first cycle's state_write
 # was visible to it. Two fixes close this:
 #
-#   1. Per-dedup_key mutual exclusion (acquire_lock/release_lock below): the
-#      read-decide-act-write section for one dedup_key runs under an atomic
-#      `mkdir`-based lock (portable to plain bash on macOS/Linux without
-#      `flock`). A concurrent invocation that cannot acquire the lock SKIPS
-#      that record for this cycle rather than blocking — the record is
-#      untouched, so the next cycle (this one's or another's) re-evaluates it
-#      against whatever the lock-holder left behind. A lock whose mtime is
-#      older than CV_LOCK_STALE_SECONDS is presumed abandoned by a crashed
-#      holder and is stolen rather than wedging that PR's record forever.
+#   1. Per-dedup_key mutual exclusion (acquire_lock/release_lock, shared via
+#      con-voyage-lib.sh): the read-decide-act-write section for one dedup_key
+#      runs under an atomic `mkdir`-based lock (portable to plain bash on
+#      macOS/Linux without `flock`). A concurrent invocation that cannot
+#      acquire the lock SKIPS that record for this cycle rather than
+#      blocking — the record is untouched, so the next cycle (this one's or
+#      another's) re-evaluates it against whatever the lock-holder left
+#      behind. A lock whose mtime is older than CV_LOCK_STALE_SECONDS is
+#      presumed abandoned by a crashed holder and is stolen rather than
+#      wedging that PR's record forever.
 #   2. A fresh re-check immediately before acting (right before superseding
 #      the tracked bead / re-notifying its implementor): re-fetch the tracked
 #      bead's status/updated_at ONE more time and compare against the
@@ -295,63 +296,11 @@ sys.exit(0 if age > threshold_s else 1)
 }
 
 # ---------------------------------------------------------------------------
-# Per-dedup_key mutual exclusion (fk-11yuv Fix 2b — see header). `mkdir` is
-# atomic on every POSIX filesystem this pack runs on, so it doubles as a lock
-# primitive without depending on `flock` (not reliably available on macOS).
+# Per-dedup_key mutual exclusion (fk-11yuv Fix 2b — see header). acquire_lock
+# and release_lock now live in con-voyage-lib.sh (fk-8b5fl — lifted so
+# con-voyage-pr-watch.sh can share the exact same mkdir-based lock instead of
+# duplicating it) and were sourced above along with the other shared helpers.
 # ---------------------------------------------------------------------------
-CV_LOCK_DIR="${CV_STATE_DIR}/.locks"
-
-# acquire_lock DEDUP_KEY — exit 0 (lock held) or 1 (held by someone else and
-# not stale). A stale lock (older than CV_LOCK_STALE_SECONDS — a crashed or
-# hung holder) is stolen rather than left to wedge this record forever.
-acquire_lock() {
-  local dedup_key="$1"
-  local lockdir="${CV_LOCK_DIR}/${dedup_key}.lock"
-  mkdir -p "$CV_LOCK_DIR" 2>/dev/null
-  if mkdir "$lockdir" 2>/dev/null; then
-    printf '%s\n' "$$" > "${lockdir}/pid" 2>/dev/null || true
-    return 0
-  fi
-  # Held already (or a crashed holder's leftover). A stale-looking lock can't
-  # be reclaimed by "check mtime, then rm -rf + mkdir" (or even a single
-  # atomic `mv` of it): a slow straggler's OWN staleness read can still be
-  # acted on after a faster stealer has already replaced the lock with a
-  # fresh one — mv/mkdir don't know the thing now at this path is a different
-  # instance than the one the straggler judged stale. So steal ATTEMPTS are
-  # serialized behind a second, fixed-path mkdir mutex that (unlike lockdir)
-  # is never removed and recreated by the swap below, and only the winner of
-  # that mutex checks staleness — fresh, right then, with no other swapper
-  # able to race it — before ever touching lockdir.
-  local steal_mutex="${lockdir}.stealing"
-  if ! mkdir "$steal_mutex" 2>/dev/null; then
-    return 1
-  fi
-  if python3 -c "
-import os, sys, time
-try:
-    age = time.time() - os.stat(sys.argv[1]).st_mtime
-except Exception:
-    sys.exit(1)
-sys.exit(0 if age > float(sys.argv[2]) else 1)
-" "$lockdir" "$CV_LOCK_STALE_SECONDS" 2>/dev/null; then
-    rm -rf "$lockdir" 2>/dev/null
-    if mkdir "$lockdir" 2>/dev/null; then
-      printf '%s\n' "$$" > "${lockdir}/pid" 2>/dev/null || true
-      echo "con-voyage-repair-watchdog: NOTICE: stole stale lock for ${dedup_key} (>${CV_LOCK_STALE_SECONDS}s; prior holder presumed dead)" >&2
-      rm -rf "$steal_mutex" 2>/dev/null
-      return 0
-    fi
-  fi
-  rm -rf "$steal_mutex" 2>/dev/null
-  return 1
-}
-
-# release_lock DEDUP_KEY — always safe to call even if the lock was never
-# acquired (e.g. a caller that skipped straight past acquire_lock's failure).
-release_lock() {
-  local dedup_key="$1"
-  rm -rf "${CV_LOCK_DIR}/${dedup_key}.lock" 2>/dev/null || true
-}
 
 # ---------------------------------------------------------------------------
 # process_state_record DEDUP_KEY — evaluate and, if needed, act on exactly one

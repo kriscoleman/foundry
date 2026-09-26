@@ -580,6 +580,13 @@ JSON
       if [ "${STUB_BD_CREATE_FAIL:-0}" = "1" ]; then
         exit 1
       fi
+      # STUB_BD_CREATE_SLEEP: seconds to sleep before returning, so a real
+      # concurrent second invocation has a deterministic window to attempt
+      # (and fail) the same dedup_key's lock while this call is "in flight"
+      # (fk-8b5fl, mirroring con-voyage-repair-watchdog.test.sh CASE 22).
+      if [ -n "${STUB_BD_CREATE_SLEEP:-}" ]; then
+        sleep "$STUB_BD_CREATE_SLEEP"
+      fi
       if [ -n "${STUB_BD_CREATE_ID:-}" ]; then
         printf '%s\n' "${STUB_BD_CREATE_ID}"
       else
@@ -2235,6 +2242,95 @@ STATE_DIR_39A="$(cat "${SANDBOX}/statedir-39a" 2>/dev/null || echo "")"
 STATE_DIR_39B="$(cat "${SANDBOX}/statedir-39b" 2>/dev/null || echo "")"
 assert_eq "va-39a-bead" "$(state_field "$STATE_DIR_39A" "cv-ci-repair-kriscoleman-foundry-11" "inflight_rework")" "run a's isolated state tracks only its own mint"
 assert_eq "va-39b-bead" "$(state_field "$STATE_DIR_39B" "cv-ci-repair-kriscoleman-foundry-11" "inflight_rework")" "run b's isolated state tracks only its own mint (no cross-talk from run a)"
+
+# ===========================================================================
+# CASE 40 — fk-8b5fl, the actual bug: two REAL concurrent pr-watch invocations
+#   racing the SAME dedup_key (a fresh PR, no prior state) against a
+#   DELIBERATELY SHARED CV_STATE_DIR must mint exactly ONE repair bead, not
+#   two. Seen live: two con-voyage-pr-watch.sh cycles running at the same
+#   time against the same persistent CV_STATE_DIR could each read the same
+#   pre-mint state and both decide to mint before either wrote back. Process A
+#   acquires the dedup_key's lock and sleeps INSIDE its `bd create` call
+#   (holding the lock the whole time via STUB_BD_CREATE_SLEEP); process B is
+#   launched a beat later and is guaranteed to find the lock already held — a
+#   deterministic race, not a timing coin flip (mirrors
+#   con-voyage-repair-watchdog.test.sh CASE 22, whose lock is now the SAME
+#   shared con-voyage-lib.sh implementation this script also wraps its
+#   read-decide-write in).
+# ===========================================================================
+start_case "40: fk-8b5fl — two concurrent pr-watch cycles against ONE CV_STATE_DIR mint exactly one repair bead, not two"
+setup_case_env "40"
+
+GC_LOG_40A="${SANDBOX}/gc-40a.log"; : > "$GC_LOG_40A"
+GC_LOG_40B="${SANDBOX}/gc-40b.log"; : > "$GC_LOG_40B"
+OUT_40A="${SANDBOX}/out-40a.log"
+OUT_40B="${SANDBOX}/out-40b.log"
+
+env GH="${STUBDIR}/gh" GC="${STUBDIR}/gc" GC_CITY="$CITY_DIR" \
+  CV_STATE_DIR="$STATE_DIR" STUB_GH_LOG="${SANDBOX}/gh-40a.log" STUB_GC_LOG="$GC_LOG_40A" \
+  CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_BD_CREATE_ID="va-40a-bead" STUB_BD_CREATE_SLEEP="1" \
+  bash "$SCRIPT" > "$OUT_40A" 2>&1 &
+PID_40A=$!
+
+sleep 0.3
+
+env GH="${STUBDIR}/gh" GC="${STUBDIR}/gc" GC_CITY="$CITY_DIR" \
+  CV_STATE_DIR="$STATE_DIR" STUB_GH_LOG="${SANDBOX}/gh-40b.log" STUB_GC_LOG="$GC_LOG_40B" \
+  CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_BD_CREATE_ID="va-40b-bead" \
+  bash "$SCRIPT" > "$OUT_40B" 2>&1 &
+PID_40B=$!
+
+wait "$PID_40A"; RC_40A=$?
+wait "$PID_40B"; RC_40B=$?
+
+assert_eq "0" "$RC_40A" "process A exits 0"
+assert_eq "0" "$RC_40B" "process B exits 0"
+
+total_create_40=$(( $(log_count "$GC_LOG_40A" 'bd create .*--silent') + $(log_count "$GC_LOG_40B" 'bd create .*--silent') ))
+total_sling_40=$(( $(log_count "$GC_LOG_40A" 'sling vandoor/gc.implementation-worker va-40a-bead --on con-voyage-ci-repair') + $(log_count "$GC_LOG_40B" 'sling vandoor/gc.implementation-worker va-40b-bead --on con-voyage-ci-repair') ))
+
+assert_eq "1" "$total_create_40" "exactly ONE repair bead is minted across both concurrent pr-watch cycles, not two"
+assert_eq "1" "$total_sling_40" "exactly ONE ci-repair sling across both concurrent pr-watch cycles, not two"
+
+if grep -q 'locked by a concurrent pr-watch run' "$OUT_40A" "$OUT_40B"; then
+  pass "one of the two concurrent runs logs a lock-contention SKIP for the shared dedup_key"
+else
+  fail "expected one of the two concurrent runs to log a lock-contention SKIP"
+fi
+
+assert_eq "va-40a-bead" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "inflight_rework")" "the state record tracks the lock-holding process's mint (the deterministic winner), not the skipped one"
+
+# ===========================================================================
+# CASE 41 — fk-8b5fl: an already-stale per-dedup_key lock (as a crashed/frozen
+#   prior pr-watch cycle would leave behind — CV_LOCK_STALE_SECONDS default
+#   300s; this lock's mtime is forced to epoch 0) must be STOLEN, not left to
+#   wedge this PR's mint forever. The atomicity of the steal itself is
+#   already proven under real concurrency by
+#   con-voyage-repair-watchdog.test.sh CASE 23 against the same shared
+#   con-voyage-lib.sh implementation; this case proves con-voyage-pr-watch.sh
+#   actually wires acquire_lock/release_lock into its own read-decide-write
+#   and recovers end to end, rather than silently skipping every cycle.
+# ===========================================================================
+start_case "41: fk-8b5fl — pr-watch recovers from an already-stale per-dedup_key lock instead of wedging forever"
+setup_case_env "41"
+
+LOCK_41="${STATE_DIR}/.locks/cv-ci-repair-kriscoleman-foundry-11.lock"
+mkdir -p "$LOCK_41"
+printf '99999\n' > "${LOCK_41}/pid"
+python3 -c "import os; os.utime('${LOCK_41}', (0, 0))"
+
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_BD_CREATE_ID="va-41-bead"
+assert_eq "0" "$RC" "script exits 0 despite a pre-existing stale lock"
+assert_log_count "$GC_LOG" 'bd create .*--silent' 1 "the stale lock is stolen so the mint still proceeds, not skipped forever"
+assert_log_count "$GC_LOG" 'sling vandoor/gc.implementation-worker va-41-bead --on con-voyage-ci-repair' 1 "the repair is still slung after stealing the stale lock"
+if printf '%s' "$OUT" | grep -q 'NOTICE: stole stale lock'; then
+  pass "logs the stale-lock steal NOTICE"
+else
+  fail "expected a stale-lock steal NOTICE"
+fi
+assert_eq "va-41-bead" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "inflight_rework")" "state records the newly-minted bead after recovering from the stale lock"
 
 # ===========================================================================
 # Summary
