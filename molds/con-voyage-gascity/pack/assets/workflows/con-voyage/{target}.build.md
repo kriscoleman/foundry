@@ -53,6 +53,19 @@ as `gc.implementation.summary_path` on `$ROOT_ID`, and close this step with
 section below — but still write the artifact per "## Write the
 implementation summary artifact".
 
+Despite the heading, "a pre-built branch" is not guaranteed — the reused
+worktree can itself still be on a detached HEAD (fk-tazxl). Confirming/
+attaching a branch is a ref operation, not a source-file change, so it does
+not conflict with "do not touch source files" above:
+
+```bash
+CV_GUARD="$(command -v cv-worktree-prep.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name cv-worktree-prep.sh 2>/dev/null | head -1)"
+if [ -n "$CV_GUARD" ] && [ -x "$CV_GUARD" ]; then
+  "$CV_GUARD" ensure-branch "$WORKTREE" "con-voyage/${CONVOY_ID}" \
+    || { echo "failed to attach a named branch to the pre-built commit — publish would find a detached HEAD and silently push nothing (fk-tazxl)" >&2; exit 1; }
+fi
+```
+
 ## Fresh bead: run the first TDD implementation round
 
 If `$SHORT_CIRCUIT` is `false`, resolve the real work bead — the source
@@ -75,6 +88,15 @@ if [ -n "$CV_GUARD" ] && [ -x "$CV_GUARD" ]; then
   "$CV_GUARD" guard "$(pwd)" || { echo "fix the reported hygiene violation, re-stage, and re-run the guard before committing" >&2; exit 1; }
 fi
 git commit -m "<conventional-commit message for the requested change>"
+```
+
+`$WORKTREE` was created by `git worktree add --detach HEAD` (prepare-build), so the commit above lands on a detached HEAD unless a branch is attached now. Attach one immediately — do not leave this to publish (fk-tazxl: a detached source-anchor worktree makes publish silently push nothing):
+
+```bash
+if [ -n "$CV_GUARD" ] && [ -x "$CV_GUARD" ]; then
+  "$CV_GUARD" ensure-branch "$WORKTREE" "con-voyage/${CONVOY_ID}" \
+    || { echo "failed to attach a named branch to the build commit — publish would find a detached HEAD and silently push nothing (fk-tazxl)" >&2; exit 1; }
+fi
 ```
 
 ## Write the implementation summary artifact

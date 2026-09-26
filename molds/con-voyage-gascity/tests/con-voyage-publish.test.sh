@@ -151,6 +151,34 @@ else
   FAILURES=$((FAILURES+1))
 fi
 
+# ===========================================================================
+# CASE 8 — fk-tazxl: a source-anchor worktree can still reach publish on a
+#   detached HEAD (build's own ensure-branch call may predate this fix, or a
+#   non-con-voyage path fed this worktree). publish must never silently push
+#   nothing — attach a branch, using the same con-voyage/<convoy-id>
+#   convention build.md uses, or fail loud.
+# ===========================================================================
+start_case "8: publish attaches (or fails loud on) a branch before pushing, so a detached worktree never silently pushes nothing"
+assert_contains '"$CV_GUARD" ensure-branch "$(pwd)" "con-voyage/${CONVOY_ID}"' "calls cv-worktree-prep.sh ensure-branch with the same con-voyage/<convoy-id> convention build.md uses"
+assert_contains 'refusing to push nothing' "fails loud instead of proceeding when ensure-branch itself fails"
+
+start_case "9: the ensure-branch backstop runs after the hygiene guard and before the actual push"
+guard_line="$(line_of '"$CV_GUARD" guard "$(pwd)" "origin/${BASE_BRANCH}"')"
+ensure_branch_line="$(line_of '"$CV_GUARD" ensure-branch "$(pwd)" "con-voyage/${CONVOY_ID}"')"
+push_prose_line="$(line_of 'Push the work branch to origin using create-if-absent')"
+if [ -n "$guard_line" ] && [ -n "$ensure_branch_line" ] && [ "$guard_line" -lt "$ensure_branch_line" ]; then
+  echo "  PASS: hygiene guard (line ${guard_line}) precedes the ensure-branch backstop (line ${ensure_branch_line})"
+else
+  echo "  FAIL: expected the hygiene guard to precede the ensure-branch backstop" >&2
+  FAILURES=$((FAILURES+1))
+fi
+if [ -n "$ensure_branch_line" ] && [ -n "$push_prose_line" ] && [ "$ensure_branch_line" -lt "$push_prose_line" ]; then
+  echo "  PASS: the ensure-branch backstop (line ${ensure_branch_line}) precedes the push instruction (line ${push_prose_line})"
+else
+  echo "  FAIL: expected the ensure-branch backstop to precede the push instruction" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "ALL CASES PASSED"

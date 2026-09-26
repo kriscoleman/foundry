@@ -73,6 +73,23 @@
 #                   base ref resolves at all, `built` reports NOT BUILT (do
 #                   the build) rather than BUILT (skip it) — a redundant build
 #                   is far cheaper than silently skipping the only one.
+#   ensure-branch <dir> [branch-name]
+#                 — fk-tazxl: prepare-build always creates the build worktree
+#                   detached (`git worktree add --detach HEAD`), and the build
+#                   phase's TDD commit never attaches a branch, so publish can
+#                   later find a detached HEAD and silently push nothing. If
+#                   <dir> is already on a branch, this is a no-op (the
+#                   existing branch is left alone, never swapped for
+#                   branch-name). If <dir> is detached, attach a branch at the
+#                   current commit: reuse an existing ref by that name only
+#                   when it already points at the SAME commit as HEAD,
+#                   otherwise create it. branch-name defaults to
+#                   `con-voyage/$(basename <dir>)` (prepare-build's own
+#                   worktree convention is `worktrees/<source-anchor-id>`, so
+#                   the default is deterministic for that layout). Never
+#                   silently drops a commit: if branch-name already exists
+#                   pointing at a DIFFERENT commit, this fails loud (exit 1)
+#                   rather than move that ref or leave the caller guessing.
 #
 # Usage:
 #   cv-worktree-prep.sh exclude <dir>
@@ -80,6 +97,7 @@
 #   cv-worktree-prep.sh dirty <dir>
 #   cv-worktree-prep.sh built <dir> [base-ref]
 #   cv-worktree-prep.sh resolve-base <dir> [explicit-base]
+#   cv-worktree-prep.sh ensure-branch <dir> [branch-name]
 #
 # resolve-base (fk-qppb4) — echoes guard's own base-resolution algorithm
 # (explicit arg -> origin/HEAD -> origin/main -> main -> empty-tree fail-safe)
@@ -119,6 +137,7 @@ Usage:
   cv-worktree-prep.sh guard <dir> [base-ref]
   cv-worktree-prep.sh dirty <dir>
   cv-worktree-prep.sh resolve-base <dir> [explicit-base]
+  cv-worktree-prep.sh ensure-branch <dir> [branch-name]
 USAGE
 }
 
@@ -336,6 +355,40 @@ cmd_built() {
   return 1
 }
 
+cmd_ensure_branch() {
+  local dir="$1" name="${2:-}"
+  require_git_dir "$dir" "ensure-branch"
+
+  local current
+  current="$(git -C "$dir" symbolic-ref -q --short HEAD 2>/dev/null || true)"
+  if [ -n "$current" ]; then
+    echo "cv-worktree-prep: ${dir} is already on branch '${current}' — nothing to do"
+    return 0
+  fi
+
+  [ -n "$name" ] || name="con-voyage/$(basename "$dir")"
+
+  local head_commit
+  head_commit="$(git -C "$dir" rev-parse --verify --quiet HEAD 2>/dev/null || true)"
+  [ -n "$head_commit" ] || die "ensure-branch: '${dir}' has a detached HEAD with no commit to attach a branch to"
+
+  if git -C "$dir" show-ref --verify --quiet "refs/heads/${name}"; then
+    local existing_commit
+    existing_commit="$(git -C "$dir" rev-parse --verify --quiet "refs/heads/${name}" 2>/dev/null || true)"
+    if [ "$existing_commit" = "$head_commit" ]; then
+      git -C "$dir" checkout -q "$name" \
+        || die "ensure-branch: failed to check out existing branch '${name}' already at ${head_commit} in ${dir}"
+      echo "cv-worktree-prep: attached existing branch '${name}' (already at HEAD's commit) in ${dir}"
+      return 0
+    fi
+    die "ensure-branch: branch '${name}' already exists in ${dir} pointing at ${existing_commit}, not the detached HEAD commit ${head_commit} — refusing to move it or silently pick a different name"
+  fi
+
+  git -C "$dir" checkout -q -b "$name" \
+    || die "ensure-branch: failed to create branch '${name}' at ${head_commit} in ${dir}"
+  echo "cv-worktree-prep: created and attached branch '${name}' at ${head_commit} in ${dir}"
+}
+
 SUBCOMMAND="${1:-}"
 [ -n "$SUBCOMMAND" ] || { usage; die "missing subcommand"; }
 shift || true
@@ -346,8 +399,9 @@ case "$SUBCOMMAND" in
   dirty) cmd_dirty "${1:-}" ;;
   built) cmd_built "${1:-}" "${2:-}" ;;
   resolve-base) cmd_resolve_base "${1:-}" "${2:-}" ;;
+  ensure-branch) cmd_ensure_branch "${1:-}" "${2:-}" ;;
   *)
     usage
-    die "unknown subcommand '${SUBCOMMAND}' (expected exclude, guard, dirty, built, or resolve-base)"
+    die "unknown subcommand '${SUBCOMMAND}' (expected exclude, guard, dirty, built, resolve-base, or ensure-branch)"
     ;;
 esac
