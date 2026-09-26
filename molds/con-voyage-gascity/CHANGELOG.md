@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.9.0](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.8.0...con-voyage-gascity-v0.9.0) (2026-09-26)
+
+
+### Features
+
+* **con-voyage:** thread a per-journey base branch for GitHub stacked PRs (fk-qppb4) ([511c54b](https://github.com/kriscoleman/foundry/commit/511c54bbd9896529f59bb8dc3efe0f092bf22a7d))
+
+
+### Bug Fixes
+
+* **con-voyage:** address LOW findings from the fk-2c937 review ([7b41a3a](https://github.com/kriscoleman/foundry/commit/7b41a3a71462f8d42d5b41116734ff1f2c487ea8))
+* **con-voyage:** attach a named branch after the build commit and as a publish backstop ([e042fd8](https://github.com/kriscoleman/foundry/commit/e042fd81328fb64e169fcda504f623146296fd8c))
+* **con-voyage:** build phase reuses a work bead's prior built anchor, not just the sling's fresh convoy (fk-ki8je) ([23ad406](https://github.com/kriscoleman/foundry/commit/23ad406e1873ee0b95c08da385b505b5cc4a4c86))
+* **con-voyage:** consume rig-level finalize records from the city-scoped order ([abee2f5](https://github.com/kriscoleman/foundry/commit/abee2f58e2831e4a1840c9174e6e0527dee25ba4))
+* **con-voyage:** fix stacked-PR base resolution BLOCKING findings (review fk-hrbj7) ([1077267](https://github.com/kriscoleman/foundry/commit/1077267c1ceff9785a922f5a82c3b46536c00159))
+* **con-voyage:** fix stall-detector footer order and tautological fixture (review fk-higuf) ([dd3cacd](https://github.com/kriscoleman/foundry/commit/dd3cacd8a474a96a6a18361b63f022bd15d36b3f))
+* **con-voyage:** make repair-watchdog's stale-lock steal atomic (review fk-uxj98) ([2f4c5e7](https://github.com/kriscoleman/foundry/commit/2f4c5e7ee29a2e87c1a921f317e11e457d224a4d))
+* **con-voyage:** make the B2 zsh regression test non-tautological (review fk-hrbj7) ([edf15eb](https://github.com/kriscoleman/foundry/commit/edf15ebfb11276533b99f49a898a35dfad02dd63))
+* **con-voyage:** make the review watchdog scan every registered rig's store ([9706f61](https://github.com/kriscoleman/foundry/commit/9706f6191a189fc2fa1220783a77d75ea4c0d21a))
+* **con-voyage:** pin fixture git identity in stacked-pr-base test (repair fk-2y6e3) ([c229b8a](https://github.com/kriscoleman/foundry/commit/c229b8ae8cc670e516325e21833f8f3689c6c13e))
+* **con-voyage:** prevent duplicate re-dispatch lineages in repair-watchdog ([cca6f98](https://github.com/kriscoleman/foundry/commit/cca6f9875808d48b23cc182ada69d5ab825186df))
+* **con-voyage:** render convoy_id and other vars cleanly in workflow prompts ([71c3def](https://github.com/kriscoleman/foundry/commit/71c3def958a282460fe4699c0988b668a6864461))
+* **con-voyage:** resolve validate_build_artifact.py schemas from either deployment depth ([dee74e3](https://github.com/kriscoleman/foundry/commit/dee74e3ccbe52201e5691d08cb9bf45dc461a3e7))
+* **con-voyage:** route Netlify deploy-preview comments as bot, not human feedback (fk-5zc65) ([86ac57e](https://github.com/kriscoleman/foundry/commit/86ac57e831428bcae0f9a7ee97785f7e1cab6c72))
+* **con-voyage:** stop the review loop re-iterating after a no-op approval (fk-s15g6) ([1f1e6a1](https://github.com/kriscoleman/foundry/commit/1f1e6a1fe35310b0346cd1aa42eac6c6316d84ae))
+* **con-voyage:** warn headless workers off interactive prompts, add stall detector ([d486ac6](https://github.com/kriscoleman/foundry/commit/d486ac6709efa9b681ab3a662b368c9472d49e8f))
+* correct stray double-brace convoy_id tokens in con-voyage templates (repair fk-rgqgs) ([7d06b56](https://github.com/kriscoleman/foundry/commit/7d06b56c4b593287bc90cc815ef24ad82cddf7f6))
+
 ## [0.8.0](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.7.11...con-voyage-gascity-v0.8.0) (2026-09-25)
 
 
