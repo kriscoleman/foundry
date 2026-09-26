@@ -30,7 +30,11 @@ Every PR comment MUST lead with [<rig>/<agent> -- dev-ex].
 This review lane never runs a command that touches the implementation on disk directly inside the shared source-anchor work_dir recorded in the review context. Every active lane can read and execute against that same directory at the same time, so a local edit (including a temporary mutate-run-revert check) or a build/test invocation there can race a concurrent build or test run from another lane and produce a false BLOCKING or false-negative finding (fk-q659). Acquire your own private worktree copy first with `cv-review-lane-worktree.sh acquire`, and run every such command inside it instead — never inside the shared work_dir.
 
 ```bash
-CV_LANE_WT_BIN="$(command -v cv-review-lane-worktree.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name cv-review-lane-worktree.sh 2>/dev/null | head -1)"
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/cv-review-lane-worktree.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LANE_WT_BIN="${CV_PACK_ROOT}/assets/scripts/cv-review-lane-worktree.sh"
+[ -f "$CV_LANE_WT_BIN" ] || CV_LANE_WT_BIN=""
 LANE_WORKTREE=""
 if [ -n "$CV_LANE_WT_BIN" ]; then
   LANE_WORKTREE="$(bash "$CV_LANE_WT_BIN" acquire "<source anchor work_dir from the review context>" "$CLAIMED_BEAD_ID")" \

@@ -69,7 +69,7 @@ line_of() {
 # ===========================================================================
 start_case "1: CV_STATE_DIR resolution calls the shared cv_default_state_dir(), not a duplicate"
 assert_contains 'if [ -z "${CV_STATE_DIR:-}" ]; then' "resolution only runs when the caller has not already set CV_STATE_DIR"
-assert_contains 'CV_LIB="$(command -v con-voyage-lib.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"' "locates con-voyage-lib.sh via the same command-v/find idiom as this file's CV_VERIFY/CV_GUARD/CV_BIN"
+assert_contains 'CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"' "locates con-voyage-lib.sh via the same deterministic cv_pack_root idiom as this file's CV_VERIFY/CV_GUARD/CV_BIN (fk-q2pon)"
 assert_contains 'CV_STATE_DIR="$(source "$CV_LIB" && cv_default_state_dir)"' "sources the lib and calls cv_default_state_dir() for the resolved value"
 
 # ===========================================================================

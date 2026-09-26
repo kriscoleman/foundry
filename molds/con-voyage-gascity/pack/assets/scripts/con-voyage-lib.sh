@@ -24,7 +24,50 @@
 # omitting both flags lets gc's own cwd-based store auto-detection resolve
 # the right store instead.
 #
-# Requires: bash 4+, gc CLI, python3.
+# Requires: bash 4+, gc CLI, python3, git.
+
+# cv_pack_root — print this pack's asset root, resolved deterministically
+# (fk-q2pon), never by searching $GC_CITY for whichever copy sorts first:
+#   1. `git rev-parse --show-toplevel` — shell-agnostic (unlike
+#      ${BASH_SOURCE[0]}, which the doc comment on
+#      cv_worktree_prep_resolve_base below explains is empty under zsh) — if
+#      that toplevel carries its own molds/con-voyage-gascity/pack copy, a
+#      dogfooding run with cwd inside a rig checkout or one of its worktrees
+#      uses THAT copy, so a step under test loads the same code it is
+#      testing instead of a stale sibling elsewhere under $GC_CITY
+#      (fk-8dfxt).
+#   2. Otherwise, $GC_CITY/packs/con-voyage — the live pack cast a normal,
+#      non-dogfooding cast rig actually runs from.
+# Always returns one of these two paths; never a list of candidates.
+cv_pack_root() {
+  local toplevel
+  toplevel="$(git rev-parse --show-toplevel 2>/dev/null)"
+  if [ -n "$toplevel" ] && [ -f "${toplevel}/molds/con-voyage-gascity/pack/assets/scripts/con-voyage-lib.sh" ]; then
+    printf '%s' "${toplevel}/molds/con-voyage-gascity/pack"
+    return 0
+  fi
+  printf '%s' "${GC_CITY:-.}/packs/con-voyage"
+}
+
+# cv_pack_script NAME — print the absolute path to pack asset script NAME
+# under cv_pack_root, or print nothing (matching the fail-soft contract the
+# old command-v/find idiom had on a total miss, so existing `[ -n "$VAR" ]`
+# call sites keep working unchanged) if it does not exist there either.
+#
+# fk-q2pon (found dogfooding this very fix under zsh): the local var below is
+# named `script_path`, never bare `path` — `path` is a special TIED parameter
+# in zsh (an array kept in sync with $PATH, not an ordinary scalar), so
+# `local path` silently replaces $PATH with an empty value for the rest of
+# this function's scope. No error is raised (unlike fk-k14n's `local status`
+# read-only-variable abort elsewhere in this file), so this survived a
+# bash-only test run undetected: cv_pack_root's `git rev-parse` call above
+# then silently "command not found"s under zsh, and this function falls back
+# to the GC_CITY cast even when the correct worktree copy exists right there.
+cv_pack_script() {
+  local name="$1" script_path
+  script_path="$(cv_pack_root)/assets/scripts/${name}"
+  [ -f "$script_path" ] && printf '%s' "$script_path"
+}
 
 # cv_default_state_dir — print the default CV_STATE_DIR base (each caller
 # appends "/.gc/cv-pr-watch" via this function's own output) for when the
@@ -174,25 +217,22 @@ print(target or '')
 # (see that script's own resolve_base doc comment for the exact order). Empty
 # output if the script cannot be found or is not executable.
 #
-# fk-qppb4 B2 (con-voyage review): both callers below used to locate the
-# sibling script via `script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" &&
-# pwd)"`. The `.md` workflow steps that use this lib `source` it directly in
-# the agent's own interactive shell, which per this pack's own shell-safety
-# contract may be bash OR zsh — and zsh leaves `${BASH_SOURCE[0]}` empty, so
-# `script_dir` silently resolved to the caller's cwd instead of this file's
-# directory, the executable check failed, and the delegation below was
-# skipped entirely (reproduced first-hand under zsh 5.9: the caller fell back
-# to the literal "main" instead of the real delegated "origin/main", for the
-# same unconfigured input that bash resolved correctly). Locate the script
-# the same PATH-then-bounded-find way the workflow `.md` snippets already
-# locate every other pack script instead — no shell-specific behavior.
+# fk-qppb4 B2 (con-voyage review): this used to locate the sibling script via
+# `script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"`. The `.md`
+# workflow steps that use this lib `source` it directly in the agent's own
+# interactive shell, which per this pack's own shell-safety contract may be
+# bash OR zsh — and zsh leaves `${BASH_SOURCE[0]}` empty, so `script_dir`
+# silently resolved to the caller's cwd instead of this file's directory, the
+# executable check failed, and the delegation below was skipped entirely
+# (reproduced first-hand under zsh 5.9: the caller fell back to the literal
+# "main" instead of the real delegated "origin/main", for the same
+# unconfigured input that bash resolved correctly). cv_pack_script (fk-q2pon)
+# fixes this the same shell-agnostic way without reintroducing that bug: see
+# its own and cv_pack_root's doc comments above for why.
 cv_worktree_prep_resolve_base() {
   local dir="$1" explicit="${2:-}"
   local prep_script
-  prep_script="$(command -v cv-worktree-prep.sh 2>/dev/null || true)"
-  if [ -z "$prep_script" ]; then
-    prep_script="$(find "${GC_CITY:-.}" -maxdepth 6 -name cv-worktree-prep.sh 2>/dev/null | head -1)"
-  fi
+  prep_script="$(cv_pack_script cv-worktree-prep.sh)"
   [ -n "$prep_script" ] && [ -x "$prep_script" ] || { printf ''; return 0; }
   bash "$prep_script" resolve-base "$dir" "$explicit" 2>/dev/null
 }

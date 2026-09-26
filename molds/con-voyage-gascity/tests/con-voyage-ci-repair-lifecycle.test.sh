@@ -223,7 +223,10 @@ fi
 # ===========================================================================
 start_case "8: each close site is self-contained (re-sources con-voyage-lib.sh)"
 n_close_sites=$(grep -c 'cv_bead_close "{repair_bead}"' "$CI_REPAIR_MD")
-n_lib_sources=$(grep -c 'name con-voyage-lib.sh' "$CI_REPAIR_MD")
+# fk-q2pon: con-voyage-lib.sh resolution no longer greps for a literal
+# `-name con-voyage-lib.sh` (that nondeterministic idiom is gone); each
+# independent resolution site now assigns CV_LIB from cv_pack_root instead.
+n_lib_sources=$(grep -cF 'CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"' "$CI_REPAIR_MD")
 if [ "$n_lib_sources" -ge "$n_close_sites" ]; then
   pass "con-voyage-lib.sh is located at least once per close site (${n_lib_sources} >= ${n_close_sites})"
 else
