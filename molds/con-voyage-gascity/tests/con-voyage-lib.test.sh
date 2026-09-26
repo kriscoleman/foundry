@@ -540,6 +540,43 @@ GH="$GH_SAVE"
 IFS=$'\x1f' read -r fast_state _fast_merged _fast_closed <<< "$result"
 assert_eq "MERGED" "$fast_state" "a normal, fast gh response still parses correctly whether or not it ran under a timeout wrapper"
 
+# cv_default_rig_root (fk-4jdeh): the bare rig-root resolver cv_default_state_dir
+# itself now builds on. A caller that needs the rig root ITSELF as an argument
+# -- not a "<root>/.gc/cv-pr-watch" state-dir path -- must call this directly
+# rather than stripping the suffix back off cv_default_state_dir's output or
+# hand-copying the GC_RIG_ROOT/.beads-walkup/GC_CITY algorithm a third time.
+# setup-con-voyage-review previously passed ${GC_CITY:-.} -- the multi-rig
+# CITY root -- as the <rig-root> argument to cv-ensure-gate-scripts.sh and
+# cv-ensure-build-artifact-validator.sh, both of which write to
+# <rig-root>/.gc/...; harmless on a rig with those paths already hand-seeded
+# under its city root by coincidence, but silently seeding the wrong
+# directory on any rig without that lucky prior seeding.
+# ---------------------------------------------------------------------------
+start_case "cv_default_rig_root: prefers GC_RIG_ROOT when set"
+GC_RIG_ROOT_SAVE="${GC_RIG_ROOT:-}"
+GC_RIG_ROOT="${SANDBOX}/rig-root-bare"
+result="$(cv_default_rig_root)"
+assert_eq "${SANDBOX}/rig-root-bare" "$result" "GC_RIG_ROOT wins over GC_CITY, returned bare (no /.gc/cv-pr-watch suffix)"
+
+start_case "cv_default_rig_root: falls back to walking up from cwd for a .beads marker when GC_RIG_ROOT is unset"
+unset GC_RIG_ROOT
+mkdir -p "${SANDBOX}/walkup-rig-bare/.beads" "${SANDBOX}/walkup-rig-bare/worktrees/nested/deep"
+RIGDIR_BARE="$(cd "${SANDBOX}/walkup-rig-bare" && pwd)"
+result="$(cd "${RIGDIR_BARE}/worktrees/nested/deep" && cv_default_rig_root)"
+assert_eq "$RIGDIR_BARE" "$result" "walks up to the nearest .beads-marked rig root, returned bare"
+
+start_case "cv_default_rig_root: falls back to GC_CITY when neither signal is available"
+NOMARKERDIR_BARE="${SANDBOX}/no-marker-zone-bare"
+mkdir -p "$NOMARKERDIR_BARE"
+result="$(cd "$NOMARKERDIR_BARE" && cv_default_rig_root)"
+assert_eq "${GC_CITY}" "$result" "last-resort fallback to GC_CITY, returned bare"
+
+if [ -n "$GC_RIG_ROOT_SAVE" ]; then
+  GC_RIG_ROOT="$GC_RIG_ROOT_SAVE"
+else
+  unset GC_RIG_ROOT
+fi
+
 # ---------------------------------------------------------------------------
 # session_id_for_ident / first_alive_session_id_for_route (fk-loo1 FIX-F —
 # review-lane liveness guard helpers, shared with con-voyage-review-watchdog.sh)
