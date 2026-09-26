@@ -266,6 +266,11 @@ start_case "cv_bead_metadata: non-string metadata value -> JSON-encoded"
 export STUB_BDSHOW_JSON_fk_meta3='{"id":"fk-meta3","metadata":{"gc.flag":true}}'
 assert_eq "true" "$(cv_bead_metadata "fk-meta3" "gc.flag")" "a non-string value is still returned (JSON-encoded)"
 
+start_case "cv_bead_metadata: \$GC unset -> defaults to literal \"gc\" on PATH, not a silent no-op (fk-4q6ib BLOCKING-2: main.publish.md called this helper without setting \$GC first)"
+export STUB_BDSHOW_JSON_fk_metagc='{"id":"fk-metagc","metadata":{"gc.var.convoy_id":"fk-hd0xv"}}'
+gc_unset_result="$(PATH="${STUBDIR}:${PATH}" bash -c "unset GC; source '$LIB'; cv_bead_metadata 'fk-metagc' 'gc.var.convoy_id'")"
+assert_eq "fk-hd0xv" "$gc_unset_result" "a caller that forgets to set \$GC still resolves via the default, not empty"
+
 start_case "cv_root_bead_id: bead carries gc.root_bead_id -> that root id"
 export STUB_BDSHOW_JSON_fk_step1='{"id":"fk-step1","metadata":{"gc.root_bead_id":"fk-root1"}}'
 assert_eq "fk-root1" "$(cv_root_bead_id "fk-step1")" "reads the workflow root off a step bead"
