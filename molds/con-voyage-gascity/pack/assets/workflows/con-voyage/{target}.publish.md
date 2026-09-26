@@ -59,7 +59,7 @@ review context, so a stacked slice's PR is opened against (and guarded
 against) the branch it actually stacks on instead of always `main`:
 
 ```bash
-CONVOY_ID="{{convoy_id}}"
+CONVOY_ID="{convoy_id}"
 CV_LIB="$(command -v con-voyage-lib.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"
 BASE_BRANCH="main"
 if [ -n "$CV_LIB" ]; then
