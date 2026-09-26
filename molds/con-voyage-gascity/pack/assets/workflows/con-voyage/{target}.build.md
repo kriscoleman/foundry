@@ -59,7 +59,11 @@ attaching a branch is a ref operation, not a source-file change, so it does
 not conflict with "do not touch source files" above:
 
 ```bash
-CV_GUARD="$(command -v cv-worktree-prep.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name cv-worktree-prep.sh 2>/dev/null | head -1)"
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/cv-worktree-prep.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_GUARD="${CV_PACK_ROOT}/assets/scripts/cv-worktree-prep.sh"
+[ -f "$CV_GUARD" ] || CV_GUARD=""
 if [ -n "$CV_GUARD" ] && [ -x "$CV_GUARD" ]; then
   "$CV_GUARD" ensure-branch "$WORKTREE" "con-voyage/${CONVOY_ID}" \
     || { echo "failed to attach a named branch to the pre-built commit — publish would find a detached HEAD and silently push nothing (fk-tazxl)" >&2; exit 1; }
