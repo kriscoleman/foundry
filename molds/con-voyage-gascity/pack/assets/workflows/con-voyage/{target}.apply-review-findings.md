@@ -1,5 +1,40 @@
 Apply con-voyage review findings.
 
+## Sync the worktree to the current base (fk-hbsmk)
+
+Before reading the review synthesis or touching any file, sync this worktree
+to the current origin default base the same way the build phase does — review
+findings must never be applied on top of an unconfirmed/stale base:
+
+```bash
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
+if [ -z "$CV_LIB" ]; then
+  echo "apply-review-findings: con-voyage-lib.sh not found — cannot sync to the current base" >&2
+  exit 1
+fi
+SYNC_RESULT="$(source "$CV_LIB" && cv_sync_worktree_to_base "$(pwd)")" \
+  || { echo "apply-review-findings: failed to sync to the current base — refusing to review/fix on a possibly-stale base" >&2; exit 1; }
+echo "apply-review-findings: worktree sync: ${SYNC_RESULT}"
+```
+
+(NOTE for reviewers: fk-q2pon is concurrently replacing this same
+`command -v || find`-style resolution pattern across this file with a
+`cv_pack_script`/`cv_pack_root` helper in con-voyage-lib.sh. It had not
+landed on origin/main as of this change, so the snippet above uses the same
+absolute pack-path fallback fk-q2pon introduces rather than adding a new
+first-match `find`. Whichever of the two PRs lands second should rebase.)
+
+If `$SYNC_RESULT` is `recreated` or `rebased`, the sync alone moved HEAD to a
+new commit before you evaluated a single finding — carry this forward into
+"Setting code_review.verdict" below: it forces verdict=iterate even on an
+otherwise no-op pass, exactly like a fix commit would (0.9.1 semantics: any
+change to the tree this pass, whatever its source, means nobody has reviewed
+the resulting commit yet).
+
 Read the con-voyage review synthesis. If all active review lanes approve, write a
 no-op review summary and set code_review.verdict=done.
 
@@ -37,24 +72,33 @@ FIX_COMMIT_SHA="$(git rev-parse HEAD)"
 ```
 
 Commit ONLY when you actually changed files this pass — never an empty/no-op
-commit when all lanes already approved and nothing needed fixing.
+commit when all lanes already approved and nothing needed fixing. If
+`$SYNC_RESULT` was `recreated` or `rebased` but there were no BLOCKING
+findings to fix, do not create an empty commit either — the sync itself
+already moved HEAD, so capture that as your fix commit instead:
+
+```bash
+[ -n "${FIX_COMMIT_SHA:-}" ] || FIX_COMMIT_SHA="$(git rev-parse HEAD)"
+```
 
 ### Setting code_review.verdict
 
 Set code_review.verdict=done ONLY on a genuine no-op pass: every active lane
-had already approved before this pass ran, and you changed nothing. In every
-other case — you fixed one or more BLOCKING findings and committed a change
-this pass — set code_review.verdict=iterate instead, even if you believe every
-finding raised this cycle is now addressed. The lanes that reported those
-BLOCKING findings reviewed the OLD diff, not your fix; nobody has reviewed the
-new commit yet, so the loop must run one more full iteration (every active
-lane again) against it before the fix can be trusted as done. Never set done
-in the same pass that committed a fix.
+had already approved before this pass ran, you changed nothing, AND
+`$SYNC_RESULT` was `noop`. In every other case — you fixed one or more
+BLOCKING findings and committed a change this pass, OR the worktree sync
+above reported `recreated`/`rebased` — set code_review.verdict=iterate
+instead, even if you believe every finding raised this cycle is now
+addressed. The lanes that reported those BLOCKING findings (or approved
+outright) reviewed the OLD commit, not this one; nobody has reviewed the new
+commit yet, so the loop must run one more full iteration (every active lane
+again) against it before the fix can be trusted as done. Never set done in
+the same pass that committed a fix or synced to a new base commit.
 
-When you commit a fix this pass, also record code_review.fix_commit=<sha>
-(the `$FIX_COMMIT_SHA` captured above) so the loop's exit check can
-independently confirm no lane has reviewed it yet. Leave code_review.fix_commit
-unset on a no-op pass.
+When you commit a fix this pass, or the sync alone moved HEAD, also record
+code_review.fix_commit=<sha> (the `$FIX_COMMIT_SHA` captured above) so the
+loop's exit check can independently confirm no lane has reviewed it yet.
+Leave code_review.fix_commit unset only on a genuine no-op pass (verdict=done).
 
 Always close with gc.outcome=pass, code_review.verdict=done|iterate,
 code_review.report_path=<review summary path>, and

@@ -77,6 +77,41 @@ cd "$WORKTREE" || { echo "con-voyage build: cd into ${WORKTREE} failed" >&2; exi
 Do not edit files anywhere but inside `$WORKTREE`. Never edit the launcher
 checkout.
 
+## Sync the worktree to the current base (fk-hbsmk)
+
+Before anything else — before even the short-circuit decision — make sure
+`$WORKTREE` actually starts from the CURRENT `origin/main` (or whatever the
+repo's real default base is), not whatever it happened to be built from.
+Evidence (2026-09-26): 4 of 7 foundry-kc con-voyage builds started on a
+stale local main, 18 commits behind origin, on a detached HEAD, because a
+stale-copy `find` resolved an old cv-worktree-prep.sh. This is now
+structural instead of a per-run habit, and applies to BOTH the short-circuit
+and fresh-bead paths below — this is a ref-level sync, not a source-file
+change, so it does not conflict with "do not touch source files":
+
+```bash
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
+if [ -z "$CV_LIB" ]; then
+  echo "con-voyage build: con-voyage-lib.sh not found — cannot sync ${WORKTREE} to its current base" >&2
+  exit 1
+fi
+SYNC_RESULT="$(source "$CV_LIB" && cv_sync_worktree_to_base "$WORKTREE" "con-voyage/${CONVOY_ID}")" \
+  || { echo "con-voyage build: failed to sync ${WORKTREE} to its current base — refusing to start on a possibly-stale/unconfirmed base" >&2; exit 1; }
+echo "con-voyage build: worktree sync: ${SYNC_RESULT}"
+```
+
+(NOTE for reviewers: fk-q2pon is concurrently replacing this same
+`command -v || find`-style resolution pattern across this file with a
+`cv_pack_script`/`cv_pack_root` helper in con-voyage-lib.sh. It had not
+landed on origin/main as of this change, so the snippet above uses the same
+absolute pack-path fallback fk-q2pon introduces rather than adding a new
+first-match `find`. Whichever of the two PRs lands second should rebase and
+may be able to simplify this block to a `cv_pack_script` call.)
+
 ## Short-circuit: a pre-built branch already exists
 
 If `$SHORT_CIRCUIT` is `true`, prepare-build already confirmed `$WORKTREE`

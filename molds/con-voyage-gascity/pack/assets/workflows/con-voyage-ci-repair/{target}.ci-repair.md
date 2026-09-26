@@ -391,7 +391,46 @@ the fix.
 
 ## Step 3 — Check out the PR branch
 
-Work in the rig root. Fetch the branch and create a local tracking ref:
+Work in the rig root. This is a shared, long-lived checkout reused across
+repair runs, so before switching to `{branch}` make sure it is not left
+detached or stuck stale from an earlier run (fk-hbsmk — the same class of bug
+as a stale con-voyage build worktree: sync structurally instead of trusting
+whatever state the last repair left behind):
+
+```bash
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
+if [ -n "$CV_LIB" ]; then
+  SYNC_RESULT="$(source "$CV_LIB" && cv_sync_worktree_to_base "$(pwd)")" \
+    || echo "ci-repair: could not sync the rig-root workspace to its current base (non-fatal here — {branch} is about to be checked out explicitly below)" >&2
+  [ -n "${SYNC_RESULT:-}" ] && echo "ci-repair: workspace sync: ${SYNC_RESULT}"
+else
+  echo "con-voyage-lib.sh not found — skipping workspace sync (non-fatal)" >&2
+fi
+```
+
+(NOTE for reviewers: fk-q2pon is concurrently replacing this same
+`command -v || find`-style resolution pattern across this file with a
+`cv_pack_script`/`cv_pack_root` helper in con-voyage-lib.sh. It had not
+landed on origin/main as of this change, so the snippet above uses the same
+absolute pack-path fallback fk-q2pon introduces rather than adding a new
+first-match `find`. Whichever of the two PRs lands second should rebase.
+Also note this call targets the shared rig-root workspace itself, not
+`{branch}` — the PR branch's own base-vs-main handling is a distinct,
+already-deliberate concern owned by Step 4c's `behind_base` strategy below,
+which this does not change.)
+
+A failed sync here is deliberately non-fatal: unlike build.md and
+apply-review-findings.md (which are about to write NEW code from this base),
+Step 3 immediately below re-points the workspace at the exact commit
+`{branch}` needs regardless of whatever state the sync found, so a sync
+failure only means Step 3's own fetch+checkout has to do more work — it is
+not a reason to abandon a repair the operator is waiting on.
+
+Fetch the branch and create a local tracking ref:
 
 <!-- FOLLOW-UP (noted, not fixed — out of scope for fk-4xq): every {branch}
      interpolation in this file (here and in Steps 4/6/7 below) is unquoted in
