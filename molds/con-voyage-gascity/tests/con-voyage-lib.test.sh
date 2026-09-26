@@ -350,6 +350,87 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# cv_text_has_usage_limit_stall (fk-o5xxx: a captured pane frame carrying the
+# real provider usage-limit banner must be detected, in both its initial and
+# repeat-after-continue forms; a normal frame must not).
+# ---------------------------------------------------------------------------
+start_case "cv_text_has_usage_limit_stall: detects the initial usage-limit banner in a captured pane fixture"
+PANE_FIXTURE_USAGE_LIMIT=$'Usage limit reached · continuing automatically at 6:10am · esc or type to cancel'
+if cv_text_has_usage_limit_stall "$PANE_FIXTURE_USAGE_LIMIT"; then
+  echo "  PASS: initial usage-limit banner fixture is detected"
+else
+  echo "  FAIL: initial usage-limit banner fixture was NOT detected" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
+start_case "cv_text_has_usage_limit_stall: detects the repeat-after-continue banner variant"
+PANE_FIXTURE_USAGE_LIMIT_AGAIN=$'Usage limit reached again after you continued · continuing automatically at 4:30pm · the automatic-continue setting no longer ends the session'
+if cv_text_has_usage_limit_stall "$PANE_FIXTURE_USAGE_LIMIT_AGAIN"; then
+  echo "  PASS: repeat usage-limit banner fixture is detected"
+else
+  echo "  FAIL: repeat usage-limit banner fixture was NOT detected" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
+start_case "cv_text_has_usage_limit_stall: a normal pane frame is never a false positive"
+if cv_text_has_usage_limit_stall "$PANE_FIXTURE_NORMAL"; then
+  echo "  FAIL: normal pane fixture was incorrectly detected as a usage-limit stall" >&2
+  FAILURES=$((FAILURES+1))
+else
+  echo "  PASS: normal pane fixture is not detected"
+fi
+
+# ---------------------------------------------------------------------------
+# cv_lane_has_open_blocking_dependency (fk-o5xxx DEFECT 1: a review-lane bead
+# with an open "blocks" dependency is not ready, regardless of any other
+# dependency type or status).
+# ---------------------------------------------------------------------------
+start_case "cv_lane_has_open_blocking_dependency: an open 'blocks' dependency is not ready"
+export STUB_BDSHOW_JSON_fk_notready1='[{"id":"fk-notready1","dependencies":[{"id":"fk-build","dependency_type":"blocks","status":"open"}]}]'
+if cv_lane_has_open_blocking_dependency "fk-notready1"; then
+  echo "  PASS: an open blocking dependency is detected"
+else
+  echo "  FAIL: expected an open blocking dependency to be detected" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
+start_case "cv_lane_has_open_blocking_dependency: every 'blocks' dependency closed -> ready"
+export STUB_BDSHOW_JSON_fk_ready1='[{"id":"fk-ready1","dependencies":[{"id":"fk-build","dependency_type":"blocks","status":"closed"}]}]'
+if cv_lane_has_open_blocking_dependency "fk-ready1"; then
+  echo "  FAIL: a fully-closed blocking dependency was incorrectly treated as not ready" >&2
+  FAILURES=$((FAILURES+1))
+else
+  echo "  PASS: a closed blocking dependency is ready"
+fi
+
+start_case "cv_lane_has_open_blocking_dependency: no dependencies at all -> ready"
+export STUB_BDSHOW_JSON_fk_ready2='[{"id":"fk-ready2","dependencies":[]}]'
+if cv_lane_has_open_blocking_dependency "fk-ready2"; then
+  echo "  FAIL: a lane with no dependencies was incorrectly treated as not ready" >&2
+  FAILURES=$((FAILURES+1))
+else
+  echo "  PASS: no dependencies at all is ready"
+fi
+
+start_case "cv_lane_has_open_blocking_dependency: an open 'tracks' (non-blocks) dependency is ignored"
+export STUB_BDSHOW_JSON_fk_ready3='[{"id":"fk-ready3","dependencies":[{"id":"fk-other","dependency_type":"tracks","status":"open"}]}]'
+if cv_lane_has_open_blocking_dependency "fk-ready3"; then
+  echo "  FAIL: a non-blocks dependency type must never gate readiness" >&2
+  FAILURES=$((FAILURES+1))
+else
+  echo "  PASS: an open non-blocks dependency does not affect readiness"
+fi
+
+start_case "cv_lane_has_open_blocking_dependency: fail-safe — unknown bead treated as NOT ready"
+# No STUB_BDSHOW_JSON_* for this id => empty `bd show` output => fail-safe.
+if cv_lane_has_open_blocking_dependency "fk-unknown-lane"; then
+  echo "  PASS: an unresolvable lane fails safe to 'not ready' (no action taken)"
+else
+  echo "  FAIL: expected a bd-show lookup failure to fail safe to 'not ready'" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
+# ---------------------------------------------------------------------------
 # finalize_read / finalize_write round-trip
 # ---------------------------------------------------------------------------
 start_case "finalize_write/read round-trip"
