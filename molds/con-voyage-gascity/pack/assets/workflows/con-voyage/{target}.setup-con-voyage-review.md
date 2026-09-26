@@ -50,7 +50,11 @@ pre-fk-qppb4 behavior:
 
 ```bash
 CONVOY_ID="{convoy_id}"
-CV_LIB="$(command -v con-voyage-lib.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
 BASE_BRANCH="main"
 CONVOY_TARGET=""
 if [ -n "$CV_LIB" ]; then
@@ -177,14 +181,22 @@ still treats it as satisfied — silently converting "review never ran" into
 exist BEFORE the review loop is ever dispatched, not after:
 
 ```bash
-CV_LIB="$(command -v con-voyage-lib.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
 RIG_ROOT=""
 if [ -n "$CV_LIB" ]; then
   RIG_ROOT="$(source "$CV_LIB" && cv_default_rig_root)"
 fi
 [ -n "${RIG_ROOT:-}" ] || RIG_ROOT="${GC_CITY:-.}"
 
-CV_ENSURE_GATE_SCRIPTS="$(command -v cv-ensure-gate-scripts.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name cv-ensure-gate-scripts.sh 2>/dev/null | head -1)"
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/cv-ensure-gate-scripts.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_ENSURE_GATE_SCRIPTS="${CV_PACK_ROOT}/assets/scripts/cv-ensure-gate-scripts.sh"
+[ -f "$CV_ENSURE_GATE_SCRIPTS" ] || CV_ENSURE_GATE_SCRIPTS=""
 if [ -z "$CV_ENSURE_GATE_SCRIPTS" ] || [ ! -x "$CV_ENSURE_GATE_SCRIPTS" ]; then
   echo "cv-ensure-gate-scripts.sh not found under ${GC_CITY:-.} — the con-voyage pack may not be imported correctly on this rig" >&2
   exit 1
@@ -212,14 +224,22 @@ actually validating anything. Guarantee both exist BEFORE the workflow-finalize
 gate is ever evaluated:
 
 ```bash
-CV_LIB="$(command -v con-voyage-lib.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
 RIG_ROOT=""
 if [ -n "$CV_LIB" ]; then
   RIG_ROOT="$(source "$CV_LIB" && cv_default_rig_root)"
 fi
 [ -n "${RIG_ROOT:-}" ] || RIG_ROOT="${GC_CITY:-.}"
 
-CV_ENSURE_VALIDATOR="$(command -v cv-ensure-build-artifact-validator.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name cv-ensure-build-artifact-validator.sh 2>/dev/null | head -1)"
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/cv-ensure-build-artifact-validator.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_ENSURE_VALIDATOR="${CV_PACK_ROOT}/assets/scripts/cv-ensure-build-artifact-validator.sh"
+[ -f "$CV_ENSURE_VALIDATOR" ] || CV_ENSURE_VALIDATOR=""
 if [ -z "$CV_ENSURE_VALIDATOR" ] || [ ! -x "$CV_ENSURE_VALIDATOR" ]; then
   echo "cv-ensure-build-artifact-validator.sh not found under ${GC_CITY:-.} — the con-voyage pack may not be imported correctly on this rig" >&2
   exit 1

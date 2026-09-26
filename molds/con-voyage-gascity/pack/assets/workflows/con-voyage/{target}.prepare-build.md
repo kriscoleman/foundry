@@ -14,8 +14,16 @@ the workflow root.
 CONVOY_ID="{convoy_id}"
 DEFAULT_WORKTREE="$(pwd)/worktrees/${CONVOY_ID}"
 
-CV_LIB="$(command -v con-voyage-lib.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"
-CV_WT_PREP="$(command -v cv-worktree-prep.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name cv-worktree-prep.sh 2>/dev/null | head -1)"
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/cv-worktree-prep.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_WT_PREP="${CV_PACK_ROOT}/assets/scripts/cv-worktree-prep.sh"
+[ -f "$CV_WT_PREP" ] || CV_WT_PREP=""
 if [ -z "$CV_LIB" ] || [ -z "$CV_WT_PREP" ] || [ ! -x "$CV_WT_PREP" ]; then
   echo "con-voyage-lib.sh or cv-worktree-prep.sh not found — the con-voyage pack may not be imported correctly on this rig" >&2
   exit 1

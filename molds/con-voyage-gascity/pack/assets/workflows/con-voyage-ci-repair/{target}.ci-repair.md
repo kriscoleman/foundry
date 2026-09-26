@@ -35,7 +35,11 @@ from this point on:
 
 ```bash
 GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
-CV_LIB="$(find "${GC_CITY}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
 if [ -n "$CV_LIB" ] && [ -f "$CV_LIB" ]; then
   # shellcheck disable=SC1090
   source "$CV_LIB"
@@ -108,7 +112,11 @@ else
       --notes "dropped: not authored by operator (invalid pr='${pr}', expected a numeric PR id)"
     gc bd close "{convoy_id}" --reason "dropped: not authored by operator"
     GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
-    CV_LIB="$(find "${GC_CITY}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"
+    CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+    CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+    [ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+    CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+    [ -f "$CV_LIB" ] || CV_LIB=""
     [ -n "$CV_LIB" ] && [ -f "$CV_LIB" ] && source "$CV_LIB" \
       && cv_bead_close "{repair_bead}" abandoned "dropped: not authored by operator (invalid pr)"
     exit 0
@@ -122,7 +130,11 @@ else
       --notes "dropped: not authored by operator (pr_author='${pr_author:-<unresolved>}', CV_PR_AUTHOR='${CV_PR_AUTHOR:-<unresolved>}')"
     gc bd close "{convoy_id}" --reason "dropped: not authored by operator"
     GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
-    CV_LIB="$(find "${GC_CITY}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"
+    CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+    CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+    [ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+    CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+    [ -f "$CV_LIB" ] || CV_LIB=""
     [ -n "$CV_LIB" ] && [ -f "$CV_LIB" ] && source "$CV_LIB" \
       && cv_bead_close "{repair_bead}" abandoned "dropped: not authored by operator (author mismatch)"
     exit 0
@@ -204,7 +216,11 @@ print('1' if skip else '0')
       --notes "not actionable: awaiting human review only (CI green, MERGEABLE, branch up to date, reviewDecision=REVIEW_REQUIRED) — no machine action taken, no PR comment posted"
     gc bd close "{convoy_id}"
     GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
-    CV_LIB="$(find "${GC_CITY}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"
+    CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+    CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+    [ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+    CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+    [ -f "$CV_LIB" ] || CV_LIB=""
     [ -n "$CV_LIB" ] && [ -f "$CV_LIB" ] && source "$CV_LIB" \
       && cv_bead_close "{repair_bead}" no-op "awaiting human review only — no machine action taken"
     exit 0
@@ -317,7 +333,11 @@ post, so the banner can no longer be forgotten:
 Locate and use the script:
 
 ```bash
-CV_BIN="$(command -v cv-pr-comment.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name cv-pr-comment.sh 2>/dev/null | head -1)"
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/cv-pr-comment.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_BIN="${CV_PACK_ROOT}/assets/scripts/cv-pr-comment.sh"
+[ -f "$CV_BIN" ] || CV_BIN=""
 if [ -z "$CV_BIN" ] || [ ! -x "$CV_BIN" ]; then
   echo "cv-pr-comment.sh not found — refusing to post without the banner (do NOT fall back to raw gh pr comment/review)" >&2
   exit 1
@@ -401,7 +421,11 @@ This working copy must never commit con-voyage's own local tooling state
 upstream. Before touching any files, write the hygiene excludes:
 
 ```bash
-CV_PREP="$(command -v cv-worktree-prep.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name cv-worktree-prep.sh 2>/dev/null | head -1)"
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/cv-worktree-prep.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_PREP="${CV_PACK_ROOT}/assets/scripts/cv-worktree-prep.sh"
+[ -f "$CV_PREP" ] || CV_PREP=""
 [ -n "$CV_PREP" ] && [ -x "$CV_PREP" ] && "$CV_PREP" exclude "$(pwd)"
 ```
 
@@ -652,7 +676,11 @@ base lookup comes up empty the guard auto-derives it (origin/HEAD → origin/mai
 → main) and, failing that, fails safe:
 
 ```bash
-CV_GUARD="$(command -v cv-worktree-prep.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name cv-worktree-prep.sh 2>/dev/null | head -1)"
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/cv-worktree-prep.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_GUARD="${CV_PACK_ROOT}/assets/scripts/cv-worktree-prep.sh"
+[ -f "$CV_GUARD" ] || CV_GUARD=""
 if [ -n "$CV_GUARD" ] && [ -x "$CV_GUARD" ]; then
   guard_base="$(gh pr view {pr} --repo {repo} --json baseRefName --jq .baseRefName 2>/dev/null || true)"
   "$CV_GUARD" guard "$(pwd)" "${guard_base:+origin/${guard_base}}" || { echo "fix the reported hygiene violation, re-stage, and re-run the guard before committing" >&2; exit 1; }
@@ -691,7 +719,11 @@ gc bd update "{convoy_id}" \
   --notes "CI repair pushed to {branch}: <one-line summary of fix>"
 gc bd close "{convoy_id}"
 GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
-CV_LIB="$(find "${GC_CITY}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
 [ -n "$CV_LIB" ] && [ -f "$CV_LIB" ] && source "$CV_LIB" \
   && cv_bead_close "{repair_bead}" <landed|no-op|abandoned> "<one-line summary of fix, or the 4d reason>"
 ```
@@ -707,7 +739,11 @@ gc mail send {escalation_target} \
   -m "Repair bead {convoy_id} is stuck. Reason: <brief explanation>. Branch: {branch}."
 gc bd close "{convoy_id}" --reason "abandoned: escalated to {escalation_target} — <brief explanation>"
 GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
-CV_LIB="$(find "${GC_CITY}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
 [ -n "$CV_LIB" ] && [ -f "$CV_LIB" ] && source "$CV_LIB" \
   && cv_bead_close "{repair_bead}" abandoned "escalated to {escalation_target} — <brief explanation>"
 gc runtime drain-ack

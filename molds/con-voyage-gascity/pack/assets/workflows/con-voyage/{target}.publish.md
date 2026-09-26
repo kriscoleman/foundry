@@ -33,7 +33,11 @@ print((d.get('metadata') or {}).get('gc.root_bead_id') or '')
 fi
 [ -n "$ROOT_ID" ] || ROOT_ID="$GC_BEAD_ID"
 
-CV_VERIFY="$(command -v cv-verify-review-approved.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name cv-verify-review-approved.sh 2>/dev/null | head -1)"
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/cv-verify-review-approved.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_VERIFY="${CV_PACK_ROOT}/assets/scripts/cv-verify-review-approved.sh"
+[ -f "$CV_VERIFY" ] || CV_VERIFY=""
 if [ -z "$CV_VERIFY" ] || [ ! -x "$CV_VERIFY" ]; then
   echo "cv-verify-review-approved.sh not found — refusing to publish without being able to verify the review outcome" >&2
   exit 1
@@ -60,7 +64,11 @@ against) the branch it actually stacks on instead of always `main`:
 
 ```bash
 CONVOY_ID="{convoy_id}"
-CV_LIB="$(command -v con-voyage-lib.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
 BASE_BRANCH="main"
 if [ -n "$CV_LIB" ]; then
   BASE_BRANCH="$(source "$CV_LIB" && cv_resolve_base_branch "$CONVOY_ID" "$(pwd)")"
@@ -76,7 +84,11 @@ If push is true:
   pushing stale HEAD:
 
   ```bash
-  CV_GUARD="$(command -v cv-worktree-prep.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name cv-worktree-prep.sh 2>/dev/null | head -1)"
+  CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+  CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+  [ -f "${CV_PACK_ROOT}/assets/scripts/cv-worktree-prep.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+  CV_GUARD="${CV_PACK_ROOT}/assets/scripts/cv-worktree-prep.sh"
+  [ -f "$CV_GUARD" ] || CV_GUARD=""
   if [ -n "$CV_GUARD" ] && [ -x "$CV_GUARD" ]; then
     "$CV_GUARD" dirty "$(pwd)" || { echo "worktree has uncommitted changes — review fixes must be committed before publish; refusing to push stale HEAD" >&2; exit 1; }
   fi
@@ -126,7 +138,11 @@ If open_pr is true (requires push to have succeeded):
   slice it actually stacks on:
 
   ```bash
-  CV_BIN="$(command -v cv-pr-comment.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name cv-pr-comment.sh 2>/dev/null | head -1)"
+  CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+  CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+  [ -f "${CV_PACK_ROOT}/assets/scripts/cv-pr-comment.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+  CV_BIN="${CV_PACK_ROOT}/assets/scripts/cv-pr-comment.sh"
+  [ -f "$CV_BIN" ] || CV_BIN=""
   if [ -z "$CV_BIN" ] || [ ! -x "$CV_BIN" ]; then
     echo "cv-pr-comment.sh not found — refusing to open the PR without the banner (do NOT fall back to raw gh pr create)" >&2
     exit 1
@@ -187,7 +203,11 @@ gc bd set-state "$WORK_BEAD" cv=awaiting_merge --reason "con-voyage: PR opened, 
 #    fenced ```bash block, so it CAN source a shell lib like the pack's other
 #    scripts do — no need to duplicate the resolver's algorithm here too.
 if [ -z "${CV_STATE_DIR:-}" ]; then
-  CV_LIB="$(command -v con-voyage-lib.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"
+  CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+  CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+  [ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+  CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+  [ -f "$CV_LIB" ] || CV_LIB=""
   if [ -n "$CV_LIB" ]; then
     CV_STATE_DIR="$(source "$CV_LIB" && cv_default_state_dir)"
   fi

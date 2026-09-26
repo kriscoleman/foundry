@@ -38,7 +38,11 @@ lane's own instructions. After writing the synthesis, sweep this cycle's per-lan
 copies so they do not accumulate across review rounds:
 
 ```bash
-CV_LANE_WT_BIN="$(command -v cv-review-lane-worktree.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name cv-review-lane-worktree.sh 2>/dev/null | head -1)"
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/cv-review-lane-worktree.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LANE_WT_BIN="${CV_PACK_ROOT}/assets/scripts/cv-review-lane-worktree.sh"
+[ -f "$CV_LANE_WT_BIN" ] || CV_LANE_WT_BIN=""
 if [ -n "$CV_LANE_WT_BIN" ]; then
   bash "$CV_LANE_WT_BIN" sweep "<source anchor work_dir from the review context>" \
     || echo "note: per-lane worktree sweep failed (continuing)"

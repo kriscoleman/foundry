@@ -23,7 +23,11 @@ fails loud and unstages anything it safely can if a hygiene path (`.beads/`,
 until it reports clean:
 
 ```bash
-CV_GUARD="$(command -v cv-worktree-prep.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name cv-worktree-prep.sh 2>/dev/null | head -1)"
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/cv-worktree-prep.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_GUARD="${CV_PACK_ROOT}/assets/scripts/cv-worktree-prep.sh"
+[ -f "$CV_GUARD" ] || CV_GUARD=""
 git add -A
 if [ -n "$CV_GUARD" ] && [ -x "$CV_GUARD" ]; then
   "$CV_GUARD" guard "$(pwd)" || { echo "fix the reported hygiene violation, re-stage, and re-run the guard before committing" >&2; exit 1; }
