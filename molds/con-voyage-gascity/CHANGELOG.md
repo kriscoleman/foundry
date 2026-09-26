@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.2](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.9.1...con-voyage-gascity-v0.9.2) (2026-09-26)
+
+
+### Bug Fixes
+
+* **con-voyage:** lift pr-watch/repair-watchdog lock into con-voyage-lib.sh ([24df891](https://github.com/kriscoleman/foundry/commit/24df891107ae4d165aaec905530b8b9a4ea9d39c))
+* **con-voyage:** repair-watchdog threads repair_bead and skips re-dispatch for already-green PRs ([caad0cf](https://github.com/kriscoleman/foundry/commit/caad0cff2ffef5250bd37400cca566d6a595cb6e))
+
 ## [0.9.1](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.9.0...con-voyage-gascity-v0.9.1) (2026-09-26)
 
 
