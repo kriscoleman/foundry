@@ -97,6 +97,37 @@
 # duplicating it here was judged out of scope for this bead (Fix 2 is about
 # self-healing dead/stalled rework, not implementor discovery).
 #
+# Fix 2b (fk-11yuv): two overlapping invocations of THIS script (e.g. an order
+# cycle firing again before the prior one finished, or two separate processes
+# racing) could both read the same stale ".state" record before either wrote
+# back, and both independently supersede the tracked bead and mint a FRESH
+# fallback bead/lineage for the same PR — two live re-dispatch lineages doing
+# duplicate (and potentially conflicting) work on the same shared worktree.
+# Seen live on kriscoleman/foundry#81: a watchdog cycle superseded a
+# never-claimed bead and re-dispatched, and ~2 seconds later a second cycle did
+# the same thing again for the same PR before the first cycle's state_write
+# was visible to it. Two fixes close this:
+#
+#   1. Per-dedup_key mutual exclusion (acquire_lock/release_lock below): the
+#      read-decide-act-write section for one dedup_key runs under an atomic
+#      `mkdir`-based lock (portable to plain bash on macOS/Linux without
+#      `flock`). A concurrent invocation that cannot acquire the lock SKIPS
+#      that record for this cycle rather than blocking — the record is
+#      untouched, so the next cycle (this one's or another's) re-evaluates it
+#      against whatever the lock-holder left behind. A lock whose mtime is
+#      older than CV_LOCK_STALE_SECONDS is presumed abandoned by a crashed
+#      holder and is stolen rather than wedging that PR's record forever.
+#   2. A fresh re-check immediately before acting (right before superseding
+#      the tracked bead / re-notifying its implementor): re-fetch the tracked
+#      bead's status/updated_at ONE more time and compare against the
+#      snapshot the classification above used. If the bead went closed/
+#      unknown, or its updated_at moved, something changed it since we looked
+#      (a worker claimed it, or it made progress) — yield (skip, no state
+#      change) instead of racing that fresh activity with a second lineage.
+#      This is what makes "a superseded lineage gets claimed after all" safe
+#      even within a single (now-serialized) run: the bead-less reuse case has
+#      no bead to reclaim and is not subject to this recheck.
+#
 # Environment / configuration (all optional with sane defaults):
 #
 #   GC                Path to the gc binary (default: gc)
@@ -120,6 +151,11 @@
 #                     Default: 900 (15 minutes).
 #   CV_MAX_ATTEMPTS   Consecutive watchdog re-dispatches allowed for the SAME
 #                     problem cycle before escalating instead. Default: 3.
+#   CV_LOCK_STALE_SECONDS  Seconds after which a held per-dedup_key lock is
+#                     presumed abandoned (crashed holder) and stolen rather
+#                     than left to wedge that PR's record forever. Default:
+#                     300 (5 minutes) — generous relative to the handful of
+#                     `bd`/`gc` calls a single record's processing needs.
 #   CV_ESCALATE_TARGET  Mail recipient when a PR's rework exhausts
 #                     CV_MAX_ATTEMPTS. Default: the reserved `human` alias
 #                     (same convention as escalation_target in
@@ -161,6 +197,7 @@ CV_PR_AUTHOR="${CV_PR_AUTHOR:-}"
 CV_STALL_SECONDS="${CV_STALL_SECONDS:-900}"
 CV_MAX_ATTEMPTS="${CV_MAX_ATTEMPTS:-3}"
 CV_ESCALATE_TARGET="${CV_ESCALATE_TARGET:-human}"
+CV_LOCK_STALE_SECONDS="${CV_LOCK_STALE_SECONDS:-300}"
 # Forwarded, NOT read, by this script (see header) — declared here with the
 # other tunables rather than left as an inline ${..:-default} at each use
 # site, so every configuration knob resolves in one place.
@@ -180,6 +217,9 @@ case "$CV_STALL_SECONDS" in
 esac
 case "$CV_MAX_ATTEMPTS" in
   *[!0-9]*|'') CV_MAX_ATTEMPTS="3" ;;
+esac
+case "$CV_LOCK_STALE_SECONDS" in
+  *[!0-9]*|'') CV_LOCK_STALE_SECONDS="300" ;;
 esac
 
 # ---------------------------------------------------------------------------
@@ -255,16 +295,56 @@ sys.exit(0 if age > threshold_s else 1)
 }
 
 # ---------------------------------------------------------------------------
-# Main loop: iterate every per-PR state record under CV_STATE_DIR. Glob-safe
-# against an empty/missing directory (mirrors con-voyage-pr-watch.sh's own
-# `[ -f "$x" ] || continue` idiom for a possibly-empty glob).
+# Per-dedup_key mutual exclusion (fk-11yuv Fix 2b — see header). `mkdir` is
+# atomic on every POSIX filesystem this pack runs on, so it doubles as a lock
+# primitive without depending on `flock` (not reliably available on macOS).
 # ---------------------------------------------------------------------------
-for state_file in "${CV_STATE_DIR}"/*.state; do
-  [ -f "$state_file" ] || continue
+CV_LOCK_DIR="${CV_STATE_DIR}/.locks"
 
-  dedup_key="${state_file##*/}"
-  dedup_key="${dedup_key%.state}"
+# acquire_lock DEDUP_KEY — exit 0 (lock held) or 1 (held by someone else and
+# not stale). A stale lock (older than CV_LOCK_STALE_SECONDS — a crashed or
+# hung holder) is stolen rather than left to wedge this record forever.
+acquire_lock() {
+  local dedup_key="$1"
+  local lockdir="${CV_LOCK_DIR}/${dedup_key}.lock"
+  mkdir -p "$CV_LOCK_DIR" 2>/dev/null
+  if mkdir "$lockdir" 2>/dev/null; then
+    printf '%s\n' "$$" > "${lockdir}/pid" 2>/dev/null || true
+    return 0
+  fi
+  if python3 -c "
+import os, sys, time
+try:
+    age = time.time() - os.stat(sys.argv[1]).st_mtime
+except Exception:
+    sys.exit(1)
+sys.exit(0 if age > float(sys.argv[2]) else 1)
+" "$lockdir" "$CV_LOCK_STALE_SECONDS" 2>/dev/null; then
+    rm -rf "$lockdir" 2>/dev/null
+    if mkdir "$lockdir" 2>/dev/null; then
+      printf '%s\n' "$$" > "${lockdir}/pid" 2>/dev/null || true
+      return 0
+    fi
+  fi
+  return 1
+}
 
+# release_lock DEDUP_KEY — always safe to call even if the lock was never
+# acquired (e.g. a caller that skipped straight past acquire_lock's failure).
+release_lock() {
+  local dedup_key="$1"
+  rm -rf "${CV_LOCK_DIR}/${dedup_key}.lock" 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------------------
+# process_state_record DEDUP_KEY — evaluate and, if needed, act on exactly one
+# per-PR state record. Called with that record's lock already held (see the
+# main loop below). Every early-out below is a `return` (not `continue` — this
+# now runs inside a function, not the loop body directly) so the caller's lock
+# release always runs regardless of which path this takes.
+# ---------------------------------------------------------------------------
+process_state_record() {
+  local dedup_key="$1"
   state_read "$dedup_key"
 
   label="${dedup_key}"
@@ -281,7 +361,7 @@ for state_file in "${CV_STATE_DIR}"/*.state; do
   # here just because there is no tracked bead.
   if [ -z "${ST_INFLIGHT// /}" ] && [ -z "${ST_IMPLEMENTOR// /}" ]; then
     echo "con-voyage-repair-watchdog: SKIP ${dedup_key} — no in-flight rework and no known implementor"
-    continue
+    return
   fi
 
   # HARD INVARIANT — AUTHOR SCOPING (defensive re-check; see header). An
@@ -290,7 +370,7 @@ for state_file in "${CV_STATE_DIR}"/*.state; do
   # fail closed, exactly like every other author gate in this pack.
   if [ -z "${ST_PR_AUTHOR// /}" ] || [ "$ST_PR_AUTHOR" != "$CV_PR_AUTHOR" ]; then
     echo "con-voyage-repair-watchdog: SKIP ${dedup_key} — author scoping (pr_author='${ST_PR_AUTHOR}' != CV_PR_AUTHOR='${CV_PR_AUTHOR}')"
-    continue
+    return
   fi
 
   # "stop re-dispatching that one" — a prior cycle already escalated this
@@ -299,7 +379,7 @@ for state_file in "${CV_STATE_DIR}"/*.state; do
   # dispatch (which resets escalated=0).
   if [ "$ST_ESCALATED" = "1" ]; then
     echo "con-voyage-repair-watchdog: SKIP ${label} — already escalated; not re-dispatching"
-    continue
+    return
   fi
 
   implementor_known=0
@@ -350,7 +430,7 @@ for state_file in "${CV_STATE_DIR}"/*.state; do
     # own supersede/re-mint logic. Leave the record untouched.
     if [ -z "$tracked_status" ] || [ "$tracked_status" = "closed" ]; then
       echo "con-voyage-repair-watchdog: SKIP ${label} — tracked bead ${ST_INFLIGHT} is closed/unknown; deferring to the monitor's next cycle"
-      continue
+      return
     fi
 
     if [ "$implementor_known" -eq 1 ] && [ "$alive" -eq 0 ]; then
@@ -382,7 +462,7 @@ for state_file in "${CV_STATE_DIR}"/*.state; do
     # symmetrically, an unclaimed-but-still-fresh fallback bead within its
     # grace period, or a bead-less reuse whose last_dispatch_at is fresh).
     echo "con-voyage-repair-watchdog: OK ${label} — no action (implementor_known=${implementor_known} alive=${alive} updated_at=${tracked_updated_at} last_dispatch_at=${ST_LAST_DISPATCH_AT})"
-    continue
+    return
   fi
 
   # Acceptance: "3 failed attempts -> escalate via gc mail, stop
@@ -401,7 +481,31 @@ for state_file in "${CV_STATE_DIR}"/*.state; do
     else
       echo "con-voyage-repair-watchdog: WARNING: escalation mail to ${CV_ESCALATE_TARGET} failed for ${label}; will retry next cycle" >&2
     fi
-    continue
+    return
+  fi
+
+  # Re-check immediately before acting (fk-11yuv Fix 2b — see header): the
+  # tracked bead may have been claimed or otherwise updated in the window
+  # between the classification read above and this point — including by the
+  # very lineage we are about to supersede, if it got claimed after all. A
+  # fresh updated_at (or the bead having gone closed/unknown) means real
+  # progress happened since our snapshot; re-dispatching now would race that
+  # activity with a second, redundant lineage. Yield instead: leave the record
+  # untouched so the next cycle re-evaluates against current state. The
+  # bead-less reuse case (no ST_INFLIGHT) has no bead to reclaim and is not
+  # rechecked here — its own staleness (last_dispatch_at) is written only by
+  # this watchdog, so there is no third party that could have moved it.
+  if [ -n "${ST_INFLIGHT// /}" ]; then
+    recheck_fields="$(bead_status "$ST_INFLIGHT" updated_at)"
+    IFS=$'\x1f' read -r recheck_status recheck_updated_at <<< "$recheck_fields"
+    if [ -z "$recheck_status" ] || [ "$recheck_status" = "closed" ]; then
+      echo "con-voyage-repair-watchdog: SKIP ${label} — tracked bead ${ST_INFLIGHT} went closed/unknown since evaluation; yielding, not re-dispatching"
+      return
+    fi
+    if [ "$recheck_updated_at" != "$tracked_updated_at" ]; then
+      echo "con-voyage-repair-watchdog: SKIP ${label} — tracked bead ${ST_INFLIGHT} was claimed/updated since evaluation (${tracked_updated_at} -> ${recheck_updated_at}); yielding, not re-dispatching"
+      return
+    fi
   fi
 
   new_attempt_count=$((ST_ATTEMPT_COUNT + 1))
@@ -412,12 +516,12 @@ for state_file in "${CV_STATE_DIR}"/*.state; do
     # attempt counter untouched: this was not a real attempt.
     if [ -z "${ST_REPAIR_ROUTE// /}" ] || [ -z "${ST_REPO_FULL// /}" ] || [ -z "${ST_PR_NUMBER// /}" ]; then
       echo "con-voyage-repair-watchdog: WARNING: ${label} is ${action_desc} but its state record is missing repair_route/repo_full/pr_number; cannot safely re-dispatch (will re-check next cycle once con-voyage-pr-watch.sh repopulates it)" >&2
-      continue
+      return
     fi
     rig="${ST_REPAIR_ROUTE%%/*}"
     if [ "$rig" = "$ST_REPAIR_ROUTE" ] || [ -z "$rig" ]; then
       echo "con-voyage-repair-watchdog: WARNING: ${label} repair_route '${ST_REPAIR_ROUTE}' has no '<rig>/' prefix; cannot derive a target rig; skipping re-dispatch" >&2
-      continue
+      return
     fi
 
     echo "con-voyage-repair-watchdog: ${action_desc} ${label} — reassigning to a new implementor (attempt ${new_attempt_count}/${CV_MAX_ATTEMPTS})"
@@ -434,7 +538,7 @@ for state_file in "${CV_STATE_DIR}"/*.state; do
 
     if [ -z "${new_bead_id// /}" ]; then
       echo "con-voyage-repair-watchdog: WARNING: failed to create a fallback repair bead for ${label}; will retry next cycle" >&2
-      continue
+      return
     fi
 
     if "$GC" --city "$GC_CITY" sling "$ST_REPAIR_ROUTE" "$new_bead_id" \
@@ -471,6 +575,29 @@ for state_file in "${CV_STATE_DIR}"/*.state; do
       echo "con-voyage-repair-watchdog: WARNING: mail to implementor ${ST_IMPLEMENTOR} failed for ${label}; will retry next cycle" >&2
     fi
   fi
+}
+
+# ---------------------------------------------------------------------------
+# Main loop: iterate every per-PR state record under CV_STATE_DIR. Glob-safe
+# against an empty/missing directory (mirrors con-voyage-pr-watch.sh's own
+# `[ -f "$x" ] || continue` idiom for a possibly-empty glob). Each record is
+# processed under its own per-dedup_key lock (fk-11yuv Fix 2b — see header) so
+# a concurrent invocation never races this one on the same PR.
+# ---------------------------------------------------------------------------
+for state_file in "${CV_STATE_DIR}"/*.state; do
+  [ -f "$state_file" ] || continue
+
+  dedup_key="${state_file##*/}"
+  dedup_key="${dedup_key%.state}"
+
+  if ! acquire_lock "$dedup_key"; then
+    echo "con-voyage-repair-watchdog: SKIP ${dedup_key} — locked by a concurrent watchdog run"
+    continue
+  fi
+
+  process_state_record "$dedup_key"
+
+  release_lock "$dedup_key"
 done
 
 exit 0

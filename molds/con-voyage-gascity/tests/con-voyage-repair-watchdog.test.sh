@@ -110,6 +110,12 @@ case "$sub" in
       if [ "${STUB_BD_CREATE_FAIL:-0}" = "1" ]; then
         exit 1
       fi
+      # STUB_BD_CREATE_SLEEP: seconds to sleep before returning, so a real
+      # concurrent second invocation has a deterministic window to attempt
+      # (and fail) the same dedup_key's lock while this call is "in flight".
+      if [ -n "${STUB_BD_CREATE_SLEEP:-}" ]; then
+        sleep "$STUB_BD_CREATE_SLEEP"
+      fi
       printf '%s\n' "${STUB_BD_CREATE_ID:-wd-newbead}"
       exit 0
     fi
@@ -117,9 +123,30 @@ case "$sub" in
       show_id="${args[$((i+2))]:-}"
       # STUB_BDSHOW_MAP: newline-delimited "<id>|<status>|<updated_at>" rows.
       # An id with no matching row returns an empty JSON object (unknown bead).
+      # Multiple rows for the SAME id are returned in order across successive
+      # `bd show` calls for that id within one script run (1st call -> row 1,
+      # 2nd call -> row 2, ...), clamped to the last row once calls exceed the
+      # rows given — this is what lets a test simulate "the bead was updated
+      # between the initial read and the pre-action recheck" without any real
+      # concurrency. The call count is tracked per-id under GC_CITY (fresh per
+      # test case, see setup_case_env) so it never leaks across cases.
       match=""
       if [ -n "${STUB_BDSHOW_MAP:-}" ]; then
-        match="$(printf '%s\n' "$STUB_BDSHOW_MAP" | awk -F'|' -v id="$show_id" '$1==id{print; exit}')"
+        all_matches="$(printf '%s\n' "$STUB_BDSHOW_MAP" | awk -F'|' -v id="$show_id" '$1==id{print}')"
+        if [ -n "$all_matches" ]; then
+          n_matches="$(printf '%s\n' "$all_matches" | wc -l | tr -d ' ')"
+          count_dir="${GC_CITY:-.}/.bdshow-counts"
+          mkdir -p "$count_dir" 2>/dev/null
+          count_file="${count_dir}/${show_id}.count"
+          prev="0"
+          [ -f "$count_file" ] && prev="$(cat "$count_file" 2>/dev/null || echo 0)"
+          case "$prev" in *[!0-9]*|'') prev=0 ;; esac
+          next=$((prev + 1))
+          echo "$next" > "$count_file"
+          idx="$next"
+          [ "$idx" -gt "$n_matches" ] && idx="$n_matches"
+          match="$(printf '%s\n' "$all_matches" | awk -v n="$idx" 'NR==n{print; exit}')"
+        fi
       fi
       if [ -n "$match" ]; then
         show_status="$(printf '%s' "$match" | awk -F'|' '{print $2}')"
@@ -715,6 +742,101 @@ assert_log_count "$GC_LOG" 'mail send' 0 "no mail — the implementor is alive a
 assert_log_count "$GC_LOG" 'bd create' 0 "no fallback bead"
 assert_log_count "$GC_LOG" 'sling' 0 "no sling"
 assert_eq "0" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-200" "attempt_count")" "attempt_count stays at 0 when nothing needed re-dispatch"
+
+# ===========================================================================
+# CASE 21 — fk-11yuv Fix 2b: the tracked bead was claimed/updated in the
+#   window between the initial classification read and the moment this
+#   watchdog is about to act on it (e.g. it just got claimed after all, or its
+#   implementor just made progress). The fresh pre-action recheck must see
+#   that and yield — no fallback bead minted, no supersede, no state change —
+#   rather than racing a second lineage against activity that just happened.
+#   STUB_BDSHOW_MAP gives TWO rows for the same bead id: the classification
+#   read gets the first (stale) row, the pre-action recheck gets the second
+#   (fresh) row — see the gc stub's per-id call sequencing above.
+# ===========================================================================
+start_case "21: fk-11yuv Fix 2b — tracked bead claimed since evaluation yields (no second lineage)"
+setup_case_env "21"
+write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-210" \
+  "" "wd-bead210" "blocked" "kriscoleman" "vandoor/gc.implementation-worker" \
+  "kriscoleman/foundry" "210" "fix/thing" "0" "0"
+STALE_TS_210="$(iso_ago 5000)"
+FRESH_TS_210="$(iso_ago 10)"
+run_script "${DEFAULT_ENV[@]}" \
+  STUB_BDSHOW_MAP="$(printf 'wd-bead210|open|%s\nwd-bead210|open|%s' "$STALE_TS_210" "$FRESH_TS_210")" \
+  STUB_BD_CREATE_ID="wd-bead210b"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd create' 0 "no fallback bead minted — the bead was claimed/updated since the initial read"
+assert_log_count "$GC_LOG" 'sling' 0 "no re-dispatch — yielding to the fresh activity instead of racing it"
+assert_log_count "$GC_LOG" 'bd close' 0 "the newly-active bead is not superseded"
+assert_eq "wd-bead210" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-210" "inflight_rework")" "state is left untouched for the next cycle"
+assert_eq "0" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-210" "attempt_count")" "attempt_count is left untouched — this was not a real attempt"
+if printf '%s' "$OUT" | grep -q 'claimed/updated since evaluation'; then
+  pass "logs a yield for the late claim"
+else
+  fail "expected a yield log line naming the late claim"
+fi
+
+# ===========================================================================
+# CASE 22 — fk-11yuv Fix 2b, the actual bug: two REAL concurrent watchdog
+#   invocations racing the SAME stale, never-claimed state record must produce
+#   exactly ONE re-dispatch lineage, not two. Seen live on kriscoleman/
+#   foundry#81: two overlapping cycles both observed the same "STALLED, never
+#   claimed" record and both superseded + re-minted a fallback bead before
+#   either one's state_write was visible to the other. Process A acquires the
+#   dedup_key's lock and sleeps INSIDE its `bd create` call (holding the lock
+#   the whole time via STUB_BD_CREATE_SLEEP); process B is launched a beat
+#   later and is guaranteed to find the lock already held — a deterministic
+#   race, not a timing coin flip.
+# ===========================================================================
+start_case "22: fk-11yuv Fix 2b — two concurrent invocations produce ONE lineage, not two"
+setup_case_env "22"
+write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-220" \
+  "" "wd-bead220" "blocked" "kriscoleman" "vandoor/gc.implementation-worker" \
+  "kriscoleman/foundry" "220" "fix/thing" "0" "0"
+STALE_TS_220="$(iso_ago 5000)"
+
+GC_LOG_A="${SANDBOX}/gc-22-a.log"; : > "$GC_LOG_A"
+GC_LOG_B="${SANDBOX}/gc-22-b.log"; : > "$GC_LOG_B"
+OUT_A="${SANDBOX}/out-22-a.log"
+OUT_B="${SANDBOX}/out-22-b.log"
+
+env GH="${STUBDIR}/gh" GC="${STUBDIR}/gc" GC_CITY="$CITY_DIR" \
+  CV_STATE_DIR="$STATE_DIR" STUB_GC_LOG="$GC_LOG_A" \
+  "${DEFAULT_ENV[@]}" STUB_BDSHOW_MAP="wd-bead220|open|${STALE_TS_220}" \
+  STUB_BD_CREATE_ID="wd-bead220a" STUB_BD_CREATE_SLEEP="1" \
+  bash "$SCRIPT" > "$OUT_A" 2>&1 &
+PID_A=$!
+
+sleep 0.3
+
+env GH="${STUBDIR}/gh" GC="${STUBDIR}/gc" GC_CITY="$CITY_DIR" \
+  CV_STATE_DIR="$STATE_DIR" STUB_GC_LOG="$GC_LOG_B" \
+  "${DEFAULT_ENV[@]}" STUB_BDSHOW_MAP="wd-bead220|open|${STALE_TS_220}" \
+  STUB_BD_CREATE_ID="wd-bead220b" \
+  bash "$SCRIPT" > "$OUT_B" 2>&1 &
+PID_B=$!
+
+wait "$PID_A"; RC_A=$?
+wait "$PID_B"; RC_B=$?
+
+assert_eq "0" "$RC_A" "process A exits 0"
+assert_eq "0" "$RC_B" "process B exits 0"
+
+total_create=$(( $(log_count "$GC_LOG_A" 'bd create') + $(log_count "$GC_LOG_B" 'bd create') ))
+total_sling=$(( $(log_count "$GC_LOG_A" 'sling') + $(log_count "$GC_LOG_B" 'sling') ))
+total_close=$(( $(log_count "$GC_LOG_A" 'bd close wd-bead220 .*superseded') + $(log_count "$GC_LOG_B" 'bd close wd-bead220 .*superseded') ))
+
+assert_eq "1" "$total_create" "exactly ONE fallback bead is minted across both concurrent runs, not two"
+assert_eq "1" "$total_sling" "exactly ONE re-dispatch sling across both concurrent runs, not two"
+assert_eq "1" "$total_close" "the never-claimed bead is superseded exactly once, not twice"
+
+if grep -q 'locked by a concurrent watchdog run' "$OUT_A" "$OUT_B"; then
+  pass "one of the two concurrent runs logs a lock-contention SKIP for the shared dedup_key"
+else
+  fail "expected one of the two concurrent runs to log a lock-contention SKIP"
+fi
+
+assert_eq "1" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-220" "attempt_count")" "attempt_count advances by exactly 1 across both concurrent runs, not 2"
 
 # ===========================================================================
 # Summary
