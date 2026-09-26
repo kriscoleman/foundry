@@ -216,6 +216,23 @@ start_case "cv_dependency_outcome: unparseable JSON -> empty (fail-safe, never a
 export STUB_BDSHOW_JSON_fk_bld5='not json'
 assert_eq "" "$(cv_dependency_outcome "fk-bld5" "Prepare con-voyage build worktree")" "unparseable bd show output resolves empty"
 
+start_case "cv_dependency_outcome (fk-2yhob review BLOCKING-1 self-defense): still resolves correctly when \$GC is unset in the caller shell"
+# The two fail-fast blocks in build.md/setup-con-voyage-review.md are each the
+# first bash block in their file, so nothing upstream has set $GC yet — an
+# agent shell only ever exports GC_BIN/GC_CITY/GC_*, never bare GC. This
+# proves the lib's own ": ${GC:=gc}" self-defense actually resolves a real
+# "gc bd show" call correctly even when GC starts unset, not just the
+# caller-side default in the two workflow files (covered separately in
+# con-voyage-build-phase.test.sh).
+export STUB_BDSHOW_JSON_fk_bld6='{"id":"fk-bld6","dependencies":[{"id":"fk-prep6","title":"Prepare con-voyage build worktree","metadata":{"gc.outcome":"fail"}}]}'
+gc_unset_result="$(
+  unset GC
+  PATH="${STUBDIR}:${PATH}"
+  source "$LIB"
+  cv_dependency_outcome "fk-bld6" "Prepare con-voyage build worktree"
+)"
+assert_eq "fail" "$gc_unset_result" "cv_dependency_outcome resolves via bare 'gc' on PATH when \$GC was never set"
+
 # ---------------------------------------------------------------------------
 # cv_close_reason_for_pr
 # ---------------------------------------------------------------------------

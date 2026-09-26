@@ -12,6 +12,7 @@ known-failed prepare-build is a near-free close instead of a worktree
 investigation:
 
 ```bash
+GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
 CV_LIB="$(command -v con-voyage-lib.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"
 PREPARE_OUTCOME=""
 if [ -n "$CV_LIB" ]; then
