@@ -857,6 +857,57 @@ SITE_TOML
     echo "  FAIL: cv_with_timeout under zsh took ${zsh_elapsed}s — the bound did not actually apply" >&2
     FAILURES=$((FAILURES+1))
   fi
+
+  # acquire_lock/release_lock (fk-8b5fl): newly lifted into this file from
+  # con-voyage-repair-watchdog.sh so con-voyage-pr-watch.sh can share the same
+  # lock instead of duplicating it. Neither function's local variable names
+  # collide with a zsh special parameter (unlike the `status` bug above), so
+  # no abort is expected here — this case exists to prove that going forward,
+  # not to hunt for one, per the same "any newly live-shell-sourced helper
+  # gets the zsh treatment" precedent the other cases in this block follow.
+  start_case "acquire_lock/release_lock under zsh: acquire creates the lock dir, release removes it (no read-only-variable abort)"
+  ZSH_LOCK_DEDUP="zsh-lock-test-1"
+  ZSH_LOCK_DIR="${CV_STATE_DIR}/.locks/${ZSH_LOCK_DEDUP}.lock"
+  rm -rf "$ZSH_LOCK_DIR"
+  zsh_err="$(CV_STATE_DIR="$CV_STATE_DIR" zsh -c "source '$LIB'; acquire_lock '${ZSH_LOCK_DEDUP}'" 2>&1 >/dev/null)"
+  case "$zsh_err" in
+    *"read-only"*)
+      echo "  FAIL: acquire_lock aborts under zsh: $zsh_err" >&2
+      FAILURES=$((FAILURES+1))
+      ;;
+    *)
+      echo "  PASS: acquire_lock raises no read-only-variable error under zsh" ;;
+  esac
+  if [ -d "$ZSH_LOCK_DIR" ]; then
+    echo "  PASS: acquire_lock under zsh actually created the lock directory on disk"
+  else
+    echo "  FAIL: acquire_lock under zsh did not create the expected lock directory" >&2
+    FAILURES=$((FAILURES+1))
+  fi
+
+  CV_STATE_DIR="$CV_STATE_DIR" zsh -c "source '$LIB'; release_lock '${ZSH_LOCK_DEDUP}'"
+  if [ -d "$ZSH_LOCK_DIR" ]; then
+    echo "  FAIL: release_lock under zsh did not remove the lock directory" >&2
+    FAILURES=$((FAILURES+1))
+  else
+    echo "  PASS: release_lock under zsh removed the lock directory"
+  fi
+
+  start_case "acquire_lock under zsh steals an already-stale lock instead of wedging forever"
+  mkdir -p "$ZSH_LOCK_DIR"
+  python3 -c "import os; os.utime('${ZSH_LOCK_DIR}', (0, 0))"
+  zsh_steal_err="$(CV_STATE_DIR="$CV_STATE_DIR" CV_LOCK_STALE_SECONDS="300" zsh -c "source '$LIB'; acquire_lock '${ZSH_LOCK_DEDUP}'" 2>&1 >/dev/null)"
+  zsh_steal_rc=$?
+  assert_eq "0" "$zsh_steal_rc" "acquire_lock under zsh returns success after stealing an already-stale lock"
+  case "$zsh_steal_err" in
+    *"NOTICE: stole stale lock"*)
+      echo "  PASS: acquire_lock under zsh logs the stale-lock steal NOTICE" ;;
+    *)
+      echo "  FAIL: expected a stale-lock steal NOTICE under zsh, got: $zsh_steal_err" >&2
+      FAILURES=$((FAILURES+1))
+      ;;
+  esac
+  rm -rf "$ZSH_LOCK_DIR" "${ZSH_LOCK_DIR}.stealing"
 fi
 
 echo
