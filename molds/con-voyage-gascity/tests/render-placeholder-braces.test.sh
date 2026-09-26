@@ -89,7 +89,7 @@ render_single_brace() {
 start_case "apply-review-findings commit example renders with no stray braces"
 
 PRE_FIX_LINE='git commit -m "fix: <brief description of the review fix> (review {{convoy_id}})"'
-POST_FIX_FILE="${MOLD_DIR}/pack/assets/workflows/con-voyage/{target}.apply-review-findings.md"
+POST_FIX_FILE="${MOLD_DIR}/pack/assets/workflows/con-voyage/main.apply-review-findings.md"
 
 if [ ! -f "$POST_FIX_FILE" ]; then
   echo "FATAL: template under test not found at ${POST_FIX_FILE}" >&2
@@ -193,6 +193,36 @@ if [ "$condition_field_count" -gt 0 ]; then
 else
   fail "expected at least one condition = \"\"\"{{var}}\"\"\" field (con-voyage.formula.toml roster toggles) — did the sweep touch a legitimate mechanism?"
 fi
+
+# ===========================================================================
+# CASE 4 — no shipped workflow asset filename still carries a literal
+# `{target}` placeholder (fk-4q6ib). gc resolves `{target}` in a formula's
+# `id` field at cook time (confirmed empirically: a real dispatched bead's
+# gc.step_id came out `main.build`, not `{target}.build`) and applies the
+# identical resolution when it computes the "Resolved prompt file" path it
+# reports for a too-large-to-inline description_file (confirmed: that same
+# bead's reported path was `.../main.build.md`). But this pack's `pack/`
+# output is cast with `process: false` (README: "Authoring note: the pack is
+# a raw pass-through") — ailloy copies every file byte-for-byte, including
+# its NAME, so a file still literally named `{target}.build.md` on disk can
+# never match the `main.build.md` gc actually looks for. This is a
+# filesystem-naming invariant, independent of any one formula.toml's current
+# content, so it also catches a new asset added later with the old habit.
+# ===========================================================================
+start_case "no workflow asset filename still contains a literal {target} placeholder"
+
+stray_names=0
+while IFS= read -r -d '' f; do
+  base="$(basename "$f")"
+  case "$base" in
+    *'{target}'*)
+      fail "asset ships with a literal {target} in its filename: ${f#"${MOLD_DIR}"/} — gc resolves {target} to the real target (e.g. 'main') before computing the path it looks for; this filename can never match"
+      stray_names=$((stray_names + 1))
+      ;;
+  esac
+done < <(find "${MOLD_DIR}/pack/assets/workflows" -type f -print0)
+
+[ "$stray_names" -eq 0 ] && pass "no workflow asset filename contains a literal {target}"
 
 # ===========================================================================
 # Summary

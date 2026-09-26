@@ -48,14 +48,14 @@ default = "gc.implementation-worker"
 id = "{target}.prepare-build"
 title = "Prepare con-voyage build worktree"
 metadata = { "gc.run_target" = "gc.run-operator" }
-description_file = "../assets/workflows/con-voyage/{target}.prepare-build.md"
+description_file = "../assets/workflows/con-voyage/main.prepare-build.md"
 
 [[template]]
 id = "{target}.build"
 title = "Con-voyage: initial implementation (TDD)"
 needs = ["{target}.prepare-build"]
 metadata = { "gc.run_target" = "{implementation_target}", "gc.build.artifact_schema" = "gc.build.implementation-summary.v1", "gc.build.artifact_path_keys" = "gc.implementation.summary_path,gc.build.implementation_summary_path,gc.var.summary_path" }
-description_file = "../assets/workflows/con-voyage/{target}.build.md"
+description_file = "../assets/workflows/con-voyage/main.build.md"
 
 [template.check]
 max_attempts = 3
@@ -74,7 +74,7 @@ id = "{target}.setup-con-voyage-review"
 title = "Prepare con-voyage review context"
 needs = ["{target}.build"]
 metadata = { "gc.run_target" = "gc.run-operator" }
-description_file = "../assets/workflows/con-voyage/{target}.setup-con-voyage-review.md"
+description_file = "../assets/workflows/con-voyage/main.setup-con-voyage-review.md"
 
 # ---------------------------------------------------------------------------
 # Review loop — children fan out and synthesize, loop until approved
@@ -122,7 +122,7 @@ id = "{target}.con-voyage-review-loop"
 title = "Run con-voyage review until approved"
 needs = ["{target}.setup-con-voyage-review"]
 metadata = { "gc.run_target" = "gc.run-operator" }
-description_file = "../assets/workflows/con-voyage/{target}.con-voyage-review-loop.md"
+description_file = "../assets/workflows/con-voyage/main.con-voyage-review-loop.md"
 
 [template.check]
 max_attempts = 8
@@ -140,7 +140,7 @@ timeout = "10m"
 id = "{target}.acceptance-review"
 title = "Con-voyage: acceptance and correctness"
 metadata = { "gc.run_target" = "gc.implementation-reviewer" }
-description_file = "../assets/workflows/con-voyage/{target}.acceptance-review.md"
+description_file = "../assets/workflows/con-voyage/main.acceptance-review.md"
 
 # ---------------------------------------------------------------------------
 # Floor lane: test-evidence review (inherited from build-basic-review)
@@ -150,7 +150,7 @@ description_file = "../assets/workflows/con-voyage/{target}.acceptance-review.md
 id = "{target}.test-evidence-review"
 title = "Con-voyage: test evidence"
 metadata = { "gc.run_target" = "gc.gap-analyst" }
-description_file = "../assets/workflows/con-voyage/{target}.test-evidence-review.md"
+description_file = "../assets/workflows/con-voyage/main.test-evidence-review.md"
 
 # ---------------------------------------------------------------------------
 # Floor lane: simplicity review (inherited from build-basic-review)
@@ -160,7 +160,7 @@ description_file = "../assets/workflows/con-voyage/{target}.test-evidence-review
 id = "{target}.simplicity-review"
 title = "Con-voyage: simplicity and maintainability"
 metadata = { "gc.run_target" = "gc.design-implementation-reviewer" }
-description_file = "../assets/workflows/con-voyage/{target}.simplicity-review.md"
+description_file = "../assets/workflows/con-voyage/main.simplicity-review.md"
 
 # ---------------------------------------------------------------------------
 # Floor lane: security review (always active)
@@ -170,7 +170,7 @@ description_file = "../assets/workflows/con-voyage/{target}.simplicity-review.md
 id = "{target}.security-review"
 title = "Con-voyage: security review"
 metadata = { "gc.run_target" = "con-voyage.cv-security-reviewer" }
-description_file = "../assets/workflows/con-voyage/{target}.security-review.md"
+description_file = "../assets/workflows/con-voyage/main.security-review.md"
 
 # ---------------------------------------------------------------------------
 # Floor lane: native-language code review (always active; default = Go PE)
@@ -180,7 +180,7 @@ description_file = "../assets/workflows/con-voyage/{target}.security-review.md"
 id = "{target}.code-review"
 title = "Con-voyage: code review (native-language)"
 metadata = { "gc.run_target" = "{code_lens}" }
-description_file = "../assets/workflows/con-voyage/{target}.code-review.md"
+description_file = "../assets/workflows/con-voyage/main.code-review.md"
 
 # ---------------------------------------------------------------------------
 # Roster lanes — conditional on per-lens boolean vars (default = false / off)
@@ -205,7 +205,7 @@ id = "{target}.product-owner-review"
 title = "Con-voyage: product-owner review"
 condition = """{{enable_product_owner}}"""
 metadata = { "gc.run_target" = "con-voyage.cv-product-owner" }
-description_file = "../assets/workflows/con-voyage/{target}.product-owner-review.md"
+description_file = "../assets/workflows/con-voyage/main.product-owner-review.md"
 
 [vars.enable_founder_cto]
 description = "Enable founder-CTO roster lens."
@@ -216,7 +216,7 @@ id = "{target}.founder-cto-review"
 title = "Con-voyage: founder-CTO review"
 condition = """{{enable_founder_cto}}"""
 metadata = { "gc.run_target" = "con-voyage.cv-founder-cto" }
-description_file = "../assets/workflows/con-voyage/{target}.founder-cto-review.md"
+description_file = "../assets/workflows/con-voyage/main.founder-cto-review.md"
 
 [vars.enable_dev_ex]
 description = "Enable dev-ex reviewer roster lens."
@@ -227,7 +227,7 @@ id = "{target}.dev-ex-review"
 title = "Con-voyage: developer experience review"
 condition = """{{enable_dev_ex}}"""
 metadata = { "gc.run_target" = "con-voyage.cv-dev-ex-reviewer" }
-description_file = "../assets/workflows/con-voyage/{target}.dev-ex-review.md"
+description_file = "../assets/workflows/con-voyage/main.dev-ex-review.md"
 
 [vars.enable_standards_janitor]
 description = "Enable standards-janitor roster lens."
@@ -238,7 +238,7 @@ id = "{target}.standards-janitor-review"
 title = "Con-voyage: standards and conventions review"
 condition = """{{enable_standards_janitor}}"""
 metadata = { "gc.run_target" = "con-voyage.cv-standards-janitor" }
-description_file = "../assets/workflows/con-voyage/{target}.standards-janitor-review.md"
+description_file = "../assets/workflows/con-voyage/main.standards-janitor-review.md"
 
 [vars.enable_qa_test]
 description = "Enable QA / test-engineer roster lens."
@@ -249,7 +249,7 @@ id = "{target}.qa-test-review"
 title = "Con-voyage: QA and test-engineering review"
 condition = """{{enable_qa_test}}"""
 metadata = { "gc.run_target" = "con-voyage.cv-qa-test-engineer" }
-description_file = "../assets/workflows/con-voyage/{target}.qa-test-review.md"
+description_file = "../assets/workflows/con-voyage/main.qa-test-review.md"
 
 [vars.enable_sre]
 description = "Enable SRE reliability roster lens."
@@ -260,7 +260,7 @@ id = "{target}.sre-review"
 title = "Con-voyage: SRE reliability review"
 condition = """{{enable_sre}}"""
 metadata = { "gc.run_target" = "con-voyage.cv-sre-reliability" }
-description_file = "../assets/workflows/con-voyage/{target}.sre-review.md"
+description_file = "../assets/workflows/con-voyage/main.sre-review.md"
 
 [vars.enable_design_ux]
 description = "Enable design/UX roster lens."
@@ -271,7 +271,7 @@ id = "{target}.design-ux-review"
 title = "Con-voyage: design and UX review"
 condition = """{{enable_design_ux}}"""
 metadata = { "gc.run_target" = "con-voyage.cv-design-ux" }
-description_file = "../assets/workflows/con-voyage/{target}.design-ux-review.md"
+description_file = "../assets/workflows/con-voyage/main.design-ux-review.md"
 
 [vars.enable_documentation]
 description = "Enable documentation roster lens."
@@ -282,7 +282,7 @@ id = "{target}.documentation-review"
 title = "Con-voyage: documentation review"
 condition = """{{enable_documentation}}"""
 metadata = { "gc.run_target" = "con-voyage.cv-documentation" }
-description_file = "../assets/workflows/con-voyage/{target}.documentation-review.md"
+description_file = "../assets/workflows/con-voyage/main.documentation-review.md"
 
 [vars.enable_marketing]
 description = "Enable marketing roster lens."
@@ -293,7 +293,7 @@ id = "{target}.marketing-review"
 title = "Con-voyage: marketing review"
 condition = """{{enable_marketing}}"""
 metadata = { "gc.run_target" = "con-voyage.cv-marketing" }
-description_file = "../assets/workflows/con-voyage/{target}.marketing-review.md"
+description_file = "../assets/workflows/con-voyage/main.marketing-review.md"
 
 [vars.enable_api_platform]
 description = "Enable API/platform contract roster lens."
@@ -304,7 +304,7 @@ id = "{target}.api-platform-review"
 title = "Con-voyage: API and platform contract review"
 condition = """{{enable_api_platform}}"""
 metadata = { "gc.run_target" = "con-voyage.cv-api-platform-contract" }
-description_file = "../assets/workflows/con-voyage/{target}.api-platform-review.md"
+description_file = "../assets/workflows/con-voyage/main.api-platform-review.md"
 
 [vars.enable_compliance]
 description = "Enable compliance/privacy roster lens."
@@ -315,7 +315,7 @@ id = "{target}.compliance-review"
 title = "Con-voyage: compliance and privacy review"
 condition = """{{enable_compliance}}"""
 metadata = { "gc.run_target" = "con-voyage.cv-compliance-privacy" }
-description_file = "../assets/workflows/con-voyage/{target}.compliance-review.md"
+description_file = "../assets/workflows/con-voyage/main.compliance-review.md"
 
 [vars.enable_data_db]
 description = "Enable data/database engineer roster lens."
@@ -326,7 +326,7 @@ id = "{target}.data-db-review"
 title = "Con-voyage: data and database review"
 condition = """{{enable_data_db}}"""
 metadata = { "gc.run_target" = "con-voyage.cv-data-db-engineer" }
-description_file = "../assets/workflows/con-voyage/{target}.data-db-review.md"
+description_file = "../assets/workflows/con-voyage/main.data-db-review.md"
 
 # ---------------------------------------------------------------------------
 # Fan-in: synthesize all active review lanes
@@ -355,7 +355,7 @@ needs = [
   "{target}.data-db-review",
 ]
 metadata = { "gc.run_target" = "gc.review-synthesizer" }
-description_file = "../assets/workflows/con-voyage/{target}.synthesize-review.md"
+description_file = "../assets/workflows/con-voyage/main.synthesize-review.md"
 
 # ---------------------------------------------------------------------------
 # Apply findings, then loop back if any BLOCKING finding remains
@@ -366,7 +366,7 @@ id = "{target}.apply-review-findings"
 title = "Apply con-voyage review findings"
 needs = ["{target}.synthesize-review"]
 metadata = { "gc.run_target" = "{implementation_target}", "gc.continuation_group" = "con-voyage-review-fixes" }
-description_file = "../assets/workflows/con-voyage/{target}.apply-review-findings.md"
+description_file = "../assets/workflows/con-voyage/main.apply-review-findings.md"
 
 # ---------------------------------------------------------------------------
 # Publish step — pushes the work branch and opens the PR (never auto-merges)
@@ -377,7 +377,7 @@ id = "{target}.publish"
 title = "Publish con-voyage result (push branch + open PR)"
 needs = ["{target}.con-voyage-review-loop"]
 metadata = { "gc.run_target" = "gc.publisher" }
-description_file = "../assets/workflows/con-voyage/{target}.publish.md"
+description_file = "../assets/workflows/con-voyage/main.publish.md"
 
 # ---------------------------------------------------------------------------
 # Finalize step — writes the build artifact, checked for validity
@@ -388,7 +388,7 @@ id = "{target}"
 title = "Finalize con-voyage review"
 needs = ["{target}.publish"]
 metadata = { "gc.run_target" = "gc.run-operator", "gc.build.artifact_schema" = "gc.build.review.v1", "gc.build.artifact_path_keys" = "gc.build.review_report_path" }
-description_file = "../assets/workflows/con-voyage/{target}.md"
+description_file = "../assets/workflows/con-voyage/main.md"
 
 [template.check]
 max_attempts = 3

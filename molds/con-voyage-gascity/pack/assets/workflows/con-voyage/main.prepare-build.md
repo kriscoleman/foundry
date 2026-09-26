@@ -2,34 +2,66 @@ Prepare the con-voyage build worktree (fk-9aunv: fold the do-work build into
 con-voyage as its own first phase, so one sling on a fresh work bead builds,
 reviews, and publishes — no separate `gc sling ... --on do-work` first).
 
-The `{convoy_id}` token is the source anchor for this journey — the same
-synthetic input convoy `cv_resolve_work_bead` and every other con-voyage step
-already resolve against. Unlike do-work, con-voyage never runs against a
-drain-unit convoy, so trust `{convoy_id}` directly; do not re-derive it from
-the workflow root.
+The convoy id is the source anchor for this journey — the same synthetic
+input convoy `cv_resolve_work_bead` and every other con-voyage step already
+resolve against. Unlike do-work, con-voyage never runs against a drain-unit
+convoy, so trust it directly once resolved.
 
-## Resolve, or create, the build worktree
+Resolve it from the workflow root's metadata below — never from a literal
+`{convoy_id}` token in this file's own prose or bash. This description_file
+is too large for gc to inline into the bead body (confirmed: a real
+dispatched bead for this exact step rendered only the generic "External
+Prompt Required" wrapper, never this file's content), so any `{var}` token
+written here is a permanent no-op — it renders exactly as written, forever,
+to whatever worker reads this file off disk (fk-4q6ib).
+
+## Resolve the workflow root and the convoy id
 
 ```bash
-CONVOY_ID="{convoy_id}"
-DEFAULT_WORKTREE="$(pwd)/worktrees/${CONVOY_ID}"
-
 CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
 CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
 [ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
 CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
 [ -f "$CV_LIB" ] || CV_LIB=""
+if [ -z "$CV_LIB" ]; then
+  echo "con-voyage-lib.sh not found — the con-voyage pack may not be imported correctly on this rig" >&2
+  exit 1
+fi
+
+GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
+
+ROOT_ID="${GC_ROOT_BEAD_ID:-}"
+[ -n "$ROOT_ID" ] || ROOT_ID="$(source "$CV_LIB" && cv_root_bead_id "$GC_BEAD_ID")"
+
+# gc.var.convoy_id is the flat, gc-managed mirror of every formula var
+# (including the built-in convoy id) that gc writes onto the workflow root at
+# cook time — available before this, the first step, ever runs. Confirmed
+# live: gc.input_convoy_id carries the identical value as a second, more
+# narrowly-named key; prefer the var-namespaced one for consistency with how
+# every other formula var is read, falling back to the alias only if a future
+# gc version ever drops one of the two.
+CONVOY_ID="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.var.convoy_id)"
+[ -n "$CONVOY_ID" ] || CONVOY_ID="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.input_convoy_id)"
+if [ -z "$CONVOY_ID" ]; then
+  echo "con-voyage prepare-build: could not resolve convoy id from workflow root ${ROOT_ID} metadata (gc.var.convoy_id / gc.input_convoy_id both empty)" >&2
+  exit 1
+fi
+```
+
+## Resolve, or create, the build worktree
+
+```bash
+DEFAULT_WORKTREE="$(pwd)/worktrees/${CONVOY_ID}"
+
 CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
 CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
 [ -f "${CV_PACK_ROOT}/assets/scripts/cv-worktree-prep.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
 CV_WT_PREP="${CV_PACK_ROOT}/assets/scripts/cv-worktree-prep.sh"
 [ -f "$CV_WT_PREP" ] || CV_WT_PREP=""
-if [ -z "$CV_LIB" ] || [ -z "$CV_WT_PREP" ] || [ ! -x "$CV_WT_PREP" ]; then
-  echo "con-voyage-lib.sh or cv-worktree-prep.sh not found — the con-voyage pack may not be imported correctly on this rig" >&2
+if [ -z "$CV_WT_PREP" ] || [ ! -x "$CV_WT_PREP" ]; then
+  echo "cv-worktree-prep.sh not found — the con-voyage pack may not be imported correctly on this rig" >&2
   exit 1
 fi
-
-GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
 
 # A prior do-work (or con-voyage) run may have already built this exact
 # source anchor — do-work/prepare-worktree.md persists the resolved worktree
@@ -102,23 +134,9 @@ fi
 Every later step (build, setup-con-voyage-review, and everything downstream)
 reads the resolved source anchor from the workflow root instead of
 re-deriving it — the same handoff pattern do-work's implement step uses for
-`gc.implementation.summary_path`.
+`gc.implementation.summary_path`. `$ROOT_ID` is already resolved above.
 
 ```bash
-ROOT_ID="${GC_ROOT_BEAD_ID:-}"
-if [ -z "$ROOT_ID" ]; then
-  ROOT_ID="$(gc bd show "$GC_BEAD_ID" --json 2>/dev/null | python3 -c "
-import json, sys
-try:
-    d = json.load(sys.stdin)
-    d = d[0] if isinstance(d, list) else d
-except Exception:
-    d = {}
-print((d.get('metadata') or {}).get('gc.root_bead_id') or '')
-" 2>/dev/null)"
-fi
-[ -n "$ROOT_ID" ] || ROOT_ID="$GC_BEAD_ID"
-
 bd update "$ROOT_ID" \
   --set-metadata "gc.build.source_anchor_id=${CONVOY_ID}" \
   --set-metadata "gc.build.source_anchor_work_dir=${WORKTREE}" \

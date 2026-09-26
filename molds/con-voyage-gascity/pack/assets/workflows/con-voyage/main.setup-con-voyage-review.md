@@ -84,7 +84,10 @@ default" and every step below is then a no-op, byte-identical to
 pre-fk-qppb4 behavior:
 
 ```bash
-CONVOY_ID="{convoy_id}"
+# $SOURCE_ANCHOR_ID is already resolved above — never a literal {convoy_id}
+# token: this description_file is too large for gc to inline, so any {var}
+# token in this file's own content is a permanent no-op (fk-4q6ib).
+CONVOY_ID="$SOURCE_ANCHOR_ID"
 CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
 CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
 [ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
@@ -145,9 +148,9 @@ synthesis can distinguish floor findings from persona findings.
 
 con-voyage now drives the WORK BEAD's own lifecycle so it moves on the dashboard
 and never sits open after its PR lands. The work bead is the bead this con-voyage
-delivers — NOT this setup step's own claimed bead. In this graph.v2 workflow the
-`{convoy_id}` token resolves to a synthetic input convoy that `tracks` the real
-work bead; resolve it, then claim it and seed its body. Assign it to the fixed
+delivers — NOT this setup step's own claimed bead. `$SOURCE_ANCHOR_ID` (resolved
+above) is a synthetic input convoy that `tracks` the real work bead; resolve it,
+then claim it and seed its body. Assign it to the fixed
 `con-voyage:work-bead` identity — NOT this session's own actor identity — because
 the work bead carries no graph.v2 step metadata (empty gc.root_bead_id/
 gc.routed_to/gc.continuation_group); assigning it to yourself means your own next
@@ -157,10 +160,10 @@ resolution error it falls back to the convoy id, and every bd call is best-effor
 so a bd hiccup never blocks review):
 
 ```bash
-# Resolve the real work bead from {convoy_id} (synthetic input convoy ->
+# Resolve the real work bead from $SOURCE_ANCHOR_ID (synthetic input convoy ->
 # its `tracks` dependency = the work bead; a non-convoy id is already the work
 # bead). Fail-safe: WORK_BEAD is never empty (falls back to the convoy id).
-CONVOY_ID="{convoy_id}"
+CONVOY_ID="$SOURCE_ANCHOR_ID"
 WORK_BEAD="$(gc bd show "$CONVOY_ID" --json 2>/dev/null | python3 -c "
 import sys, json
 cid = sys.argv[1]

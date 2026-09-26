@@ -402,7 +402,7 @@ fi
 # cv_resolve_base_branch and cv_ensure_branch_based_on in, in the right order,
 # before gathering review context.
 # ===========================================================================
-SETUP_MD="${MOLD_DIR}/pack/assets/workflows/con-voyage/{target}.setup-con-voyage-review.md"
+SETUP_MD="${MOLD_DIR}/pack/assets/workflows/con-voyage/main.setup-con-voyage-review.md"
 if [ ! -f "$SETUP_MD" ]; then
   echo "FATAL: workflow file under test not found at ${SETUP_MD}" >&2
   exit 2

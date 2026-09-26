@@ -25,7 +25,7 @@ set -uo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOLD_DIR="$(cd "${TEST_DIR}/.." && pwd)"
-PUBLISH_MD="${MOLD_DIR}/pack/assets/workflows/con-voyage/{target}.publish.md"
+PUBLISH_MD="${MOLD_DIR}/pack/assets/workflows/con-voyage/main.publish.md"
 
 if [ ! -f "$PUBLISH_MD" ]; then
   echo "FATAL: workflow file under test not found at ${PUBLISH_MD}" >&2
@@ -115,7 +115,11 @@ fi
 # ===========================================================================
 start_case "4: BASE_BRANCH is resolved via the shared cv_resolve_base_branch(), not a placeholder"
 assert_contains 'BASE_BRANCH="$(source "$CV_LIB" && cv_resolve_base_branch "$CONVOY_ID" "$(pwd)")"' "resolves BASE_BRANCH by sourcing con-voyage-lib.sh and calling cv_resolve_base_branch"
-assert_contains 'CONVOY_ID="{convoy_id}"' "resolves the journey's convoy id from the graph.v2 template var"
+# fk-4q6ib: a literal {convoy_id} token in this description_file is a
+# permanent no-op (gc never inlines/substitutes a description_file this
+# large), so CONVOY_ID is now resolved dynamically off the workflow root's
+# gc.build.source_anchor_id metadata instead of a graph.v2 template var.
+assert_contains 'CONVOY_ID="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.build.source_anchor_id)"' "resolves the journey's convoy id dynamically from the workflow root's metadata, not a dead template var"
 assert_not_contains '<base-branch>' "no hand-filled <base-branch> placeholder remains anywhere in this file"
 
 # ===========================================================================
