@@ -1,0 +1,32 @@
+# con-voyage-askuserquestion-watchdog — city-wide interactive-prompt-stall
+# watchdog (fk-o9ntx: item 2/DETECT of fk-6kvnt's proposal).
+#
+# fk-6kvnt shipped the PREVENTION text (every con-voyage-dispatched worker is
+# told never to call an interactive prompt tool) plus the detection PRIMITIVE
+# cv_text_has_interactive_prompt_stall in con-voyage-lib.sh. That prevention
+# text only reaches con-voyage-dispatched steps, so a core
+# gc.implementation-worker on a raw --no-formula bead (do-work's own formula —
+# exactly what stalled for ~20 minutes on 2026-09-25, fk-6kvnt) gets none of
+# it. This order is the live watchdog around that primitive: it scans EVERY
+# active session in the city every cycle, regardless of formula or template,
+# so it also covers that gap.
+#
+# See assets/scripts/con-voyage-askuserquestion-watchdog.sh for the full
+# design rationale and algorithm — in particular why a stall must be seen on
+# two CONSECUTIVE cycles before mail goes out: a peeked pane is the LAST
+# RENDERED FRAME and can be stale.
+
+[order]
+description = "Detect a live session stuck on an interactive prompt (e.g. AskUserQuestion) for two consecutive cycles and mail the mayor with the unblock command"
+trigger = "cooldown"
+interval = "5m"
+exec = "$PACK_DIR/assets/scripts/con-voyage-askuserquestion-watchdog.sh"
+
+# CV_ASKQ_MAIL_TARGET is "mayor" per the bead's own explicit ask (this is a
+# city-wide safety net, not a per-lane concern, so it deliberately does not
+# follow con-voyage-review-watchdog.toml/con-voyage-repair-watchdog.toml's
+# "human" escalation-target default).
+[order.env]
+CV_ASKQ_MAIL_TARGET = "mayor"
+CV_ASKQ_PEEK_LINES = "50"
+CV_ASKQ_STORE_TIMEOUT_SECONDS = "30"
