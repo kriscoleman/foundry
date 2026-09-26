@@ -1,0 +1,349 @@
+#!/usr/bin/env bash
+# con-voyage-sync-base.test.sh — hermetic, offline tests for fk-hbsmk:
+# cv_sync_worktree_to_base, the shared "make sure this worktree starts from
+# the CURRENT origin default base" helper every con-voyage step that writes
+# code calls at its START, so a worker never silently implements against a
+# stale local main.
+#
+# EVIDENCE (operator directive, Slack #repl-city-mayor 2026-09-26 15:00): 4 of
+# 7 foundry-kc con-voyage builds on 2026-09-26 started on the rig's stale
+# local main (18 commits behind origin/main) on a DETACHED HEAD, because a
+# first-match `find` resolution picked a stale cv-worktree-prep.sh. The mayor
+# caught it by hand and had each builder rebase. This makes the sync
+# structural instead of a habit.
+#
+# cv_sync_worktree_to_base DIR [BRANCH_NAME]:
+#   1. git fetch origin (bounded by cv_with_timeout — macOS has no timeout(1)).
+#   2. delegates to cv-worktree-prep.sh ensure-branch (fk-tazxl) so a detached
+#      worktree gets a name before anything else happens.
+#   3. delegates to cv-worktree-prep.sh resolve-base for the current default
+#      base ref (origin/HEAD -> origin/main -> main), never re-deriving that
+#      order itself (must never disagree with guard/built/
+#      cv_resolve_base_branch about what "the base" means).
+#   4. HEAD already contains the resolved base -> no-op.
+#   5. Otherwise, diff HEAD against ITS merge-base with the new base: zero
+#      commits of DIR's own beyond it -> recreate the branch straight from
+#      the new base (`checkout -B`, never `git merge`); one or more -> replay
+#      them onto the new base (`rebase --onto`, preserving DIR's own
+#      commits). A conflict aborts the rebase immediately and fails closed —
+#      never a half-finished rebase left behind.
+#
+# Prints exactly one bare word to stdout on success: noop | recreated |
+# rebased (the same "pure value on stdout, diagnostics on stderr" contract
+# cv_resolve_base_branch/resolve-base already use) — nothing to stdout and a
+# non-zero exit on any failure.
+#
+# HOW IT WORKS: real local git repos under a temp sandbox (mirrors
+# con-voyage-stacked-pr-base.test.sh's mk_repo/git_c pattern) — no stubs for
+# git itself, since git's own fetch/rebase/merge-base behavior is exactly
+# what's under test. `gc` is stubbed only so `source "$LIB"` succeeds; the
+# code path under test here never calls it.
+#
+# Run:  bash tests/con-voyage-sync-base.test.sh   (exit 0 => all cases passed)
+
+set -uo pipefail
+
+export GIT_TERMINAL_PROMPT=0
+export GIT_CONFIG_NOSYSTEM=1
+
+TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MOLD_DIR="$(cd "${TEST_DIR}/.." && pwd)"
+LIB="${MOLD_DIR}/pack/assets/scripts/con-voyage-lib.sh"
+PREP_SCRIPT="${MOLD_DIR}/pack/assets/scripts/cv-worktree-prep.sh"
+
+for f in "$LIB" "$PREP_SCRIPT"; do
+  if [ ! -f "$f" ]; then
+    echo "FATAL: required file not found at ${f}" >&2
+    exit 2
+  fi
+done
+
+SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/cv-sync-base-test.XXXXXX")"
+# shellcheck disable=SC2329  # invoked indirectly via the EXIT trap below
+cleanup() { rm -rf "$SANDBOX"; }
+trap cleanup EXIT
+
+FAILURES=0
+start_case() { echo; echo "=== CASE: $1 ==="; }
+pass() { echo "  PASS: $1"; }
+fail() { echo "  FAIL: $1" >&2; FAILURES=$((FAILURES+1)); }
+assert_eq() {
+  if [ "$1" = "$2" ]; then pass "$3 (=$1)"; else fail "$3 (expected '$1', got '$2')"; fi
+}
+
+git_c() { git -C "$1" -c user.email=test@example.com -c user.name="Test" "${@:2}"; }
+
+mk_repo() {
+  local repo="${SANDBOX}/$1"
+  mkdir -p "$repo"
+  git_c "$repo" init -q -b main
+  # Persist identity into the repo's own config (not just a per-invocation `-c`
+  # override): the rebase path under test creates a real replayed commit, and
+  # a bare CI runner's auto-derived identity can have an empty name and abort
+  # the rebase ("empty ident name ... not allowed") — see
+  # con-voyage-stacked-pr-base.test.sh's mk_repo for the same precedent.
+  git_c "$repo" config user.email test@example.com
+  git_c "$repo" config user.name "Test"
+  printf 'placeholder\n' > "$repo/README.md"
+  git_c "$repo" add README.md
+  git_c "$repo" commit -q -m "init"
+  printf '%s' "$repo"
+}
+
+# Fake `gc` so `source "$LIB"` succeeds; not called by cv_sync_worktree_to_base.
+STUBDIR="${SANDBOX}/stubbin"
+mkdir -p "$STUBDIR"
+cat > "${STUBDIR}/gc" <<'GC_STUB'
+#!/usr/bin/env bash
+exit 0
+GC_STUB
+chmod +x "${STUBDIR}/gc"
+# shellcheck disable=SC2034  # consumed by con-voyage-lib.sh at call time
+GC="${STUBDIR}/gc"
+
+# shellcheck source=../pack/assets/scripts/con-voyage-lib.sh
+source "$LIB"
+
+# Keep every fetch in this suite instant and bounded even if something regresses.
+export CV_SYNC_FETCH_TIMEOUT_SECONDS=5
+
+# ===========================================================================
+# CASE 1 — already up to date on a named branch -> no-op. Idempotent: running
+#   it twice in a row is still a no-op.
+# ===========================================================================
+start_case "1: already current on a named branch -> no-op, idempotent"
+UPSTREAM1="${SANDBOX}/repo1-upstream.git"
+git init -q -b main --bare "$UPSTREAM1"
+REPO1="$(mk_repo repo1)"
+git_c "$REPO1" remote add origin "$UPSTREAM1"
+git_c "$REPO1" push -q -u origin main
+git_c "$REPO1" remote set-head origin main
+before_sha1="$(git_c "$REPO1" rev-parse HEAD)"
+result1="$(cv_sync_worktree_to_base "$REPO1" 2>/dev/null)"
+rc1=$?
+assert_eq "0" "$rc1" "exits 0 when already current"
+assert_eq "noop" "$result1" "reports noop"
+assert_eq "$before_sha1" "$(git_c "$REPO1" rev-parse HEAD)" "HEAD unchanged"
+assert_eq "main" "$(git_c "$REPO1" symbolic-ref --short HEAD)" "stays on its named branch"
+result1b="$(cv_sync_worktree_to_base "$REPO1" 2>/dev/null)"
+assert_eq "noop" "$result1b" "idempotent: a second run is still a no-op"
+
+# ===========================================================================
+# CASE 2 — detached HEAD, already current -> gets a named branch attached
+#   (delegates to ensure-branch), still reports noop (content unchanged).
+# ===========================================================================
+start_case "2: detached HEAD, already current -> named branch attached, reports noop"
+UPSTREAM2="${SANDBOX}/repo2-upstream.git"
+git init -q -b main --bare "$UPSTREAM2"
+REPO2="$(mk_repo repo2)"
+git_c "$REPO2" remote add origin "$UPSTREAM2"
+git_c "$REPO2" push -q -u origin main
+git_c "$REPO2" remote set-head origin main
+WT2="${SANDBOX}/repo2-worktree"
+git_c "$REPO2" worktree add -q --detach "$WT2" HEAD
+before_sha2="$(git_c "$WT2" rev-parse HEAD)"
+if git_c "$WT2" symbolic-ref -q --short HEAD >/dev/null 2>&1; then
+  fail "expected the fixture worktree to start detached"
+else
+  pass "fixture worktree starts detached, confirming this case is meaningful"
+fi
+result2="$(cv_sync_worktree_to_base "$WT2" "con-voyage/repo2-worktree" 2>/dev/null)"
+rc2=$?
+assert_eq "0" "$rc2" "exits 0"
+assert_eq "noop" "$result2" "reports noop (content unchanged)"
+assert_eq "$before_sha2" "$(git_c "$WT2" rev-parse HEAD)" "HEAD's commit is unchanged"
+assert_eq "con-voyage/repo2-worktree" "$(git_c "$WT2" symbolic-ref --short HEAD 2>/dev/null)" "worktree is no longer detached — named branch attached"
+
+# ===========================================================================
+# CASE 3 — fresh worktree, zero commits of its own, stale local base ->
+#   recreated straight from the new origin/main tip (checkout -B), never a
+#   rebase (nothing of the caller's own to replay).
+# ===========================================================================
+start_case "3: no local commits + stale base -> recreated from origin/main"
+UPSTREAM3="${SANDBOX}/repo3-upstream.git"
+git init -q -b main --bare "$UPSTREAM3"
+REPO3="$(mk_repo repo3)"
+git_c "$REPO3" remote add origin "$UPSTREAM3"
+git_c "$REPO3" push -q -u origin main
+git_c "$REPO3" remote set-head origin main
+WT3="${SANDBOX}/repo3-worktree"
+git_c "$REPO3" worktree add -q --detach "$WT3" HEAD
+stale_sha3="$(git_c "$WT3" rev-parse HEAD)"
+# origin/main advances with a new commit the worktree has never seen.
+printf 'v2\n' >> "${REPO3}/README.md"
+git_c "$REPO3" add README.md
+git_c "$REPO3" commit -q -m "feat: upstream advances"
+git_c "$REPO3" push -q origin main
+new_tip3="$(git_c "$REPO3" rev-parse main)"
+if [ "$stale_sha3" = "$new_tip3" ]; then
+  fail "fixture setup bug: origin/main did not actually advance"
+else
+  pass "fixture: origin/main advanced past the worktree's stale commit"
+fi
+result3="$(cv_sync_worktree_to_base "$WT3" "con-voyage/repo3-worktree" 2>/dev/null)"
+rc3=$?
+assert_eq "0" "$rc3" "exits 0"
+assert_eq "recreated" "$result3" "reports recreated"
+assert_eq "$new_tip3" "$(git_c "$WT3" rev-parse HEAD)" "HEAD now matches the new origin/main tip"
+assert_eq "con-voyage/repo3-worktree" "$(git_c "$WT3" symbolic-ref --short HEAD 2>/dev/null)" "worktree is on the named branch"
+
+# ===========================================================================
+# CASE 4 — worktree with REAL local commits, behind origin/main -> rebased
+#   onto the new tip, own commit(s) preserved.
+# ===========================================================================
+start_case "4: worktree behind origin/main WITH local commits -> rebased, commits preserved"
+UPSTREAM4="${SANDBOX}/repo4-upstream.git"
+git init -q -b main --bare "$UPSTREAM4"
+REPO4="$(mk_repo repo4)"
+git_c "$REPO4" remote add origin "$UPSTREAM4"
+git_c "$REPO4" push -q -u origin main
+git_c "$REPO4" remote set-head origin main
+WT4="${SANDBOX}/repo4-worktree"
+git_c "$REPO4" worktree add -q --detach "$WT4" HEAD
+git_c "$WT4" checkout -q -b con-voyage/repo4-worktree
+printf 'impl\n' > "${WT4}/impl.txt"
+git_c "$WT4" add impl.txt
+git_c "$WT4" commit -q -m "feat: implementation commit"
+own_commit_msg4="$(git_c "$WT4" log -1 --format=%s)"
+# origin/main advances underneath, unrelated to impl.txt.
+printf 'v2\n' >> "${REPO4}/README.md"
+git_c "$REPO4" add README.md
+git_c "$REPO4" commit -q -m "feat: upstream advances"
+git_c "$REPO4" push -q origin main
+new_tip4="$(git_c "$REPO4" rev-parse main)"
+result4="$(cv_sync_worktree_to_base "$WT4" 2>/dev/null)"
+rc4=$?
+assert_eq "0" "$rc4" "exits 0"
+assert_eq "rebased" "$result4" "reports rebased"
+if git_c "$WT4" merge-base --is-ancestor "$new_tip4" HEAD 2>/dev/null; then
+  pass "the new origin/main tip is now an ancestor of HEAD"
+else
+  fail "expected the new origin/main tip to be an ancestor of HEAD after rebase"
+fi
+assert_eq "impl" "$(cat "${WT4}/impl.txt")" "the worktree's own implementation change survived the rebase"
+assert_eq "$own_commit_msg4" "$(git_c "$WT4" log -1 --format=%s)" "own commit message preserved (replayed, not squashed)"
+assert_eq "con-voyage/repo4-worktree" "$(git_c "$WT4" symbolic-ref --short HEAD 2>/dev/null)" "stays on its own named branch"
+
+# ===========================================================================
+# CASE 5 — rebase conflict -> fails closed: non-zero exit, HEAD restored to
+#   its pre-sync commit, no leftover rebase state, never falls back to merge.
+# ===========================================================================
+start_case "5: conflicting rebase -> non-zero exit, clean tree, HEAD restored"
+UPSTREAM5="${SANDBOX}/repo5-upstream.git"
+git init -q -b main --bare "$UPSTREAM5"
+REPO5="$(mk_repo repo5)"
+git_c "$REPO5" remote add origin "$UPSTREAM5"
+git_c "$REPO5" push -q -u origin main
+git_c "$REPO5" remote set-head origin main
+WT5="${SANDBOX}/repo5-worktree"
+git_c "$REPO5" worktree add -q --detach "$WT5" HEAD
+git_c "$WT5" checkout -q -b con-voyage/repo5-worktree
+printf 'worktree line\n' > "${WT5}/README.md"
+git_c "$WT5" add README.md
+git_c "$WT5" commit -q -m "feat: worktree touches README"
+before_sha5="$(git_c "$WT5" rev-parse HEAD)"
+# origin/main advances with a CONFLICTING change to the same line.
+printf 'upstream line\n' > "${REPO5}/README.md"
+git_c "$REPO5" add README.md
+git_c "$REPO5" commit -q -m "feat: upstream also touches README (conflicts)"
+git_c "$REPO5" push -q origin main
+err5="$(cv_sync_worktree_to_base "$WT5" 2>&1 >/dev/null)"
+rc5=$?
+assert_eq "1" "$rc5" "returns non-zero on a rebase conflict"
+case "$err5" in
+  *"conflict"*) pass "error message calls out the conflict" ;;
+  *) fail "expected an explanatory conflict error message, got: ${err5}" ;;
+esac
+assert_eq "$before_sha5" "$(git_c "$WT5" rev-parse HEAD)" "HEAD is restored to its pre-sync commit (rebase --abort ran)"
+if [ -d "${WT5}/.git/rebase-merge" ] || [ -d "${WT5}/.git/rebase-apply" ]; then
+  fail "expected no in-progress rebase state left behind (checked linked-worktree .git file path)"
+else
+  pass "no in-progress rebase state left behind at the worktree's own .git entry"
+fi
+status_out5="$(git_c "$WT5" status --porcelain)"
+assert_eq "" "$status_out5" "worktree is clean after the aborted rebase"
+
+# ===========================================================================
+# CASE 6 — no origin remote configured at all -> fetch cannot succeed -> this
+#   fails closed rather than silently skip the sync (the whole point of this
+#   helper is to never let a step proceed on an unconfirmed base).
+# ===========================================================================
+start_case "6: no origin remote at all -> fails closed rather than silently proceeding"
+REPO6="$(mk_repo repo6)"
+before_sha6="$(git_c "$REPO6" rev-parse HEAD)"
+err6="$(cv_sync_worktree_to_base "$REPO6" 2>&1 >/dev/null)"
+rc6=$?
+assert_eq "1" "$rc6" "returns non-zero when there is no origin to sync against"
+assert_eq "$before_sha6" "$(git_c "$REPO6" rev-parse HEAD)" "HEAD is untouched"
+
+# ===========================================================================
+# Structural checks — the helper must actually be wired into every
+# code-writing step's START, not just exist unused in the lib.
+# ===========================================================================
+BUILD_MD="${MOLD_DIR}/pack/assets/workflows/con-voyage/{target}.build.md"
+APPLY_MD="${MOLD_DIR}/pack/assets/workflows/con-voyage/{target}.apply-review-findings.md"
+CI_REPAIR_MD="${MOLD_DIR}/pack/assets/workflows/con-voyage-ci-repair/{target}.ci-repair.md"
+for f in "$BUILD_MD" "$APPLY_MD" "$CI_REPAIR_MD"; do
+  if [ ! -f "$f" ]; then
+    echo "FATAL: workflow file under test not found at ${f}" >&2
+    exit 2
+  fi
+done
+
+assert_md_contains() {
+  local file="$1" needle="$2" label="$3"
+  if grep -qF -- "$needle" "$file"; then
+    pass "$label"
+  else
+    fail "$label (not found verbatim in ${file})"
+  fi
+}
+
+md_line_of() {
+  local file="$1" needle="$2"
+  grep -nF -- "$needle" "$file" | head -1 | cut -d: -f1
+}
+
+start_case "build.md: calls cv_sync_worktree_to_base before the short-circuit decision"
+assert_md_contains "$BUILD_MD" 'cv_sync_worktree_to_base "$WORKTREE"' "build.md calls cv_sync_worktree_to_base on \$WORKTREE"
+sync_line_build="$(md_line_of "$BUILD_MD" 'cv_sync_worktree_to_base "$WORKTREE"')"
+shortcircuit_line_build="$(md_line_of "$BUILD_MD" '## Short-circuit')"
+if [ -n "$sync_line_build" ] && [ -n "$shortcircuit_line_build" ] && [ "$sync_line_build" -lt "$shortcircuit_line_build" ]; then
+  pass "sync call (line ${sync_line_build}) precedes the short-circuit decision (line ${shortcircuit_line_build})"
+else
+  fail "expected the sync call to precede the short-circuit decision"
+fi
+
+start_case "apply-review-findings.md: calls cv_sync_worktree_to_base at the start and treats a change as iterate"
+assert_md_contains "$APPLY_MD" 'cv_sync_worktree_to_base' "apply-review-findings.md calls cv_sync_worktree_to_base"
+assert_md_contains "$APPLY_MD" 'code_review.verdict=iterate' "apply-review-findings.md still documents the iterate verdict"
+sync_line_apply="$(md_line_of "$APPLY_MD" 'cv_sync_worktree_to_base')"
+verdict_section_line_apply="$(md_line_of "$APPLY_MD" '### Setting code_review.verdict')"
+if [ -n "$sync_line_apply" ] && [ -n "$verdict_section_line_apply" ] && [ "$sync_line_apply" -lt "$verdict_section_line_apply" ]; then
+  pass "sync call (line ${sync_line_apply}) precedes the verdict-setting section (line ${verdict_section_line_apply})"
+else
+  fail "expected the sync call to precede the verdict-setting section"
+fi
+case "$(cat "$APPLY_MD")" in
+  *"sync"*"recreated"*|*"recreated"*"sync"*) pass "apply-review-findings.md's prose accounts for a recreated/rebased sync result forcing iterate" ;;
+  *) fail "expected apply-review-findings.md to call out that a sync-induced change (recreated/rebased) also forces verdict=iterate" ;;
+esac
+
+start_case "ci-repair.md: syncs the shared workspace before checking out the PR branch"
+assert_md_contains "$CI_REPAIR_MD" 'cv_sync_worktree_to_base' "ci-repair.md calls cv_sync_worktree_to_base"
+sync_line_repair="$(md_line_of "$CI_REPAIR_MD" 'cv_sync_worktree_to_base')"
+checkout_line_repair="$(md_line_of "$CI_REPAIR_MD" 'git checkout {branch}')"
+if [ -n "$sync_line_repair" ] && [ -n "$checkout_line_repair" ] && [ "$sync_line_repair" -lt "$checkout_line_repair" ]; then
+  pass "sync call (line ${sync_line_repair}) precedes checking out {branch} (line ${checkout_line_repair})"
+else
+  fail "expected the sync call to precede the PR-branch checkout"
+fi
+
+echo
+if [ "$FAILURES" -eq 0 ]; then
+  echo "ALL CASES PASSED"
+  exit 0
+else
+  echo "FAILED: ${FAILURES} assertion(s) failed"
+  exit 1
+fi

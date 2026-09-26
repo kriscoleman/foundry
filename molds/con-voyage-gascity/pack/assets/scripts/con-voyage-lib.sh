@@ -434,6 +434,116 @@ cv_ensure_branch_based_on() {
   echo "cv-lib: ${dir} is now based on ${base_branch}"
 }
 
+# cv_sync_worktree_to_base DIR [BRANCH_NAME] — fk-hbsmk: make sure DIR starts
+# from the CURRENT origin default base before any code-writing step begins,
+# instead of trusting a long-lived worktree/local main that can silently be
+# many commits stale (evidence: 4 of 7 foundry-kc con-voyage builds on
+# 2026-09-26 started detached on a local main 18 commits behind origin/main,
+# because a stale-copy `find` resolution loaded an old cv-worktree-prep.sh).
+#
+# Never `git merge`. Fails closed (non-zero, no partial rebase left behind)
+# rather than silently proceed on an unconfirmed base:
+#   - the fetch itself fails or times out (CV_SYNC_FETCH_TIMEOUT_SECONDS,
+#     default 60s, bounded via cv_with_timeout — macOS has no timeout(1))
+#   - the rebase hits a conflict (aborted immediately, HEAD restored)
+#
+# Base resolution and branch-naming are both DELEGATED to
+# cv-worktree-prep.sh — never reimplemented here, so this can never disagree
+# with guard/built/cv_resolve_base_branch about what "the base" means:
+#   1. git fetch origin, bounded.
+#   2. ensure-branch (fk-tazxl) — a detached worktree gets a name before
+#      anything else happens.
+#   3. resolve-base — the current default base ref (origin/HEAD ->
+#      origin/main -> main).
+#   4. HEAD already contains that base -> no-op.
+#   5. Otherwise, diff HEAD against its merge-base with the resolved base:
+#      zero commits of DIR's own beyond it -> recreate the branch straight
+#      from the new base (`checkout -B`); one or more -> replay them onto the
+#      new base (`rebase --onto`, preserving DIR's own commits). Using the
+#      merge-base (rather than a base SHA captured before the fetch) makes
+#      this immune to whether `git push` happened to also update this
+#      worktree's own remote-tracking ref.
+#
+# Prints exactly one bare word to stdout on success: noop | recreated |
+# rebased (nothing else — callers capture it via command substitution, the
+# same contract cv_resolve_base_branch/resolve-base already use). All
+# diagnostics go to stderr. Prints nothing to stdout and returns non-zero on
+# any failure.
+cv_sync_worktree_to_base() {
+  local dir="$1" branch_name="${2:-}"
+
+  if [ -z "$dir" ] || [ ! -d "$dir" ] \
+    || ! git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "cv-lib: ERROR cv_sync_worktree_to_base: '${dir}' is not inside a git working tree" >&2
+    return 1
+  fi
+
+  local fetch_timeout="${CV_SYNC_FETCH_TIMEOUT_SECONDS:-60}"
+  if ! cv_with_timeout "$fetch_timeout" git -C "$dir" fetch -q origin >&2; then
+    echo "cv-lib: ERROR cv_sync_worktree_to_base: git fetch origin failed or timed out (${fetch_timeout}s) in ${dir} — refusing to proceed on an unconfirmed base" >&2
+    return 1
+  fi
+
+  local prep_script
+  prep_script="$(command -v cv-worktree-prep.sh 2>/dev/null || true)"
+  if [ -z "$prep_script" ]; then
+    prep_script="$(find "${GC_CITY:-.}" -maxdepth 6 -name cv-worktree-prep.sh 2>/dev/null | head -1)"
+  fi
+  if [ -z "$prep_script" ] || [ ! -x "$prep_script" ]; then
+    echo "cv-lib: ERROR cv_sync_worktree_to_base: cv-worktree-prep.sh not found — cannot sync ${dir}" >&2
+    return 1
+  fi
+
+  bash "$prep_script" ensure-branch "$dir" "$branch_name" >&2 \
+    || { echo "cv-lib: ERROR cv_sync_worktree_to_base: ensure-branch failed for ${dir}" >&2; return 1; }
+
+  local current_branch
+  current_branch="$(git -C "$dir" symbolic-ref -q --short HEAD 2>/dev/null || true)"
+  [ -n "$current_branch" ] \
+    || { echo "cv-lib: ERROR cv_sync_worktree_to_base: ${dir} is still detached after ensure-branch" >&2; return 1; }
+
+  local base_ref base_sha
+  base_ref="$(bash "$prep_script" resolve-base "$dir" 2>/dev/null)"
+  base_sha="$(git -C "$dir" rev-parse --verify --quiet "${base_ref}^{commit}" 2>/dev/null || true)"
+
+  if [ -z "$base_sha" ]; then
+    echo "cv-lib: cv_sync_worktree_to_base: no base ref resolved for ${dir} — nothing to sync against" >&2
+    printf 'noop\n'
+    return 0
+  fi
+
+  if git -C "$dir" merge-base --is-ancestor "$base_sha" HEAD 2>/dev/null; then
+    echo "cv-lib: ${dir} already contains ${base_ref} (${base_sha}) — no sync needed" >&2
+    printf 'noop\n'
+    return 0
+  fi
+
+  local mb ahead
+  mb="$(git -C "$dir" merge-base "$base_sha" HEAD 2>/dev/null || true)"
+  [ -n "$mb" ] || mb="$base_sha"
+  ahead="$(git -C "$dir" rev-list --count "${mb}..HEAD" 2>/dev/null || echo 0)"
+  case "$ahead" in ''|*[!0-9]*) ahead=0 ;; esac
+
+  if [ "$ahead" -eq 0 ]; then
+    if ! git -C "$dir" checkout -q -B "$current_branch" "$base_sha" >&2; then
+      echo "cv-lib: ERROR cv_sync_worktree_to_base: checkout -B ${current_branch} ${base_ref} failed in ${dir}" >&2
+      return 1
+    fi
+    echo "cv-lib: ${dir} had no commits of its own beyond ${base_ref}'s history — recreated ${current_branch} from ${base_ref}" >&2
+    printf 'recreated\n'
+    return 0
+  fi
+
+  echo "cv-lib: rebasing ${dir} onto ${base_ref} (${ahead} commit(s) of its own)" >&2
+  if ! git -C "$dir" rebase --onto "$base_sha" "$mb" >&2; then
+    git -C "$dir" rebase --abort >/dev/null 2>&1 || true
+    echo "cv-lib: ERROR cv_sync_worktree_to_base: rebase of ${dir} onto ${base_ref} failed (conflict) — aborted, tree left clean; resolve manually before continuing" >&2
+    return 1
+  fi
+  echo "cv-lib: ${dir} is now based on ${base_ref}" >&2
+  printf 'rebased\n'
+}
+
 # ---------------------------------------------------------------------------
 # Per-PR repair state record (fk-4o74 Fix 1; extended by Fix 2's watchdog,
 # fk-lfan's B1 round). File: "<CV_STATE_DIR>/<dedup_key>.state", plain
