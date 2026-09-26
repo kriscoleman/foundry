@@ -114,6 +114,14 @@ if [ "$REVIEW_MODE" = "report" ]; then
   exit 1
 fi
 
+# LANE_STATUS scans every code_review.<lane>_verdict key present on any
+# current-iteration bead (not a fixed list of 3) — con-voyage adds
+# security_verdict and code_verdict on top of build-basic-review's
+# acceptance/test_evidence/simplicity floor, plus up to twelve conditional
+# roster lanes (product_owner, dev_ex, qa_test, ...), each under its own
+# "<lane>_verdict" key. A fixed 3-key struct silently ignored every lane
+# con-voyage itself added (fk-w31l7: code_review.code_verdict=iterate was
+# still on the board when a "done" self-report let the loop exit anyway).
 LANE_STATUS="$(printf '%s\n' "$MATCHES" | jq -r \
   --arg root "$PARENT_ROOT" \
   --arg attempt "$ATTEMPT" \
@@ -146,46 +154,66 @@ LANE_STATUS="$(printf '%s\n' "$MATCHES" | jq -r \
     .[]
     | current_loop
     | .metadata
-    | {
-        acceptance: (."code_review.acceptance_verdict" // ""),
-        test_evidence: (."code_review.test_evidence_verdict" // ""),
-        simplicity: (."code_review.simplicity_verdict" // "")
-      }
-  ] as $rows
-  | {
-      acceptance: ([$rows[].acceptance | select(. != "")] | last // ""),
-      test_evidence: ([$rows[].test_evidence | select(. != "")] | last // ""),
-      simplicity: ([$rows[].simplicity | select(. != "")] | last // "")
-    } as $latest
-  | if ($latest.acceptance != "" or $latest.test_evidence != "" or $latest.simplicity != "") then
-      if (approved($latest.acceptance) and approved($latest.test_evidence) and approved($latest.simplicity)) then
+    | to_entries[]
+    | select(.key | test("^code_review\\..+_verdict$"))
+    | select(.value != null and .value != "")
+  ] as $entries
+  | (reduce $entries[] as $e ({}; . + {($e.key): $e.value})) as $latest
+  | ($latest | keys) as $lane_keys
+  | if ($lane_keys | length) == 0 then
+      ""
+    else
+      if ([$lane_keys[] | approved($latest[.])] | all) then
         "approved"
       else
-        "iterate: acceptance=\($latest.acceptance // "<missing>") test_evidence=\($latest.test_evidence // "<missing>") simplicity=\($latest.simplicity // "<missing>")"
+        "iterate: " + ([$lane_keys[] | select(approved($latest[.]) | not) | "\(.)=\($latest[.])"] | join(", "))
       end
-    else
-      ""
     end
 ' 2>/dev/null)"
 
-if [ "$VERDICT" != "done" ]; then
-  case "$VERDICT" in
-    approved|pass)
-      ;;
-    "")
-      if [ "$LANE_STATUS" = "approved" ]; then
-        echo "Implementation review approved from lane verdicts"
-        exit 0
-      fi
-      echo "Implementation review needs another iteration: ${LANE_STATUS:-missing verdict}"
-      exit 1
-      ;;
-    *)
-      echo "Implementation review needs another iteration: $VERDICT"
-      exit 1
-      ;;
-  esac
-fi
+# FIX_COMMIT is set by apply-review-findings only when it actually committed
+# a fix this attempt. Lanes fan out BEFORE apply-review-findings runs within
+# a cycle (see {target}.con-voyage-review-loop.md), so a fix commit recorded
+# on THIS attempt's apply-review-findings bead structurally cannot have been
+# seen by any lane in this same attempt — "done" is never trustworthy
+# alongside one, regardless of what any lane verdict says.
+FIX_COMMIT="$(printf '%s\n' "$MATCHES" | jq -r --arg attempt "$ATTEMPT" --arg apply_step "$APPLY_STEP_ID" '
+  [
+    .[]
+    | select((.metadata["gc.attempt"] // "") == $attempt)
+    | select($apply_step != "" and (.metadata["gc.step_id"] // "") == $apply_step)
+    | select((.metadata["code_review.fix_commit"] // "") != "")
+    | .metadata["code_review.fix_commit"]
+  ] | last // ""
+' 2>/dev/null)"
 
-echo "Implementation review approved"
-exit 0
+case "$VERDICT" in
+  done|approved|pass)
+    if [ -n "$FIX_COMMIT" ]; then
+      echo "Implementation review needs another iteration: apply-review-findings recorded fix commit ${FIX_COMMIT} this attempt, which no lane has reviewed yet"
+      exit 1
+    fi
+    if [ -n "$LANE_STATUS" ] && [ "$LANE_STATUS" != "approved" ]; then
+      echo "Implementation review needs another iteration: $LANE_STATUS"
+      exit 1
+    fi
+    echo "Implementation review approved"
+    exit 0
+    ;;
+  "")
+    if [ -n "$FIX_COMMIT" ]; then
+      echo "Implementation review needs another iteration: apply-review-findings recorded fix commit ${FIX_COMMIT} this attempt, which no lane has reviewed yet"
+      exit 1
+    fi
+    if [ "$LANE_STATUS" = "approved" ]; then
+      echo "Implementation review approved from lane verdicts"
+      exit 0
+    fi
+    echo "Implementation review needs another iteration: ${LANE_STATUS:-missing verdict}"
+    exit 1
+    ;;
+  *)
+    echo "Implementation review needs another iteration: $VERDICT"
+    exit 1
+    ;;
+esac
