@@ -223,6 +223,75 @@ run_check loop-5 5
 assert_eq "0" "$RC" "exit 0 with a single unambiguous verdict=done"
 
 # ===========================================================================
+# CASE 4 — THE FALSE-APPROVAL DIRECTION (fk-hrbj7 LOW-2): the loop body's own
+# code_review.verdict rollup says "done" while the real apply-review-findings
+# bead says "iterate" (BLOCKING work still outstanding). CASE 2 above only
+# covers "iterate" on both beads, which exits 1 either way and never
+# exercises this direction. Pre-fix (9a5499e), unscoped "last" over bd list's
+# unordered result could pick the body bead's "done" and falsely approve
+# (exit 0) with real BLOCKING findings still open — the more consequential
+# half of the original bug (cross-checked against live data: root fk-nuy1h
+# attempt 4, loop body fk-z23in rollup=done vs. a real apply verdict
+# elsewhere in the iterate class). Must resolve from apply-review-findings
+# specifically and exit 1.
+# ===========================================================================
+start_case "4: apply-review-findings verdict=iterate is not shadowed by the loop body's own code_review.verdict=done rollup (false-approval direction)"
+ROOT4="$(bead_json wfroot-4 '{}')"
+BODY4="$(bead_json loop-6 '{
+  "gc.root_bead_id": "wfroot-4",
+  "gc.step_id": "main.con-voyage-review-loop",
+  "gc.attempt": "6",
+  "gc.scope_role": "body",
+  "code_review.verdict": "done"
+}')"
+APPLY4="$(bead_json apply-6 '{
+  "gc.root_bead_id": "wfroot-4",
+  "gc.attempt": "6",
+  "gc.step_id": "main.apply-review-findings",
+  "code_review.verdict": "iterate"
+}')"
+# Matches order deliberately puts the body bead's done rollup AFTER
+# apply-review-findings' own iterate entry — the same adversarial order as
+# CASE 1, this time with the vocabulary that makes unscoped "last" resolve to
+# a false approval instead of a wasted iteration.
+write_fixtures "$ROOT4" "$BODY4" "$APPLY4" "$BODY4"
+run_check loop-6 6
+assert_eq "1" "$RC" "exit 1 when apply-review-findings verdict=iterate is shadowed by the loop body's code_review.verdict=done rollup"
+if printf '%s' "$OUT" | grep -qi 'another iteration'; then pass "output reports another iteration needed"; else fail "output does not report another iteration needed: $OUT"; fi
+
+# ===========================================================================
+# CASE 5 — gc.step_id fallback diagnostic (fk-hrbj7 LOW-1): when the current
+# bead's gc.step_id is absent or doesn't end in ".con-voyage-review-loop",
+# APPLY_STEP_ID can't be derived, so VERDICT must resolve empty and the
+# script falls back to the LANE_STATUS heuristic — never reading
+# apply-review-findings' code_review.verdict directly (which would bypass
+# the step-id scoping CASE 1/4 depend on). Confirms the fallback happens (via
+# the new stderr diagnostic) and does not falsely approve even though the
+# apply-review-findings-shaped bead here says "done".
+# ===========================================================================
+start_case "5: missing/mismatched gc.step_id logs a diagnostic and falls back to LANE_STATUS instead of falsely approving"
+ROOT5="$(bead_json wfroot-5 '{}')"
+BODY5="$(bead_json loop-7 '{
+  "gc.root_bead_id": "wfroot-5",
+  "gc.attempt": "7",
+  "gc.scope_role": "body",
+  "code_review.acceptance_verdict": "iterate",
+  "code_review.test_evidence_verdict": "iterate",
+  "code_review.simplicity_verdict": "iterate"
+}')"
+APPLY5="$(bead_json apply-7 '{
+  "gc.root_bead_id": "wfroot-5",
+  "gc.attempt": "7",
+  "gc.step_id": "main.apply-review-findings",
+  "code_review.verdict": "done"
+}')"
+write_fixtures "$ROOT5" "$BODY5" "$APPLY5" "$BODY5"
+run_check loop-7 7
+assert_eq "1" "$RC" "exit 1 from LANE_STATUS fallback, not a false approval via apply-review-findings' own verdict=done"
+if printf '%s' "$OUT" | grep -qi "does not match expected"; then pass "diagnostic logged for step-id fallback"; else fail "missing step-id fallback diagnostic: $OUT"; fi
+if printf '%s' "$OUT" | grep -qi 'another iteration'; then pass "output reports another iteration needed from LANE_STATUS"; else fail "output does not report another iteration needed: $OUT"; fi
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 echo
