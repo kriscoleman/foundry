@@ -63,14 +63,20 @@ review context, so a stacked slice's PR is opened against (and guarded
 against) the branch it actually stacks on instead of always `main`:
 
 ```bash
-CONVOY_ID="{convoy_id}"
 CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
 CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
 [ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
 CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
 [ -f "$CV_LIB" ] || CV_LIB=""
 BASE_BRANCH="main"
+CONVOY_ID=""
 if [ -n "$CV_LIB" ]; then
+  # $ROOT_ID is already resolved above — never a literal {convoy_id} token:
+  # this description_file is too large for gc to inline, so any {var} token
+  # in this file's own content is a permanent no-op (fk-4q6ib). prepare-build
+  # wrote this key on the workflow root before this workflow's first step
+  # ever finished, so it is always present by the time publish runs.
+  CONVOY_ID="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.build.source_anchor_id)"
   BASE_BRANCH="$(source "$CV_LIB" && cv_resolve_base_branch "$CONVOY_ID" "$(pwd)")"
 fi
 echo "con-voyage publish: resolved base branch = ${BASE_BRANCH}"
@@ -214,7 +220,7 @@ after a successful PR open, substituting the real values:
 ```bash
 # Inputs (fill from this run):
 WORK_BEAD="<work bead id from the review context>"   # NOT this step's bead
-CONVOY_ID="{convoy_id}"                             # the con-voyage convoy
+# $CONVOY_ID is already resolved (base-branch resolution block above)
 PR_URL="<the https URL cv-pr-comment.sh create printed>"
 PR_NUMBER="<the PR number>"
 REPO_FULL="<owner/repo>"

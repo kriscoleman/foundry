@@ -1745,6 +1745,61 @@ for dep in (data.get('dependencies') or []):
 " "$dep_title" 2>/dev/null
 }
 
+# cv_bead_metadata BEAD_ID KEY — print BEAD_ID's metadata[KEY] value (a string
+# printed as-is; any other JSON type re-encoded as JSON), or empty when the
+# bead is unknown, bd show fails, the JSON is unparseable, or KEY is absent.
+# Fail-safe: never aborts the caller.
+#
+# WHY THIS EXISTS (fk-4q6ib): a `{var}`-style token in a description_file only
+# gets substituted when gc inlines that file's content into the bead body —
+# and gc does NOT inline a description_file above its own size threshold
+# (confirmed: a real dispatched bead whose description_file was 8130 bytes
+# rendered only the generic "External Prompt Required" wrapper, never the
+# file's own content). Every step template in this pack is well above that
+# threshold, so a `{convoy_id}` (or similar) token inside one is a permanent
+# no-op, not a rendering nuance to work around with different brace styles.
+# The only reliable way to get a per-instance value into such a step is to
+# read it back from bead metadata at runtime — this is the shared primitive
+# for that, generalizing the single-key readers already in this file
+# (cv_bead_work_dir's bare `work_dir`, the inline gc.root_bead_id lookup
+# duplicated across build.md/prepare-build.md/publish.md/setup-review.md).
+cv_bead_metadata() {
+  local bead_id="$1" key="$2"
+  [ -n "${bead_id// /}" ] || { printf ''; return 0; }
+  local json
+  json=$("$GC" bd show "$bead_id" --json 2>/dev/null) || json=""
+  [ -n "$json" ] || { printf ''; return 0; }
+  printf '%s' "$json" | python3 -c "
+import sys, json
+key = sys.argv[1]
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+if isinstance(data, list):
+    data = data[0] if data else {}
+if not isinstance(data, dict):
+    raise SystemExit(0)
+meta = data.get('metadata') or {}
+if key not in meta or meta[key] is None:
+    raise SystemExit(0)
+val = meta[key]
+print(val if isinstance(val, str) else json.dumps(val))
+" "$key" 2>/dev/null
+}
+
+# cv_root_bead_id BEAD_ID — print BEAD_ID's workflow root: its
+# gc.root_bead_id metadata value, or BEAD_ID itself when that key is absent
+# (BEAD_ID already IS the root, or the lookup failed outright). Fail-safe:
+# always falls back to BEAD_ID (which may itself be empty) rather than
+# aborting the caller.
+cv_root_bead_id() {
+  local bead_id="$1"
+  local root
+  root="$(cv_bead_metadata "$bead_id" gc.root_bead_id)"
+  printf '%s' "${root:-$bead_id}"
+}
+
 # cv_close_reason_for_pr PR_STATE PR_NUMBER — canonical work-bead close reason
 # for a finalized PR. PR_STATE is the GitHub PR state ("MERGED" or "CLOSED",
 # case-insensitive). Any merged state -> "landed: PR #N merged"; a closed-

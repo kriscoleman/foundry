@@ -646,7 +646,7 @@ assert_log_count "$GC_LOG" 'mail send' 0 "cycle 5 sends no mail of any kind — 
 #   {target}.ci-repair.md).
 # ===========================================================================
 start_case "16: {target}.con-voyage-review-loop.md carries the claim-verification/re-dispatch block"
-REVIEW_LOOP_MD="${MOLD_DIR}/pack/assets/workflows/con-voyage/{target}.con-voyage-review-loop.md"
+REVIEW_LOOP_MD="${MOLD_DIR}/pack/assets/workflows/con-voyage/main.con-voyage-review-loop.md"
 if [ -f "$REVIEW_LOOP_MD" ]; then pass "review-loop workflow file exists"; else fail "review-loop workflow file not found at ${REVIEW_LOOP_MD}"; fi
 
 if grep -q '## Verify review-lane claims and re-dispatch stalled lenses' "$REVIEW_LOOP_MD"; then

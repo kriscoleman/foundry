@@ -25,9 +25,9 @@ set -uo pipefail
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOLD_DIR="$(cd "${TEST_DIR}/.." && pwd)"
 FORMULA="${MOLD_DIR}/pack/formulas/con-voyage.formula.toml"
-PREPARE_BUILD_MD="${MOLD_DIR}/pack/assets/workflows/con-voyage/{target}.prepare-build.md"
-BUILD_MD="${MOLD_DIR}/pack/assets/workflows/con-voyage/{target}.build.md"
-SETUP_MD="${MOLD_DIR}/pack/assets/workflows/con-voyage/{target}.setup-con-voyage-review.md"
+PREPARE_BUILD_MD="${MOLD_DIR}/pack/assets/workflows/con-voyage/main.prepare-build.md"
+BUILD_MD="${MOLD_DIR}/pack/assets/workflows/con-voyage/main.build.md"
+SETUP_MD="${MOLD_DIR}/pack/assets/workflows/con-voyage/main.setup-con-voyage-review.md"
 LIB="${MOLD_DIR}/pack/assets/scripts/con-voyage-lib.sh"
 WT_PREP="${MOLD_DIR}/pack/assets/scripts/cv-worktree-prep.sh"
 

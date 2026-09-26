@@ -34,7 +34,7 @@ set -uo pipefail
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOLD_DIR="$(cd "${TEST_DIR}/.." && pwd)"
 SCRIPT="${MOLD_DIR}/pack/assets/scripts/con-voyage-ci-repair-guard.sh"
-CI_REPAIR_MD="${MOLD_DIR}/pack/assets/workflows/con-voyage-ci-repair/{target}.ci-repair.md"
+CI_REPAIR_MD="${MOLD_DIR}/pack/assets/workflows/con-voyage-ci-repair/main.ci-repair.md"
 CI_REPAIR_FORMULA="${MOLD_DIR}/pack/formulas/con-voyage-ci-repair.formula.toml"
 
 if [ ! -f "$SCRIPT" ]; then

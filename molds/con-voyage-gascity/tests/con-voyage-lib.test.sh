@@ -278,6 +278,55 @@ gc_unset_result="$(
 assert_eq "fail" "$gc_unset_result" "cv_dependency_outcome resolves via bare 'gc' on PATH when \$GC was never set"
 
 # ---------------------------------------------------------------------------
+# cv_bead_metadata / cv_root_bead_id (fk-4q6ib: a `{convoy_id}`-style token in
+# any description_file too large for gc to inline is a permanent no-op — the
+# worker reads the raw, never-rendered file off disk, so nothing ever
+# substitutes it. Workflow steps must resolve per-instance values like
+# convoy_id dynamically instead of trusting template substitution; these two
+# helpers are the shared primitive for that, generalizing the single-key
+# readers above.)
+# ---------------------------------------------------------------------------
+start_case "cv_bead_metadata: known string metadata key -> its value"
+export STUB_BDSHOW_JSON_fk_meta1='{"id":"fk-meta1","metadata":{"gc.var.convoy_id":"fk-hd0xv"}}'
+assert_eq "fk-hd0xv" "$(cv_bead_metadata "fk-meta1" "gc.var.convoy_id")" "reads a namespaced metadata key"
+
+start_case "cv_bead_metadata: missing key -> empty"
+export STUB_BDSHOW_JSON_fk_meta2='{"id":"fk-meta2","metadata":{"other.key":"x"}}'
+assert_eq "" "$(cv_bead_metadata "fk-meta2" "gc.var.convoy_id")" "an absent key resolves empty, not an error"
+
+start_case "cv_bead_metadata: bd show returns nothing -> empty (fail-safe)"
+assert_eq "" "$(cv_bead_metadata "fk-unknownmeta" "gc.var.convoy_id")" "unknown/failed bd show resolves empty"
+
+start_case "cv_bead_metadata: empty bead id -> empty, no bd call"
+: > "$GC_LOG"
+assert_eq "" "$(cv_bead_metadata "" "gc.var.convoy_id")" "empty bead id resolves empty"
+assert_log_count 'bd show' 0 "empty bead id never calls bd show"
+
+start_case "cv_bead_metadata: unparseable JSON -> empty (fail-safe, never aborts)"
+export STUB_BDSHOW_JSON_fk_badmeta='not json'
+assert_eq "" "$(cv_bead_metadata "fk-badmeta" "gc.var.convoy_id")" "unparseable bd show output resolves empty"
+
+start_case "cv_bead_metadata: non-string metadata value -> JSON-encoded"
+export STUB_BDSHOW_JSON_fk_meta3='{"id":"fk-meta3","metadata":{"gc.flag":true}}'
+assert_eq "true" "$(cv_bead_metadata "fk-meta3" "gc.flag")" "a non-string value is still returned (JSON-encoded)"
+
+start_case "cv_root_bead_id: bead carries gc.root_bead_id -> that root id"
+export STUB_BDSHOW_JSON_fk_step1='{"id":"fk-step1","metadata":{"gc.root_bead_id":"fk-root1"}}'
+assert_eq "fk-root1" "$(cv_root_bead_id "fk-step1")" "reads the workflow root off a step bead"
+
+start_case "cv_root_bead_id: bead has no gc.root_bead_id -> itself (it IS the root)"
+export STUB_BDSHOW_JSON_fk_root2='{"id":"fk-root2","metadata":{"gc.kind":"workflow"}}'
+assert_eq "fk-root2" "$(cv_root_bead_id "fk-root2")" "a rootless bead falls back to itself"
+
+start_case "cv_root_bead_id: bd show returns nothing -> input id (fail-safe)"
+assert_eq "fk-unknownroot" "$(cv_root_bead_id "fk-unknownroot")" "unknown/failed bd show falls back to the input id"
+
+start_case "cv_root_bead_id: empty input -> empty, no bd call"
+: > "$GC_LOG"
+assert_eq "" "$(cv_root_bead_id "")" "empty bead id resolves empty"
+assert_log_count 'bd show' 0 "empty bead id never calls bd show"
+
+# ---------------------------------------------------------------------------
 # cv_close_reason_for_pr
 # ---------------------------------------------------------------------------
 start_case "cv_close_reason_for_pr: canonical reasons"
@@ -414,7 +463,7 @@ cv_bead_claim_non_routable "rb-unknown" 2>/dev/null || rc=$?
 assert_eq "0" "$rc" "unknown-bead call still returns 0 (never aborts the step)"
 
 start_case "setup-con-voyage-review.md: WORK_BEAD claim uses the non-routable owner identity, not --claim"
-SETUP_MD="${MOLD_DIR}/pack/assets/workflows/con-voyage/{target}.setup-con-voyage-review.md"
+SETUP_MD="${MOLD_DIR}/pack/assets/workflows/con-voyage/main.setup-con-voyage-review.md"
 if [ -f "$SETUP_MD" ]; then
   if grep -qF -- "--assignee \"${CV_WORK_BEAD_OWNER}\"" "$SETUP_MD"; then
     echo "  PASS: workflow block assigns the work bead to CV_WORK_BEAD_OWNER"
