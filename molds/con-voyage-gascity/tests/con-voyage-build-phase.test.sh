@@ -205,6 +205,23 @@ else
   FAILURES=$((FAILURES+1))
 fi
 
+start_case "build.md (fk-2yhob review BLOCKING-1): the fail-fast block defaults \$GC before calling cv_dependency_outcome"
+# con-voyage-lib.sh functions like cv_dependency_outcome call "$GC" bd ..., but
+# an agent shell only ever has GC_BIN/GC_CITY/GC_* in its env, never bare GC —
+# an un-defaulted block silently runs an empty command, cv_dependency_outcome
+# resolves empty ("unknown"), and the fast-skip guard never fires for ANY
+# upstream outcome, including a genuine fail. Every other block in this file
+# defaults GC first (see the "Fresh bead" section below); this one must too.
+assert_contains "$BUILD_MD" 'GC="${GC:-gc}"' "sets a GC default before using the shared lib"
+gc_default_line="$(grep -n 'GC="\${GC:-gc}"' "$BUILD_MD" | head -1 | cut -d: -f1)"
+dep_outcome_line="$(grep -n 'cv_dependency_outcome "\$GC_BEAD_ID" "Prepare con-voyage build worktree"' "$BUILD_MD" | head -1 | cut -d: -f1)"
+if [ -n "$gc_default_line" ] && [ -n "$dep_outcome_line" ] && [ "$gc_default_line" -lt "$dep_outcome_line" ]; then
+  echo "  PASS: GC is defaulted before the cv_dependency_outcome call"
+else
+  echo "  FAIL: expected 'GC=\"\${GC:-gc}\"' before the cv_dependency_outcome call in $BUILD_MD (line ${gc_default_line:-missing} vs ${dep_outcome_line:-missing}) — with \$GC unset in a real agent shell this fail-fast check silently never fires" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
 start_case "setup-con-voyage-review.md: fails fast if the build step's own outcome was not pass, BEFORE gathering review context"
 assert_contains "$SETUP_MD" "cv_dependency_outcome" "calls the shared outcome-lookup helper"
 assert_contains "$SETUP_MD" "Con-voyage: initial implementation (TDD)" "checks the build step by its exact formula title"
@@ -215,6 +232,17 @@ if [ -n "$failfast_line" ] && [ -n "$anchor_line" ] && [ "$failfast_line" -lt "$
   echo "  PASS: the fail-fast check runs before review-context gathering"
 else
   echo "  FAIL: the fail-fast check (line ${failfast_line:-missing}) does not precede 'Read the source anchor the build phase resolved' (line ${anchor_line:-missing}) in $SETUP_MD" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
+start_case "setup-con-voyage-review.md (fk-2yhob review BLOCKING-1): the fail-fast block defaults \$GC before calling cv_dependency_outcome"
+assert_contains "$SETUP_MD" 'GC="${GC:-gc}"' "sets a GC default before using the shared lib"
+gc_default_line="$(grep -n 'GC="\${GC:-gc}"' "$SETUP_MD" | head -1 | cut -d: -f1)"
+dep_outcome_line="$(grep -n 'cv_dependency_outcome "\$GC_BEAD_ID" "Con-voyage: initial implementation (TDD)"' "$SETUP_MD" | head -1 | cut -d: -f1)"
+if [ -n "$gc_default_line" ] && [ -n "$dep_outcome_line" ] && [ "$gc_default_line" -lt "$dep_outcome_line" ]; then
+  echo "  PASS: GC is defaulted before the cv_dependency_outcome call"
+else
+  echo "  FAIL: expected 'GC=\"\${GC:-gc}\"' before the cv_dependency_outcome call in $SETUP_MD (line ${gc_default_line:-missing} vs ${dep_outcome_line:-missing}) — with \$GC unset in a real agent shell this fail-fast check silently never fires" >&2
   FAILURES=$((FAILURES+1))
 fi
 

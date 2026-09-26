@@ -1206,6 +1206,7 @@ if work_dir and bead_id:
 # when this prints a non-empty value that is not "pass".
 cv_dependency_outcome() {
   local bead_id="$1" dep_title="$2"
+  : "${GC:=gc}"
   [ -n "${bead_id// /}" ] || { printf ''; return 0; }
   local json
   json=$("$GC" bd show "$bead_id" --json 2>/dev/null) || json=""
