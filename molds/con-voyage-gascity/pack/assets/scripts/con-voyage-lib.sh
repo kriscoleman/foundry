@@ -413,6 +413,46 @@ CV_REVIEW_LANE_WORKTREE_REMINDER='This review lane never runs a command that tou
 # it instead, driven by the formulas' own description_file lists.
 # shellcheck disable=SC2016  # backticks/$VAR below are literal reminder text for the reader, not expansion
 CV_SHELL_SAFETY_REMINDER='This Bash tool runs whichever shell the operator has configured — bash or zsh, never assume which. zsh does not word-split unquoted `$VAR` the way bash/POSIX sh does, so under zsh `for x in $VAR` or `set -- $VAR` silently runs once on the whole string (or no-ops) instead of splitting on whitespace. Never rely on unquoted-variable splitting: use an array of literal elements (`arr=(...)`; `for x in "${arr[@]}"`), or pipe through `xargs`/`while read` — both behave identically in bash and zsh. If you must split a variable into an array directly, `read -a` (bash) and `read -A` (zsh) are not interchangeable (zsh hard-errors on `-a`) — branch on `$ZSH_VERSION` rather than hard-coding one.'
+
+# ---------------------------------------------------------------------------
+# No-interactive-prompts reminder (fk-6kvnt): city worker sessions run
+# headless — nobody is watching the terminal — but they can still call an
+# interactive terminal prompt tool (for example Claude Code's
+# AskUserQuestion). Doing so blocks the session forever with nobody able to
+# answer it: SEEN 2026-09-25 on a raw --no-formula bead that sat blocked on an
+# AskUserQuestion prompt for roughly 20 minutes until the mayor happened to
+# peek the pane and answered it by hand. Distributed the same way as
+# CV_COMMUNAL_DUTY_REMINDER/CV_SHELL_SAFETY_REMINDER above, for the same
+# reason: static template assets cannot source this constant directly, so
+# tests/agents-contract.test.sh diffs them against it instead, driven by the
+# formulas' own description_file lists. Deliberately NOT distributed to the
+# mayor's own prompt (outside pack/formulas/*.toml entirely) — the mayor runs
+# with a human at the terminal and is the designated point of contact this
+# same reminder tells every other worker to mail instead.
+CV_NO_INTERACTIVE_PROMPT_REMINDER='This session runs headless — nobody is watching a terminal, so an interactive prompt tool (for example AskUserQuestion) blocks the session forever with no one able to answer it. Never call an interactive prompt tool. When a real decision is needed, mail the mayor (`gc mail`) with the question, then either wait for a reply or close the bead as blocked with the open question recorded in the close reason.'
+
+# cv_text_has_interactive_prompt_stall TEXT — exit 0 if TEXT contains the
+# footer Claude Code's AskUserQuestion (and similar single/multi-select
+# terminal prompts) prints while blocked waiting on a selection, exit 1
+# otherwise. This is a detection PRIMITIVE only — it classifies a text blob
+# handed to it and does not itself read any session's pane content. It exists
+# so a future periodic watchdog (mirroring con-voyage-review-watchdog.sh /
+# con-voyage-repair-watchdog.sh) can peek a live worker session's captured
+# pane text and call this to recognize the stall (fk-6kvnt item 2); wiring
+# that live watchdog is tracked as follow-up, see this change's implementation
+# summary for why it is out of scope here. Matches on the two literal ASCII
+# phrases that bracket the glyphs ("Enter to select" ... "navigate") rather
+# than the exact unicode middle-dot/arrow characters in between, because
+# tmux/terminal pane capture is not guaranteed to round-trip non-ASCII glyphs
+# byte-for-byte across every locale/terminfo — the two phrases co-occurring in
+# that order is already a highly specific signal of this one prompt UI, and
+# matching on them is robust to that capture variance.
+cv_text_has_interactive_prompt_stall() {
+  case "$1" in
+    *'Enter to select'*'navigate'*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 # ---------------------------------------------------------------------------
 # Non-routable WORK BEAD owner identity (fk-9f2n): setup-con-voyage-review's
 # WORK_BEAD lifecycle block used to run `bd update $WORK_BEAD --claim`, which
@@ -477,6 +517,8 @@ ${feedback_summary}
 ${CV_COMMUNAL_DUTY_REMINDER}
 
 ${CV_SHELL_SAFETY_REMINDER}
+
+${CV_NO_INTERACTIVE_PROMPT_REMINDER}
 
 Routing from con-voyage-pr-watch (idempotency: ${idempotency_key})
 BODY
