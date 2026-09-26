@@ -391,15 +391,22 @@ CV_NO_INTERACTIVE_PROMPT_REMINDER='This session runs headless — nobody is watc
 # pane text and call this to recognize the stall (fk-6kvnt item 2); wiring
 # that live watchdog is tracked as follow-up, see this change's implementation
 # summary for why it is out of scope here. Matches on the two literal ASCII
-# phrases that bracket the glyphs ("Enter to select" ... "navigate") rather
-# than the exact unicode middle-dot/arrow characters in between, because
-# tmux/terminal pane capture is not guaranteed to round-trip non-ASCII glyphs
-# byte-for-byte across every locale/terminfo — the two phrases co-occurring in
-# that order is already a highly specific signal of this one prompt UI, and
-# matching on them is robust to that capture variance.
+# phrases that bracket the glyphs ("Enter to select" and "to navigate")
+# rather than the exact unicode middle-dot/arrow characters in between,
+# because tmux/terminal pane capture is not guaranteed to round-trip
+# non-ASCII glyphs byte-for-byte across every locale/terminfo — the two
+# phrases co-occurring is already a highly specific signal of this one
+# prompt UI, and matching on them is robust to that capture variance. Checks
+# each phrase independently of order: Claude Code's real footer renders
+# "to navigate" before "Enter to select" (e.g. "↑/↓ to navigate · Enter to
+# select · Esc to close"), so an ordered single-glob match never fires.
 cv_text_has_interactive_prompt_stall() {
   case "$1" in
-    *'Enter to select'*'navigate'*) return 0 ;;
+    *'Enter to select'*) ;;
+    *) return 1 ;;
+  esac
+  case "$1" in
+    *'to navigate'*) return 0 ;;
     *) return 1 ;;
   esac
 }
