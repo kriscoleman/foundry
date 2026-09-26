@@ -1,6 +1,38 @@
 Run con-voyage's initial implementation phase (fk-9aunv: fold the do-work
 build into con-voyage as its own first phase).
 
+## Fail fast if prepare-build did not pass
+
+`needs` in graph.v2 is satisfied once the upstream bead is CLOSED, regardless
+of its outcome — a failed prepare-build does not, by itself, stop this step
+from being routed and claimed (fk-03g4s: a torn-down run burned a claim and a
+full worktree investigation on every downstream build step before a human
+had to intervene). Check prepare-build's own recorded outcome first, so a
+known-failed prepare-build is a near-free close instead of a worktree
+investigation:
+
+```bash
+CV_LIB="$(command -v con-voyage-lib.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"
+PREPARE_OUTCOME=""
+if [ -n "$CV_LIB" ]; then
+  PREPARE_OUTCOME="$(source "$CV_LIB" && cv_dependency_outcome "$GC_BEAD_ID" "Prepare con-voyage build worktree")"
+fi
+if [ -n "$PREPARE_OUTCOME" ] && [ "$PREPARE_OUTCOME" != "pass" ]; then
+  bd update "$CLAIMED_BEAD_ID" \
+    --set-metadata 'gc.outcome=skipped' \
+    --set-metadata "gc.skip_reason=prepare-build outcome=${PREPARE_OUTCOME}, no worktree to build in"
+  bd close "$CLAIMED_BEAD_ID" --reason 'Skipped: prepare-build did not pass, so there is no worktree to build in.'
+  exit 0
+fi
+```
+
+An empty `$PREPARE_OUTCOME` (lib not found, or prepare-build not resolvable as
+a direct dependency by that exact title) is "unknown", not "confirmed pass" —
+fall through to the existing worktree-based guard below rather than guessing.
+
+If the block above closes this bead, STOP — do not continue to "Read what
+prepare-build resolved" or any later section in this file.
+
 ## Read what prepare-build resolved
 
 ```bash
