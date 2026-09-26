@@ -382,6 +382,139 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# cv_extra_rig_state_dirs (fk-2c937 review, LOW-A/C/D/E): direct unit coverage
+# for the helper con-voyage-finalize.sh uses to learn about every registered
+# rig's ".gc/cv-pr-watch" directory from "${GC_CITY}/.gc/site.toml". Previously
+# only exercised end-to-end (con-voyage-finalize.test.sh CASE 29/30), each with
+# exactly one registered rig never equal to the primary dir — leaving
+# multi-rig scanning and skip-primary dedup untested in isolation (the
+# reviewers' own LOW-1/LOW findings). GC_CITY is swapped to a private
+# sandbox dir for these cases and restored after, so no fixture here leaks
+# into the "cv_default_state_dir" cases above or the zsh cases below.
+# ---------------------------------------------------------------------------
+GC_CITY_SAVE="$GC_CITY"
+GC_CITY="${SANDBOX}/cv-extra-rig-city"
+mkdir -p "${GC_CITY}/.gc"
+
+start_case "cv_extra_rig_state_dirs: multi-rig site.toml yields every registered rig's dir except the primary"
+RIG_A="${SANDBOX}/multi-rig-a"
+RIG_B="${SANDBOX}/multi-rig-b"
+RIG_C="${SANDBOX}/multi-rig-c"
+cat > "${GC_CITY}/.gc/site.toml" <<SITE_TOML
+workspace_name = "test-city"
+
+[[rig]]
+name = "rig-a"
+path = "${RIG_A}"
+
+[[rig]]
+name = "rig-b"
+path = "${RIG_B}"
+
+[[rig]]
+name = "rig-c"
+path = "${RIG_C}"
+SITE_TOML
+result="$(cv_extra_rig_state_dirs "${RIG_C}/.gc/cv-pr-watch" 2>/dev/null | sort)"
+expected="$(printf '%s\n%s' "${RIG_A}/.gc/cv-pr-watch" "${RIG_B}/.gc/cv-pr-watch" | sort)"
+assert_eq "$expected" "$result" "multi-rig scanning + skip-primary dedup in one pass (rig-c's dir equals the passed-in primary)"
+
+start_case "cv_extra_rig_state_dirs: missing site.toml -> nothing, fail-soft, no warning"
+rm -f "${GC_CITY}/.gc/site.toml"
+result="$(cv_extra_rig_state_dirs "${SANDBOX}/whatever/.gc/cv-pr-watch" 2>/dev/null)"
+assert_eq "" "$result" "no site.toml at all prints nothing"
+stderr_out="$(cv_extra_rig_state_dirs "${SANDBOX}/whatever/.gc/cv-pr-watch" 2>&1 >/dev/null)"
+assert_eq "" "$stderr_out" "a missing site.toml is the ordinary/expected case, not degradation -- no warning"
+
+start_case "cv_extra_rig_state_dirs: site.toml present but zero [[rig]] blocks -> nothing, warns on stderr (LOW-E)"
+cat > "${GC_CITY}/.gc/site.toml" <<SITE_TOML
+workspace_name = "test-city"
+SITE_TOML
+result="$(cv_extra_rig_state_dirs "${SANDBOX}/whatever/.gc/cv-pr-watch" 2>/dev/null)"
+assert_eq "" "$result" "zero [[rig]] blocks prints nothing"
+stderr_out="$(cv_extra_rig_state_dirs "${SANDBOX}/whatever/.gc/cv-pr-watch" 2>&1 >/dev/null)"
+case "$stderr_out" in
+  *WARNING*) echo "  PASS: warns on stderr so a silently-degraded parse is distinguishable from a missing file" ;;
+  *) echo "  FAIL: expected a stderr WARNING when site.toml exists but yields zero rig paths (got: '$stderr_out')" >&2; FAILURES=$((FAILURES+1)) ;;
+esac
+
+start_case "cv_extra_rig_state_dirs: single-quoted TOML path value is parsed like the double-quoted form (LOW-D)"
+RIG_Q="${SANDBOX}/single-quoted-rig"
+cat > "${GC_CITY}/.gc/site.toml" <<SITE_TOML
+[[rig]]
+name = "quoted"
+path = '${RIG_Q}'
+SITE_TOML
+result="$(cv_extra_rig_state_dirs "${SANDBOX}/other/.gc/cv-pr-watch" 2>/dev/null)"
+assert_eq "${RIG_Q}/.gc/cv-pr-watch" "$result" "single-quoted path = '...' is parsed, not silently dropped"
+
+start_case "cv_extra_rig_state_dirs: a bare/unquoted path value is skipped, not emitted as garbage"
+cat > "${GC_CITY}/.gc/site.toml" <<SITE_TOML
+[[rig]]
+name = "bare"
+path = /no/quotes/here
+SITE_TOML
+result="$(cv_extra_rig_state_dirs "${SANDBOX}/other/.gc/cv-pr-watch" 2>/dev/null)"
+assert_eq "" "$result" "an unquoted value is dropped rather than turned into a bogus directory entry"
+
+GC_CITY="$GC_CITY_SAVE"
+
+# ---------------------------------------------------------------------------
+# pr_finalize_state: CV_GH_TIMEOUT_SECONDS bounds a hung `gh pr view` (fk-2c937
+# review, SRE LOW-2) — previously unbounded, so one stalled poll (GitHub
+# partition, gh auth re-prompt, rate-limit stall) blocked this monitor's
+# entire sweep with no cap, and the fk-2c937 diff now runs that same poll
+# once per registered rig in a single pass, amplifying the blast radius. A
+# missing `timeout`/`gtimeout` binary degrades to the prior unwrapped
+# behavior (fail soft, matching this file's posture) rather than a hard
+# dependency -- the enforcement case below is skipped, not failed, on a host
+# with neither installed.
+# ---------------------------------------------------------------------------
+GH_SAVE="$GH"
+HANG_GH="${STUBDIR}/gh-hang"
+cat > "$HANG_GH" <<'HANG_STUB'
+#!/usr/bin/env bash
+sleep 6
+printf '{"state":"MERGED","mergedAt":"2026-01-01T00:00:00Z","closedAt":null}\n'
+HANG_STUB
+chmod +x "$HANG_GH"
+
+if ! command -v timeout >/dev/null 2>&1 && ! command -v gtimeout >/dev/null 2>&1; then
+  echo
+  echo "SKIP: no timeout/gtimeout binary on this host, skipping the timeout-enforcement case" >&2
+else
+  start_case "pr_finalize_state: a hung gh pr view is bounded by CV_GH_TIMEOUT_SECONDS, not left to hang"
+  GH="$HANG_GH"
+  CV_GH_TIMEOUT_SECONDS=1
+  start_ts=$(date +%s)
+  result="$(pr_finalize_state "kriscoleman/foundry" "42")"
+  end_ts=$(date +%s)
+  elapsed=$((end_ts - start_ts))
+  assert_eq "$(printf '\x1f\x1f')" "$result" "a killed gh call yields the SEP-only unresolved-state fallback, not the eventual MERGED body"
+  if [ "$elapsed" -lt 4 ]; then
+    echo "  PASS: returned in ${elapsed}s -- bounded by the 1s timeout, not the 6s hang"
+  else
+    echo "  FAIL: took ${elapsed}s -- the timeout was not enforced" >&2
+    FAILURES=$((FAILURES+1))
+  fi
+  unset CV_GH_TIMEOUT_SECONDS
+  GH="$GH_SAVE"
+fi
+
+start_case "pr_finalize_state: a fast/normal gh call is unaffected by the timeout wrapping (happy path)"
+FAST_GH="${STUBDIR}/gh-fast"
+cat > "$FAST_GH" <<'FAST_STUB'
+#!/usr/bin/env bash
+printf '{"state":"MERGED","mergedAt":"2026-01-01T00:00:00Z","closedAt":null}\n'
+FAST_STUB
+chmod +x "$FAST_GH"
+GH="$FAST_GH"
+result="$(pr_finalize_state "kriscoleman/foundry" "42")"
+GH="$GH_SAVE"
+IFS=$'\x1f' read -r fast_state _fast_merged _fast_closed <<< "$result"
+assert_eq "MERGED" "$fast_state" "a normal, fast gh response still parses correctly whether or not it ran under a timeout wrapper"
+
+# ---------------------------------------------------------------------------
 # session_id_for_ident / first_alive_session_id_for_route (fk-loo1 FIX-F —
 # review-lane liveness guard helpers, shared with con-voyage-review-watchdog.sh)
 # ---------------------------------------------------------------------------
@@ -571,6 +704,23 @@ else
       echo "  PASS: close_if_open raises no read-only-variable error under zsh" ;;
   esac
   assert_log_count 'bd close rb-open' 1 "close_if_open under zsh still reaches bd close"
+
+  start_case "cv_extra_rig_state_dirs under zsh: multi-rig parsing + skip-primary dedup (fk-2c937 review — no word-splitting/quoting divergence)"
+  ZSH_CITY="${SANDBOX}/cv-extra-rig-zsh-city"
+  mkdir -p "${ZSH_CITY}/.gc"
+  ZRIG_A="${SANDBOX}/zsh-rig-a"
+  ZRIG_B="${SANDBOX}/zsh-rig-b"
+  cat > "${ZSH_CITY}/.gc/site.toml" <<SITE_TOML
+[[rig]]
+name = "rig-a"
+path = "${ZRIG_A}"
+
+[[rig]]
+name = "rig-b"
+path = "${ZRIG_B}"
+SITE_TOML
+  zsh_result="$(GC_CITY="$ZSH_CITY" zsh -c "source '$LIB'; cv_extra_rig_state_dirs '${ZRIG_B}/.gc/cv-pr-watch'" 2>/dev/null | sort)"
+  assert_eq "${ZRIG_A}/.gc/cv-pr-watch" "$zsh_result" "under zsh: rig-a's dir is printed, rig-b's is skipped as the passed-in primary"
 fi
 
 echo
