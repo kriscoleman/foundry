@@ -39,19 +39,53 @@ if [ -n "$EXISTING_WORK_DIR" ] && [ -d "$EXISTING_WORK_DIR" ] && "$CV_WT_PREP" b
   SHORT_CIRCUIT="true"
   echo "con-voyage prepare-build: source anchor ${CONVOY_ID} already has a pre-built branch at ${WORKTREE} — short-circuiting the initial build"
 else
-  # Fresh bead: create or reuse the deterministic worktree, same convention
-  # do-work/prepare-worktree.md uses ($(pwd)/worktrees/<source-anchor-id>).
-  if [ -d "$WORKTREE" ]; then
-    git -C "$WORKTREE" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
-      || { echo "con-voyage prepare-build: ${WORKTREE} exists but is not a git worktree for this repository — failing closed" >&2; exit 1; }
-  else
-    git worktree add "$WORKTREE" --detach HEAD \
-      || { echo "con-voyage prepare-build: git worktree add failed for ${WORKTREE}" >&2; exit 1; }
+  # fk-ki8je: a fresh sling's own input convoy NEVER has a work_dir of its
+  # own — do-work closes ITS OWN source anchor when it finishes, so that
+  # state never carries onto a new convoy, and the branch above alone can
+  # never fire for the normal do-work -> con-voyage handoff. Before building
+  # fresh, check whether the underlying WORK BEAD has an earlier source
+  # anchor (closed or still open) that already finished a build.
+  PRIOR_ANCHOR_ID=""
+  PRIOR_ANCHOR_DIR=""
+  WORK_BEAD_ID="$(source "$CV_LIB" && cv_resolve_work_bead "$CONVOY_ID")"
+  if [ -n "$WORK_BEAD_ID" ] && [ "$WORK_BEAD_ID" != "$CONVOY_ID" ]; then
+    read -r PRIOR_ANCHOR_ID PRIOR_ANCHOR_DIR <<< "$(source "$CV_LIB" && cv_find_prior_built_anchor "$WORK_BEAD_ID" "$CONVOY_ID")"
   fi
-  "$CV_WT_PREP" exclude "$WORKTREE" || echo "note: cv-worktree-prep.sh exclude failed for ${WORKTREE} (continuing)"
-  gc bd update "$CONVOY_ID" --set-metadata "work_dir=${WORKTREE}" \
-    || { echo "con-voyage prepare-build: failed to persist work_dir on ${CONVOY_ID}" >&2; exit 1; }
-  echo "con-voyage prepare-build: fresh source anchor ${CONVOY_ID} — worktree ready at ${WORKTREE}; the build step will run its first TDD round"
+
+  if [ -n "$PRIOR_ANCHOR_DIR" ]; then
+    WORKTREE="$PRIOR_ANCHOR_DIR"
+    SHORT_CIRCUIT="true"
+    echo "con-voyage prepare-build: work bead ${WORK_BEAD_ID} has an earlier built source anchor ${PRIOR_ANCHOR_ID} at ${WORKTREE} — reusing it and short-circuiting the initial build"
+
+    # fk-tazxl overlap: a reused anchor from an older do-work run can be left
+    # on a detached HEAD (do-work's own implement step does not always name
+    # a branch). publish pushes "whatever branch is checked out", so a
+    # detached HEAD here would silently push nothing. Give it a stable name
+    # now, while we already know exactly which worktree is being adopted.
+    if [ -z "$(git -C "$WORKTREE" branch --show-current 2>/dev/null)" ]; then
+      STABLE_BRANCH="con-voyage/${PRIOR_ANCHOR_ID}"
+      git -C "$WORKTREE" checkout -q -b "$STABLE_BRANCH" \
+        || { echo "con-voyage prepare-build: failed to create ${STABLE_BRANCH} on detached-HEAD anchor ${WORKTREE}" >&2; exit 1; }
+      echo "con-voyage prepare-build: ${WORKTREE} was on a detached HEAD — created ${STABLE_BRANCH} at the existing commit so publish has something to push"
+    fi
+
+    gc bd update "$CONVOY_ID" --set-metadata "work_dir=${WORKTREE}" \
+      || { echo "con-voyage prepare-build: failed to persist work_dir on ${CONVOY_ID}" >&2; exit 1; }
+  else
+    # Fresh bead: create or reuse the deterministic worktree, same convention
+    # do-work/prepare-worktree.md uses ($(pwd)/worktrees/<source-anchor-id>).
+    if [ -d "$WORKTREE" ]; then
+      git -C "$WORKTREE" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+        || { echo "con-voyage prepare-build: ${WORKTREE} exists but is not a git worktree for this repository — failing closed" >&2; exit 1; }
+    else
+      git worktree add "$WORKTREE" --detach HEAD \
+        || { echo "con-voyage prepare-build: git worktree add failed for ${WORKTREE}" >&2; exit 1; }
+    fi
+    "$CV_WT_PREP" exclude "$WORKTREE" || echo "note: cv-worktree-prep.sh exclude failed for ${WORKTREE} (continuing)"
+    gc bd update "$CONVOY_ID" --set-metadata "work_dir=${WORKTREE}" \
+      || { echo "con-voyage prepare-build: failed to persist work_dir on ${CONVOY_ID}" >&2; exit 1; }
+    echo "con-voyage prepare-build: fresh source anchor ${CONVOY_ID} — worktree ready at ${WORKTREE}; the build step will run its first TDD round"
+  fi
 fi
 ```
 
