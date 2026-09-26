@@ -1,5 +1,35 @@
 Prepare the con-voyage review context.
 
+## Fail fast if the build step did not pass
+
+Same reasoning as the build step's own guard (fk-03g4s): a `needs` edge in
+graph.v2 is satisfied once the upstream bead is CLOSED, regardless of its
+outcome, so a build step that was itself skipped/failed does not, by itself,
+stop this step from being routed and claimed. Check the build step's own
+recorded outcome first, before gathering any review context:
+
+```bash
+CV_LIB="$(command -v con-voyage-lib.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"
+BUILD_OUTCOME=""
+if [ -n "$CV_LIB" ]; then
+  BUILD_OUTCOME="$(source "$CV_LIB" && cv_dependency_outcome "$GC_BEAD_ID" "Con-voyage: initial implementation (TDD)")"
+fi
+if [ -n "$BUILD_OUTCOME" ] && [ "$BUILD_OUTCOME" != "pass" ]; then
+  bd update "$CLAIMED_BEAD_ID" \
+    --set-metadata 'gc.outcome=skipped' \
+    --set-metadata "gc.skip_reason=build outcome=${BUILD_OUTCOME}, nothing to review"
+  bd close "$CLAIMED_BEAD_ID" --reason 'Skipped: build did not pass, so there is nothing to review.'
+  exit 0
+fi
+```
+
+An empty `$BUILD_OUTCOME` (lib not found, or the build step not resolvable as
+a direct dependency by that exact title) is "unknown", not "confirmed pass" —
+fall through to the existing source-anchor guard below rather than guessing.
+
+If the block above closes this bead, STOP — do not continue to "Read the
+source anchor the build phase resolved" or any later section in this file.
+
 ## Read the source anchor the build phase resolved
 
 The prepare-build/build steps that precede this one (fk-9aunv) already

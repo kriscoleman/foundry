@@ -179,6 +179,44 @@ export STUB_BDSHOW_JSON_fk_bad='not json'
 assert_eq "" "$(cv_bead_work_dir "fk-bad")" "unparseable bd show output resolves empty"
 
 # ---------------------------------------------------------------------------
+# cv_dependency_outcome (fk-03g4s: a `needs` edge in graph.v2 is satisfied on
+# CLOSURE alone, regardless of outcome — prepare-build closing gc.outcome=fail
+# still let the build step be routed and claimed. build.md/setup-con-voyage-
+# review.md fail-fast by checking their own direct dependency's gc.outcome
+# BEFORE doing any real investigation. Matched by `title`, not `gc.step_ref`/
+# `gc.control_for` — those gain a per-attempt `iteration.N` suffix on
+# ralph-wrapped (checked) steps but title is the formula's static `title =
+# "..."` string, stable across every attempt and every step type.
+# ---------------------------------------------------------------------------
+start_case "cv_dependency_outcome: matching dependency title with gc.outcome=fail -> fail"
+export STUB_BDSHOW_JSON_fk_bld1='{"id":"fk-bld1","dependencies":[{"id":"fk-prep1","title":"Prepare con-voyage build worktree","metadata":{"gc.outcome":"fail"}}]}'
+assert_eq "fail" "$(cv_dependency_outcome "fk-bld1" "Prepare con-voyage build worktree")" "reads gc.outcome off the title-matched dependency"
+
+start_case "cv_dependency_outcome: matching dependency title with gc.outcome=pass -> pass"
+export STUB_BDSHOW_JSON_fk_bld2='{"id":"fk-bld2","dependencies":[{"id":"fk-prep2","title":"Prepare con-voyage build worktree","metadata":{"gc.outcome":"pass"}}]}'
+assert_eq "pass" "$(cv_dependency_outcome "fk-bld2" "Prepare con-voyage build worktree")" "a passed dependency reads back pass"
+
+start_case "cv_dependency_outcome: no dependency matches the title -> empty (unknown, not a false pass/fail)"
+export STUB_BDSHOW_JSON_fk_bld3='{"id":"fk-bld3","dependencies":[{"id":"fk-other","title":"con-voyage","metadata":{}}]}'
+assert_eq "" "$(cv_dependency_outcome "fk-bld3" "Prepare con-voyage build worktree")" "an unmatched title resolves empty, never a guess"
+
+start_case "cv_dependency_outcome: matched dependency has no gc.outcome yet -> empty"
+export STUB_BDSHOW_JSON_fk_bld4='{"id":"fk-bld4","dependencies":[{"id":"fk-prep4","title":"Prepare con-voyage build worktree","metadata":{}}]}'
+assert_eq "" "$(cv_dependency_outcome "fk-bld4" "Prepare con-voyage build worktree")" "a dependency with no recorded outcome resolves empty"
+
+start_case "cv_dependency_outcome: bd show returns nothing -> empty (fail-safe)"
+assert_eq "" "$(cv_dependency_outcome "fk-unknown" "Prepare con-voyage build worktree")" "unknown/failed bd show resolves empty"
+
+start_case "cv_dependency_outcome: empty bead id -> empty, no bd call"
+: > "$GC_LOG"
+assert_eq "" "$(cv_dependency_outcome "" "Prepare con-voyage build worktree")" "empty bead id resolves empty"
+assert_log_count 'bd show' 0 "empty bead id never calls bd show"
+
+start_case "cv_dependency_outcome: unparseable JSON -> empty (fail-safe, never aborts)"
+export STUB_BDSHOW_JSON_fk_bld5='not json'
+assert_eq "" "$(cv_dependency_outcome "fk-bld5" "Prepare con-voyage build worktree")" "unparseable bd show output resolves empty"
+
+# ---------------------------------------------------------------------------
 # cv_close_reason_for_pr
 # ---------------------------------------------------------------------------
 start_case "cv_close_reason_for_pr: canonical reasons"

@@ -180,6 +180,45 @@ assert_contains "$SETUP_MD" "gc.build.source_anchor_work_dir" "reads source_anch
 assert_contains "$SETUP_MD" "refusing to start a review with nothing to review" "fails loud instead of silently reviewing nothing"
 
 # ---------------------------------------------------------------------------
+# fk-03g4s: a `needs` edge in graph.v2 is satisfied on CLOSURE alone,
+# regardless of outcome — prepare-build closing gc.outcome=fail did not, by
+# itself, stop the build step from being routed and claimed; workers burned a
+# claim + full investigation on every downstream step before a human tore the
+# run down. build.md and setup-con-voyage-review.md now check their own
+# direct dependency's gc.outcome FIRST and close as gc.outcome=skipped right
+# away when it did not pass, instead of only discovering the failure via a
+# slower defense-in-depth guard further down the file.
+# ---------------------------------------------------------------------------
+start_case "lib.sh: exposes cv_dependency_outcome for outcome-gated fail-fast checks"
+assert_contains "$LIB" "cv_dependency_outcome()" "cv_dependency_outcome is defined"
+
+start_case "build.md: fails fast if prepare-build's own outcome was not pass, BEFORE any worktree investigation"
+assert_contains "$BUILD_MD" "cv_dependency_outcome" "calls the shared outcome-lookup helper"
+assert_contains "$BUILD_MD" "Prepare con-voyage build worktree" "checks the prepare-build step by its exact formula title"
+assert_contains "$BUILD_MD" "gc.outcome=skipped" "closes as skipped, not pass or fail, when the upstream step did not pass"
+failfast_line="$(grep -n '^## Fail fast if prepare-build did not pass' "$BUILD_MD" | head -1 | cut -d: -f1)"
+resolved_line="$(grep -n '^## Read what prepare-build resolved' "$BUILD_MD" | head -1 | cut -d: -f1)"
+if [ -n "$failfast_line" ] && [ -n "$resolved_line" ] && [ "$failfast_line" -lt "$resolved_line" ]; then
+  echo "  PASS: the fail-fast check runs before the worktree investigation section"
+else
+  echo "  FAIL: the fail-fast check (line ${failfast_line:-missing}) does not precede 'Read what prepare-build resolved' (line ${resolved_line:-missing}) in $BUILD_MD" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
+start_case "setup-con-voyage-review.md: fails fast if the build step's own outcome was not pass, BEFORE gathering review context"
+assert_contains "$SETUP_MD" "cv_dependency_outcome" "calls the shared outcome-lookup helper"
+assert_contains "$SETUP_MD" "Con-voyage: initial implementation (TDD)" "checks the build step by its exact formula title"
+assert_contains "$SETUP_MD" "gc.outcome=skipped" "closes as skipped, not pass or fail, when the upstream step did not pass"
+failfast_line="$(grep -n '^## Fail fast if the build step did not pass' "$SETUP_MD" | head -1 | cut -d: -f1)"
+anchor_line="$(grep -n '^## Read the source anchor the build phase resolved' "$SETUP_MD" | head -1 | cut -d: -f1)"
+if [ -n "$failfast_line" ] && [ -n "$anchor_line" ] && [ "$failfast_line" -lt "$anchor_line" ]; then
+  echo "  PASS: the fail-fast check runs before review-context gathering"
+else
+  echo "  FAIL: the fail-fast check (line ${failfast_line:-missing}) does not precede 'Read the source anchor the build phase resolved' (line ${anchor_line:-missing}) in $SETUP_MD" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
+# ---------------------------------------------------------------------------
 # The pack's own contract: every formula-dispatched node (agents-contract.
 # test.sh already enforces this globally by discovering description_file
 # entries from the formula, so the two new nodes are automatically in scope

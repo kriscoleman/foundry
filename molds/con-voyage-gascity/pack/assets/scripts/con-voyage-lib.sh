@@ -1180,6 +1180,59 @@ if work_dir and bead_id:
   return 0
 }
 
+# cv_dependency_outcome BEAD_ID DEP_TITLE — print the `gc.outcome` metadata
+# value of BEAD_ID's direct dependency whose `title` exactly matches
+# DEP_TITLE, or empty if no such dependency exists, it has no recorded
+# outcome, or anything fails to resolve.
+#
+# WHY MATCH BY TITLE: a formula step's `title` is the static string set once
+# in its formula TOML (`title = "..."`), stable across every attempt. Its
+# `gc.step_ref`/`gc.control_for` are not: a ralph-wrapped (checked/retried)
+# step gains a per-attempt `iteration.N` suffix while a plain step's
+# `gc.step_ref` has no such suffix, so the same key means different things on
+# different step types. Title is the one identifier both share (fk-03g4s).
+#
+# WHY THIS EXISTS: a `needs` edge in graph.v2 is satisfied once the upstream
+# bead is CLOSED, regardless of its outcome — a failed prepare-build does not,
+# by itself, stop the build step from being routed and claimed. build.md and
+# setup-con-voyage-review.md call this to check their own direct dependency's
+# outcome BEFORE doing any real investigation, so a known-failed upstream step
+# is a near-free close instead of a full worktree/context investigation
+# (fk-03g4s: a torn-down run burned a claim + investigation on every
+# downstream step before a human intervened).
+#
+# FAIL-SAFE: prints empty — never aborts the caller — on any lookup failure.
+# Callers must treat empty as "unknown", not "confirmed pass": only skip work
+# when this prints a non-empty value that is not "pass".
+cv_dependency_outcome() {
+  local bead_id="$1" dep_title="$2"
+  [ -n "${bead_id// /}" ] || { printf ''; return 0; }
+  local json
+  json=$("$GC" bd show "$bead_id" --json 2>/dev/null) || json=""
+  [ -n "$json" ] || { printf ''; return 0; }
+  printf '%s' "$json" | python3 -c "
+import sys, json
+title = sys.argv[1]
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+if isinstance(data, list):
+    data = data[0] if data else {}
+if not isinstance(data, dict):
+    raise SystemExit(0)
+for dep in (data.get('dependencies') or []):
+    if not isinstance(dep, dict):
+        continue
+    if dep.get('title') == title:
+        meta = dep.get('metadata') or {}
+        val = meta.get('gc.outcome') or ''
+        if isinstance(val, str):
+            print(val)
+        raise SystemExit(0)
+" "$dep_title" 2>/dev/null
+}
+
 # cv_close_reason_for_pr PR_STATE PR_NUMBER — canonical work-bead close reason
 # for a finalized PR. PR_STATE is the GitHub PR state ("MERGED" or "CLOSED",
 # case-insensitive). Any merged state -> "landed: PR #N merged"; a closed-
