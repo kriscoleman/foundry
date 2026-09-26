@@ -1,0 +1,32 @@
+# con-voyage-rig-sync — keep each rig's local default branch fast-forwarded
+# to origin.
+#
+# Operator directive (Slack #repl-city-mayor, 2026-09-26): "We need our rigs
+# to try and be synced with main consistently." foundry-kc's local main had
+# sat 18 commits behind origin/main, feeding stale-base con-voyage builds.
+#
+# For every rig `gc rig list --json` reports (skipping the HQ city root and
+# any rig with no configured default_branch): git fetch origin, then
+# fast-forward the rig ROOT's local default branch to origin ONLY when that
+# root is already on that branch and its tracked tree is clean. A rig that
+# can't be fast-forwarded (dirty, diverged, on another branch, or a failed
+# fetch) is left completely untouched — never switched, stashed, reset, or
+# rebased — and reported to the mayor at most once per state change. See
+# assets/scripts/con-voyage-rig-sync.sh for the full design.
+#
+# No auto-merge, no GitHub calls, no rigs/*/worktrees/ access ever occurs
+# from this order.
+
+[order]
+description = "Fast-forward each rig's local default branch to origin when clean; report drift to the mayor"
+trigger = "cooldown"
+interval = "20m"
+exec = "$PACK_DIR/assets/scripts/con-voyage-rig-sync.sh"
+
+# CV_RIG_SYNC_ESCALATE_TARGET is the mail recipient for a rig that can't be
+# fast-forwarded (dirty/diverged/other-branch/fetch-failed). Defaults to
+# "mayor" inside the script itself even without this block; listed here
+# explicitly (same convention as every other watchdog order's [order.env])
+# so the operator-facing tunable is visible and easy to override per-city.
+[order.env]
+CV_RIG_SYNC_ESCALATE_TARGET = "mayor"
