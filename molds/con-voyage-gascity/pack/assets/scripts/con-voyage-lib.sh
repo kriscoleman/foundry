@@ -596,6 +596,101 @@ cv_text_has_interactive_prompt_stall() {
     *) return 1 ;;
   esac
 }
+
+# cv_text_has_usage_limit_stall TEXT — exit 0 if TEXT contains the literal
+# system banner Claude Code prints in a live session's pane when the whole
+# provider account hits a usage limit, exit 1 otherwise. Same detection-
+# PRIMITIVE style as cv_text_has_interactive_prompt_stall above: classifies a
+# text blob handed to it (e.g. a `gc session peek` capture) and performs no
+# session I/O of its own. Confirmed against two real captured occurrences
+# that froze every session city-wide on the same claude.ai account
+# (2026-09-25 ~19:25-20:05 EDT and 2026-09-26 ~15:17-16:25 EDT) — both the
+# initial banner ("Usage limit reached · continuing automatically at <time> ·
+# esc or type to cancel") and the repeat ("Usage limit reached again after
+# you continued · ...") share this one literal substring, so matching on it
+# is robust to which of the two variants is on screen without depending on
+# the volatile reset-time suffix.
+cv_text_has_usage_limit_stall() {
+  case "$1" in
+    *'Usage limit reached'*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# cv_session_shows_usage_limit_stall SESSION_ID — exit 0 if a live peek of
+# SESSION_ID's captured pane currently shows the provider usage-limit banner
+# (cv_text_has_usage_limit_stall). Used by con-voyage-review-watchdog.sh to
+# sample one candidate session before treating a batch of stalled lanes as N
+# independent failures instead of one city-wide freeze.
+#
+# FAIL-SAFE: exit 1 (no freeze signal) for an empty SESSION_ID, a peek call
+# that fails, or unparseable/empty output — an inability to peek a session
+# must never itself manufacture a freeze signal.
+cv_session_shows_usage_limit_stall() {
+  local session_id="$1"
+  [ -n "${session_id// /}" ] || return 1
+  local json
+  json=$("$GC" --city "$GC_CITY" session peek "$session_id" --json --lines 60 2>/dev/null) || json=""
+  [ -n "$json" ] || return 1
+  local output_text
+  output_text="$(printf '%s' "$json" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print('')
+    raise SystemExit(0)
+if not isinstance(d, dict):
+    print('')
+    raise SystemExit(0)
+print(d.get('output') or '')
+" 2>/dev/null)"
+  cv_text_has_usage_limit_stall "$output_text"
+}
+
+# cv_lane_has_open_blocking_dependency LANE_ID — exit 0 if LANE_ID currently
+# has at least one "blocks"-type dependency whose own status is not "closed"
+# (the lane is NOT yet ready to be worked). A fan-out graph.v2 lane bead is
+# created with status=open at scope-creation time, before its own blocking
+# steps (e.g. the build phase, or review setup) have closed, so `status=open`
+# alone never means ready — con-voyage-review-watchdog.sh uses this to hold
+# off starting a lane's stall clock until every blocking dependency is
+# closed. Exit 1 (the lane IS ready) when every "blocks" dependency is
+# closed, or there are none.
+#
+# FAIL-SAFE: exit 0 (treated as NOT ready, i.e. no watchdog action this
+# cycle) for an empty LANE_ID, a `bd show` failure, or unparseable JSON —
+# same "when in doubt, do nothing" posture as is_stale's fail-to-non-stale
+# default above. A transient lookup failure must never itself cause a false
+# stall action; the normal staleness/escalation gates remain the real safety
+# net once the lookup succeeds on a later cycle.
+cv_lane_has_open_blocking_dependency() {
+  local lane_id="$1"
+  [ -n "${lane_id// /}" ] || return 0
+  local json
+  json=$("$GC" bd show "$lane_id" --json 2>/dev/null) || json=""
+  [ -n "$json" ] || return 0
+  printf '%s' "$json" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+if isinstance(data, list):
+    data = data[0] if data else {}
+if not isinstance(data, dict):
+    sys.exit(0)
+for dep in (data.get('dependencies') or []):
+    if not isinstance(dep, dict):
+        continue
+    dtype = dep.get('dependency_type') or dep.get('type') or ''
+    if dtype != 'blocks':
+        continue
+    if (dep.get('status') or '') != 'closed':
+        sys.exit(0)
+sys.exit(1)
+" 2>/dev/null
+}
 # ---------------------------------------------------------------------------
 # Non-routable WORK BEAD owner identity (fk-9f2n): setup-con-voyage-review's
 # WORK_BEAD lifecycle block used to run `bd update $WORK_BEAD --claim`, which

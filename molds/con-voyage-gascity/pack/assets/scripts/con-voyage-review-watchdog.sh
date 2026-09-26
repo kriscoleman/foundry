@@ -25,8 +25,34 @@
 # metadata-field query instead of globbing per-PR state records. No GitHub
 # calls are made anywhere in this script.
 #
-# ALGORITHM, per candidate review-lane bead (open or in_progress, belonging
-# to an active con-voyage-review-loop scope):
+# fk-o5xxx (2026-09-26 dogfooding incident): a claude.ai usage limit froze
+# every session city-wide for ~1h; this watchdog kept re-dispatching/
+# escalating 26 review lanes across 5 runs because (1) it started a lane's
+# stall clock from bead CREATION instead of from when the lane became READY
+# (many escalated lanes had open blocking dependencies — an unclaimed build
+# step, or review setup still in progress — and could not have made progress
+# yet), and (2) it treated a city-wide freeze as N independent per-lane
+# stalls instead of one cause, burning each lane's attempts and escalating
+# needlessly. TWO changes below address this:
+#   - READINESS GATE: a candidate lane whose own `bd show` reports an open
+#     (non-closed) "blocks"-type dependency is not ready yet — its stall
+#     clock never starts, regardless of how stale/dead it otherwise looks.
+#     See cv_lane_has_open_blocking_dependency in con-voyage-lib.sh.
+#   - FREEZE DETECTION: before acting on any lane, every ready candidate is
+#     first classified (needs action or not) without side effects. If more
+#     than CV_LENS_FREEZE_PERCENT of watched lanes crossed the stall
+#     threshold this cycle (once at least CV_LENS_FREEZE_MIN_WATCHED lanes
+#     are being watched, to avoid a false alarm off a tiny sample), or every
+#     lane of one route/lens did (2+ lanes, 100% stalled), or a sampled
+#     stalled lane's session peek shows the captured provider usage-limit
+#     banner (cv_text_has_usage_limit_stall), the whole cycle is treated as a
+#     suspected freeze: no lane is re-dispatched or escalated, no
+#     attempt_count advances, and exactly ONE mail goes to
+#     CV_LENS_FREEZE_TARGET (not one per lane) before re-checking next cycle.
+#
+# ALGORITHM, per READY candidate review-lane bead (open or in_progress,
+# belonging to an active con-voyage-review-loop scope, no open blocking
+# dependency):
 #   - Already escalated (gc.review_watchdog.escalated=1) -> skip entirely.
 #   - open + unassigned (never claimed):
 #     - no gc.routed_to metadata -> WARNING, skip (nothing safe to target).
@@ -71,7 +97,24 @@
 #                          per-rig store read (this host has no `timeout(1)`;
 #                          see cv_with_timeout in con-voyage-lib.sh). A hung
 #                          store hits the same empty-result WARNING+skip path
-#                          as an outright query failure. Default: 30.
+#                          as an outright query failure. Default: 30. Also
+#                          bounds the freeze-detection session peek below.
+#   CV_LENS_FREEZE_PERCENT  Percent of watched (ready, non-escalated) lanes
+#                          that must cross the stall threshold in the same
+#                          cycle, once CV_LENS_FREEZE_MIN_WATCHED lanes are
+#                          being watched, to suspect a city-wide provider
+#                          freeze instead of N independent stalls. Default:
+#                          50.
+#   CV_LENS_FREEZE_MIN_WATCHED  Minimum number of watched lanes required
+#                          before CV_LENS_FREEZE_PERCENT applies — guards
+#                          against a false alarm off a tiny sample (e.g. a
+#                          single stalled lane is never, on its own, "100% of
+#                          watched lanes"). The narrower "every lane of one
+#                          route stalled" rule still applies below this
+#                          floor. Default: 3.
+#   CV_LENS_FREEZE_TARGET  Mail recipient for the single suspected-freeze
+#                          notice (distinct from CV_LENS_ESCALATE_TARGET,
+#                          which is per-lane). Default: the mayor.
 #
 # Exit codes:
 #   0 — completed (some, all, or none of the candidate lanes needed action)
@@ -93,6 +136,9 @@ CV_LENS_STALL_SECONDS="${CV_LENS_STALL_SECONDS:-600}"
 CV_LENS_MAX_ATTEMPTS="${CV_LENS_MAX_ATTEMPTS:-3}"
 CV_LENS_ESCALATE_TARGET="${CV_LENS_ESCALATE_TARGET:-human}"
 CV_LENS_STORE_TIMEOUT_SECONDS="${CV_LENS_STORE_TIMEOUT_SECONDS:-30}"
+CV_LENS_FREEZE_PERCENT="${CV_LENS_FREEZE_PERCENT:-50}"
+CV_LENS_FREEZE_MIN_WATCHED="${CV_LENS_FREEZE_MIN_WATCHED:-3}"
+CV_LENS_FREEZE_TARGET="${CV_LENS_FREEZE_TARGET:-mayor}"
 
 # A malformed override must never silently break the staleness/escalation
 # checks that gate this watchdog's core behavior — same fail-safe posture as
@@ -106,6 +152,12 @@ case "$CV_LENS_MAX_ATTEMPTS" in
 esac
 case "$CV_LENS_STORE_TIMEOUT_SECONDS" in
   *[!0-9]*|'') CV_LENS_STORE_TIMEOUT_SECONDS="30" ;;
+esac
+case "$CV_LENS_FREEZE_PERCENT" in
+  *[!0-9]*|'') CV_LENS_FREEZE_PERCENT="50" ;;
+esac
+case "$CV_LENS_FREEZE_MIN_WATCHED" in
+  *[!0-9]*|'') CV_LENS_FREEZE_MIN_WATCHED="3" ;;
 esac
 
 # ---------------------------------------------------------------------------
@@ -121,7 +173,7 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "con-voyage-review-watchdog: stall=${CV_LENS_STALL_SECONDS}s max_attempts=${CV_LENS_MAX_ATTEMPTS} escalate_target=${CV_LENS_ESCALATE_TARGET}"
+echo "con-voyage-review-watchdog: stall=${CV_LENS_STALL_SECONDS}s max_attempts=${CV_LENS_MAX_ATTEMPTS} escalate_target=${CV_LENS_ESCALATE_TARGET} freeze_percent=${CV_LENS_FREEZE_PERCENT} freeze_min_watched=${CV_LENS_FREEZE_MIN_WATCHED} freeze_target=${CV_LENS_FREEZE_TARGET}"
 
 # ---------------------------------------------------------------------------
 # Shared session-liveness helpers (session_id_for_ident,
@@ -289,6 +341,67 @@ if [ -z "$LANES_TSV" ]; then
   exit 0
 fi
 
+# classify_lane STATUS ASSIGNEE UPDATED_AT ROUTED_TO — pure decision step
+# shared by the discovery pass below: computes whether this row needs
+# watchdog action right now, WITHOUT taking any mutating action itself
+# (session-liveness lookups still happen here; sling/nudge/mail/bd-update are
+# deferred to the action pass). Prints one SEP-joined line: REASON, then
+# NEEDS_ACTION (0/1), USE_REROUTE (0/1), ACTION_DESC, TARGET_SESSION_ID.
+# REASON is one of NO_ROUTE / NO_LIVE_ASSIGNEE / OK. Splitting discovery from
+# action lets the freeze check see every candidate's verdict for this cycle
+# BEFORE any lane is nudged/re-routed/escalated (fk-o5xxx DEFECT 2).
+classify_lane() {
+  local status="$1" assignee="$2" updated_at="$3" routed_to="$4"
+  local needs_action=0 use_reroute=0 action_desc="" target_session_id="" reason="OK"
+
+  if [ "$status" = "open" ] && [ -z "${assignee// /}" ]; then
+    if [ -z "${routed_to// /}" ]; then
+      reason="NO_ROUTE"
+    else
+      local route_session_id
+      route_session_id="$(first_alive_session_id_for_route "$routed_to")"
+      if [ -z "$route_session_id" ]; then
+        needs_action=1
+        use_reroute=1
+        action_desc="DEAD (no live session for route ${routed_to})"
+      elif is_stale "$updated_at" "$CV_LENS_STALL_SECONDS"; then
+        needs_action=1
+        target_session_id="$route_session_id"
+        action_desc="STALLED (never claimed, pool alive)"
+      fi
+    fi
+  elif [ "$status" = "in_progress" ] && [ -n "${assignee// /}" ]; then
+    if is_stale "$updated_at" "$CV_LENS_STALL_SECONDS"; then
+      local assignee_session_id
+      assignee_session_id="$(session_id_for_ident "$assignee")"
+      if [ -z "$assignee_session_id" ]; then
+        reason="NO_LIVE_ASSIGNEE"
+      else
+        needs_action=1
+        target_session_id="$assignee_session_id"
+        action_desc="STALLED (claimed, no progress)"
+      fi
+    fi
+  fi
+
+  printf '%s\n' "${reason}${SEP}${needs_action}${SEP}${use_reroute}${SEP}${action_desc}${SEP}${target_session_id}"
+}
+
+SEP=$'\x1f'
+WATCHED_TOTAL=0
+STALLED_TOTAL=0
+declare -A GROUP_TOTAL=()
+declare -A GROUP_STALLED=()
+FIRST_STALLED_PEEK_SESSION=""
+DECIDED_TSV=""
+
+# ---------------------------------------------------------------------------
+# PASS 1 — discovery/classification only. Applies the escalated-skip and the
+# readiness gate (fk-o5xxx DEFECT 1), classifies every remaining candidate
+# without acting on it, and tallies watched/stalled counts (overall and per
+# route) so the freeze check below can see the whole cycle before anything
+# is nudged/re-routed/escalated.
+# ---------------------------------------------------------------------------
 while IFS=$'\x1f' read -r lane_id status assignee updated_at routed_to attempt_count escalated; do
   [ -n "$lane_id" ] || continue
 
@@ -305,45 +418,93 @@ while IFS=$'\x1f' read -r lane_id status assignee updated_at routed_to attempt_c
     continue
   fi
 
-  needs_action=0
-  use_reroute=0
-  action_desc=""
-  target_session_id=""
-
-  if [ "$status" = "open" ] && [ -z "${assignee// /}" ]; then
-    if [ -z "${routed_to// /}" ]; then
-      echo "con-voyage-review-watchdog: WARNING: ${lane_id} is open+unassigned but has no gc.routed_to metadata; cannot safely re-dispatch" >&2
-      continue
-    fi
-    route_session_id="$(first_alive_session_id_for_route "$routed_to")"
-    if [ -z "$route_session_id" ]; then
-      needs_action=1
-      use_reroute=1
-      action_desc="DEAD (no live session for route ${routed_to})"
-    elif is_stale "$updated_at" "$CV_LENS_STALL_SECONDS"; then
-      needs_action=1
-      use_reroute=0
-      target_session_id="$route_session_id"
-      action_desc="STALLED (never claimed, pool alive)"
-    fi
-  elif [ "$status" = "in_progress" ] && [ -n "${assignee// /}" ]; then
-    if is_stale "$updated_at" "$CV_LENS_STALL_SECONDS"; then
-      assignee_session_id="$(session_id_for_ident "$assignee")"
-      if [ -z "$assignee_session_id" ]; then
-        echo "con-voyage-review-watchdog: WARNING: ${lane_id} is claimed by ${assignee} but no live session matches that identity; leaving it for a human/fresh cycle rather than guessing" >&2
-        continue
-      fi
-      needs_action=1
-      use_reroute=0
-      target_session_id="$assignee_session_id"
-      action_desc="STALLED (claimed, no progress)"
-    fi
-  fi
-
-  if [ "$needs_action" -eq 0 ]; then
-    echo "con-voyage-review-watchdog: OK ${lane_id} — no action (status=${status} assignee=${assignee} updated_at=${updated_at})"
+  if cv_lane_has_open_blocking_dependency "$lane_id"; then
+    echo "con-voyage-review-watchdog: NOT READY ${lane_id} — has an open blocking dependency; stall clock not started"
     continue
   fi
+
+  IFS="$SEP" read -r reason needs_action use_reroute action_desc target_session_id <<< "$(classify_lane "$status" "$assignee" "$updated_at" "$routed_to")"
+
+  case "$reason" in
+    NO_ROUTE)
+      echo "con-voyage-review-watchdog: WARNING: ${lane_id} is open+unassigned but has no gc.routed_to metadata; cannot safely re-dispatch" >&2
+      continue
+      ;;
+    NO_LIVE_ASSIGNEE)
+      echo "con-voyage-review-watchdog: WARNING: ${lane_id} is claimed by ${assignee} but no live session matches that identity; leaving it for a human/fresh cycle rather than guessing" >&2
+      continue
+      ;;
+  esac
+
+  WATCHED_TOTAL=$((WATCHED_TOTAL + 1))
+  GROUP_TOTAL["$routed_to"]=$(( ${GROUP_TOTAL["$routed_to"]:-0} + 1 ))
+
+  if [ "$needs_action" = "1" ]; then
+    STALLED_TOTAL=$((STALLED_TOTAL + 1))
+    GROUP_STALLED["$routed_to"]=$(( ${GROUP_STALLED["$routed_to"]:-0} + 1 ))
+    if [ -n "$target_session_id" ] && [ -z "$FIRST_STALLED_PEEK_SESSION" ]; then
+      FIRST_STALLED_PEEK_SESSION="$target_session_id"
+    fi
+    DECIDED_TSV="${DECIDED_TSV}${lane_id}${SEP}${routed_to}${SEP}${use_reroute}${SEP}${action_desc}${SEP}${target_session_id}${SEP}${attempt_count}"$'\n'
+  else
+    echo "con-voyage-review-watchdog: OK ${lane_id} — no action (status=${status} assignee=${assignee} updated_at=${updated_at})"
+  fi
+done <<< "$LANES_TSV"
+
+# ---------------------------------------------------------------------------
+# FREEZE CHECK (fk-o5xxx DEFECT 2) — decide, from this cycle's tallies alone,
+# whether a city-wide provider freeze (not N independent stalls) explains
+# every stalled lane found above. Any one signal is enough.
+# ---------------------------------------------------------------------------
+FREEZE=0
+FREEZE_REASON=""
+
+if [ "$WATCHED_TOTAL" -gt 0 ] && [ "$WATCHED_TOTAL" -ge "$CV_LENS_FREEZE_MIN_WATCHED" ]; then
+  FREEZE_PERCENT_NOW=$(( STALLED_TOTAL * 100 / WATCHED_TOTAL ))
+  if [ "$FREEZE_PERCENT_NOW" -ge "$CV_LENS_FREEZE_PERCENT" ]; then
+    FREEZE=1
+    FREEZE_REASON="${STALLED_TOTAL}/${WATCHED_TOTAL} watched review lanes (${FREEZE_PERCENT_NOW}%) crossed the stall threshold in this cycle"
+  fi
+fi
+
+if [ "$FREEZE" -eq 0 ]; then
+  for route in "${!GROUP_TOTAL[@]}"; do
+    group_total="${GROUP_TOTAL[$route]}"
+    group_stalled="${GROUP_STALLED[$route]:-0}"
+    if [ "$group_total" -ge 2 ] && [ "$group_total" -eq "$group_stalled" ]; then
+      FREEZE=1
+      FREEZE_REASON="all ${group_total} watched review lane(s) routed to ${route} crossed the stall threshold in this cycle"
+      break
+    fi
+  done
+fi
+
+if [ "$FREEZE" -eq 0 ] && [ -n "$FIRST_STALLED_PEEK_SESSION" ]; then
+  if cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" cv_session_shows_usage_limit_stall "$FIRST_STALLED_PEEK_SESSION"; then
+    FREEZE=1
+    FREEZE_REASON="sampled session ${FIRST_STALLED_PEEK_SESSION} shows the provider usage-limit banner"
+  fi
+fi
+
+if [ "$FREEZE" -eq 1 ]; then
+  echo "con-voyage-review-watchdog: FREEZE SUSPECTED (${FREEZE_REASON}) — suppressing re-dispatch/escalation for ${STALLED_TOTAL} stalled lane(s) this cycle; attempts left unchanged"
+  if "$GC" --city "$GC_CITY" mail send "$CV_LENS_FREEZE_TARGET" \
+    -s "con-voyage review watchdog: provider freeze suspected" \
+    -m "Provider freeze suspected: ${FREEZE_REASON}. Suppressing automatic re-dispatch/escalation for every watched review lane this cycle; will re-check next cycle." \
+    2>&1; then
+    :
+  else
+    echo "con-voyage-review-watchdog: WARNING: freeze-suspected mail to ${CV_LENS_FREEZE_TARGET} failed; will retry next cycle" >&2
+  fi
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# PASS 2 — action. No freeze suspected: act on every lane PASS 1 decided
+# needs_action=1, exactly as before.
+# ---------------------------------------------------------------------------
+while IFS="$SEP" read -r lane_id routed_to use_reroute action_desc target_session_id attempt_count; do
+  [ -n "$lane_id" ] || continue
 
   # Escalation check BEFORE acting: CV_LENS_MAX_ATTEMPTS re-dispatches have
   # already been made against this SAME lane and it is STILL stalled/dead —
@@ -395,6 +556,6 @@ while IFS=$'\x1f' read -r lane_id status assignee updated_at routed_to attempt_c
       echo "con-voyage-review-watchdog: WARNING: session nudge failed for ${lane_id}; will retry next cycle" >&2
     fi
   fi
-done <<< "$LANES_TSV"
+done <<< "$DECIDED_TSV"
 
 exit 0

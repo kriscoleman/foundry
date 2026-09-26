@@ -144,6 +144,38 @@ case "$sub" in
       fi
       exit 0
     fi
+    if [ "$bdsub" = "show" ]; then
+      target_id="${args[$((i+2))]:-}"
+      python3 - "$STUB_DB_FILE" "$target_id" "${STUB_DB_DIR:-}" <<'PYEOF'
+import json, os, sys
+db_file, target_id, db_dir = sys.argv[1], sys.argv[2], sys.argv[3]
+found = None
+try:
+    with open(db_file) as f:
+        db = json.load(f)
+except Exception:
+    db = []
+for d in db:
+    if d.get('id') == target_id:
+        found = d
+        break
+if found is None and db_dir and os.path.isdir(db_dir):
+    for fn in sorted(os.listdir(db_dir)):
+        try:
+            with open(os.path.join(db_dir, fn)) as f:
+                rig_db = json.load(f)
+        except Exception:
+            continue
+        for d in rig_db:
+            if d.get('id') == target_id:
+                found = d
+                break
+        if found is not None:
+            break
+print(json.dumps([found] if found is not None else []))
+PYEOF
+      exit 0
+    fi
     if [ "$bdsub" = "update" ]; then
       if [ "${STUB_BDUPDATE_FAIL:-0}" = "1" ]; then
         exit 1
@@ -217,6 +249,15 @@ PYEOF
       fi
       exit 0
     fi
+    if [ "$sessub" = "peek" ]; then
+      peek_id="${args[$((i+2))]:-}"
+      var="STUB_SESSION_PEEK_OUTPUT_${peek_id//-/_}"
+      python3 -c "
+import json, sys
+print(json.dumps({'ok': True, 'output': sys.argv[1], 'line_count': 1, 'lines': 1, 'session_id': sys.argv[2]}))
+" "${!var:-}" "$peek_id"
+      exit 0
+    fi
     exit 0
     ;;
 esac
@@ -270,13 +311,22 @@ print('')
 " "$1" "$2" "$3"
 }
 
-# lane ID STATUS ASSIGNEE UPDATED_AT ROUTED_TO ATTEMPT_COUNT ESCALATED TITLE —
+# lane ID STATUS ASSIGNEE UPDATED_AT ROUTED_TO ATTEMPT_COUNT ESCALATED TITLE [DEPS_JSON] —
 # build one review-lane bead JSON object (default title is a real floor-lane
 # title so the ralph_step_id/scope_role/title filters all pass by default).
+# DEPS_JSON (default "[]", built with deps() below) is embedded verbatim as
+# the bead's own `dependencies` array — this is what a `bd show <id> --json`
+# on this SAME lane returns via the stub's new `bd show` case, mirroring the
+# real nested-dependency shape (fk-o5xxx readiness gate).
 lane() {
   python3 -c "
 import json, sys
 _id, status, assignee, updated_at, routed_to, attempt_count, escalated, title = sys.argv[1:9]
+deps_json = sys.argv[9] if len(sys.argv) > 9 and sys.argv[9] else '[]'
+try:
+    deps = json.loads(deps_json)
+except Exception:
+    deps = []
 meta = {
     'gc.ralph_step_id': 'main.con-voyage-review-loop',
     'gc.scope_role': 'member',
@@ -288,9 +338,26 @@ if escalated != '__ABSENT__':
     meta['gc.review_watchdog.escalated'] = escalated
 print(json.dumps({
     'id': _id, 'status': status, 'assignee': assignee, 'updated_at': updated_at,
-    'title': title, 'metadata': meta,
+    'title': title, 'metadata': meta, 'dependencies': deps,
 }))
-" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "${8:-Con-voyage: test evidence}"
+" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "${8:-Con-voyage: test evidence}" "${9:-[]}"
+}
+
+# deps ID:STATUS[:TYPE] ... — build a dependencies-array JSON fragment for
+# lane()'s optional 9th argument. TYPE defaults to "blocks" (the only type the
+# readiness gate inspects); STATUS defaults to "closed".
+deps() {
+  python3 -c "
+import json, sys
+out = []
+for item in sys.argv[1:]:
+    parts = item.split(':')
+    dep_id = parts[0]
+    status = parts[1] if len(parts) > 1 else 'closed'
+    dtype = parts[2] if len(parts) > 2 else 'blocks'
+    out.append({'id': dep_id, 'status': status, 'dependency_type': dtype})
+print(json.dumps(out))
+" "$@"
 }
 
 write_db() {
@@ -820,6 +887,136 @@ ELAPSED=$((END_TS - START_TS))
 assert_eq "0" "$RC" "script exits 0 despite a hung city store"
 if [ "$ELAPSED" -lt 10 ]; then pass "the hung city query was killed well before its own 20s hang finished (elapsed ${ELAPSED}s)"; else fail "the run took ${ELAPSED}s — the timeout did not bound the city call"; fi
 assert_log_count "$GC_LOG" 'sling replicated-docs/con-voyage.cv-documentation rd-lane4 --nudge' 1 "the rig-store lane is still discovered even though the city query hung"
+
+# ===========================================================================
+# CASE 26 — fk-o5xxx DEFECT 1: a lane with an OPEN blocking dependency is not
+#   ready yet — its stall clock must never start, no matter how stale its own
+#   updated_at is or how obviously "dead" its pool looks. Never counted:
+#   no sling/nudge/mail, no attempt_count write.
+# ===========================================================================
+start_case "26: a lane with an open blocking dependency is never counted (not ready)"
+setup_case_env "26"
+write_db "$DB_FILE" "$(lane "fk-notready" "open" "" "$(iso_ago 99999)" "foundry-kc/gc.gap-analyst" "0" "0" "Con-voyage: test evidence" "$(deps "fk-buildstep:open")")"
+run_script "${DEFAULT_ENV[@]}" STUB_SESSION_LIST_JSON='{"sessions":[]}'
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling|session nudge|mail send' 0 "a not-ready lane is never acted on despite looking dead+ancient"
+assert_eq "0" "$(db_metadata_field "$DB_FILE" "fk-notready" "gc.review_watchdog.attempt_count")" "attempt_count stays at its seeded 0 — the stall clock never started"
+if printf '%s' "$OUT" | grep -q "NOT READY fk-notready"; then pass "logs a NOT READY line for the blocked lane"; else fail "expected a NOT READY line naming fk-notready"; fi
+
+# ===========================================================================
+# CASE 27 — sanity/negative control for CASE 26: a lane whose only blocking
+#   dependency is CLOSED is ready, and behaves exactly like a dependency-free
+#   lane (unchanged existing behavior).
+# ===========================================================================
+start_case "27: a lane with only CLOSED blocking dependencies is ready (unaffected)"
+setup_case_env "27"
+write_db "$DB_FILE" "$(lane "fk-ready" "open" "" "$(iso_ago 5000)" "foundry-kc/gc.gap-analyst" "0" "0" "Con-voyage: test evidence" "$(deps "fk-buildstep:closed")")"
+run_script "${DEFAULT_ENV[@]}" STUB_SESSION_LIST_JSON='{"sessions":[{"id":"rc-ready","template":"foundry-kc/gc.gap-analyst","state":"active"}]}'
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'session nudge rc-ready ' 1 "a lane with only closed blocking deps is treated as ready and nudged normally"
+assert_eq "1" "$(db_metadata_field "$DB_FILE" "fk-ready" "gc.review_watchdog.attempt_count")" "attempt_count advances normally once ready"
+
+# ===========================================================================
+# CASE 28 — fk-o5xxx DEFECT 2 (global percent rule): many watched lanes
+#   crossing the stall threshold in the same cycle, across DIFFERENT routes
+#   (so the per-lens rule cannot explain it), is a suspected provider freeze:
+#   no re-dispatch of any kind, exactly ONE freeze-suspected mail (not one per
+#   lane), and every attempt_count stays unchanged.
+# ===========================================================================
+start_case "28: many lanes stalled in one cycle across different routes -> freeze suspected, one mail, no re-dispatch"
+setup_case_env "28"
+write_db "$DB_FILE" \
+  "$(lane "fk-freeze1" "open" "" "$(iso_ago 5000)" "foundry-kc/gc.gap-analyst" "0" "0")" \
+  "$(lane "fk-freeze2" "open" "" "$(iso_ago 5000)" "foundry-kc/con-voyage.cv-security-reviewer" "0" "0" "Con-voyage: security review")" \
+  "$(lane "fk-freeze3" "open" "" "$(iso_ago 5000)" "foundry-kc/con-voyage.cv-simplicity-reviewer" "0" "0" "Con-voyage: simplicity review")" \
+  "$(lane "fk-freeze4" "open" "" "$(iso_ago 5000)" "foundry-kc/con-voyage.cv-sre-reliability" "0" "0" "Con-voyage: sre review")"
+run_script "${DEFAULT_ENV[@]}" STUB_SESSION_LIST_JSON='{"sessions":[]}'
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling|session nudge' 0 "no re-dispatch of any kind while a freeze is suspected"
+assert_log_count "$GC_LOG" 'mail send mayor' 1 "exactly one freeze-suspected mail, not one per stalled lane"
+if printf '%s' "$OUT" | grep -q "FREEZE SUSPECTED"; then pass "logs a FREEZE SUSPECTED line"; else fail "expected a FREEZE SUSPECTED line"; fi
+for id in fk-freeze1 fk-freeze2 fk-freeze3 fk-freeze4; do
+  assert_eq "0" "$(db_metadata_field "$DB_FILE" "$id" "gc.review_watchdog.attempt_count")" "${id}: attempt_count unchanged during a suspected freeze"
+done
+
+# ===========================================================================
+# CASE 29 — fk-o5xxx DEFECT 2 (per-lens rule): ALL lanes of one lens (route)
+#   are stalled while the city-wide percentage stays well under the default
+#   50% threshold (2 stalled out of 5 watched = 40%) — still a suspected
+#   freeze via the per-lens rule alone.
+# ===========================================================================
+start_case "29: all lanes of one lens stalled -> freeze suspected via the per-lens rule alone"
+setup_case_env "29"
+write_db "$DB_FILE" \
+  "$(lane "fk-lensA1" "open" "" "$(iso_ago 5000)" "foundry-kc/con-voyage.cv-documentation" "0" "0" "Con-voyage: documentation review")" \
+  "$(lane "fk-lensA2" "in_progress" "gc__documentation-rc-9" "$(iso_ago 5000)" "foundry-kc/con-voyage.cv-documentation" "0" "0" "Con-voyage: documentation review")" \
+  "$(lane "fk-fresh1" "open" "" "$(iso_ago 5)" "foundry-kc/gc.gap-analyst" "0" "0")" \
+  "$(lane "fk-fresh2" "open" "" "$(iso_ago 5)" "foundry-kc/con-voyage.cv-security-reviewer" "0" "0" "Con-voyage: security review")" \
+  "$(lane "fk-fresh3" "open" "" "$(iso_ago 5)" "foundry-kc/con-voyage.cv-simplicity-reviewer" "0" "0" "Con-voyage: simplicity review")"
+run_script "${DEFAULT_ENV[@]}" STUB_SESSION_LIST_JSON='{"sessions":[{"id":"rc-9","session_name":"gc__documentation-rc-9","state":"active"},{"id":"rc-lensA","template":"foundry-kc/con-voyage.cv-documentation","state":"active"}]}'
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling|session nudge' 0 "no re-dispatch — the fully-stalled lens alone is enough to suspect a freeze"
+assert_log_count "$GC_LOG" 'mail send mayor' 1 "exactly one freeze-suspected mail"
+assert_eq "0" "$(db_metadata_field "$DB_FILE" "fk-lensA1" "gc.review_watchdog.attempt_count")" "fk-lensA1: attempt_count unchanged"
+assert_eq "0" "$(db_metadata_field "$DB_FILE" "fk-lensA2" "gc.review_watchdog.attempt_count")" "fk-lensA2: attempt_count unchanged"
+
+# ===========================================================================
+# CASE 30 — fk-o5xxx DEFECT 2 (session-peek signature): a single stalled lane
+#   — nowhere near the percent or per-lens thresholds on its own — still
+#   suspects a freeze when a sampled peek of its target session's pane shows
+#   the real captured provider usage-limit banner.
+# ===========================================================================
+start_case "30: a sampled session peek showing the usage-limit banner suspects a freeze"
+setup_case_env "30"
+write_db "$DB_FILE" "$(lane "fk-peek1" "open" "" "$(iso_ago 5000)" "foundry-kc/gc.gap-analyst" "0" "0")"
+run_script "${DEFAULT_ENV[@]}" \
+  STUB_SESSION_LIST_JSON='{"sessions":[{"id":"rc-peek","template":"foundry-kc/gc.gap-analyst","state":"active"}]}' \
+  STUB_SESSION_PEEK_OUTPUT_rc_peek='Some prior output...
+
+Usage limit reached · continuing automatically at 6:10am · esc or type to cancel'
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'session nudge' 0 "no nudge — the peeked banner alone is enough to suspect a freeze"
+assert_log_count "$GC_LOG" 'mail send mayor' 1 "exactly one freeze-suspected mail"
+assert_eq "0" "$(db_metadata_field "$DB_FILE" "fk-peek1" "gc.review_watchdog.attempt_count")" "attempt_count unchanged"
+
+# ===========================================================================
+# CASE 31 — negative control for CASE 30: the SAME single-stalled-lane shape,
+#   but the sampled peek shows ordinary, unrelated pane text. Must NOT
+#   suspect a freeze — proves the peek call itself does not regress the
+#   existing single-stalled-lane re-dispatch behavior (CASE 4).
+# ===========================================================================
+start_case "31: a normal (non-usage-limit) peek does not falsely suspect a freeze"
+setup_case_env "31"
+write_db "$DB_FILE" "$(lane "fk-peek2" "open" "" "$(iso_ago 5000)" "foundry-kc/gc.gap-analyst" "0" "0")"
+run_script "${DEFAULT_ENV[@]}" \
+  STUB_SESSION_LIST_JSON='{"sessions":[{"id":"rc-peek2","template":"foundry-kc/gc.gap-analyst","state":"active"}]}' \
+  STUB_SESSION_PEEK_OUTPUT_rc_peek2='Running tests...
+5 passed, 0 failed
+$ '
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'session nudge rc-peek2 ' 1 "a benign peek leaves the existing single-stalled-lane nudge behavior unchanged"
+assert_log_count "$GC_LOG" 'mail send mayor' 0 "no freeze mail for a benign peek"
+assert_eq "1" "$(db_metadata_field "$DB_FILE" "fk-peek2" "gc.review_watchdog.attempt_count")" "attempt_count advances normally — this was not a freeze"
+
+# ===========================================================================
+# CASE 32 — a suspected freeze suppresses escalation too, not just re-dispatch:
+#   a lane that already exhausted CV_LENS_MAX_ATTEMPTS would normally escalate
+#   via mail this cycle, but a concurrent city-wide freeze must hold that back
+#   as well — exactly the one freeze mail fires, no escalation mail, escalated
+#   flag left unset.
+# ===========================================================================
+start_case "32: a suspected freeze also suppresses a lane that would otherwise escalate"
+setup_case_env "32"
+write_db "$DB_FILE" \
+  "$(lane "fk-capped" "open" "" "$(iso_ago 5000)" "foundry-kc/gc.gap-analyst" "3" "0")" \
+  "$(lane "fk-freezeB2" "open" "" "$(iso_ago 5000)" "foundry-kc/con-voyage.cv-security-reviewer" "0" "0" "Con-voyage: security review")" \
+  "$(lane "fk-freezeB3" "open" "" "$(iso_ago 5000)" "foundry-kc/con-voyage.cv-simplicity-reviewer" "0" "0" "Con-voyage: simplicity review")"
+run_script "${DEFAULT_ENV[@]}" STUB_SESSION_LIST_JSON='{"sessions":[]}'
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'mail send human' 0 "the normally-due escalation is suppressed by the suspected freeze"
+assert_log_count "$GC_LOG" 'mail send mayor' 1 "exactly one freeze-suspected mail covers the whole cycle"
+assert_eq "0" "$(db_metadata_field "$DB_FILE" "fk-capped" "gc.review_watchdog.escalated")" "the capped lane is NOT escalated while a freeze is suspected"
+assert_eq "3" "$(db_metadata_field "$DB_FILE" "fk-capped" "gc.review_watchdog.attempt_count")" "attempt_count stays exactly as it was"
 
 # ===========================================================================
 # Summary

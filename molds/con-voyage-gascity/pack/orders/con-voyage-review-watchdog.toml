@@ -34,7 +34,17 @@ exec = "$PACK_DIR/assets/scripts/con-voyage-review-watchdog.sh"
 # no progress ~10m; escalate after 3 attempts) — same shape as
 # con-voyage-repair-watchdog.toml's own [order.env], deliberately under a
 # distinct CV_LENS_ prefix so the two watchdogs' tunables never collide.
+#
+# CV_LENS_FREEZE_PERCENT/CV_LENS_FREEZE_MIN_WATCHED/CV_LENS_FREEZE_TARGET
+# (fk-o5xxx DEFECT 2) suspect a city-wide provider freeze — instead of N
+# independent stalls — when most watched lanes (or every lane of one lens)
+# cross the stall threshold in the same cycle, or a sampled session peek
+# shows the captured usage-limit banner; a suspected freeze suppresses
+# re-dispatch/escalation for the whole cycle and mails the mayor once instead.
 [order.env]
 CV_LENS_STALL_SECONDS = "600"
 CV_LENS_MAX_ATTEMPTS = "3"
 CV_LENS_ESCALATE_TARGET = "human"
+CV_LENS_FREEZE_PERCENT = "50"
+CV_LENS_FREEZE_MIN_WATCHED = "3"
+CV_LENS_FREEZE_TARGET = "mayor"
