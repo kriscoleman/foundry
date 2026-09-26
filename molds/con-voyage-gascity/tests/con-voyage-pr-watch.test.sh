@@ -2143,6 +2143,90 @@ else
 fi
 
 # ===========================================================================
+# CASE 39 — Concurrency: two isolated invocations both finish within a bound.
+#   Reported (fk-yiidb): this test appeared to hang when run concurrently
+#   with, or right after, another run of itself, stalling a worktree-lane
+#   sweep. Investigation: every case above already isolates CV_STATE_DIR/
+#   GC_CITY per case via $SANDBOX's mktemp -d, and two REAL concurrent
+#   invocations of the script even against a DELIBERATELY SHARED CV_STATE_DIR
+#   complete in under a second in practice — they double-mint a repair bead
+#   for the same PR instead of hanging (a separate, narrower production
+#   concern, reported to the mayor rather than fixed here — it needs a
+#   cross-process lock in the production script, out of scope for a test
+#   hang). What IS real: the full suite's ~40 cases each spawn several
+#   short-lived python3/gh/gc stub processes and the whole file can take
+#   minutes end to end on a loaded machine — long enough that an external
+#   sweep with a shorter patience threshold can mistake a merely-slow run for
+#   a hung one, especially with a sibling lane's run competing for the same
+#   CPU. This case locks in the actual contract going forward: each
+#   invocation gets its OWN temp state dir (mktemp -d, removed by this file's
+#   existing EXIT trap), and two such isolated invocations run CONCURRENTLY
+#   must each complete within a generous bound with zero cross-contamination
+#   of the other's state, regardless of system load.
+#
+#   No `timeout` binary ships on this Mac, so the bound is enforced with a
+#   portable background-and-kill guard: poll `kill -0` on both PIDs and, if
+#   either is still alive past the bound, kill both and fail the case.
+# ===========================================================================
+start_case "39: two concurrent isolated invocations both finish within a bound"
+
+CONCURRENCY_BOUND_SECS=25
+
+run_concurrent_case() {
+  # $1 = suffix ("a"/"b"), $2 = STUB_BD_CREATE_ID for this run's own mint.
+  local suffix="$1" bead_id="$2"
+  local city_dir="${SANDBOX}/city-39${suffix}"
+  local state_dir
+  state_dir="$(mktemp -d "${SANDBOX}/39${suffix}-state.XXXXXX")"
+  mkdir -p "$city_dir"
+  cat > "${city_dir}/city.toml" <<'TOML'
+[[github.pr_monitor]]
+owner="kriscoleman"
+repo="foundry"
+TOML
+  env GH="${STUBDIR}/gh" GC="${STUBDIR}/gc" GC_CITY="$city_dir" CV_STATE_DIR="$state_dir" \
+      CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+      STUB_GH_LOG="${SANDBOX}/gh-39${suffix}.log" STUB_GC_LOG="${SANDBOX}/gc-39${suffix}.log" \
+      STUB_BD_CREATE_ID="$bead_id" \
+      bash "$SCRIPT" > "${SANDBOX}/out-39${suffix}.log" 2>&1
+  printf '%s' "$?" > "${SANDBOX}/rc-39${suffix}"
+  printf '%s' "$state_dir" > "${SANDBOX}/statedir-39${suffix}"
+}
+
+run_concurrent_case "a" "va-39a-bead" &
+CONC_PID_A=$!
+run_concurrent_case "b" "va-39b-bead" &
+CONC_PID_B=$!
+
+conc_elapsed=0
+conc_hung=0
+while kill -0 "$CONC_PID_A" 2>/dev/null || kill -0 "$CONC_PID_B" 2>/dev/null; do
+  conc_elapsed=$((conc_elapsed + 1))
+  if [ "$conc_elapsed" -gt "$CONCURRENCY_BOUND_SECS" ]; then
+    kill -9 "$CONC_PID_A" "$CONC_PID_B" 2>/dev/null
+    conc_hung=1
+    break
+  fi
+  sleep 1
+done
+wait "$CONC_PID_A" 2>/dev/null
+wait "$CONC_PID_B" 2>/dev/null
+
+if [ "$conc_hung" -eq 1 ]; then
+  fail "concurrent runs did not both finish within ${CONCURRENCY_BOUND_SECS}s (hang reproduced)"
+else
+  pass "both concurrent invocations completed within ${CONCURRENCY_BOUND_SECS}s (elapsed=${conc_elapsed}s)"
+fi
+
+assert_eq "0" "$(cat "${SANDBOX}/rc-39a" 2>/dev/null || echo x)" "run a exits 0"
+assert_eq "0" "$(cat "${SANDBOX}/rc-39b" 2>/dev/null || echo x)" "run b exits 0"
+
+STATE_DIR_39A="$(cat "${SANDBOX}/statedir-39a" 2>/dev/null || echo "")"
+STATE_DIR_39B="$(cat "${SANDBOX}/statedir-39b" 2>/dev/null || echo "")"
+assert_eq "va-39a-bead" "$(state_field "$STATE_DIR_39A" "cv-ci-repair-kriscoleman-foundry-11" "inflight_rework")" "run a's isolated state tracks only its own mint"
+assert_eq "va-39b-bead" "$(state_field "$STATE_DIR_39B" "cv-ci-repair-kriscoleman-foundry-11" "inflight_rework")" "run b's isolated state tracks only its own mint (no cross-talk from run a)"
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 echo
