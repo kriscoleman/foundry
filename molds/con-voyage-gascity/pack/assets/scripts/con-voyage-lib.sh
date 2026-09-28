@@ -191,6 +191,10 @@ cv_extra_rig_state_dirs() {
 # `gc convoy target`/`gc convoy create --target`. Empty output (never a
 # non-zero exit) if the convoy has no target set, the id is empty, or
 # gc/python3 fail — every caller has a safe default to fall through to.
+# Also defaults $GC to "gc" itself (fk-zl42t iteration-2 BLOCKING-1), the same
+# fix cv_bead_metadata got above — main.publish.md and
+# main.setup-con-voyage-review.md both reach this via cv_resolve_base_branch
+# with no `GC=` set in scope.
 cv_convoy_target() {
   local convoy_id="$1"
   [ -n "${convoy_id// /}" ] || { printf ''; return 0; }
