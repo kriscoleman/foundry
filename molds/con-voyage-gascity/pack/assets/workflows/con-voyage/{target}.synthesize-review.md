@@ -15,7 +15,48 @@ planning pass. Structure it as:
 
 When any BLOCKING finding exists from any lane, the verdict is iterate.
 When no BLOCKING findings exist but LOWs remain, stop and surface them to the
-human facilitator. Never silently accept LOWs.
+human facilitator. Never silently accept LOWs — see "Mail the human on a
+LOW-only verdict" below: surfacing means actually sending that mail, not just
+writing that you would.
+
+## Mail the human on a LOW-only verdict (fk-8g9ue)
+
+apply-review-findings only ever branches on BLOCKING, so nothing else in the
+loop notifies anyone before publish. If this step does not actually send mail
+on a LOW-only verdict, nobody is ever told — no matter what this synthesis's
+own text claims. Run this right after writing the synthesis file, before
+closing this step:
+
+```bash
+GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
+ROOT_ID="${GC_ROOT_BEAD_ID:-$GC_BEAD_ID}"
+CONVOY_ID="$(gc bd show "$ROOT_ID" --json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    d = d[0] if isinstance(d, list) else d
+except Exception:
+    d = {}
+print((d.get('metadata') or {}).get('gc.build.source_anchor_id') or '')
+" 2>/dev/null)"
+[ -n "$CONVOY_ID" ] || { echo "con-voyage synthesis: no gc.build.source_anchor_id on root ${ROOT_ID} — cannot resolve the work bead for the LOW-only mail" >&2; exit 1; }
+
+CV_LIB="$(command -v con-voyage-lib.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"
+WORK_BEAD="$(source "$CV_LIB" && cv_resolve_work_bead "$CONVOY_ID")"
+
+CV_MAIL_BIN="$(command -v cv-synthesis-low-mail.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name cv-synthesis-low-mail.sh 2>/dev/null | head -1)"
+CV_LENS_ESCALATE_TARGET="{cv_lens_escalate_target}" "$CV_MAIL_BIN" \
+  "<synthesis path just written above>" "$ROOT_ID" "$WORK_BEAD" "con-voyage/${CONVOY_ID}"
+```
+
+This is a no-op (exits 0, sends nothing) when any BLOCKING finding is present
+or when both counts are zero — those cases need no human mail. On a genuine
+LOW-only verdict it sends the mail (to the mayor, who owns the human
+conversation, and to the configured escalation target when that resolves to
+a distinct real mailbox) and records `code_review.low_mail_sent=true` plus
+`code_review.low_mail_id` on the root bead, so the gate and publish can
+verify a mail actually went out. A failed send is a hard failure of this
+script (non-zero exit) — never treat it as best-effort and close anyway.
 
 Close with gc.outcome=pass, code_review.synthesis_path=<synthesis path>, and
 code_review.output_path=<synthesis path>.
