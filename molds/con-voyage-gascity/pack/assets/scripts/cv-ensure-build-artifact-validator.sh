@@ -63,6 +63,8 @@ USAGE
 }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=con-voyage-lib.sh
+source "${SCRIPT_DIR}/con-voyage-lib.sh"
 SOURCE_VALIDATOR="${SCRIPT_DIR}/validate_build_artifact.py"
 SOURCE_SCHEMAS_DIR="$(cd "${SCRIPT_DIR}/.." 2>/dev/null && pwd)/schemas/build"
 
@@ -85,48 +87,48 @@ seeded=0
 updated=0
 present=0
 
-if [ -e "$DEST_VALIDATOR" ]; then
-  if cmp -s "$SOURCE_VALIDATOR" "$DEST_VALIDATOR"; then
+mkdir -p "$DEST_VALIDATOR_DIR" || die "could not create ${DEST_VALIDATOR_DIR}"
+copy_status="$(cv_ensure_current_copy "$SOURCE_VALIDATOR" "$DEST_VALIDATOR" --exec)" || die "could not ensure ${DEST_VALIDATOR} from ${SOURCE_VALIDATOR}"
+case "$copy_status" in
+  current)
     echo "cv-ensure-build-artifact-validator: validate_build_artifact.py already present and current at ${DEST_VALIDATOR} — left untouched"
     present=$((present+1))
-  else
-    cp "$DEST_VALIDATOR" "${DEST_VALIDATOR}.prev" || die "could not back up stale ${DEST_VALIDATOR} to ${DEST_VALIDATOR}.prev"
-    tmp="${DEST_VALIDATOR}.tmp.$$"
-    cp "$SOURCE_VALIDATOR" "$tmp" || die "could not stage ${SOURCE_VALIDATOR} to ${tmp}"
-    chmod +x "$tmp" || die "could not set the exec bit on ${tmp}"
-    mv -f "$tmp" "$DEST_VALIDATOR" || die "could not move ${tmp} to ${DEST_VALIDATOR}"
+    ;;
+  updated)
     echo "cv-ensure-build-artifact-validator: validate_build_artifact.py was stale — replaced at ${DEST_VALIDATOR} (previous copy backed up to ${DEST_VALIDATOR}.prev)"
     updated=$((updated+1))
-  fi
-else
-  mkdir -p "$DEST_VALIDATOR_DIR" || die "could not create ${DEST_VALIDATOR_DIR}"
-  cp "$SOURCE_VALIDATOR" "$DEST_VALIDATOR" || die "could not copy ${SOURCE_VALIDATOR} to ${DEST_VALIDATOR}"
-  chmod +x "$DEST_VALIDATOR" || die "could not set the exec bit on ${DEST_VALIDATOR}"
-  echo "cv-ensure-build-artifact-validator: seeded validate_build_artifact.py -> ${DEST_VALIDATOR}"
-  seeded=$((seeded+1))
-fi
+    ;;
+  seeded)
+    echo "cv-ensure-build-artifact-validator: seeded validate_build_artifact.py -> ${DEST_VALIDATOR}"
+    seeded=$((seeded+1))
+    ;;
+  *)
+    die "unexpected status '${copy_status}' ensuring ${DEST_VALIDATOR}"
+    ;;
+esac
 
 mkdir -p "$DEST_SCHEMAS_DIR" || die "could not create ${DEST_SCHEMAS_DIR}"
 for src in "${SOURCE_SCHEMA_FILES[@]}"; do
   name="$(basename "$src")"
   dest="${DEST_SCHEMAS_DIR}/${name}"
-  if [ -e "$dest" ]; then
-    if cmp -s "$src" "$dest"; then
+  copy_status="$(cv_ensure_current_copy "$src" "$dest")" || die "could not ensure ${dest} from ${src}"
+  case "$copy_status" in
+    current)
       echo "cv-ensure-build-artifact-validator: ${name} already present and current at ${dest} — left untouched"
       present=$((present+1))
-      continue
-    fi
-    cp "$dest" "${dest}.prev" || die "could not back up stale ${dest} to ${dest}.prev"
-    tmp="${dest}.tmp.$$"
-    cp "$src" "$tmp" || die "could not stage ${src} to ${tmp}"
-    mv -f "$tmp" "$dest" || die "could not move ${tmp} to ${dest}"
-    echo "cv-ensure-build-artifact-validator: ${name} was stale — replaced at ${dest} (previous copy backed up to ${dest}.prev)"
-    updated=$((updated+1))
-    continue
-  fi
-  cp "$src" "$dest" || die "could not copy ${src} to ${dest}"
-  echo "cv-ensure-build-artifact-validator: seeded ${name} -> ${dest}"
-  seeded=$((seeded+1))
+      ;;
+    updated)
+      echo "cv-ensure-build-artifact-validator: ${name} was stale — replaced at ${dest} (previous copy backed up to ${dest}.prev)"
+      updated=$((updated+1))
+      ;;
+    seeded)
+      echo "cv-ensure-build-artifact-validator: seeded ${name} -> ${dest}"
+      seeded=$((seeded+1))
+      ;;
+    *)
+      die "unexpected status '${copy_status}' ensuring ${dest}"
+      ;;
+  esac
 done
 
 total=$((1 + ${#SOURCE_SCHEMA_FILES[@]}))
