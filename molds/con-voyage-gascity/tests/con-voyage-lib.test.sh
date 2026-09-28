@@ -350,7 +350,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# cv_text_has_usage_limit_stall (fk-o5xxx: a captured pane frame carrying the
+# cv_text_has_usage_limit_stall (fk-7ba34: a captured pane frame carrying the
 # real provider usage-limit banner must be detected, in both its initial and
 # repeat-after-continue forms; a normal frame must not).
 # ---------------------------------------------------------------------------
@@ -381,7 +381,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# cv_lane_has_open_blocking_dependency (fk-o5xxx DEFECT 1: a review-lane bead
+# cv_lane_has_open_blocking_dependency (fk-7ba34 DEFECT 1: a review-lane bead
 # with an open "blocks" dependency is not ready, regardless of any other
 # dependency type or status).
 # ---------------------------------------------------------------------------

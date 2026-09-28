@@ -36,7 +36,7 @@ exec = "$PACK_DIR/assets/scripts/con-voyage-review-watchdog.sh"
 # distinct CV_LENS_ prefix so the two watchdogs' tunables never collide.
 #
 # CV_LENS_FREEZE_PERCENT/CV_LENS_FREEZE_MIN_WATCHED/CV_LENS_FREEZE_TARGET
-# (fk-o5xxx DEFECT 2) suspect a city-wide provider freeze — instead of N
+# (fk-7ba34 DEFECT 2) suspect a city-wide provider freeze — instead of N
 # independent stalls — when most watched lanes (or every lane of one lens)
 # cross the stall threshold in the same cycle, or a sampled session peek
 # shows the captured usage-limit banner; a suspected freeze suppresses
