@@ -409,7 +409,21 @@ cv_ensure_branch_based_on() {
   # fk-qppb4 L2: an explicit refspec actually populates refs/remotes/origin/<b>
   # (a bare branch-name refspec only writes FETCH_HEAD), so the rev-parse
   # below can rely on this fetch instead of a pre-existing remote-tracking ref.
-  git -C "$dir" fetch -q origin "${base_branch}:refs/remotes/origin/${base_branch}" 2>/dev/null || true
+  #
+  # fk-0f459: this is the one real network/remote-I/O call in this function
+  # (rebase and rev-parse below are both local-only) and previously had no
+  # wall-clock bound — reproduced first-hand as a genuine stuck-process pile
+  # under concurrent-lane load (bash blocked in its own command-substitution
+  # read() waiting on a slow/stalled git child, the same failure shape
+  # cv_with_timeout's own doc comment already describes as "one stuck NFS
+  # mount or long writer lock"). Bounded the same way every other
+  # possibly-stalling external call in this pack already is.
+  CV_BASE_BRANCH_FETCH_TIMEOUT_SECONDS="${CV_BASE_BRANCH_FETCH_TIMEOUT_SECONDS:-30}"
+  case "$CV_BASE_BRANCH_FETCH_TIMEOUT_SECONDS" in
+    *[!0-9]*|'') CV_BASE_BRANCH_FETCH_TIMEOUT_SECONDS="30" ;;
+  esac
+  cv_with_timeout "$CV_BASE_BRANCH_FETCH_TIMEOUT_SECONDS" \
+    git -C "$dir" fetch -q origin "${base_branch}:refs/remotes/origin/${base_branch}" 2>/dev/null || true
   local new_base="origin/${base_branch}"
   git -C "$dir" rev-parse --verify --quiet "${new_base}^{commit}" >/dev/null 2>&1 || new_base="$base_branch"
   if ! git -C "$dir" rev-parse --verify --quiet "${new_base}^{commit}" >/dev/null 2>&1; then
