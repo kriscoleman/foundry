@@ -255,10 +255,19 @@ case "$err5" in
   *) fail "expected an explanatory conflict error message, got: ${err5}" ;;
 esac
 assert_eq "$before_sha5" "$(git_c "$WT5" rev-parse HEAD)" "HEAD is restored to its pre-sync commit (rebase --abort ran)"
-if [ -d "${WT5}/.git/rebase-merge" ] || [ -d "${WT5}/.git/rebase-apply" ]; then
-  fail "expected no in-progress rebase state left behind (checked linked-worktree .git file path)"
+# WT5 is a LINKED worktree (`git worktree add`), so `${WT5}/.git` is a plain
+# FILE (a `gitdir:` pointer), never a directory — `${WT5}/.git/rebase-merge`
+# can therefore never resolve to a directory on any machine regardless of
+# whether rebase state was actually left behind, making the old guessed-path
+# check tautological (dropping the `rebase --abort` call entirely would still
+# PASS). Resolve the worktree's real git-dir indirection instead (review
+# fk-hbsmk B3, con-voyage synthesis root fk-gg5d6).
+WT5_REBASE_MERGE="$(git_c "$WT5" rev-parse --git-path rebase-merge)"
+WT5_REBASE_APPLY="$(git_c "$WT5" rev-parse --git-path rebase-apply)"
+if [ -d "$WT5_REBASE_MERGE" ] || [ -d "$WT5_REBASE_APPLY" ]; then
+  fail "expected no in-progress rebase state left behind (resolved via 'git rev-parse --git-path', not a guessed .git subpath)"
 else
-  pass "no in-progress rebase state left behind at the worktree's own .git entry"
+  pass "no in-progress rebase state left behind (resolved via the worktree's real git-dir indirection)"
 fi
 status_out5="$(git_c "$WT5" status --porcelain)"
 assert_eq "" "$status_out5" "worktree is clean after the aborted rebase"
@@ -275,6 +284,38 @@ err6="$(cv_sync_worktree_to_base "$REPO6" 2>&1 >/dev/null)"
 rc6=$?
 assert_eq "1" "$rc6" "returns non-zero when there is no origin to sync against"
 assert_eq "$before_sha6" "$(git_c "$REPO6" rev-parse HEAD)" "HEAD is untouched"
+
+# ===========================================================================
+# CASE 7 — review fk-hbsmk B2 (con-voyage synthesis root fk-gg5d6):
+#   cv-worktree-prep.sh resolution must be deterministic via a caller-
+#   supplied CV_PACK_ROOT, not solely dependent on the fragile `command -v ||
+#   find $GC_CITY -maxdepth 6` fallback — the exact stale-copy-resolution
+#   mechanism this whole helper exists to eliminate for base resolution
+#   itself. GC_CITY is pointed at a sandbox with nothing findable in it, so
+#   the ONLY way this can succeed is via CV_PACK_ROOT.
+# ===========================================================================
+start_case "7: CV_PACK_ROOT resolves cv-worktree-prep.sh deterministically, independent of the find fallback"
+UPSTREAM7="${SANDBOX}/repo7-upstream.git"
+git init -q -b main --bare "$UPSTREAM7"
+REPO7="$(mk_repo repo7)"
+git_c "$REPO7" remote add origin "$UPSTREAM7"
+git_c "$REPO7" push -q -u origin main
+git_c "$REPO7" remote set-head origin main
+EMPTY_CITY7="${SANDBOX}/empty-city-7"
+mkdir -p "$EMPTY_CITY7"
+ERR7="${SANDBOX}/case7-err.log"
+GC_CITY_SAVE7="${GC_CITY:-}"
+GC_CITY="$EMPTY_CITY7"
+result7="$(CV_PACK_ROOT="${MOLD_DIR}/pack" cv_sync_worktree_to_base "$REPO7" 2>"$ERR7")"
+rc7=$?
+GC_CITY="$GC_CITY_SAVE7"
+assert_eq "0" "$rc7" "exits 0 — CV_PACK_ROOT alone is enough, GC_CITY has nothing findable"
+assert_eq "noop" "$result7" "reports noop (already current)"
+if [ -s "$ERR7" ] && grep -qi 'cv-worktree-prep.sh not found' "$ERR7"; then
+  fail "expected CV_PACK_ROOT to resolve cv-worktree-prep.sh without needing the find fallback, got: $(cat "$ERR7")"
+else
+  pass "cv-worktree-prep.sh was resolved via CV_PACK_ROOT, not the (here, unusable) find fallback"
+fi
 
 # ===========================================================================
 # Structural checks — the helper must actually be wired into every
@@ -315,7 +356,19 @@ else
 fi
 
 start_case "apply-review-findings.md: calls cv_sync_worktree_to_base at the start and treats a change as iterate"
-assert_md_contains "$APPLY_MD" 'cv_sync_worktree_to_base' "apply-review-findings.md calls cv_sync_worktree_to_base"
+# review fk-hbsmk B1 (con-voyage synthesis root fk-gg5d6): the previous
+# looser check here (bare function-name substring) could not tell
+# `cv_sync_worktree_to_base "$(pwd)"` (syncs the shared rig-root launcher
+# checkout — wrong) apart from `cv_sync_worktree_to_base "$WORKTREE"` (syncs
+# the actual target worktree — right), so it stayed green through the bug.
+# Require the same exact-argument pattern build.md's own check already does,
+# plus an explicit negative-control that the old buggy call shape is gone.
+assert_md_contains "$APPLY_MD" 'cv_sync_worktree_to_base "$WORKTREE"' "apply-review-findings.md calls cv_sync_worktree_to_base on \$WORKTREE, not ambient \$(pwd)"
+if grep -qF 'cv_sync_worktree_to_base "$(pwd)"' "$APPLY_MD"; then
+  fail "apply-review-findings.md must never sync via ambient \$(pwd) — that syncs the shared rig-root launcher checkout, not the target worktree (fk-hbsmk B1)"
+else
+  pass "no ambient-\$(pwd) sync call regressed back in"
+fi
 assert_md_contains "$APPLY_MD" 'code_review.verdict=iterate' "apply-review-findings.md still documents the iterate verdict"
 sync_line_apply="$(md_line_of "$APPLY_MD" 'cv_sync_worktree_to_base')"
 verdict_section_line_apply="$(md_line_of "$APPLY_MD" '### Setting code_review.verdict')"

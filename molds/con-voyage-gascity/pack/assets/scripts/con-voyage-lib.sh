@@ -469,6 +469,12 @@ cv_ensure_branch_based_on() {
 # same contract cv_resolve_base_branch/resolve-base already use). All
 # diagnostics go to stderr. Prints nothing to stdout and returns non-zero on
 # any failure.
+#
+# CV_PACK_ROOT (optional) — a caller-known absolute path to this pack's own
+# `pack/` directory (i.e. `${CV_PACK_ROOT}/assets/scripts/cv-worktree-prep.sh`
+# exists), used to resolve cv-worktree-prep.sh deterministically instead of
+# the fragile `command -v || find $GC_CITY -maxdepth 6` fallback this
+# function would otherwise fall back to (see body comment for why).
 cv_sync_worktree_to_base() {
   local dir="$1" branch_name="${2:-}"
 
@@ -484,10 +490,30 @@ cv_sync_worktree_to_base() {
     return 1
   fi
 
-  local prep_script
-  prep_script="$(command -v cv-worktree-prep.sh 2>/dev/null || true)"
-  if [ -z "$prep_script" ]; then
-    prep_script="$(find "${GC_CITY:-.}" -maxdepth 6 -name cv-worktree-prep.sh 2>/dev/null | head -1)"
+  # Resolving cv-worktree-prep.sh via `command -v || find $GC_CITY -maxdepth 6`
+  # is the exact stale-copy-resolution mechanism this whole function exists to
+  # eliminate for base resolution (see header) — using it again here for the
+  # script lookup itself would just relocate the same risk (review fk-hbsmk
+  # B2, con-voyage synthesis root fk-gg5d6: on a rig where the script is not
+  # on PATH, the `find` fallback cannot reach this pack's own mold-source copy
+  # within 6 levels and silently resolves the live pack-cast copy instead —
+  # byte-identical today, but that is incidental timing, not a guarantee).
+  # A caller that already knows its own pack root (every `.md` workflow step
+  # that sources this file resolves one before doing so) can pass it via
+  # CV_PACK_ROOT for a deterministic lookup; only a caller that does not
+  # falls back to the pre-existing (fragile, but unchanged) resolution below.
+  # con-voyage-lib.sh's OTHER two internal copies of this same fallback
+  # (cv_worktree_prep_resolve_base, cv_find_prior_built_anchor) are pre-
+  # existing and out of scope here — fk-q2pon's planned cv_pack_script helper
+  # is the real fix for all three at once.
+  local prep_script=""
+  if [ -n "${CV_PACK_ROOT:-}" ] && [ -x "${CV_PACK_ROOT}/assets/scripts/cv-worktree-prep.sh" ]; then
+    prep_script="${CV_PACK_ROOT}/assets/scripts/cv-worktree-prep.sh"
+  else
+    prep_script="$(command -v cv-worktree-prep.sh 2>/dev/null || true)"
+    if [ -z "$prep_script" ]; then
+      prep_script="$(find "${GC_CITY:-.}" -maxdepth 6 -name cv-worktree-prep.sh 2>/dev/null | head -1)"
+    fi
   fi
   if [ -z "$prep_script" ] || [ ! -x "$prep_script" ]; then
     echo "cv-lib: ERROR cv_sync_worktree_to_base: cv-worktree-prep.sh not found — cannot sync ${dir}" >&2
