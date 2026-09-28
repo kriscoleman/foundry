@@ -51,6 +51,11 @@ for f in "$LIB" "$PREP_SCRIPT"; do
   fi
 done
 
+# Captured before any test case shadows `git` on PATH (fk-0f459 hang-bound
+# case below), so the shadow stub can still delegate everything but `fetch`
+# to the genuine binary.
+REAL_GIT="$(command -v git)"
+
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/cv-stacked-pr-base-test.XXXXXX")"
 # shellcheck disable=SC2329  # invoked indirectly via the EXIT trap below
 cleanup() { rm -rf "$SANDBOX"; }
@@ -288,6 +293,75 @@ if [ -d "${REPO7}/.git/rebase-merge" ] || [ -d "${REPO7}/.git/rebase-apply" ]; t
 else
   pass "no in-progress rebase state left behind — worktree is usable again"
 fi
+
+# ---------------------------------------------------------------------------
+# fk-0f459: a stalled `git fetch` inside cv_ensure_branch_based_on used to
+# have no wall-clock bound at all — reproduced first-hand under real
+# concurrent-lane load (con-voyage-stacked-pr-base.test.sh piling up stuck,
+# 0:00-CPU `bash`/`git` processes; `sample` showed the parent blocked in
+# bash's own command_substitute -> read_comsub -> read() on a pipe, i.e.
+# waiting on a slow/stalled `git` child that just hadn't returned yet). A
+# shadow `git` on PATH that hangs only on `fetch` (delegating every other
+# subcommand to the real binary via $REAL_GIT) simulates that stall
+# deterministically without depending on real machine load.
+# ---------------------------------------------------------------------------
+start_case "cv_ensure_branch_based_on: a stalled git fetch is bounded, not left to hang the caller"
+REPO8="$(mk_repo repo8)"
+UPSTREAM8="${SANDBOX}/repo8-upstream.git"
+git init -q -b main --bare "$UPSTREAM8"
+# Seed the upstream's "trunk" branch from a throwaway clone, never through
+# REPO8 itself — REPO8 must never locally cache refs/remotes/origin/trunk
+# (nor own a local branch literally named "trunk"), so resolving "trunk" as a
+# base is only reachable via a real fetch, not a name that happens to already
+# be resolvable locally (the mistake an earlier draft of this case made: a
+# push-from-REPO8 fixture auto-populates the local remote-tracking ref,
+# short-circuiting the function before the fetch it's meant to exercise).
+SEED8="${SANDBOX}/repo8-seed"
+git clone -q "$REPO8" "$SEED8"
+git_c "$SEED8" checkout -q -b trunk
+printf 'trunk content\n' > "${SEED8}/TRUNK.md"
+git_c "$SEED8" add TRUNK.md
+git_c "$SEED8" commit -q -m "trunk-only commit"
+git_c "$SEED8" push -q "$UPSTREAM8" trunk
+rm -rf "$SEED8"
+
+git_c "$REPO8" remote add origin "$UPSTREAM8"
+git_c "$REPO8" checkout -q -b work
+printf 'impl\n' > "${REPO8}/impl.txt"
+git_c "$REPO8" add impl.txt
+git_c "$REPO8" commit -q -m "feat: implementation commit"
+
+GIT_HANG_STUBDIR="${SANDBOX}/git-hang-stub"
+mkdir -p "$GIT_HANG_STUBDIR"
+cat > "${GIT_HANG_STUBDIR}/git" <<EOF
+#!/usr/bin/env bash
+# cv_ensure_branch_based_on always calls "git -C \$dir fetch ...", so the
+# subcommand is \$3, not \$1 — match anywhere in argv, not just the first word.
+for _a in "\$@"; do
+  if [ "\$_a" = "fetch" ]; then
+    sleep 5
+    exit 0
+  fi
+done
+exec "${REAL_GIT}" "\$@"
+EOF
+chmod +x "${GIT_HANG_STUBDIR}/git"
+
+before8=$(date +%s)
+err8="$(PATH="${GIT_HANG_STUBDIR}:${PATH}" CV_BASE_BRANCH_FETCH_TIMEOUT_SECONDS=1 cv_ensure_branch_based_on "$REPO8" "trunk" 2>&1)"
+rc8=$?
+elapsed8=$(( $(date +%s) - before8 ))
+
+assert_eq "1" "$rc8" "a timed-out fetch still fails loud, same as any other unresolvable base branch"
+if [ "$elapsed8" -le 3 ]; then
+  pass "returned in ${elapsed8}s — bounded by the 1s fetch timeout, not the stub's full 5s hang"
+else
+  fail "took ${elapsed8}s — expected the stalled fetch to be bounded to ~1s, not run to the stub's full 5s hang"
+fi
+case "$err8" in
+  *"does not resolve to a commit"*) pass "existing error message surfaces cleanly once the bounded fetch gives up" ;;
+  *) fail "expected the existing 'does not resolve to a commit' error, got: ${err8}" ;;
+esac
 
 # ===========================================================================
 # {target}.setup-con-voyage-review.md — structural check (mirrors
