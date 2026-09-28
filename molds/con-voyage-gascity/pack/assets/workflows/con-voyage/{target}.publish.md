@@ -182,7 +182,11 @@ on):
 2. Post it once:
 
    ```bash
-   CV_BIN="$(command -v cv-pr-comment.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name cv-pr-comment.sh 2>/dev/null | head -1)"
+   CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+   CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+   [ -f "${CV_PACK_ROOT}/assets/scripts/cv-pr-comment.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+   CV_BIN="${CV_PACK_ROOT}/assets/scripts/cv-pr-comment.sh"
+   [ -f "$CV_BIN" ] || CV_BIN=""
    [ -n "$CV_BIN" ] && [ -x "$CV_BIN" ] || { echo "cv-pr-comment.sh not found — skipping the aggregated review comment (PR body already carries the verdict)" >&2; }
    if [ -n "$CV_BIN" ] && [ -x "$CV_BIN" ]; then
      "$CV_BIN" comment-aggregate "$PR_NUMBER" --repo "$REPO_FULL" \
