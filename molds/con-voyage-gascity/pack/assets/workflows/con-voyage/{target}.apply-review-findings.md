@@ -1,13 +1,57 @@
 Apply con-voyage review findings.
 
-## Sync the worktree to the current base (fk-hbsmk)
+## Resolve the target worktree (review fk-hbsmk B1)
 
-Before reading the review synthesis or touching any file, sync this worktree
-to the current origin default base the same way the build phase does — review
-findings must never be applied on top of an unconfirmed/stale base:
+Every con-voyage step launches with cwd = the shared rig-root launcher
+checkout, not the target worktree — never rely on ambient `$(pwd)` for
+anything below. Resolve the real implementation source anchor/worktree the
+same way `build.md` already does, from the workflow root's metadata:
 
 ```bash
-CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+ROOT_ID="${GC_ROOT_BEAD_ID:-}"
+if [ -z "$ROOT_ID" ]; then
+  ROOT_ID="$(gc bd show "$GC_BEAD_ID" --json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    d = d[0] if isinstance(d, list) else d
+except Exception:
+    d = {}
+print((d.get('metadata') or {}).get('gc.root_bead_id') or '')
+" 2>/dev/null)"
+fi
+[ -n "$ROOT_ID" ] || ROOT_ID="$GC_BEAD_ID"
+
+read -r CONVOY_ID WORKTREE <<< "$(gc bd show "$ROOT_ID" --json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    d = d[0] if isinstance(d, list) else d
+except Exception:
+    d = {}
+meta = d.get('metadata') or {}
+print(meta.get('gc.build.source_anchor_id') or '', meta.get('gc.build.source_anchor_work_dir') or '')
+" 2>/dev/null)"
+
+if [ -z "$WORKTREE" ] || [ ! -d "$WORKTREE" ]; then
+  echo "apply-review-findings: no valid gc.build.source_anchor_work_dir on workflow root ${ROOT_ID} — cannot resolve the target worktree" >&2
+  exit 1
+fi
+cd "$WORKTREE" || { echo "apply-review-findings: cd into ${WORKTREE} failed" >&2; exit 1; }
+[ "$(pwd -P)" = "$(cd "$WORKTREE" && pwd -P)" ] || { echo "apply-review-findings: pwd verification failed" >&2; exit 1; }
+```
+
+Do not edit files anywhere but inside `$WORKTREE`. Never edit the launcher
+checkout.
+
+## Sync the worktree to the current base (fk-hbsmk)
+
+Before reading the review synthesis or touching any file, sync `$WORKTREE`
+to the current origin default base the same way the build phase does —
+review findings must never be applied on top of an unconfirmed/stale base:
+
+```bash
+CV_TOPLEVEL="$(git -C "$WORKTREE" rev-parse --show-toplevel 2>/dev/null)"
 CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
 [ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
 CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
@@ -16,10 +60,18 @@ if [ -z "$CV_LIB" ]; then
   echo "apply-review-findings: con-voyage-lib.sh not found — cannot sync to the current base" >&2
   exit 1
 fi
-SYNC_RESULT="$(source "$CV_LIB" && cv_sync_worktree_to_base "$(pwd)")" \
+SYNC_RESULT="$(export CV_PACK_ROOT; source "$CV_LIB" && cv_sync_worktree_to_base "$WORKTREE" "con-voyage/${CONVOY_ID}")" \
   || { echo "apply-review-findings: failed to sync to the current base — refusing to review/fix on a possibly-stale base" >&2; exit 1; }
 echo "apply-review-findings: worktree sync: ${SYNC_RESULT}"
 ```
+
+`CV_TOPLEVEL` is now resolved from `$WORKTREE` explicitly (not ambient
+`$(pwd)`, and not the shared rig-root checkout's own toplevel) so
+`CV_PACK_ROOT` reflects the worktree actually being synced/fixed — the same
+B1 fix as the resolve-and-cd step above, applied to this lookup too. Passing
+`CV_PACK_ROOT` through to `cv_sync_worktree_to_base` also gives it a
+deterministic `cv-worktree-prep.sh` lookup instead of that helper's own
+`command -v || find`-style fallback (review fk-hbsmk B2).
 
 (NOTE for reviewers: fk-q2pon is concurrently replacing this same
 `command -v || find`-style resolution pattern across this file with a
