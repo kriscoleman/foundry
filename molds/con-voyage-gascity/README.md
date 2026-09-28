@@ -349,19 +349,43 @@ name = "con-voyage-rate-limit-lookout"
 trigger = "cooldown"
 ```
 
-Once enabled (cooldown 5m), it peeks every active claude-backed session and acts:
+Once enabled (cooldown 5m), it peeks every active claude-backed session — budget
+bounded (`CV_LOOKOUT_TIME_BUDGET_SECONDS`, default 90s, kept under the order's
+own `timeout`) so a slow store can't push escalation past the order's exec
+deadline; a session left unpeeked this run is picked up next run — and acts:
 
 - **Context compact approaching** (`auto-compact` ≤ 15% in the pane) → proactive
   `gc handoff --target`, so the worker restarts fresh with its own handoff mail
   waiting — a smooth transition instead of a mid-task compact. (gc's PreCompact
   hook still covers compactions that land between lookout ticks.)
-- **Usage/rate limit observed** → the **circuit breaker opens**: every active
-  claude session is handed off (context preserved for when limits clear), and the
-  mayor gets a structured escalation naming the all-opencode fallback pools so it
-  can switch dispatch. While open, re-escalation is throttled
+- **Usage/rate limit observed** → the **circuit breaker opens**. Escalation
+  happens FIRST — `breaker.state` is written and the mayor is mailed before any
+  handoff is attempted, so a crash or timeout after that point still leaves the
+  breaker open and the mayor told. A session whose pane shows Claude Code's own
+  auto-continue banner ("continuing automatically", "continuing shortly") is
+  left alone — it will resume without help, and handing it off would only lose
+  the in-flight turn and re-prime context. Every other active claude session is
+  handed off (context preserved for when limits clear), and the mayor gets a
+  structured escalation naming the all-opencode fallback pools so it can switch
+  dispatch. While open, re-escalation is throttled
   (`CV_LOOKOUT_BREAKER_REMIND_SECONDS`, default 30m).
+- **Auto-flip (opt-in, `CV_LOOKOUT_AUTO_FLIP=true`, pack default off)** — instead
+  of only mailing instructions, the lookout applies the all-opencode override
+  itself: a managed, markered block in `city.toml` overriding
+  `[agent_defaults].provider` and the mayor patch's `.provider` to the fallback
+  pools, then `gc reload`. This exists because during a claude-wide limit the
+  mayor is on claude too, so a mail-only escalation may sit unread. Once
+  flipped, every limited session — including ones showing the auto-continue
+  banner — gets handed off, since restarting them onto opencode is the point.
+  Flip-back requires the parsed reset time to have passed **and** a live probe
+  (a one-shot `claude -p` call) to succeed, with a minimum dwell and a probe
+  backoff, specifically so a momentary zero-claude-sessions reading right after
+  a flip can't immediately flip back and oscillate. See "Model tiers & the
+  opt-in all-opencode fallback mode" in the orchestration fragment for the
+  mayor's-eye view, and the script header for the exact override mechanism and
+  why it edits `city.toml` in place rather than some other layer.
 - **Limits clear** for a full reset window (`CV_LOOKOUT_BREAKER_RESET_SECONDS`,
-  default 1h) → the breaker closes with an all-clear mail.
+  default 1h, when not flipped) → the breaker closes with an all-clear mail.
 - Every run also aggregates the trailing hour of `.gc/usage.jsonl` model facts
   into `.gc/con-voyage/lookout/usage-snapshot.txt`, and the summary rides along
   in escalation mail so the mayor switches with the fleet's actual burn in hand.
@@ -389,10 +413,11 @@ model = "fireworks-ai/accounts/fireworks/models/minimax-m3"
 
 Defining these providers also gives gc implicit pool agents per rig
 (`<rig>/kimi-k3`, …), which is what the mayor re-slings to while the breaker is
-open. All lookout knobs (`CV_LOOKOUT_*`: claude provider names, peek depth,
-compact threshold, cooldowns, reset/remind windows, escalate target, fallback
-pool names, usage window) are documented in the order file and the script
-header, and overridable per city via `[[orders.overrides]]` env — alongside the
+open. All lookout knobs (`CV_LOOKOUT_*`: claude provider names, peek depth, time
+budget, compact threshold, cooldowns, reset/remind windows, escalate target,
+fallback pool names, usage window, auto-flip toggle and its dwell/probe/backoff
+timing) are documented in the order file and the script header, and overridable
+per city via `[[orders.overrides]]` env — alongside the
 `trigger` override above that turns the order on in the first place.
 
 ---
