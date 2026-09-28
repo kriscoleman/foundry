@@ -96,6 +96,17 @@ done
 sub="${args[$i]:-}"
 
 case "$sub" in
+  rig)
+    rsub="${args[$((i+1))]:-}"
+    if [ "$rsub" = "list" ]; then
+      if [ "${STUB_NO_RIGS:-0}" = "1" ]; then
+        printf '{"rigs":[]}'
+      else
+        printf '{"rigs":[{"name":"%s"}]}' "${STUB_RIG_NAME:-example-rig}"
+      fi
+      exit 0
+    fi
+    ;;
   session)
     ssub="${args[$((i+1))]:-}"
     if [ "$ssub" = "list" ]; then
@@ -105,6 +116,15 @@ case "$sub" in
     if [ "$ssub" = "peek" ]; then
       sid="${args[$((i+2))]:-}"
       cat "${STUB_PEEK_DIR}/${sid}.txt" 2>/dev/null || printf ''
+      exit 0
+    fi
+    if [ "$ssub" = "new" ]; then
+      if [ "${STUB_SESSION_NEW_FAIL:-0}" = "1" ]; then
+        exit 1
+      fi
+      exit 0
+    fi
+    if [ "$ssub" = "close" ]; then
       exit 0
     fi
     ;;
@@ -148,13 +168,27 @@ chmod +x "${STUBDIR}/gc"
 # ---------------------------------------------------------------------------
 cat > "${STUBDIR}/claude-probe" <<'PROBE_STUB'
 #!/usr/bin/env bash
-: >> "${STUB_PROBE_LOG:-/dev/null}"
+printf 'probed\n' >> "${STUB_PROBE_LOG:-/dev/null}"
 if [ "${STUB_PROBE_FAIL:-0}" = "1" ]; then
   exit 1
 fi
 exit 0
 PROBE_STUB
 chmod +x "${STUBDIR}/claude-probe"
+
+# ---------------------------------------------------------------------------
+# The `opencode-probe` stub — a one-shot, controllable "can the opencode
+# fallback pool actually spawn a session" pre-flip guard (gascity#5436).
+# ---------------------------------------------------------------------------
+cat > "${STUBDIR}/opencode-probe" <<'OPENCODE_PROBE_STUB'
+#!/usr/bin/env bash
+printf 'probed\n' >> "${STUB_OPENCODE_PROBE_LOG:-/dev/null}"
+if [ "${STUB_OPENCODE_PROBE_FAIL:-0}" = "1" ]; then
+  exit 1
+fi
+exit 0
+OPENCODE_PROBE_STUB
+chmod +x "${STUBDIR}/opencode-probe"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -262,9 +296,14 @@ reset_world() {
   write_sessions '{"sessions":[]}'
   unset STUB_HANDOFF_FAIL STUB_MAIL_FAIL STUB_RELOAD_FAIL STUB_PROBE_FAIL STUB_EXPLAIN_STALE
   unset STUB_PEEK_DELAY_SECONDS STUB_HANDOFF_DELAY_SECONDS
+  unset STUB_OPENCODE_PROBE_FAIL STUB_NO_RIGS STUB_RIG_NAME STUB_SESSION_NEW_FAIL
 }
 
-# run_lookout [EXTRA_ENV ...] — invoke the script under test.
+# run_lookout [EXTRA_ENV ...] — invoke the script under test. Defaults to a
+# working opencode spawn-capability probe stub so pre-existing scenarios that
+# expect a flip to succeed don't need to know about the gascity#5436 guard;
+# tests of the guard itself override STUB_OPENCODE_PROBE_FAIL (or clear
+# CV_LOOKOUT_OPENCODE_PROBE_CMD to exercise the built-in probe).
 run_lookout() {
   env \
     GC="${STUBDIR}/gc" \
@@ -273,11 +312,18 @@ run_lookout() {
     STUB_SESSIONS_FILE="$SESSIONS_JSON" \
     STUB_PEEK_DIR="$PEEKDIR" \
     CV_LOOKOUT_CLAUDE_PROBE_CMD="${STUBDIR}/claude-probe" \
+    CV_LOOKOUT_OPENCODE_PROBE_CMD="${STUBDIR}/opencode-probe" \
     CV_LOOKOUT_CITY_TOML="$CITY_TOML" \
     ${STUB_HANDOFF_FAIL:+STUB_HANDOFF_FAIL="$STUB_HANDOFF_FAIL"} \
     ${STUB_MAIL_FAIL:+STUB_MAIL_FAIL="$STUB_MAIL_FAIL"} \
     ${STUB_RELOAD_FAIL:+STUB_RELOAD_FAIL="$STUB_RELOAD_FAIL"} \
     ${STUB_PROBE_FAIL:+STUB_PROBE_FAIL="$STUB_PROBE_FAIL"} \
+    ${STUB_PROBE_LOG:+STUB_PROBE_LOG="$STUB_PROBE_LOG"} \
+    ${STUB_OPENCODE_PROBE_FAIL:+STUB_OPENCODE_PROBE_FAIL="$STUB_OPENCODE_PROBE_FAIL"} \
+    ${STUB_OPENCODE_PROBE_LOG:+STUB_OPENCODE_PROBE_LOG="$STUB_OPENCODE_PROBE_LOG"} \
+    ${STUB_NO_RIGS:+STUB_NO_RIGS="$STUB_NO_RIGS"} \
+    ${STUB_RIG_NAME:+STUB_RIG_NAME="$STUB_RIG_NAME"} \
+    ${STUB_SESSION_NEW_FAIL:+STUB_SESSION_NEW_FAIL="$STUB_SESSION_NEW_FAIL"} \
     ${STUB_EXPLAIN_STALE:+STUB_EXPLAIN_STALE="$STUB_EXPLAIN_STALE"} \
     ${STUB_PEEK_DELAY_SECONDS:+STUB_PEEK_DELAY_SECONDS="$STUB_PEEK_DELAY_SECONDS"} \
     ${STUB_HANDOFF_DELAY_SECONDS:+STUB_HANDOFF_DELAY_SECONDS="$STUB_HANDOFF_DELAY_SECONDS"} \
@@ -581,8 +627,12 @@ EOF
 write_peek rc-inv <<'EOF'
 ⏺ coordinating
 EOF
+STUB_OPENCODE_PROBE_LOG="${SANDBOX}/opencode-probe-open.log"
+: > "$STUB_OPENCODE_PROBE_LOG"
 out="$(run_lookout CV_LOOKOUT_AUTO_FLIP=true 2>&1)"; rc=$?
 [ "$rc" -eq 0 ] && pass "exit 0" || fail "exit code $rc (output: $out)"
+[ -s "$STUB_OPENCODE_PROBE_LOG" ] && pass "spawn-capability probe was invoked before flipping (gascity#5436 guard)" || fail "spawn probe was never invoked"
+assert_file_contains "${STATE_DIR}/breaker.state" "spawn_probe_verified=1" "spawn probe recorded verified"
 assert_file_contains "${STATE_DIR}/breaker.state" "state=open" "breaker open"
 assert_file_contains "${STATE_DIR}/breaker.state" "flipped=1" "breaker flipped=1"
 assert_file_contains "$CITY_TOML" "glm-5p3-flash" "city.toml agent_defaults overridden to medium pool"
@@ -748,6 +798,140 @@ if [ -s "$STUB_PROBE_LOG" ]; then
 else
   pass "no re-probe before the backoff window elapses"
 fi
+
+# ===========================================================================
+start_case "AUTO_FLIP=true: failed spawn probe BLOCKS the flip (gascity#5436 guard) — claude kept, BLOCKED mail, selective handoff"
+# ===========================================================================
+reset_world
+write_city_toml
+write_sessions '{"sessions":[
+  {"id":"rc-wrk1","template":"knuckles/gc.implementation-worker","provider":"sonnet","state":"active","closed":false},
+  {"id":"rc-autoresume","template":"knuckles/gc.implementation-worker","provider":"sonnet","state":"active","closed":false},
+  {"id":"rc-inv","template":"mayor","provider":"opus","state":"active","closed":false}
+]}'
+write_peek rc-wrk1 <<'EOF'
+✗ Claude usage limit reached. Your limit will reset at 11pm
+EOF
+write_peek rc-autoresume <<'EOF'
+✗ Claude usage limit reached · continuing automatically at 11pm (America/Detroit)
+EOF
+write_peek rc-inv <<'EOF'
+⏺ coordinating
+EOF
+STUB_OPENCODE_PROBE_FAIL=1
+out="$(run_lookout CV_LOOKOUT_AUTO_FLIP=true 2>&1)"; rc=$?
+unset STUB_OPENCODE_PROBE_FAIL
+[ "$rc" -eq 0 ] && pass "exit 0 despite a blocked flip" || fail "exit code $rc (output: $out)"
+assert_file_contains "${STATE_DIR}/breaker.state" "flipped=0" "breaker stays unflipped when the spawn probe fails"
+assert_file_contains "${STATE_DIR}/breaker.state" "spawn_probe_verified=0" "spawn_probe_verified recorded 0"
+assert_file_lacks "$CITY_TOML" "BEGIN con-voyage-lookout" "city.toml override never applied when the probe fails"
+assert_file_contains "$CITY_TOML" 'provider = "claude"' "mayor patch still on claude (never touched)"
+assert_log_lacks "reload" "no gc reload attempted when the probe fails"
+assert_log_lacks "config explain" "no reload verification attempted when the probe fails"
+assert_log_contains "mail send mayor" "mayor mailed about the blocked flip"
+assert_log_contains "mail send human" "human mailed about the blocked flip"
+assert_log_contains "BLOCKED" "escalation names the blocked auto-flip explicitly"
+assert_log_contains "gascity#5436" "escalation cites the gascity#5436 dependency"
+assert_log_contains "handoff --target rc-wrk1" "limited session still handed off on its CURRENT provider"
+assert_log_lacks "handoff --target rc-autoresume" "auto-resuming session still skipped when blocked (selective sweep, not mass)"
+
+# ===========================================================================
+start_case "AUTO_FLIP=true: a failed spawn probe backs off, then flips once it later succeeds"
+# ===========================================================================
+reset_world
+write_city_toml
+write_sessions "$TWO_CLAUDE_SESSIONS"
+write_peek rc-wrk1 <<'EOF'
+✗ Claude usage limit reached. Your limit will reset at 11pm
+EOF
+write_peek rc-inv <<'EOF'
+⏺ coordinating
+EOF
+STUB_OPENCODE_PROBE_FAIL=1
+out="$(run_lookout CV_LOOKOUT_AUTO_FLIP=true CV_LOOKOUT_FLIP_REPROBE_BACKOFF_SECONDS=600 2>&1)"; rc=$?
+unset STUB_OPENCODE_PROBE_FAIL
+[ "$rc" -eq 0 ] && pass "exit 0 after a failed spawn probe" || fail "exit code $rc (output: $out)"
+assert_file_contains "${STATE_DIR}/breaker.state" "flipped=0" "still unflipped after a failed spawn probe"
+next_spawn_probe="$(grep -E '^spawn_probe_next_at=' "${STATE_DIR}/breaker.state" | cut -d= -f2)"
+now="$(date +%s)"
+if [ "$next_spawn_probe" -gt "$now" ]; then
+  pass "next spawn probe scheduled in the future (backoff applied)"
+else
+  fail "expected spawn_probe_next_at in the future, got ${next_spawn_probe} (now=${now})"
+fi
+
+# A second run before the backoff elapses must not re-probe.
+: > "$STUB_GC_LOG"
+STUB_OPENCODE_PROBE_LOG="${SANDBOX}/opencode-probe-backoff.log"
+: > "$STUB_OPENCODE_PROBE_LOG"
+out="$(run_lookout CV_LOOKOUT_AUTO_FLIP=true 2>&1)"; rc=$?
+if [ -s "$STUB_OPENCODE_PROBE_LOG" ]; then
+  fail "spawn probe ran again before the backoff window elapsed"
+else
+  pass "no spawn re-probe before the backoff window elapses"
+fi
+if printf '%s' "$out" | grep -qF "spawn probe backoff active"; then
+  pass "backoff message logged"
+else
+  fail "expected a spawn-probe backoff log message"
+fi
+
+# Force the backoff to have elapsed: the next attempt should probe again and,
+# since the stub now succeeds (STUB_OPENCODE_PROBE_FAIL unset), flip normally.
+sed -i.bak -E 's/^spawn_probe_next_at=.*/spawn_probe_next_at=1/' "${STATE_DIR}/breaker.state" && rm -f "${STATE_DIR}/breaker.state.bak"
+: > "$STUB_GC_LOG"
+# rc-wrk1 was already handed off (on its current provider) by the earlier
+# blocked runs' selective sweep; bypass the per-session cooldown so this
+# assertion is about the mass-sweep-once-flipped behavior, not cooldown timing.
+out="$(run_lookout CV_LOOKOUT_AUTO_FLIP=true CV_LOOKOUT_HANDOFF_COOLDOWN_SECONDS=0 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && pass "exit 0 once the spawn probe succeeds after backoff" || fail "exit code $rc (output: $out)"
+assert_file_contains "${STATE_DIR}/breaker.state" "flipped=1" "flip proceeds once the spawn probe later succeeds"
+assert_log_contains "mail send mayor" "mayor mailed about the (now successful) flip"
+assert_log_contains "handoff --target rc-wrk1" "limited session handed off once flipped"
+
+# ===========================================================================
+start_case "AUTO_FLIP=true: built-in spawn probe (no CV_LOOKOUT_OPENCODE_PROBE_CMD override) discovers a rig and spawns/closes a real probe session"
+# ===========================================================================
+reset_world
+write_city_toml
+write_sessions "$TWO_CLAUDE_SESSIONS"
+write_peek rc-wrk1 <<'EOF'
+✗ Claude usage limit reached. Your limit will reset at 11pm
+EOF
+write_peek rc-inv <<'EOF'
+⏺ coordinating
+EOF
+out="$(run_lookout CV_LOOKOUT_AUTO_FLIP=true CV_LOOKOUT_OPENCODE_PROBE_CMD= 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && pass "exit 0 using the built-in probe" || fail "exit code $rc (output: $out)"
+assert_log_contains "rig list --json" "built-in probe discovers a rig"
+assert_log_contains "session new glm-5p3-flash" "built-in probe spawns a session on the medium fallback pool"
+assert_log_contains "--no-attach" "built-in probe spawns without attaching"
+assert_log_contains "session close" "built-in probe cleans up its probe session"
+assert_file_contains "${STATE_DIR}/breaker.state" "flipped=1" "flip proceeds once the built-in probe confirms spawn capability"
+
+# ===========================================================================
+start_case "AUTO_FLIP=true: built-in spawn probe treats 'no rig available' as unproven -> flip blocked"
+# ===========================================================================
+reset_world
+write_city_toml
+write_sessions "$TWO_CLAUDE_SESSIONS"
+write_peek rc-wrk1 <<'EOF'
+✗ Claude usage limit reached. Your limit will reset at 11pm
+EOF
+write_peek rc-inv <<'EOF'
+⏺ coordinating
+EOF
+STUB_NO_RIGS=1
+out="$(run_lookout CV_LOOKOUT_AUTO_FLIP=true CV_LOOKOUT_OPENCODE_PROBE_CMD= 2>&1)"; rc=$?
+unset STUB_NO_RIGS
+[ "$rc" -eq 0 ] && pass "exit 0 with no rig available" || fail "exit code $rc (output: $out)"
+assert_file_contains "${STATE_DIR}/breaker.state" "flipped=0" "flip blocked when no rig is available to probe against"
+if printf '%s' "$out" | grep -qF "no rig available to probe"; then
+  pass "warns that no rig was available to probe spawn capability"
+else
+  fail "expected a 'no rig available' warning"
+fi
+assert_log_lacks "session new" "no probe session attempted when no rig is discoverable"
 
 # ===========================================================================
 start_case "AUTO_FLIP=false (default): original non-flipping behavior is unchanged, incl. auto-resume skip"

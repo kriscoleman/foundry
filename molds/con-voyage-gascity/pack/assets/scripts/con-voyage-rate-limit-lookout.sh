@@ -48,8 +48,25 @@
 #     [agent_defaults].provider and the mayor's patch provider to the
 #     fallback pools, then `gc reload` — instead of only mailing
 #     instructions. This exists because during a claude-wide limit the mayor
-#     is ALSO on claude, so a mail-only escalation may sit unread. Once
-#     flipped, restarting limited sessions IS the point (they respawn on
+#     is ALSO on claude, so a mail-only escalation may sit unread.
+#     GASCITY#5436 GUARD: on gc 1.4.2, opencode/ACP-backed sessions can be
+#     silently unspawnable (the session supervisor logs "requires ACP
+#     transport but the session provider cannot route ACP sessions
+#     (skipping)") even though `gc config explain` correctly shows the
+#     override took hold — config resolution is not proof of spawn capacity.
+#     So before ever applying the override, the lookout runs a real,
+#     bounded spawn-capability probe (see CV_LOOKOUT_OPENCODE_PROBE_CMD)
+#     against the target fallback pool. Only a successful probe applies the
+#     override and restarts sessions onto opencode; a failed probe (or one
+#     still backing off) leaves the current claude providers in place,
+#     escalates a distinct "flip blocked" mail to the mayor and human citing
+#     gastownhall/gascity#5436, and falls back to the same
+#     context-preserving, current-provider handoff sweep used when
+#     CV_LOOKOUT_AUTO_FLIP is off. The same fallback applies if the override
+#     was applied but `gc reload` has not yet been verified to have taken
+#     effect — restarting sessions onto opencode is never safe until both
+#     the spawn probe and the reload are confirmed. Once flipped and
+#     verified, restarting limited sessions IS the point (they respawn on
 #     opencode), so the auto-continue-banner skip above does not apply.
 #     Flip-back is reset-time + live-probe gated with a minimum dwell and a
 #     probe backoff, specifically so a momentary zero-claude-sessions reading
@@ -138,6 +155,17 @@
 #                                       of only mailing instructions. Pack
 #                                       default: false. See README "Model
 #                                       tiers" / the orchestration fragment.
+#                                       DEPENDS ON gastownhall/gascity#5436
+#                                       (open as of this writing): on gc
+#                                       1.4.2 the session supervisor can
+#                                       silently fail to route opencode/ACP
+#                                       sessions ("requires ACP transport but
+#                                       the session provider cannot route ACP
+#                                       sessions (skipping)"). Every flip is
+#                                       therefore gated on a live spawn probe
+#                                       (CV_LOOKOUT_OPENCODE_PROBE_CMD) —
+#                                       config resolving to the fallback pool
+#                                       is not treated as proof it can spawn.
 #   CV_LOOKOUT_CITY_TOML                city.toml path the auto-flip override
 #                                       edits. Default: $GC_CITY/city.toml
 #   CV_LOOKOUT_FLIP_DWELL_SECONDS       Minimum time after a flip before any
@@ -148,11 +176,37 @@
 #   CV_LOOKOUT_CLAUDE_PROBE_CMD         One-shot command used to test whether
 #                                       claude is reachable again before
 #                                       flipping back. Default: "claude -p ok"
-#   CV_LOOKOUT_FLIP_PROBE_TIMEOUT_SECONDS Per-call bound on the probe.
+#   CV_LOOKOUT_OPENCODE_PROBE_CMD       One-shot command used to prove the
+#                                       opencode/ACP fallback pool can
+#                                       actually spawn BEFORE flipping to it
+#                                       (see the gascity#5436 note above).
+#                                       Default: empty, which runs a built-in
+#                                       probe that spawns a real, uniquely
+#                                       aliased, --no-attach session on
+#                                       CV_LOOKOUT_FALLBACK_MEDIUM_POOL (in
+#                                       CV_LOOKOUT_PROBE_RIG, or the city's
+#                                       first rig if unset), waits up to
+#                                       CV_LOOKOUT_FLIP_PROBE_TIMEOUT_SECONDS
+#                                       for the reconciler to actually start
+#                                       it, and always cleans it up. Set this
+#                                       to override with a custom check (or
+#                                       to stub it in tests).
+#   CV_LOOKOUT_PROBE_RIG                Rig to target CV_LOOKOUT_OPENCODE_PROBE_CMD's
+#                                       built-in spawn probe against. Default:
+#                                       empty, meaning "the city's first rig
+#                                       per `gc rig list --json`". ACP routing
+#                                       capability is a gc-wide property, not
+#                                       a per-rig one, so any configured rig
+#                                       is representative.
+#   CV_LOOKOUT_FLIP_PROBE_TIMEOUT_SECONDS Per-call bound on a probe — shared
+#                                       by the flip-back claude probe and the
+#                                       pre-flip opencode spawn probe.
 #                                       Default: 30
 #   CV_LOOKOUT_FLIP_REPROBE_BACKOFF_SECONDS Minimum time between two probe
-#                                       attempts after a failed probe.
-#                                       Default: 300
+#                                       attempts after a failed probe —
+#                                       shared by the flip-back claude probe
+#                                       and the pre-flip opencode spawn
+#                                       probe. Default: 300
 #
 # Exit codes:
 #   0 — completed (actions taken or not)
@@ -187,6 +241,8 @@ CV_LOOKOUT_AUTO_FLIP="${CV_LOOKOUT_AUTO_FLIP:-false}"
 CV_LOOKOUT_CITY_TOML="${CV_LOOKOUT_CITY_TOML:-${GC_CITY}/city.toml}"
 CV_LOOKOUT_FLIP_DWELL_SECONDS="${CV_LOOKOUT_FLIP_DWELL_SECONDS:-900}"
 CV_LOOKOUT_CLAUDE_PROBE_CMD="${CV_LOOKOUT_CLAUDE_PROBE_CMD:-claude -p ok}"
+CV_LOOKOUT_OPENCODE_PROBE_CMD="${CV_LOOKOUT_OPENCODE_PROBE_CMD:-}"
+CV_LOOKOUT_PROBE_RIG="${CV_LOOKOUT_PROBE_RIG:-}"
 CV_LOOKOUT_FLIP_PROBE_TIMEOUT_SECONDS="${CV_LOOKOUT_FLIP_PROBE_TIMEOUT_SECONDS:-30}"
 CV_LOOKOUT_FLIP_REPROBE_BACKOFF_SECONDS="${CV_LOOKOUT_FLIP_REPROBE_BACKOFF_SECONDS:-300}"
 
@@ -286,17 +342,24 @@ BREAKER_RELOAD_VERIFIED="$(int_or_zero "$(state_get "$BREAKER_FILE" reload_verif
 BREAKER_RESET_HINT_EPOCH="$(int_or_zero "$(state_get "$BREAKER_FILE" reset_hint_epoch)")"
 BREAKER_LAST_PROBE_AT="$(int_or_zero "$(state_get "$BREAKER_FILE" last_probe_at)")"
 BREAKER_NEXT_PROBE_AT="$(int_or_zero "$(state_get "$BREAKER_FILE" next_probe_at)")"
+# spawn_probe_* — the PRE-flip opencode/ACP spawn-capability probe (gascity#5436
+# guard). A deliberately separate state machine from last_probe_at/next_probe_at
+# above, which gate the OPPOSITE direction (flip-BACK to claude).
+SPAWN_PROBE_VERIFIED="$(int_or_zero "$(state_get "$BREAKER_FILE" spawn_probe_verified)")"
+SPAWN_PROBE_LAST_AT="$(int_or_zero "$(state_get "$BREAKER_FILE" spawn_probe_last_at)")"
+SPAWN_PROBE_NEXT_AT="$(int_or_zero "$(state_get "$BREAKER_FILE" spawn_probe_next_at)")"
 
-# breaker_write — persist the CURRENT in-memory BREAKER_* globals. Called
-# with no args deliberately: the auto-flip sequence updates a few of these
-# fields at a time across several steps (state open -> override applied ->
-# reload verified -> mailed), writing after each one so a killed run resumes
-# at the right step instead of repeating or skipping it.
+# breaker_write — persist the CURRENT in-memory BREAKER_*/SPAWN_PROBE_* globals.
+# Called with no args deliberately: the auto-flip sequence updates a few of
+# these fields at a time across several steps (state open -> spawn probe ->
+# override applied -> reload verified -> mailed), writing after each one so a
+# killed run resumes at the right step instead of repeating or skipping it.
 breaker_write() {
-  printf 'state=%s\nopened_at=%s\nlast_limit_seen_at=%s\nlast_escalated_at=%s\nflipped=%s\nreload_verified=%s\nreset_hint_epoch=%s\nlast_probe_at=%s\nnext_probe_at=%s\n' \
+  printf 'state=%s\nopened_at=%s\nlast_limit_seen_at=%s\nlast_escalated_at=%s\nflipped=%s\nreload_verified=%s\nreset_hint_epoch=%s\nlast_probe_at=%s\nnext_probe_at=%s\nspawn_probe_verified=%s\nspawn_probe_last_at=%s\nspawn_probe_next_at=%s\n' \
     "$BREAKER_STATE" "$BREAKER_OPENED_AT" "$BREAKER_LAST_LIMIT_AT" "$BREAKER_LAST_MAIL_AT" \
     "$BREAKER_FLIPPED" "$BREAKER_RELOAD_VERIFIED" "$BREAKER_RESET_HINT_EPOCH" \
     "$BREAKER_LAST_PROBE_AT" "$BREAKER_NEXT_PROBE_AT" \
+    "$SPAWN_PROBE_VERIFIED" "$SPAWN_PROBE_LAST_AT" "$SPAWN_PROBE_NEXT_AT" \
     > "$BREAKER_FILE" \
     || echo "con-voyage-rate-limit-lookout: WARNING: failed to write ${BREAKER_FILE}" >&2
 }
@@ -333,6 +396,69 @@ run_claude_probe() {
   local -a probe_cmd
   read -ra probe_cmd <<< "$CV_LOOKOUT_CLAUDE_PROBE_CMD"
   run_with_timeout "$CV_LOOKOUT_FLIP_PROBE_TIMEOUT_SECONDS" -- "${probe_cmd[@]}" >/dev/null 2>&1
+}
+
+# spawn_probe_due — true if enough backoff time has passed since the last
+# opencode spawn-capability probe attempt to try again (or none has been
+# attempted yet). Mirrors the flip-back probe's own backoff gate, kept as a
+# separate state machine (spawn_probe_next_at vs next_probe_at) since the two
+# probes run in opposite situations and must never be conflated.
+spawn_probe_due() {
+  [ "$(now_epoch)" -ge "$SPAWN_PROBE_NEXT_AT" ]
+}
+
+# run_opencode_probe — gascity#5436 guard: proves the opencode/ACP fallback
+# pool can actually spawn a session BEFORE the auto-flip override is applied.
+# `gc config explain` showing the right provider name is NOT proof — gc 1.4.2's
+# session supervisor can resolve the config correctly and still silently skip
+# starting the session ("requires ACP transport but the session provider
+# cannot route ACP sessions (skipping)"). Stubbable wholesale via
+# CV_LOOKOUT_OPENCODE_PROBE_CMD (a one-shot command, same shape as
+# CV_LOOKOUT_CLAUDE_PROBE_CMD) for tests and for operators who want a custom
+# check. The built-in default actually spawns a uniquely-aliased,
+# --no-attach, bounded-wait session on the medium fallback pool and always
+# cleans it up — "the reconciler actually started it" is the only signal
+# trusted here.
+run_opencode_probe() {
+  if [ -n "$CV_LOOKOUT_OPENCODE_PROBE_CMD" ]; then
+    local -a probe_cmd
+    read -ra probe_cmd <<< "$CV_LOOKOUT_OPENCODE_PROBE_CMD"
+    run_with_timeout "$CV_LOOKOUT_FLIP_PROBE_TIMEOUT_SECONDS" -- "${probe_cmd[@]}" >/dev/null 2>&1
+    return $?
+  fi
+
+  local rig="$CV_LOOKOUT_PROBE_RIG"
+  if [ -z "$rig" ]; then
+    rig="$(run_with_timeout 15 -- "$GC" --city "$GC_CITY" rig list --json 2>/dev/null | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print("")
+    raise SystemExit(0)
+rigs = data.get("rigs") if isinstance(data, dict) else data
+if not isinstance(rigs, list) or not rigs:
+    print("")
+    raise SystemExit(0)
+first = rigs[0]
+name = first.get("name") if isinstance(first, dict) else first
+print(name or "")
+' 2>/dev/null)"
+  fi
+  if [ -z "$rig" ]; then
+    echo "con-voyage-rate-limit-lookout: WARNING: no rig available to probe opencode spawn capability against; treating as unproven (gascity#5436)" >&2
+    return 1
+  fi
+
+  local alias="cv-lookout-acp-probe-$$"
+  local rc
+  run_with_timeout "$CV_LOOKOUT_FLIP_PROBE_TIMEOUT_SECONDS" -- \
+    "$GC" --city "$GC_CITY" --rig "$rig" session new "$CV_LOOKOUT_FALLBACK_MEDIUM_POOL" \
+    --no-attach --alias "$alias" --wait-timeout "${CV_LOOKOUT_FLIP_PROBE_TIMEOUT_SECONDS}s" \
+    >/dev/null 2>&1
+  rc=$?
+  run_with_timeout 15 -- "$GC" --city "$GC_CITY" --rig "$rig" session close "$alias" >/dev/null 2>&1 || true
+  return "$rc"
 }
 
 # reload_and_verify — apply the resolved config and confirm the mayor now
@@ -583,7 +709,35 @@ PYEOF
 # human copy exists.
 send_flip_mail() {
   local kind="$1" subject body mayor_ok=0
-  if [ "$kind" = "open" ]; then
+  if [ "$kind" = "blocked" ]; then
+    subject="con-voyage rate-limit lookout: claude limit circuit breaker OPEN — all-opencode auto-flip BLOCKED (target can't spawn)"
+    body="The con-voyage rate-limit lookout observed claude usage/rate limits. CV_LOOKOUT_AUTO_FLIP=true, but a live spawn-capability probe against the opencode fallback pool FAILED, so the lookout did NOT flip. Current claude providers are being kept.
+
+Limited sessions: ${limited_list:-unknown}
+
+Why: gc 1.4.2 has an open bug (gastownhall/gascity#5436) where the session
+supervisor can silently fail to route opencode/ACP-backed sessions
+('requires ACP transport but the session provider cannot route ACP sessions
+(skipping)') even when config resolves the provider correctly. Flipping
+config without proof the target can actually spawn would leave the fleet —
+mayor included — with zero spawnable sessions, which is worse than staying
+on claude and waiting out the limit. So the lookout proves spawn capability
+with a real probe before ever touching city.toml, and skipped the flip here
+because that probe failed.
+
+Manual fallback (same as CV_LOOKOUT_AUTO_FLIP=false mode) if you want to
+re-sling work by hand once you've independently confirmed a pool can spawn:
+  gc sling <rig>/${CV_LOOKOUT_FALLBACK_LARGE_POOL} <bead> --nudge   # opus-class
+  gc sling <rig>/${CV_LOOKOUT_FALLBACK_MEDIUM_POOL} <bead> --nudge  # sonnet-class
+  gc sling <rig>/${CV_LOOKOUT_FALLBACK_SMALL_POOL} <bead> --nudge   # haiku-class
+
+The lookout will keep retrying the spawn probe on a backoff (next attempt in
+${CV_LOOKOUT_FLIP_REPROBE_BACKOFF_SECONDS}s) and will flip automatically the
+moment it succeeds. Affected sessions are being handed off on their CURRENT
+provider instead (context preserved), same as CV_LOOKOUT_AUTO_FLIP=false.
+
+Claude usage (trailing ${CV_LOOKOUT_USAGE_WINDOW_MINUTES}m): ${USAGE_SUMMARY:-no model facts recorded}"
+  elif [ "$kind" = "open" ]; then
     subject="con-voyage rate-limit lookout: city flipped to all-opencode (auto-flip)"
     body="The con-voyage rate-limit lookout observed claude usage/rate limits and AUTOMATICALLY flipped the city to all-opencode mode (CV_LOOKOUT_AUTO_FLIP=true).
 
@@ -769,6 +923,44 @@ handoff_session() {
   fi
 }
 
+# selective_handoff_sweep REASON — hand off every non-auto-resuming session,
+# skipping ones showing Claude Code's own auto-continue banner (they resume
+# on their own; restarting only loses the in-flight turn). Used whenever
+# claude-tier dispatch is being KEPT — CV_LOOKOUT_AUTO_FLIP is off, or it's on
+# but the flip hasn't (yet, or safely) taken effect this run — so sessions
+# respawn on the CURRENT provider, never assumed to land on opencode.
+selective_handoff_sweep() {
+  local reason="$1"
+  printf '%s' "$ALL_ROWS" | while IFS=$'\x1f' read -r hsid _; do
+    [ -n "$hsid" ] || continue
+    if [ "$(session_auto_resume "$hsid")" = "1" ]; then
+      echo "con-voyage-rate-limit-lookout: SKIP ${hsid} — showing Claude Code's auto-continue banner, will resume on its own"
+      continue
+    fi
+    if budget_exceeded; then
+      echo "con-voyage-rate-limit-lookout: time budget reached; remaining handoff(s) deferred to next run"
+      break
+    fi
+    handoff_session "$hsid" "$reason"
+  done
+}
+
+# mass_handoff_sweep REASON — hand off EVERY session, including ones showing
+# the auto-continue banner. Only safe to call once the all-opencode override
+# has been applied AND verified live (gc reload confirmed) — restarting a
+# session IS the point once that's true, since it will respawn on opencode.
+mass_handoff_sweep() {
+  local reason="$1"
+  printf '%s' "$ALL_ROWS" | while IFS=$'\x1f' read -r hsid _; do
+    [ -n "$hsid" ] || continue
+    if budget_exceeded; then
+      echo "con-voyage-rate-limit-lookout: time budget reached; remaining handoff(s) deferred to next run"
+      break
+    fi
+    handoff_session "$hsid" "$reason"
+  done
+}
+
 # session_auto_resume SID -> "1" if SID was classified as limited AND
 # showing the auto-continue banner this run, else "0". Pure-bash lookup
 # (matches the rest of the script's IFS=$'\x1f' idiom) — deliberately not
@@ -877,22 +1069,35 @@ if [ -n "$LIMITED_ROWS" ]; then
 
   if [ "$CV_LOOKOUT_AUTO_FLIP" = "true" ]; then
     if [ "$BREAKER_FLIPPED" != "1" ]; then
-      echo "con-voyage-rate-limit-lookout: applying all-opencode override (mechanism: managed city.toml block — see README/PR for why)"
-      if apply_override; then
-        BREAKER_FLIPPED="1"
-        breaker_write
-        echo "con-voyage-rate-limit-lookout: override applied; reloading city config"
-        if reload_and_verify; then
-          BREAKER_RELOAD_VERIFIED="1"
+      if spawn_probe_due; then
+        echo "con-voyage-rate-limit-lookout: probing ${CV_LOOKOUT_FALLBACK_MEDIUM_POOL} (opencode/ACP) for spawn capability before flipping (gascity#5436 guard)"
+        SPAWN_PROBE_LAST_AT="$now"
+        if run_opencode_probe; then
+          echo "con-voyage-rate-limit-lookout: spawn probe succeeded; applying all-opencode override (mechanism: managed city.toml block — see README/PR for why)"
+          SPAWN_PROBE_VERIFIED="1"
+          if apply_override; then
+            BREAKER_FLIPPED="1"
+            breaker_write
+            echo "con-voyage-rate-limit-lookout: override applied; reloading city config"
+            if reload_and_verify; then
+              BREAKER_RELOAD_VERIFIED="1"
+            else
+              BREAKER_RELOAD_VERIFIED="0"
+              echo "con-voyage-rate-limit-lookout: WARNING: reload not verified; will retry next run" >&2
+            fi
+          else
+            echo "con-voyage-rate-limit-lookout: WARNING: override apply failed; staying unflipped, will retry next run" >&2
+          fi
         else
-          BREAKER_RELOAD_VERIFIED="0"
-          echo "con-voyage-rate-limit-lookout: WARNING: reload not verified; will retry next run" >&2
+          echo "con-voyage-rate-limit-lookout: WARNING: spawn probe failed — ${CV_LOOKOUT_FALLBACK_MEDIUM_POOL} (opencode/ACP) cannot spawn right now (gastownhall/gascity#5436); NOT flipping, keeping current claude providers" >&2
+          SPAWN_PROBE_VERIFIED="0"
+          SPAWN_PROBE_NEXT_AT=$(( now + CV_LOOKOUT_FLIP_REPROBE_BACKOFF_SECONDS ))
         fi
+        breaker_write
+        should_mail=1
       else
-        echo "con-voyage-rate-limit-lookout: WARNING: override apply failed; staying unflipped, will retry next run" >&2
+        echo "con-voyage-rate-limit-lookout: spawn probe backoff active — next attempt in $(( SPAWN_PROBE_NEXT_AT - now ))s; NOT flipping yet"
       fi
-      breaker_write
-      should_mail=1
     elif [ "$BREAKER_RELOAD_VERIFIED" != "1" ]; then
       echo "con-voyage-rate-limit-lookout: retrying reload verification for an already-applied override"
       if reload_and_verify; then
@@ -902,22 +1107,29 @@ if [ -n "$LIMITED_ROWS" ]; then
     fi
 
     if [ "$should_mail" -eq 1 ]; then
-      if send_flip_mail "open"; then
-        BREAKER_LAST_MAIL_AT="$now"
+      if [ "$BREAKER_FLIPPED" = "1" ]; then
+        if send_flip_mail "open"; then
+          BREAKER_LAST_MAIL_AT="$now"
+        fi
+      else
+        if send_flip_mail "blocked"; then
+          BREAKER_LAST_MAIL_AT="$now"
+        fi
       fi
       breaker_write
     fi
 
-    # Restarting limited (including auto-resuming) sessions IS the point
-    # once flipped — they respawn on opencode instead of idling for claude.
-    printf '%s' "$ALL_ROWS" | while IFS=$'\x1f' read -r hsid _; do
-      [ -n "$hsid" ] || continue
-      if budget_exceeded; then
-        echo "con-voyage-rate-limit-lookout: time budget reached; remaining handoff(s) deferred to next run"
-        break
-      fi
-      handoff_session "$hsid" "claude usage limit observed fleet-wide — all-opencode fallback engaged, respawning on opencode"
-    done
+    # Restarting sessions onto opencode is only safe once the override is
+    # BOTH applied and verified live (gc reload confirmed) — never assume a
+    # flip that hasn't cleared both gates actually took effect. Otherwise,
+    # fall back to the same context-preserving sweep on the CURRENT provider
+    # used when auto-flip is off (covers: blocked-by-probe, and
+    # applied-but-not-yet-verified).
+    if [ "$BREAKER_FLIPPED" = "1" ] && [ "$BREAKER_RELOAD_VERIFIED" = "1" ]; then
+      mass_handoff_sweep "claude usage limit observed fleet-wide — all-opencode fallback engaged, respawning on opencode"
+    else
+      selective_handoff_sweep "claude usage limit observed fleet-wide — all-opencode fallback blocked or not yet verified (gascity#5436 guard), preserving context on current provider"
+    fi
 
   else
     if [ "$should_mail" -eq 1 ]; then
@@ -940,7 +1152,16 @@ What to do (see the con-voyage-orchestration fragment, 'All-opencode fallback mo
      ${CV_LOOKOUT_FALLBACK_MEDIUM_POOL} and the mayor patch at
      ${CV_LOOKOUT_FALLBACK_LARGE_POOL} until the breaker closes. (A city can
      also opt into CV_LOOKOUT_AUTO_FLIP=true so the lookout does this step
-     itself — see README 'Model tiers'.)
+     itself, gated on a live spawn-capability probe — see README 'Model
+     tiers'.)
+
+Before bulk re-slinging: confirm the fallback pool can actually spawn a
+session first. gc 1.4.2 has an open bug (gastownhall/gascity#5436) where the
+session supervisor can silently fail to route opencode/ACP-backed sessions
+even when config looks correct — a quiet 'requires ACP transport but the
+session provider cannot route ACP sessions (skipping)' in supervisor.log,
+not a loud error. Re-slinging onto a pool that can't spawn just idles work
+instead of running it.
 
 Claude usage (trailing ${CV_LOOKOUT_USAGE_WINDOW_MINUTES}m): ${USAGE_SUMMARY:-no model facts recorded}
 
@@ -959,18 +1180,7 @@ The breaker auto-closes after ${CV_LOOKOUT_BREAKER_RESET_SECONDS}s with no limit
 
     # item 3: skip sessions that will auto-resume on their own; restarting
     # them only loses the in-flight turn and re-primes context.
-    printf '%s' "$ALL_ROWS" | while IFS=$'\x1f' read -r hsid _; do
-      [ -n "$hsid" ] || continue
-      if [ "$(session_auto_resume "$hsid")" = "1" ]; then
-        echo "con-voyage-rate-limit-lookout: SKIP ${hsid} — showing Claude Code's auto-continue banner, will resume on its own"
-        continue
-      fi
-      if budget_exceeded; then
-        echo "con-voyage-rate-limit-lookout: time budget reached; remaining handoff(s) deferred to next run"
-        break
-      fi
-      handoff_session "$hsid" "claude usage limit observed fleet-wide"
-    done
+    selective_handoff_sweep "claude usage limit observed fleet-wide"
   fi
 
 elif [ "$BREAKER_STATE" = "open" ]; then
