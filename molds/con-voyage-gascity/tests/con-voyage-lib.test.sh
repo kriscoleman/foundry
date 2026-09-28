@@ -77,6 +77,12 @@ if [ "${args[$i]:-}" = "bd" ] && [ "${args[$((i+1))]:-}" = "show" ]; then
   printf '%s' "${!var:-}"
   exit 0
 fi
+if [ "${args[$i]:-}" = "convoy" ] && [ "${args[$((i+1))]:-}" = "status" ]; then
+  id="${args[$((i+2))]:-}"
+  var="STUB_CONVOY_STATUS_JSON_${id//-/_}"
+  printf '%s' "${!var:-}"
+  exit 0
+fi
 if [ "${args[$i]:-}" = "bd" ] && [ "${args[$((i+1))]:-}" = "close" ]; then
   id="${args[$((i+2))]:-}"
   has_force=0
@@ -330,6 +336,26 @@ start_case "cv_root_bead_id: empty input -> empty, no bd call"
 : > "$GC_LOG"
 assert_eq "" "$(cv_root_bead_id "")" "empty bead id resolves empty"
 assert_log_count 'bd show' 0 "empty bead id never calls bd show"
+
+# ---------------------------------------------------------------------------
+# cv_convoy_target (fk-zl42t iteration-2 BLOCKING-1: cv_resolve_base_branch's
+# first line calls this, and main.publish.md / main.setup-con-voyage-review.md
+# both reach it with no `GC=` set in scope — the same unguarded-`$GC` defect
+# cv_bead_metadata was just fixed for above, one function away.)
+# ---------------------------------------------------------------------------
+start_case "cv_convoy_target: convoy has a target -> that value"
+export STUB_CONVOY_STATUS_JSON_fk_convoy1='{"convoy":{"fields":{"target":"main"}}}'
+assert_eq "main" "$(cv_convoy_target "fk-convoy1")" "reads the configured stacked-PR target"
+
+start_case "cv_convoy_target: empty convoy id -> empty, no gc call"
+: > "$GC_LOG"
+assert_eq "" "$(cv_convoy_target "")" "empty convoy id resolves empty"
+assert_log_count 'convoy status' 0 "empty convoy id never calls gc convoy status"
+
+start_case "cv_convoy_target: \$GC unset -> defaults to literal \"gc\" on PATH, not a silent no-op (fk-zl42t iteration-2 BLOCKING-1: main.publish.md/main.setup-con-voyage-review.md call cv_resolve_base_branch -> cv_convoy_target with no \$GC in scope)"
+export STUB_CONVOY_STATUS_JSON_fk_convoygc='{"convoy":{"fields":{"target":"release/9.0"}}}'
+gc_unset_convoy_result="$(PATH="${STUBDIR}:${PATH}" bash -c "unset GC; source '$LIB'; cv_convoy_target 'fk-convoygc'")"
+assert_eq "release/9.0" "$gc_unset_convoy_result" "a caller that forgets to set \$GC still resolves the stacked-PR target, not empty"
 
 # ---------------------------------------------------------------------------
 # cv_close_reason_for_pr
@@ -1443,6 +1469,11 @@ SITE_TOML
       ;;
   esac
   rm -rf "$ZSH_LOCK_DIR" "${ZSH_LOCK_DIR}.stealing"
+
+  start_case "cv_convoy_target under zsh: \$GC unset -> still resolves via default \"gc\" on PATH, not a silent no-op (fk-zl42t iteration-2 LOW-1: new \$GC-unset regression coverage needs bash+zsh from the start, not a bash-only case followed by a later zsh gap)"
+  export STUB_CONVOY_STATUS_JSON_fk_convoygc_zsh='{"convoy":{"fields":{"target":"release/9.0"}}}'
+  zsh_convoy_result="$(PATH="${STUBDIR}:${PATH}" zsh -c "unset GC; source '$LIB'; cv_convoy_target 'fk-convoygc-zsh'")"
+  assert_eq "release/9.0" "$zsh_convoy_result" "under zsh: a caller that forgets to set \$GC still resolves the stacked-PR target, not empty"
 fi
 
 echo
