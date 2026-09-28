@@ -363,6 +363,38 @@ case "$err8" in
   *) fail "expected the existing 'does not resolve to a commit' error, got: ${err8}" ;;
 esac
 
+# ---------------------------------------------------------------------------
+# fk-jjumm (iter-2 qa-test B1): the fetch-timeout bound above must never tax
+# the overwhelming-majority fast case — a healthy, instantly-resolving
+# remote — with an artificial ~1s wait for cv_with_timeout's own zombie-reap
+# poll loop. This exercises the real production call site
+# ({target}.setup-con-voyage-review.md's cv_ensure_branch_based_on) end to
+# end against a healthy upstream, not cv_with_timeout in isolation, so a
+# regression here is the same regression a real convoy would feel.
+# ---------------------------------------------------------------------------
+start_case "cv_ensure_branch_based_on: a healthy, instantly-resolving fetch is not taxed by the fetch-timeout bound"
+REPO9="$(mk_repo repo9)"
+UPSTREAM9="${SANDBOX}/repo9-upstream.git"
+git init -q -b main --bare "$UPSTREAM9"
+git_c "$REPO9" remote add origin "$UPSTREAM9"
+git_c "$REPO9" push -q -u origin main
+git_c "$REPO9" checkout -q -b work
+printf 'impl\n' > "${REPO9}/impl.txt"
+git_c "$REPO9" add impl.txt
+git_c "$REPO9" commit -q -m "feat: implementation commit"
+
+before9=$(date +%s%N)
+cv_ensure_branch_based_on "$REPO9" "main"
+rc9=$?
+elapsed9_ms=$(( ( $(date +%s%N) - before9 ) / 1000000 ))
+
+assert_eq "0" "$rc9" "a healthy fetch still succeeds"
+if [ "$elapsed9_ms" -le 500 ]; then
+  pass "returned in ${elapsed9_ms}ms — a healthy fetch is not taxed by the timeout bound's poll loop"
+else
+  fail "took ${elapsed9_ms}ms — expected a healthy, instant fetch to stay well under 500ms, not be taxed by cv_with_timeout's poll loop"
+fi
+
 # ===========================================================================
 # {target}.setup-con-voyage-review.md — structural check (mirrors
 # con-voyage-publish.test.sh's assert_contains/line_of pattern for verifying
