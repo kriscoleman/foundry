@@ -194,6 +194,19 @@ start_case "empty work bead id -> prints nothing, never calls bd show"
 assert_eq "" "$(cv_find_prior_built_anchor "" "fk-currentconvoy" 2>/dev/null)" "empty work bead id short-circuits"
 assert_log_count 'bd show' 0 "no bd show calls for an empty work bead id"
 
+# ---------------------------------------------------------------------------
+# $GC unset -> defaults to "gc" on PATH, never a silent no-op (fk-v8hqr,
+# same bare-"$GC" pattern as con-voyage-lib.test.sh's sibling cases). Reuses
+# the already-built fk-anchor1 fixture from above: unsetting $GC in a fresh
+# subshell must not silently degrade this to the "build fresh" fail-safe.
+# ---------------------------------------------------------------------------
+start_case "cv_find_prior_built_anchor: \$GC unset -> still invokes gc (defaults to \"gc\" on PATH) at every internal bd show, not a silent no-op"
+: > "$GC_LOG"
+result="$(PATH="${STUBDIR}:${PATH}" GC_CITY="$GC_CITY" bash -c "unset GC; source '$LIB'; cv_find_prior_built_anchor 'fk-wb1' 'fk-currentconvoy'" 2>/dev/null)"
+assert_eq "fk-anchor1 ${ANCHOR1}" "$result" "a caller that forgets to set \$GC still finds and reuses the prior built anchor, not a silent fail-safe to 'build fresh'"
+assert_log_count 'bd show fk-wb1 --json --include-dependents' 1 "reaches the first bd show (work bead's dependents) despite \$GC being unset"
+assert_log_count 'bd show fk-anchor1 --json' 1 "reaches the second bd show (candidate enrichment) despite \$GC being unset"
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "ALL CASES PASSED"

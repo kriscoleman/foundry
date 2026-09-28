@@ -194,8 +194,9 @@ cv_extra_rig_state_dirs() {
 cv_convoy_target() {
   local convoy_id="$1"
   [ -n "${convoy_id// /}" ] || { printf ''; return 0; }
+  local gc_bin="${GC:-gc}"
   local json
-  json=$("$GC" convoy status "$convoy_id" --json 2>/dev/null) || json=""
+  json=$("$gc_bin" convoy status "$convoy_id" --json 2>/dev/null) || json=""
   [ -n "$json" ] || { printf ''; return 0; }
   printf '%s' "$json" | python3 -c "
 import sys, json
@@ -852,7 +853,8 @@ cv_bead_claim_non_routable() {
     echo "cv_bead_claim_non_routable: bead ${bead_id} already closed, skipping" >&2
     return 0
   fi
-  "$GC" bd update "$bead_id" --assignee "$CV_WORK_BEAD_OWNER" --status in_progress >/dev/null 2>&1 \
+  local gc_bin="${GC:-gc}"
+  "$gc_bin" bd update "$bead_id" --assignee "$CV_WORK_BEAD_OWNER" --status in_progress >/dev/null 2>&1 \
     || echo "cv_bead_claim_non_routable: failed to claim ${bead_id}" >&2
   return 0
 }
@@ -1063,8 +1065,9 @@ bead_status() {
   local bead_id="$1" field="$2"
   local SEP=$'\x1f'
   [ -n "${bead_id// /}" ] || { printf '%s' "$SEP"; return 0; }
+  local gc_bin="${GC:-gc}"
   local json
-  json=$("$GC" bd show "$bead_id" --json 2>/dev/null) || json=""
+  json=$("$gc_bin" bd show "$bead_id" --json 2>/dev/null) || json=""
   if [ -z "$json" ]; then printf '%s' "$SEP"; return 0; fi
   printf '%s' "$json" | python3 -c "
 import sys, json
@@ -1091,8 +1094,9 @@ print((data.get('status') or '') + SEP + (data.get(field) or ''))
 implementor_alive() {
   local ident="$1"
   [ -n "${ident// /}" ] || return 1
+  local gc_bin="${GC:-gc}"
   local json
-  json=$("$GC" --city "$GC_CITY" session list --json 2>/dev/null) || json=""
+  json=$("$gc_bin" --city "$GC_CITY" session list --json 2>/dev/null) || json=""
   [ -n "$json" ] || return 1
   printf '%s' "$json" | python3 -c "
 import sys, json
@@ -1125,8 +1129,9 @@ sys.exit(1)
 session_id_for_ident() {
   local ident="$1"
   [ -n "${ident// /}" ] || return 0
+  local gc_bin="${GC:-gc}"
   local json
-  json=$("$GC" --city "$GC_CITY" session list --json 2>/dev/null) || json=""
+  json=$("$gc_bin" --city "$GC_CITY" session list --json 2>/dev/null) || json=""
   [ -n "$json" ] || return 0
   printf '%s' "$json" | python3 -c "
 import sys, json
@@ -1157,8 +1162,9 @@ for s in sessions:
 first_alive_session_id_for_route() {
   local route="$1"
   [ -n "${route// /}" ] || return 0
+  local gc_bin="${GC:-gc}"
   local json
-  json=$("$GC" --city "$GC_CITY" session list --json 2>/dev/null) || json=""
+  json=$("$gc_bin" --city "$GC_CITY" session list --json 2>/dev/null) || json=""
   [ -n "$json" ] || return 0
   printf '%s' "$json" | python3 -c "
 import sys, json
@@ -1210,7 +1216,8 @@ close_if_open() {
     IFS=$'\x1f' read -r bead_state _ <<< "$(bead_status "$bead_id" assignee)"
   fi
   [ -n "$bead_state" ] && [ "$bead_state" != "closed" ] || return 0
-  if "$GC" bd close "$bead_id" --reason "$reason" >/dev/null 2>&1; then
+  local gc_bin="${GC:-gc}"
+  if "$gc_bin" bd close "$bead_id" --reason "$reason" >/dev/null 2>&1; then
     if [ -n "$pr_label" ]; then
       echo "con-voyage-pr-watch: [PART A] ${pr_label}: closed prior open repair bead ${bead_id} (was status=${bead_state})"
     fi
@@ -1265,7 +1272,8 @@ cv_bead_mark_in_progress() {
     echo "cv_bead_mark_in_progress: bead ${bead_id} already closed, skipping" >&2
     return 0
   fi
-  "$GC" bd update "$bead_id" --claim >/dev/null 2>&1 \
+  local gc_bin="${GC:-gc}"
+  "$gc_bin" bd update "$bead_id" --claim >/dev/null 2>&1 \
     || echo "cv_bead_mark_in_progress: failed to claim ${bead_id}" >&2
   return 0
 }
@@ -1295,7 +1303,8 @@ cv_bead_close() {
     echo "cv_bead_close: bead ${bead_id} already closed, skipping" >&2
     return 0
   fi
-  "$GC" bd close "$bead_id" --reason "${outcome}: ${reason}" >/dev/null 2>&1 \
+  local gc_bin="${GC:-gc}"
+  "$gc_bin" bd close "$bead_id" --reason "${outcome}: ${reason}" >/dev/null 2>&1 \
     || echo "cv_bead_close: failed to close ${bead_id}" >&2
   return 0
 }
@@ -1330,8 +1339,9 @@ cv_bead_close() {
 cv_resolve_work_bead() {
   local convoy_id="$1"
   [ -n "${convoy_id// /}" ] || { printf '%s' "$convoy_id"; return 0; }
+  local gc_bin="${GC:-gc}"
   local json
-  json=$("$GC" bd show "$convoy_id" --json 2>/dev/null) || json=""
+  json=$("$gc_bin" bd show "$convoy_id" --json 2>/dev/null) || json=""
   if [ -z "$json" ]; then printf '%s' "$convoy_id"; return 0; fi
   printf '%s' "$json" | python3 -c "
 import sys, json
@@ -1380,8 +1390,9 @@ print(convoy_id)
 cv_bead_work_dir() {
   local bead_id="$1"
   [ -n "${bead_id// /}" ] || { printf ''; return 0; }
+  local gc_bin="${GC:-gc}"
   local json
-  json=$("$GC" bd show "$bead_id" --json 2>/dev/null) || json=""
+  json=$("$gc_bin" bd show "$bead_id" --json 2>/dev/null) || json=""
   [ -n "$json" ] || { printf ''; return 0; }
   printf '%s' "$json" | python3 -c "
 import sys, json
@@ -1432,6 +1443,7 @@ if isinstance(val, str):
 cv_find_prior_built_anchor() {
   local work_bead_id="$1" exclude_id="${2:-}"
   [ -n "${work_bead_id// /}" ] || return 0
+  local gc_bin="${GC:-gc}"
 
   local prep_script
   prep_script="$(cv_pack_script cv-worktree-prep.sh)"
@@ -1441,7 +1453,7 @@ cv_find_prior_built_anchor() {
   fi
 
   local json
-  json=$("$GC" bd show "$work_bead_id" --json --include-dependents 2>/dev/null) || json=""
+  json=$("$gc_bin" bd show "$work_bead_id" --json --include-dependents 2>/dev/null) || json=""
   [ -n "$json" ] || return 0
 
   local ids
@@ -1475,7 +1487,7 @@ for dep in (data.get("dependents") or []):
   rows="$(
     printf '%s\n' "$ids" | while IFS= read -r cand_id; do
       [ -n "$cand_id" ] || continue
-      cjson=$("$GC" bd show "$cand_id" --json 2>/dev/null) || continue
+      cjson=$("$gc_bin" bd show "$cand_id" --json 2>/dev/null) || continue
       [ -n "$cjson" ] || continue
       printf '%s' "$cjson" | python3 -c '
 import sys, json
