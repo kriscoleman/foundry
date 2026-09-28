@@ -25,7 +25,7 @@
 # metadata-field query instead of globbing per-PR state records. No GitHub
 # calls are made anywhere in this script.
 #
-# fk-o5xxx (2026-09-26 dogfooding incident): a claude.ai usage limit froze
+# fk-7ba34 (2026-09-26 dogfooding incident): a claude.ai usage limit froze
 # every session city-wide for ~1h; this watchdog kept re-dispatching/
 # escalating 26 review lanes across 5 runs because (1) it started a lane's
 # stall clock from bead CREATION instead of from when the lane became READY
@@ -349,7 +349,7 @@ fi
 # NEEDS_ACTION (0/1), USE_REROUTE (0/1), ACTION_DESC, TARGET_SESSION_ID.
 # REASON is one of NO_ROUTE / NO_LIVE_ASSIGNEE / OK. Splitting discovery from
 # action lets the freeze check see every candidate's verdict for this cycle
-# BEFORE any lane is nudged/re-routed/escalated (fk-o5xxx DEFECT 2).
+# BEFORE any lane is nudged/re-routed/escalated (fk-7ba34 DEFECT 2).
 classify_lane() {
   local status="$1" assignee="$2" updated_at="$3" routed_to="$4"
   local needs_action=0 use_reroute=0 action_desc="" target_session_id="" reason="OK"
@@ -397,7 +397,7 @@ DECIDED_TSV=""
 
 # ---------------------------------------------------------------------------
 # PASS 1 — discovery/classification only. Applies the escalated-skip and the
-# readiness gate (fk-o5xxx DEFECT 1), classifies every remaining candidate
+# readiness gate (fk-7ba34 DEFECT 1), classifies every remaining candidate
 # without acting on it, and tallies watched/stalled counts (overall and per
 # route) so the freeze check below can see the whole cycle before anything
 # is nudged/re-routed/escalated.
@@ -452,7 +452,7 @@ while IFS=$'\x1f' read -r lane_id status assignee updated_at routed_to attempt_c
 done <<< "$LANES_TSV"
 
 # ---------------------------------------------------------------------------
-# FREEZE CHECK (fk-o5xxx DEFECT 2) — decide, from this cycle's tallies alone,
+# FREEZE CHECK (fk-7ba34 DEFECT 2) — decide, from this cycle's tallies alone,
 # whether a city-wide provider freeze (not N independent stalls) explains
 # every stalled lane found above. Any one signal is enough.
 # ---------------------------------------------------------------------------

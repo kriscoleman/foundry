@@ -317,7 +317,7 @@ print('')
 # DEPS_JSON (default "[]", built with deps() below) is embedded verbatim as
 # the bead's own `dependencies` array — this is what a `bd show <id> --json`
 # on this SAME lane returns via the stub's new `bd show` case, mirroring the
-# real nested-dependency shape (fk-o5xxx readiness gate).
+# real nested-dependency shape (fk-7ba34 readiness gate).
 lane() {
   python3 -c "
 import json, sys
@@ -889,7 +889,7 @@ if [ "$ELAPSED" -lt 10 ]; then pass "the hung city query was killed well before 
 assert_log_count "$GC_LOG" 'sling replicated-docs/con-voyage.cv-documentation rd-lane4 --nudge' 1 "the rig-store lane is still discovered even though the city query hung"
 
 # ===========================================================================
-# CASE 26 — fk-o5xxx DEFECT 1: a lane with an OPEN blocking dependency is not
+# CASE 26 — fk-7ba34 DEFECT 1: a lane with an OPEN blocking dependency is not
 #   ready yet — its stall clock must never start, no matter how stale its own
 #   updated_at is or how obviously "dead" its pool looks. Never counted:
 #   no sling/nudge/mail, no attempt_count write.
@@ -917,7 +917,7 @@ assert_log_count "$GC_LOG" 'session nudge rc-ready ' 1 "a lane with only closed 
 assert_eq "1" "$(db_metadata_field "$DB_FILE" "fk-ready" "gc.review_watchdog.attempt_count")" "attempt_count advances normally once ready"
 
 # ===========================================================================
-# CASE 28 — fk-o5xxx DEFECT 2 (global percent rule): many watched lanes
+# CASE 28 — fk-7ba34 DEFECT 2 (global percent rule): many watched lanes
 #   crossing the stall threshold in the same cycle, across DIFFERENT routes
 #   (so the per-lens rule cannot explain it), is a suspected provider freeze:
 #   no re-dispatch of any kind, exactly ONE freeze-suspected mail (not one per
@@ -940,7 +940,7 @@ for id in fk-freeze1 fk-freeze2 fk-freeze3 fk-freeze4; do
 done
 
 # ===========================================================================
-# CASE 29 — fk-o5xxx DEFECT 2 (per-lens rule): ALL lanes of one lens (route)
+# CASE 29 — fk-7ba34 DEFECT 2 (per-lens rule): ALL lanes of one lens (route)
 #   are stalled while the city-wide percentage stays well under the default
 #   50% threshold (2 stalled out of 5 watched = 40%) — still a suspected
 #   freeze via the per-lens rule alone.
@@ -961,7 +961,7 @@ assert_eq "0" "$(db_metadata_field "$DB_FILE" "fk-lensA1" "gc.review_watchdog.at
 assert_eq "0" "$(db_metadata_field "$DB_FILE" "fk-lensA2" "gc.review_watchdog.attempt_count")" "fk-lensA2: attempt_count unchanged"
 
 # ===========================================================================
-# CASE 30 — fk-o5xxx DEFECT 2 (session-peek signature): a single stalled lane
+# CASE 30 — fk-7ba34 DEFECT 2 (session-peek signature): a single stalled lane
 #   — nowhere near the percent or per-lens thresholds on its own — still
 #   suspects a freeze when a sampled peek of its target session's pane shows
 #   the real captured provider usage-limit banner.
