@@ -52,7 +52,11 @@ cv_pack_root() {
 # cv_pack_script NAME — print the absolute path to pack asset script NAME
 # under cv_pack_root, or print nothing (matching the fail-soft contract the
 # old command-v/find idiom had on a total miss, so existing `[ -n "$VAR" ]`
-# call sites keep working unchanged) if it does not exist there either.
+# call sites keep working unchanged) if it does not exist there either. Always
+# returns 0, even on a miss (LOW-A, con-voyage review PR #103) — the fail-soft
+# contract covers exit status, not just output, so a future direct
+# `x="$(cv_pack_script foo)"` under `set -e` degrades gracefully instead of
+# aborting.
 #
 # fk-q2pon (found dogfooding this very fix under zsh): the local var below is
 # named `script_path`, never bare `path` — `path` is a special TIED parameter
@@ -67,6 +71,7 @@ cv_pack_script() {
   local name="$1" script_path
   script_path="$(cv_pack_root)/assets/scripts/${name}"
   [ -f "$script_path" ] && printf '%s' "$script_path"
+  return 0
 }
 
 # cv_default_state_dir — print the default CV_STATE_DIR base (each caller

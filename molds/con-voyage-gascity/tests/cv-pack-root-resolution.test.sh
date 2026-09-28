@@ -202,11 +202,20 @@ assert_eq "$CASE2_LIB" "${CITY2}/packs/con-voyage/assets/scripts/con-voyage-lib.
   "cv_pack_script falls back to \$GC_CITY/packs/con-voyage when the git toplevel has no mold copy"
 
 # ===========================================================================
-# CASE 3 — neither location has the script: fails soft (empty string), same
-# contract the old command-v/find idiom had on total miss, so existing
-# `[ -n "$VAR" ]` call sites keep working unchanged.
+# CASE 3 — neither location has the script: fails soft (empty string, exit
+# 0), same contract the old command-v/find idiom had on total miss, so
+# existing `[ -n "$VAR" ]` call sites keep working unchanged.
+#
+# LOW-A (con-voyage review, PR #103): the original version of this case only
+# asserted the OUTPUT was empty, not the exit status. cv_pack_script's last
+# command was `[ -f "$script_path" ] && printf ...`, which returns 1 (not 0)
+# on a miss — silently contradicting this file's own doc comment and this
+# very test's name. Not reachable through either real caller today (both
+# absorb the status via `$(...)` + `|| { ...; return 0; }`), but a latent
+# trap for a future direct `x="$(cv_pack_script foo)"` under `set -e`. Assert
+# both halves of the contract now.
 # ===========================================================================
-start_case "3: empty result (not a crash) when the script exists nowhere"
+start_case "3: empty result AND exit 0 (not a crash, not a nonzero status) when the script exists nowhere"
 PLAIN3="${SANDBOX}/case3-plain-repo"
 CITY3="${SANDBOX}/case3-city-empty"
 mkdir -p "$PLAIN3" "$CITY3"
@@ -216,11 +225,15 @@ git -C "$PLAIN3" init -q -b main
   cd "$PLAIN3" || exit 2
   export GC_CITY="$CITY3"
   out="$(cv_pack_script totally-nonexistent-script.sh)"
-  printf 'RESULT=[%s]\n' "$out"
+  status=$?
+  printf 'CASE3_RESULT=[%s]\nCASE3_STATUS=%s\n' "$out" "$status"
 ) > "${SANDBOX}/case3.out"
-CASE3_RESULT="$(cat "${SANDBOX}/case3.out")"
-assert_eq "$CASE3_RESULT" "RESULT=[]" \
+# shellcheck disable=SC1090
+source "${SANDBOX}/case3.out"
+assert_eq "$CASE3_RESULT" "[]" \
   "cv_pack_script prints nothing (not an error) when the script is not found anywhere"
+assert_eq "$CASE3_STATUS" "0" \
+  "cv_pack_script exits 0 on a total miss too, not just empty output (LOW-A: fail-soft contract covers exit status)"
 
 # ===========================================================================
 # CASE 4 — not inside any git repo at all: must not crash or resolve to a
