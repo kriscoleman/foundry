@@ -374,11 +374,28 @@ deadline; a session left unpeeked this run is picked up next run — and acts:
   itself: a managed, markered block in `city.toml` overriding
   `[agent_defaults].provider` and the mayor patch's `.provider` to the fallback
   pools, then `gc reload`. This exists because during a claude-wide limit the
-  mayor is on claude too, so a mail-only escalation may sit unread. Once
-  flipped, every limited session — including ones showing the auto-continue
-  banner — gets handed off, since restarting them onto opencode is the point.
-  Flip-back requires the parsed reset time to have passed **and** a live probe
-  (a one-shot `claude -p` call) to succeed, with a minimum dwell and a probe
+  mayor is on claude too, so a mail-only escalation may sit unread.
+  **Dependency: [gastownhall/gascity#5436](https://github.com/gastownhall/gascity/issues/5436)
+  (open).** On gc 1.4.2, opencode/ACP-backed sessions can be silently
+  unspawnable — the session supervisor logs "requires ACP transport but the
+  session provider cannot route ACP sessions (skipping)" — even though
+  `gc config explain`/`gc reload` report the override took hold. Config
+  resolution is not proof of spawn capacity, and flipping blind would leave
+  the fleet, mayor included, with zero spawnable sessions. So before ever
+  touching `city.toml`, the lookout runs a real, bounded spawn-capability
+  probe against the target fallback pool (`CV_LOOKOUT_OPENCODE_PROBE_CMD`,
+  default: spawn a throwaway `--no-attach` session on the medium pool and
+  confirm it actually starts). Only a successful probe applies the override
+  and hands sessions off onto opencode; a failed probe — or one still
+  backing off (`CV_LOOKOUT_FLIP_REPROBE_BACKOFF_SECONDS`) — keeps the current
+  claude providers, sends a distinct "auto-flip BLOCKED" mail citing #5436,
+  and falls back to the same context-preserving, current-provider handoff
+  sweep used when `CV_LOOKOUT_AUTO_FLIP` is off (auto-continue-banner
+  sessions still skipped). Once flipped **and** reload-verified, every
+  limited session — including ones showing the auto-continue banner — gets
+  handed off, since restarting them onto opencode is the point. Flip-back
+  requires the parsed reset time to have passed **and** a live probe (a
+  one-shot `claude -p` call) to succeed, with a minimum dwell and a probe
   backoff, specifically so a momentary zero-claude-sessions reading right after
   a flip can't immediately flip back and oscillate. See "Model tiers & the
   opt-in all-opencode fallback mode" in the orchestration fragment for the
