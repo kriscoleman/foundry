@@ -22,12 +22,14 @@
 # and always succeeds on `bd update ... --set-metadata`. The script under
 # test honors GC= (default gc) so we point it at the stub.
 #
-# Synthesis fixtures are built inline per case from the real document shape
-# (`### BLOCKING-<n>` / `### LOW-<n>` sub-headings) rather than as separate
-# fixture files — see tests/fixtures/*.json for this pack's convention on
-# genuinely-external fixtures; this one is small and case-specific enough to
-# inline, matching con-voyage-review-watchdog.test.sh's own lane()-builder
-# idiom.
+# Synthesis fixtures are built inline per case (see fixture() below) rather
+# than as separate fixture files — see tests/fixtures/*.json for this pack's
+# convention on genuinely-external fixtures; this one is small and
+# case-specific enough to inline, matching con-voyage-review-watchdog.test.sh's
+# own lane()-builder idiom. fixture()'s SHAPE parameter covers the real-world
+# heading shapes BLOCKING-1 found the old `grep -c '^### BLOCKING-'` parser
+# silently missing (e.g. fk-elkyf's actual `### 1. [lane] ...` shape counted
+# 0 under the old parser) — see CASE 9-12 below.
 #
 # Run:  bash tests/cv-synthesis-low-mail.test.sh   (exit 0 => all cases passed)
 
@@ -54,7 +56,11 @@ trap cleanup EXIT
 # ---------------------------------------------------------------------------
 # The `gc` stub. Records argv (one line per call), answers `mail send` with
 # an incrementing fake message id backed by STUB_COUNTER_FILE, and always
-# succeeds on `bd update`.
+# succeeds on `bd update`. STUB_MAIL_HANG=1 / STUB_BD_UPDATE_HANG=1 make the
+# respective call sleep STUB_HANG_SECONDS (default 20) before responding —
+# same simulated-hang idiom as con-voyage-review-watchdog.test.sh, used to
+# prove the cv_with_timeout wrap (fk-72l6i BLOCKING-3) actually bounds these
+# calls rather than trusting cv_with_timeout's own tests by proxy.
 # ---------------------------------------------------------------------------
 cat > "${STUBDIR}/gc" <<'GC_STUB'
 #!/usr/bin/env bash
@@ -69,6 +75,9 @@ args=("$@")
 case "${args[0]:-}" in
   mail)
     if [ "${args[1]:-}" = "send" ]; then
+      if [ "${STUB_MAIL_HANG:-0}" = "1" ]; then
+        sleep "${STUB_HANG_SECONDS:-20}"
+      fi
       if [ "${STUB_MAIL_FAIL:-0}" = "1" ]; then
         echo "gc mail send: simulated failure" >&2
         exit 1
@@ -82,6 +91,9 @@ case "${args[0]:-}" in
     ;;
   bd)
     if [ "${args[1]:-}" = "update" ]; then
+      if [ "${STUB_BD_UPDATE_HANG:-0}" = "1" ]; then
+        sleep "${STUB_HANG_SECONDS:-20}"
+      fi
       exit 0
     fi
     exit 0
@@ -137,12 +149,18 @@ run_script() {
   RC=$?
 }
 
-# fixture SYNTHESIS_PATH BLOCKING_COUNT LOW_COUNT — writes a synthesis file
-# at SYNTHESIS_PATH shaped like a real review-synthesis.md, with exactly
-# BLOCKING_COUNT `### BLOCKING-<n>` sub-headings and LOW_COUNT `### LOW-<n>`
-# sub-headings (the only shape the script is required to parse).
+# fixture SYNTHESIS_PATH BLOCKING_COUNT LOW_COUNT [SHAPE] — writes a
+# synthesis file at SYNTHESIS_PATH shaped like a real review-synthesis.md,
+# with exactly BLOCKING_COUNT/LOW_COUNT findings in the given SHAPE. SHAPE
+# defaults to "hyphen" (`### BLOCKING-<n>` / `### LOW-<n>`, byte-identical to
+# this fixture's original output) and also covers the real-world shapes
+# BLOCKING-1 found the old parser missing:
+#   hyphen    - ### BLOCKING-<n> / ### LOW-<n>        (original shape)
+#   numbered  - ### <n>. [lane] Title                  (fk-elkyf's real shape)
+#   short     - ### B<n> / ### L<n>
+#   bulleted  - no sub-headings at all, top-level "- " bullets only
 fixture() {
-  local path="$1" blocking="$2" low="$3"
+  local path="$1" blocking="$2" low="$3" shape="${4:-hyphen}"
   {
     echo "# Con-voyage Review Synthesis — root fixture (iteration 1)"
     echo
@@ -154,11 +172,18 @@ fixture() {
       echo "None."
     else
       for i in $(seq 1 "$blocking"); do
-        echo "### BLOCKING-${i} — sample blocking finding ${i}"
-        echo "- **Lanes:** security (BLOCKING-${i})"
-        echo "- **File:line:** \`some/file.go:${i}\`"
-        echo "- **Finding:** something must be fixed."
-        echo
+        case "$shape" in
+          hyphen)   echo "### BLOCKING-${i} — sample blocking finding ${i}" ;;
+          numbered) echo "### ${i}. [security] sample blocking finding ${i}" ;;
+          short)    echo "### B${i} — sample blocking finding ${i}" ;;
+          bulleted) echo "- [security] sample blocking finding ${i} (\`some/file.go:${i}\`) — something must be fixed." ;;
+        esac
+        if [ "$shape" != "bulleted" ]; then
+          echo "- **Lanes:** security (BLOCKING-${i})"
+          echo "- **File:line:** \`some/file.go:${i}\`"
+          echo "- **Finding:** something must be fixed."
+          echo
+        fi
       done
     fi
     echo
@@ -168,14 +193,83 @@ fixture() {
       echo "None."
     else
       for i in $(seq 1 "$low"); do
-        echo "### LOW-${i} — sample low finding ${i}"
-        echo "- **Lanes:** simplicity (LOW-${i})"
-        echo "- **File:line:** \`some/file.go:$((i + 10))\`"
-        echo "- **Finding:** a minor concern."
-        echo "- **Suggested fix:** optional cleanup."
-        echo
+        case "$shape" in
+          hyphen)   echo "### LOW-${i} — sample low finding ${i}" ;;
+          numbered) echo "### ${i}. [simplicity] sample low finding ${i}" ;;
+          short)    echo "### L${i} — sample low finding ${i}" ;;
+          bulleted) echo "- [simplicity] sample low finding ${i} (\`some/file.go:$((i + 10))\`) — a minor concern." ;;
+        esac
+        if [ "$shape" != "bulleted" ]; then
+          echo "- **Lanes:** simplicity (LOW-${i})"
+          echo "- **File:line:** \`some/file.go:$((i + 10))\`"
+          echo "- **Finding:** a minor concern."
+          echo "- **Suggested fix:** optional cleanup."
+          echo
+        fi
       done
     fi
+    echo
+    echo "## 4. Lanes approved with no findings"
+    echo
+    echo "None."
+  } > "$path"
+}
+
+# fixture_elkyf_shaped PATH LOW_COUNT — reproduces the exact structural
+# shape of the real fk-elkyf synthesis doc that BLOCKING-1 was filed
+# against: an unnumbered "## Overall verdict: ... N LOW findings" heading
+# that mentions "LOW findings" in passing (this alone broke an earlier,
+# looser version of the section-boundary parser — it locked onto this
+# verdict line instead of the real "## LOW findings" section below), a
+# "## BLOCKING findings" body of "None. Zero BLOCKING findings from any of
+# the N active lanes." (trailing prose after "None.", not just "None."
+# alone), and "### <n>. [lane] Title" LOW sub-headings (no "LOW-" prefix).
+fixture_elkyf_shaped() {
+  local path="$1" low="$2"
+  {
+    echo "# Con-voyage Review Synthesis — root fixture"
+    echo
+    echo "## Overall verdict: APPROVE (0 BLOCKING) — human decision pending on ${low} LOW findings"
+    echo
+    echo "Every active lane reports zero BLOCKING findings."
+    echo
+    echo "## BLOCKING findings (must fix before landing)"
+    echo
+    echo "None. Zero BLOCKING findings from any of the active lanes."
+    echo
+    echo "## LOW findings (surface to human for decision)"
+    echo
+    for i in $(seq 1 "$low"); do
+      echo "### ${i}. [security] sample low finding ${i}"
+      echo "- **Lane:** security"
+      echo "- **Issue:** a minor concern."
+      echo
+    done
+    echo "## Lanes approved with no findings"
+    echo
+    echo "None."
+  } > "$path"
+}
+
+# fixture_unparseable PATH — a BLOCKING findings section with real prose
+# content but no recognized per-finding shape (no ### sub-headings, no
+# top-level "- " bullets). The script must fail loud rather than silently
+# treating this as "0 findings" (BLOCKING-1's exact failure mode).
+fixture_unparseable() {
+  local path="$1"
+  {
+    echo "# Con-voyage Review Synthesis — root fixture (iteration 1)"
+    echo
+    echo "## 1. Overall verdict: **iterate**"
+    echo
+    echo "## 2. BLOCKING findings (must fix before landing)"
+    echo
+    echo "There is a real problem here but whoever wrote this synthesis forgot"
+    echo "to use a list, so there is nothing here a machine can count."
+    echo
+    echo "## 3. LOW findings (surface to human for decision)"
+    echo
+    echo "None."
     echo
     echo "## 4. Lanes approved with no findings"
     echo
@@ -289,6 +383,94 @@ fixture "$SYNTHESIS_FILE" 0 1
 run_script STUB_MAIL_FAIL="1"
 assert_eq "1" "$RC" "script exits 1 when gc mail send fails"
 assert_log_count "$GC_LOG" "^bd update ${ROOT_ID} .*code_review\\.low_mail_sent=true" 0 "never claims a mail was sent when the send actually failed"
+
+# ===========================================================================
+# CASE 9 — real-world "### <n>. [lane] Title" shape (fk-elkyf's actual doc
+#   shape, the exact miss BLOCKING-1 found — the old `grep -c '^### BLOCKING-'`
+#   parser silently counted 0 on this shape): 0 BLOCKING / 3 LOW still fires
+#   the mail with the correct count.
+# ===========================================================================
+start_case "9: numbered [lane]-heading shape (fk-elkyf real shape) -> mail still fires, correct count"
+setup_case_env "9"
+SYNTHESIS_FILE="${SANDBOX}/synthesis-9.md"
+fixture "$SYNTHESIS_FILE" 0 3 numbered
+run_script
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" '^mail send mayor ' 1 "mail still sent for the numbered [lane] heading shape"
+assert_log_count "$GC_LOG" "LOW-only: ${WORK_BEAD} ${PR_OR_BRANCH} .* 3 LOW" 1 "count is correct (3), not silently 0"
+
+# ===========================================================================
+# CASE 10 — "### B1"/"### L1" short-id heading shape: same contract.
+# ===========================================================================
+start_case "10: short B<n>/L<n> heading shape -> mail still fires, correct count"
+setup_case_env "10"
+SYNTHESIS_FILE="${SANDBOX}/synthesis-10.md"
+fixture "$SYNTHESIS_FILE" 0 2 short
+run_script
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" '^mail send mayor ' 1 "mail still sent for the B<n>/L<n> heading shape"
+assert_log_count "$GC_LOG" "LOW-only: ${WORK_BEAD} ${PR_OR_BRANCH} .* 2 LOW" 1 "count is correct (2), not silently 0"
+
+# ===========================================================================
+# CASE 11 — no sub-headings at all, a plain top-level bulleted findings
+#   section: same contract.
+# ===========================================================================
+start_case "11: plain bulleted findings section (no ### headings) -> mail still fires, correct count"
+setup_case_env "11"
+SYNTHESIS_FILE="${SANDBOX}/synthesis-11.md"
+fixture "$SYNTHESIS_FILE" 0 4 bulleted
+run_script
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" '^mail send mayor ' 1 "mail still sent for a plain bulleted section"
+assert_log_count "$GC_LOG" "LOW-only: ${WORK_BEAD} ${PR_OR_BRANCH} .* 4 LOW" 1 "count is correct (4), not silently 0"
+
+# ===========================================================================
+# CASE 12 — a findings section with real content but no recognizable
+#   per-finding shape: the script must fail loud, never silently default to
+#   "0 findings" (the exact failure mode BLOCKING-1 exists to close).
+# ===========================================================================
+start_case "12: unparseable findings section -> fails loud, no mail"
+setup_case_env "12"
+SYNTHESIS_FILE="${SANDBOX}/synthesis-12.md"
+fixture_unparseable "$SYNTHESIS_FILE"
+run_script
+assert_eq "1" "$RC" "script exits 1 rather than silently treating unparseable content as 0 findings"
+assert_log_count "$GC_LOG" 'mail send' 0 "no mail sent when the finding count itself could not be trusted"
+
+# ===========================================================================
+# CASE 13 — the real fk-elkyf document shape, reproduced exactly: an
+#   unnumbered verdict heading that mentions "N LOW findings" in passing
+#   (must not be mistaken for the real LOW section), a "None. <trailing
+#   prose>" BLOCKING body, and numbered [lane] LOW sub-headings. This is the
+#   literal on-disk document BLOCKING-1 was filed against.
+# ===========================================================================
+start_case "13: real fk-elkyf document shape -> mail still fires, correct count"
+setup_case_env "13"
+SYNTHESIS_FILE="${SANDBOX}/synthesis-13.md"
+fixture_elkyf_shaped "$SYNTHESIS_FILE" 4
+run_script
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" '^mail send mayor ' 1 "mail still sent for the real fk-elkyf document shape"
+assert_log_count "$GC_LOG" "LOW-only: ${WORK_BEAD} ${PR_OR_BRANCH} .* 4 LOW" 1 "count is correct (4), not silently 0 — the exact bug BLOCKING-1 closes"
+
+# ===========================================================================
+# CASE 14 — a hung `gc mail send` is bounded by CV_LENS_STORE_TIMEOUT_SECONDS
+#   (fk-72l6i BLOCKING-3): the script must time out and fail loud rather than
+#   block indefinitely inside the one call chain whose entire job is making
+#   sure a human gets told. Proves the cv_with_timeout wrap is actually wired
+#   in (returns well inside the hang duration), not just present in the diff.
+# ===========================================================================
+start_case "14: gc mail send hangs -> bounded by CV_LENS_STORE_TIMEOUT_SECONDS, fails loud"
+setup_case_env "14"
+SYNTHESIS_FILE="${SANDBOX}/synthesis-14.md"
+fixture "$SYNTHESIS_FILE" 0 1
+START_TS=$(date +%s)
+run_script CV_LENS_STORE_TIMEOUT_SECONDS="1" STUB_MAIL_HANG="1" STUB_HANG_SECONDS="20"
+ELAPSED=$(( $(date +%s) - START_TS ))
+assert_eq "1" "$RC" "script exits 1 when gc mail send hangs past the timeout"
+assert_eq "1" "$(printf '%s' "$OUT" | grep -qi 'timed out' && echo 1 || echo 0)" "failure message says it timed out, not a generic send failure"
+assert_eq "1" "$([ "$ELAPSED" -lt 10 ] && echo 1 || echo 0)" "returned quickly (~1s bound), not after the full 20s hang (elapsed=${ELAPSED}s)"
+assert_log_count "$GC_LOG" "^bd update ${ROOT_ID} .*code_review\\.low_mail_sent=true" 0 "never claims a mail was sent when the send actually hung"
 
 # ===========================================================================
 # Summary
