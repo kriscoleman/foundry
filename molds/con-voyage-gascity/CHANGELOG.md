@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.10.0](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.9.2...con-voyage-gascity-v0.10.0) (2026-09-28)
+
+
+### Features
+
+* **con-voyage:** three-tier model architecture + con-voyage-lookout monitor ([5c7afa5](https://github.com/kriscoleman/foundry/commit/5c7afa55e79b39abf1e672ab949959dbe34ec494))
+
+
+### Bug Fixes
+
+* **con-voyage:** add drift check for the city.toml model-mode override ([a6d81f3](https://github.com/kriscoleman/foundry/commit/a6d81f3591e9e302afd5899ae0920381a2e0d88f))
+* **con-voyage:** declare tier model choices via flag_args for gc 1.4.2 ([a89244d](https://github.com/kriscoleman/foundry/commit/a89244d72e7e588aeb073c453c0613ef94b83c48))
+* **con-voyage:** default model tiers to claude, make lookout opt-in ([21ffd2f](https://github.com/kriscoleman/foundry/commit/21ffd2fdf9130e174e4011d3b69160d4efb18e58))
+* **con-voyage:** lookout escalates before handoffs, fits the order deadline, and leaves auto-resuming sessions alone ([3e34004](https://github.com/kriscoleman/foundry/commit/3e340045982d187e62daf618733286b3e3442911))
+* **con-voyage:** rename con-voyage-lookout to con-voyage-rate-limit-lookout ([41c7322](https://github.com/kriscoleman/foundry/commit/41c7322937b2649f390dd168d352f5a143f27651))
+
 ## [0.9.2](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.9.1...con-voyage-gascity-v0.9.2) (2026-09-26)
 
 
