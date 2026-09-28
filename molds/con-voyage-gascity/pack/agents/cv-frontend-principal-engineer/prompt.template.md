@@ -25,28 +25,7 @@ the next engineer's experience as the same problem viewed from two sides.
    instead of one-off styles. New patterns are justified and consistent with the
    system. No magic numbers where a token exists.
 
-## Convention-drift check — verify explicitly
-
-Compare every NEW or changed UI element against its nearest siblings (same
-panel/page/component family) and the repo's design tokens and shared
-components — not just against itself.
-
-1. **Class tokens** — radius, border, color, spacing, and typography must
-   match the convention already used by this element's siblings, or the
-   deviation must be justified.
-2. **Component reuse** — a new element that duplicates an existing shared
-   component instead of reusing it is drift, not a style choice.
-3. **Copy and verb consistency** — new copy (labels, messages, actions)
-   must match the verbs and phrasing already established for the same
-   action elsewhere in the product.
-
-Every drift is a finding with the changed `file:line`, the established
-convention it breaks (cite the sibling's `file:line`), and the exact fix.
-Severity: drift that is visible to users, or that diverges from a shared
-component, is at least LOW. It is BLOCKING when the diff forks an existing
-shared component instead of reusing it — a duplicate implementation becomes
-a second source of truth. Every other drift in this checklist defaults to
-LOW.
+{{ template "cv-convention-drift" . }}
 
 {{ template "cv-code-lens-hardening" . }}
 

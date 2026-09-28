@@ -11,10 +11,12 @@
 # established frontend conventions" become an explicit, checked item in both
 # frontend-focused lenses' contracts, not an incidental catch.
 #
-# This asserts the contract landed in the prompt files the lenses actually
-# read — not a paraphrase elsewhere — the same way cv-code-lens-hardening
-# .test.sh asserts against the shared hardening fragment instead of a
-# description of it.
+# The check is owned by the two frontend-focused lenses and must stay DRY in
+# one shared template fragment, not pasted into each lens file — this suite
+# asserts the fragment's content AND that each lens includes it by reference
+# (`{{ template "cv-convention-drift" . }}`), the same way
+# cv-code-lens-hardening.test.sh asserts against its own shared fragment
+# instead of a paraphrase of it.
 #
 # Run:  bash tests/cv-convention-drift.test.sh   (exit 0 => all cases passed)
 
@@ -24,9 +26,8 @@ TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOLD_DIR="$(cd "${TEST_DIR}/.." && pwd)"
 AGENTS_DIR="${MOLD_DIR}/pack/agents"
 SKILL_FILE="${MOLD_DIR}/skills/con-voyage/SKILL.md"
-
-FRONTEND_PROMPT="${AGENTS_DIR}/cv-frontend-principal-engineer/prompt.template.md"
-DESIGN_UX_PROMPT="${AGENTS_DIR}/cv-design-ux/prompt.template.md"
+FRAGMENT="${MOLD_DIR}/pack/template-fragments/cv-convention-drift.template.md"
+INCLUDE_TOKEN='{{ template "cv-convention-drift" . }}'
 
 FAILURES=0
 start_case() { echo; echo "=== CASE: $1 ==="; }
@@ -46,48 +47,61 @@ assert_contains() {
   fi
 }
 
-for pair in "cv-frontend-principal-engineer:${FRONTEND_PROMPT}" "cv-design-ux:${DESIGN_UX_PROMPT}"; do
-  lens="${pair%%:*}"
-  file="${pair#*:}"
+start_case "the shared fragment exists and defines the named template"
+assert_contains "$FRAGMENT" '{{ define "cv-convention-drift" }}' \
+  "fragment defines the cv-convention-drift named template"
 
-  start_case "${lens} carries the convention-drift check section"
-  assert_contains "$file" "## Convention-drift check" \
-    "${lens} has a Convention-drift check section"
-  assert_contains "$file" "nearest siblings" \
-    "${lens} requires comparing against nearest siblings, not just itself"
+start_case "the fragment carries the convention-drift check section"
+assert_contains "$FRAGMENT" "## Convention-drift check" \
+  "fragment has a Convention-drift check section"
+assert_contains "$FRAGMENT" "nearest siblings" \
+  "fragment requires comparing against nearest siblings, not just itself"
 
-  start_case "${lens} covers class tokens (radius, border, color, spacing, typography)"
-  assert_contains "$file" "**Class tokens**" \
-    "${lens} names class tokens as a checked category"
-  assert_contains "$file" "radius, border, color, spacing, and typography" \
-    "${lens} enumerates the specific token categories"
+start_case "the fragment covers class tokens (radius, border, color, spacing, typography)"
+assert_contains "$FRAGMENT" "**Class tokens**" \
+  "fragment names class tokens as a checked category"
+assert_contains "$FRAGMENT" "radius, border, color, spacing, and typography" \
+  "fragment enumerates the specific token categories"
 
-  start_case "${lens} covers component reuse vs. a duplicated one-off"
-  assert_contains "$file" "**Component reuse**" \
-    "${lens} names component reuse as a checked category"
-  assert_contains "$file" "is drift, not a style choice" \
-    "${lens} flags duplicating a shared component instead of reusing it"
+start_case "the fragment covers component reuse vs. a duplicated one-off"
+assert_contains "$FRAGMENT" "**Component reuse**" \
+  "fragment names component reuse as a checked category"
+assert_contains "$FRAGMENT" "is drift, not a style choice" \
+  "fragment flags duplicating a shared component instead of reusing it"
 
-  start_case "${lens} covers copy/verb consistency"
-  assert_contains "$file" "**Copy and verb consistency**" \
-    "${lens} names copy/verb consistency as a checked category"
+start_case "the fragment covers copy/verb consistency"
+assert_contains "$FRAGMENT" "**Copy and verb consistency**" \
+  "fragment names copy/verb consistency as a checked category"
 
-  start_case "${lens} requires file:line citation of both the drift and the convention it breaks"
-  assert_contains "$file" "cite the sibling's" \
-    "${lens} requires citing the sibling's file:line as proof of the established convention"
+start_case "the fragment requires file:line citation of both the drift and the convention it breaks"
+assert_contains "$FRAGMENT" "cite the sibling's" \
+  "fragment requires citing the sibling's file:line as proof of the established convention"
 
-  start_case "${lens} sets severity: visible or shared-component drift is at least LOW"
-  assert_contains "$file" "is at least LOW" \
-    "${lens} sets a LOW severity floor for visible/shared-component drift"
+start_case "the fragment sets severity: visible or shared-component drift is at least LOW"
+assert_contains "$FRAGMENT" "is at least LOW" \
+  "fragment sets a LOW severity floor for visible/shared-component drift"
 
-  start_case "${lens} documents a concrete BLOCKING rule instead of leaving severity ambiguous"
-  assert_contains "$file" "BLOCKING when the diff forks an existing" \
-    "${lens} states the BLOCKING rule: forking a shared component instead of reusing it"
+start_case "the fragment documents a concrete BLOCKING rule instead of leaving severity ambiguous"
+assert_contains "$FRAGMENT" "BLOCKING when the diff forks an existing" \
+  "fragment states the BLOCKING rule: forking a shared component instead of reusing it"
+
+start_case "both frontend-focused lenses include the shared fragment by reference (DRY, not pasted)"
+for lens in cv-frontend-principal-engineer cv-design-ux; do
+  assert_contains "${AGENTS_DIR}/${lens}/prompt.template.md" "$INCLUDE_TOKEN" \
+    "${lens} includes the shared convention-drift fragment"
 done
 
-start_case "the con-voyage skill's roster table documents design-ux's drift check"
-assert_contains "$SKILL_FILE" "drift" \
-  "SKILL.md's design_ux roster row mentions convention drift"
+start_case "the con-voyage skill's design-ux roster row documents the drift check"
+DESIGN_UX_ROW="$(grep -F 'enable_design_ux=true' "$SKILL_FILE")"
+if [ -z "$DESIGN_UX_ROW" ]; then
+  echo "  FAIL: enable_design_ux roster row not found in $SKILL_FILE" >&2
+  FAILURES=$((FAILURES+1))
+elif [[ "$DESIGN_UX_ROW" == *"drift"* ]]; then
+  echo "  PASS: enable_design_ux roster row mentions convention drift"
+else
+  echo "  FAIL: enable_design_ux roster row does not mention drift" >&2
+  FAILURES=$((FAILURES+1))
+fi
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
