@@ -183,6 +183,37 @@ else
   FAILURES=$((FAILURES+1))
 fi
 
+# ===========================================================================
+# CASE 10 — fk-zl42t iteration-3 BLOCKING-1: cv_bead_metadata can legitimately
+#   return empty on a transient `gc bd show` failure (timeout, store hiccup),
+#   not just when a key is genuinely absent. Without a guard, that empty
+#   CONVOY_ID reaches cv_resolve_base_branch indistinguishably from "no
+#   `gc convoy target` override configured" and silently falls through to the
+#   worktree's default base — for a stacked-PR journey, the PR opens against
+#   the wrong branch with no warning. Mirrors the guard
+#   main.prepare-build.md already uses on the same read.
+# ===========================================================================
+start_case "10: CONVOY_ID resolution fails loud instead of silently guessing a base branch"
+assert_contains 'if [ -z "$CONVOY_ID" ]; then' "guards CONVOY_ID before it is used to resolve a base branch"
+assert_contains 'could not resolve source anchor id from workflow root' "fails loud naming the actual failure (source anchor id unreadable), not a generic error"
+
+convoy_id_line="$(line_of 'CONVOY_ID="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.build.source_anchor_id)"')"
+convoy_guard_line="$(line_of 'if [ -z "$CONVOY_ID" ]; then')"
+
+if [ -n "$convoy_id_line" ] && [ -n "$convoy_guard_line" ] && [ "$convoy_id_line" -lt "$convoy_guard_line" ]; then
+  echo "  PASS: CONVOY_ID is assigned (line ${convoy_id_line}) before the empty-guard checks it (line ${convoy_guard_line})"
+else
+  echo "  FAIL: expected CONVOY_ID assignment to precede its empty-guard" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
+if [ -n "$convoy_guard_line" ] && [ -n "$resolve_line" ] && [ "$convoy_guard_line" -lt "$resolve_line" ]; then
+  echo "  PASS: the empty-guard (line ${convoy_guard_line}) precedes cv_resolve_base_branch (line ${resolve_line}), so an unresolved CONVOY_ID never reaches it"
+else
+  echo "  FAIL: expected the empty-guard to precede cv_resolve_base_branch" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "ALL CASES PASSED"

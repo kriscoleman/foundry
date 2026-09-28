@@ -75,8 +75,14 @@ if [ -n "$CV_LIB" ]; then
   # this description_file is too large for gc to inline, so any {var} token
   # in this file's own content is a permanent no-op (fk-4q6ib). prepare-build
   # wrote this key on the workflow root before this workflow's first step
-  # ever finished, so it is always present by the time publish runs.
+  # ever finished, so it is always PRESENT by the time publish runs — but a
+  # transient `gc bd show` failure can still make it unreadable right now
+  # (fk-zl42t iteration-3 BLOCKING-1), so guard the read, not just the write.
   CONVOY_ID="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.build.source_anchor_id)"
+  if [ -z "$CONVOY_ID" ]; then
+    echo "con-voyage publish: could not resolve source anchor id from workflow root ${ROOT_ID} metadata (gc.build.source_anchor_id empty or unreadable) — refusing to guess a base branch" >&2
+    exit 1
+  fi
   BASE_BRANCH="$(source "$CV_LIB" && cv_resolve_base_branch "$CONVOY_ID" "$(pwd)")"
 fi
 echo "con-voyage publish: resolved base branch = ${BASE_BRANCH}"
