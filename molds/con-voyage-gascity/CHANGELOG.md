@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.10.1](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.10.0...con-voyage-gascity-v0.10.1) (2026-09-28)
+
+
+### Bug Fixes
+
+* **con-voyage:** catch two more nondeterministic resolution sites (fk-q2pon) ([607d3ef](https://github.com/kriscoleman/foundry/commit/607d3efc5b7312540f8007ed11148cdfbbd42fb8))
+* **con-voyage:** cv_pack_script exits 0 on a miss, not 1 (fk-q2pon LOW-A) ([d26560c](https://github.com/kriscoleman/foundry/commit/d26560c1a4c6128f30d0d94412ea9ca78262905b))
+* **con-voyage:** ensure-scripts refresh a stale seeded gate/validator copy (fk-6z17l) ([3513cc0](https://github.com/kriscoleman/foundry/commit/3513cc06fa6cd53c67d351c89f2b82d1f6fd4774))
+* **con-voyage:** fail fast when prepare-build did not pass (fk-03g4s) ([b540ee4](https://github.com/kriscoleman/foundry/commit/b540ee441e347638ea463db355d54381140e916f))
+* **con-voyage:** harden ensure-scripts' stale-replace against symlinked destinations (fk-6z17l review follow-up) ([1e97591](https://github.com/kriscoleman/foundry/commit/1e97591143905de16e909a145dd65fae463d48eb))
+* **con-voyage:** resolve pack scripts and lib deterministically (fk-q2pon) ([2969af1](https://github.com/kriscoleman/foundry/commit/2969af1a4ba3b7a7267f365788485644f5f4aede))
+* **con-voyage:** review-watchdog holds off on not-ready lanes and suspects provider freezes (fk-7ba34) ([eac7a03](https://github.com/kriscoleman/foundry/commit/eac7a0326ca23a1de4e3c28fdd37c0439f7126d9))
+* **con-voyage:** tighten pack-script-resolution regression coverage (fk-q2pon LOW-B/C/D) ([02edcaf](https://github.com/kriscoleman/foundry/commit/02edcafd9287bb122c2c5b014a6a01a1e970c0e0))
+* default $GC before cv_dependency_outcome so the fail-fast skip actually fires (review fk-2yhob) ([97c9cae](https://github.com/kriscoleman/foundry/commit/97c9caef57db07b0cd0b6f47e0709240dc70a4ca))
+
 ## [0.10.0](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.9.2...con-voyage-gascity-v0.10.0) (2026-09-28)
 
 
