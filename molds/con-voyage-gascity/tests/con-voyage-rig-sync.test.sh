@@ -389,6 +389,81 @@ LOCK_SKIPS_9=$(( $(log_count "$OUT_9A" 'locked by a concurrent run') + $(log_cou
 assert_eq "1" "$LOCK_SKIPS_9" "exactly one invocation yields a lock-contention SKIP"
 
 # ===========================================================================
+# CASE 10 — review fk-hewd2 BLOCKING-1 (con-voyage synthesis, root fk-lsnkb):
+#   a lock left behind by a crashed/frozen prior holder (mtime older than
+#   CV_LOCK_STALE_SECONDS) must be stolen, not left to wedge this rig's
+#   monitoring forever. CASE 9 only proves mutual exclusion between two LIVE
+#   invocations racing for a lock neither of them held before — it never
+#   exercises the steal branch at all (acquire_lock's plain `mkdir` always
+#   wins for whichever process gets there first). This pre-creates an
+#   ALREADY-stale lock (mtime forced to epoch 0, same idiom as
+#   con-voyage-repair-watchdog.test.sh CASE 23 — no `date -v`/`date -d`
+#   fixture actually exists anywhere in this suite to branch on) before the
+#   rig is ever touched, then confirms both that the steal happened AND that
+#   the rig was actually processed afterward, not just silently skipped.
+# ===========================================================================
+start_case "10: a stale lock (crashed prior holder) is stolen and the rig is processed"
+setup_case_env "10"
+ROOT10="$(make_rig r10 main)"
+echo "uncommitted" > "${ROOT10}/scratch.txt"
+RIGS_JSON10="{\"rigs\":[$(rig_json r10 "$ROOT10" main)]}"
+LOCK_10="${STATE_DIR}/.locks/r10.lock"
+mkdir -p "$LOCK_10"
+printf '99999\n' > "${LOCK_10}/pid"
+python3 -c "import os; os.utime('${LOCK_10}', (0, 0))"
+run_script STUB_RIG_LIST_JSON="$RIGS_JSON10"
+assert_eq "0" "$RC" "script exits 0"
+if printf '%s' "$OUT" | grep -q 'NOTICE: stole stale lock for r10'; then
+  pass "the stale-lock steal NOTICE is logged for r10"
+else
+  fail "expected a 'stole stale lock' NOTICE for r10, got: ${OUT}"
+fi
+assert_log_count "$GC_LOG" 'mail send mayor' 1 "the rig is actually processed after the steal — exactly one mail (dirty)"
+assert_eq "dirty" "$(rs_state_field "$STATE_DIR" "r10" "last_state")" "state records 'dirty' — processing ran to completion after the steal, not just the lock acquisition"
+if [ -d "$LOCK_10" ]; then
+  fail "the stolen (and re-acquired) lock was never released after processing completed"
+else
+  pass "the stolen (and re-acquired) lock is released after processing completes"
+fi
+
+# ===========================================================================
+# CASE 11 — no-steal control for CASE 10 (same review finding): only AGE
+#   distinguishes a crashed holder's lock from a live one, so a FRESH
+#   pre-existing lock (same threshold, no backdating) must never be stolen.
+#   CASE 9's two-real-processes race can't pin this down deterministically
+#   (whichever process loses the initial `mkdir` race immediately finds an
+#   already-fresh lock, but nothing there isolates "was it ever offered to
+#   the steal branch and correctly rejected" from "did it just lose the
+#   plain mkdir"). This does, directly.
+# ===========================================================================
+start_case "11: a fresh (non-stale) pre-existing lock is never stolen"
+setup_case_env "11"
+ROOT11="$(make_rig r11 main)"
+echo "uncommitted" > "${ROOT11}/scratch.txt"
+RIGS_JSON11="{\"rigs\":[$(rig_json r11 "$ROOT11" main)]}"
+LOCK_11="${STATE_DIR}/.locks/r11.lock"
+mkdir -p "$LOCK_11"
+printf '99999\n' > "${LOCK_11}/pid"
+run_script STUB_RIG_LIST_JSON="$RIGS_JSON11"
+assert_eq "0" "$RC" "script exits 0"
+if printf '%s' "$OUT" | grep -q 'SKIP r11 — locked by a concurrent run'; then
+  pass "a fresh pre-existing lock correctly yields a lock-contention SKIP"
+else
+  fail "expected r11 to be skipped as locked, got: ${OUT}"
+fi
+if printf '%s' "$OUT" | grep -q 'NOTICE: stole stale lock'; then
+  fail "a fresh lock must never be stolen, but a steal NOTICE was logged: ${OUT}"
+else
+  pass "no steal NOTICE is logged for a fresh, non-stale lock"
+fi
+assert_log_count "$GC_LOG" 'mail send' 0 "a rig skipped as locked is never processed, so it never mails"
+if [ -d "$LOCK_11" ]; then
+  pass "the fresh lock (still held by its original 'owner') is left untouched"
+else
+  fail "the fresh lock disappeared even though it should never have been touched"
+fi
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 echo
