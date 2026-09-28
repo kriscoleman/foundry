@@ -1679,9 +1679,20 @@ cv_with_timeout() {
   fi
   "$@" &
   local cmd_pid=$!
-  local waited=0
+  # fk-jjumm (iter-2 qa-test B1): the common case is a command that has
+  # already exited by the first check, but the exited child stays a zombie
+  # (still visible to `kill -0`) until this function's own `wait` reaps it,
+  # which only ever ran after the loop below — so every fast call still paid
+  # one full `sleep 1` waiting for a reap that couldn't happen until the very
+  # sleep it was waiting out was over. Tapering the poll interval up from a
+  # fraction of a second (instead of a flat 1s from the first check) gives
+  # the shell many more, much earlier chances to reap the child between
+  # checks, without changing the ceiling: the slowest this can ever detect a
+  # timeout is one poll interval late, capped at 1s, identical to before.
+  local waited="0"
+  local poll="0.05"
   while kill -0 "$cmd_pid" 2>/dev/null; do
-    if [ "$waited" -ge "$secs" ]; then
+    if awk -v w="$waited" -v s="$secs" 'BEGIN { exit !(w >= s) }'; then
       if command -v pgrep >/dev/null 2>&1; then
         local child_pid
         for child_pid in $(pgrep -P "$cmd_pid" 2>/dev/null); do
@@ -1692,8 +1703,9 @@ cv_with_timeout() {
       wait "$cmd_pid" 2>/dev/null
       return 124
     fi
-    sleep 1
-    waited=$((waited + 1))
+    sleep "$poll"
+    waited=$(awk -v w="$waited" -v p="$poll" 'BEGIN { printf "%.3f", w + p }')
+    poll=$(awk -v p="$poll" 'BEGIN { np = p * 2; if (np > 1) np = 1; printf "%.3f", np }')
   done
   wait "$cmd_pid" 2>/dev/null
   return "$?"
