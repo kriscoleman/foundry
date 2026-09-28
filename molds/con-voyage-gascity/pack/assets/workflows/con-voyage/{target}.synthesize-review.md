@@ -9,9 +9,21 @@ synthesis must be concrete enough for the fix lane to act without another
 planning pass. Structure it as:
 
 1. Overall verdict: approve or iterate
-2. BLOCKING findings (must fix before landing): list each with lane, file:line, fix
-3. LOW findings (surface to human for decision): list each with lane, file:line, fix
+2. BLOCKING findings (must fix before landing): one `### ` sub-heading per
+   finding (any consistent per-finding title works, e.g. `BLOCKING-<n>`), each
+   listing lane, file:line, fix. Write literal `None.` when there are zero.
+3. LOW findings (surface to human for decision): one `### ` sub-heading per
+   finding, each listing lane, file:line, fix. Write literal `None.` when
+   there are zero.
 4. Lanes approved with no findings
+
+`cv-synthesis-low-mail.sh` (below) counts each section's findings by its
+number of `### ` sub-headings — every finding must get its own `### `
+heading (never a bare bullet list folded into one paragraph) so template and
+script agree on the count by construction (fk-8g9ue BLOCKING-1: an earlier
+version of the script matched only the literal `### BLOCKING-<n>` shape and
+silently counted 0 on real documents that used a different per-finding
+heading style).
 
 When any BLOCKING finding exists from any lane, the verdict is iterate.
 When no BLOCKING findings exist but LOWs remain, stop and surface them to the
@@ -41,8 +53,12 @@ print((d.get('metadata') or {}).get('gc.build.source_anchor_id') or '')
 " 2>/dev/null)"
 [ -n "$CONVOY_ID" ] || { echo "con-voyage synthesis: no gc.build.source_anchor_id on root ${ROOT_ID} — cannot resolve the work bead for the LOW-only mail" >&2; exit 1; }
 
+CV_LENS_STORE_TIMEOUT_SECONDS="${CV_LENS_STORE_TIMEOUT_SECONDS:-30}"
+case "$CV_LENS_STORE_TIMEOUT_SECONDS" in
+  *[!0-9]*|'') CV_LENS_STORE_TIMEOUT_SECONDS="30" ;;
+esac
 CV_LIB="$(command -v con-voyage-lib.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name con-voyage-lib.sh 2>/dev/null | head -1)"
-WORK_BEAD="$(source "$CV_LIB" && cv_resolve_work_bead "$CONVOY_ID")"
+WORK_BEAD="$(source "$CV_LIB" && cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" cv_resolve_work_bead "$CONVOY_ID")"
 
 CV_MAIL_BIN="$(command -v cv-synthesis-low-mail.sh 2>/dev/null || find "${GC_CITY:-.}" -maxdepth 6 -name cv-synthesis-low-mail.sh 2>/dev/null | head -1)"
 CV_LENS_ESCALATE_TARGET="{cv_lens_escalate_target}" "$CV_MAIL_BIN" \
