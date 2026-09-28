@@ -12,6 +12,14 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    # fk-b055p B2: GitHub's own job default (360min) meant a reintroduced
+    # unbounded hang in the mold shell tests could wedge this job for up to
+    # 6 hours instead of failing loud and fast. Comfortably above the worst
+    # case sum of every ceiling in con-voyage-mold-suite-concurrency.test.sh
+    # (600s stacked-pr-base 3x + 1800s pr-watch 3x + 3600s full-suite-2x =
+    # 6000s/100min) plus the rest of the suite (~23 other, much faster files)
+    # and the mold-validate/assay/markdown-link steps.
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
 
