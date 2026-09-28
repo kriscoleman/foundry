@@ -36,6 +36,7 @@ set -uo pipefail
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOLD_DIR="$(cd "${TEST_DIR}/.." && pwd)"
 SCRIPT="${MOLD_DIR}/pack/assets/scripts/cv-ensure-gate-scripts.sh"
+LIB="${MOLD_DIR}/pack/assets/scripts/con-voyage-lib.sh"
 SOURCE_CHECKS_DIR="${MOLD_DIR}/pack/assets/scripts/checks"
 
 if [ ! -f "$SCRIPT" ]; then
@@ -190,14 +191,52 @@ EMPTY_SCRIPT_DIR="${SANDBOX}/empty-pack/pack/assets/scripts"
 mkdir -p "${EMPTY_SCRIPT_DIR}/checks_placeholder"
 # Deliberately do NOT create a sibling 'checks' dir at all, and copy the
 # script under test into this fake pack layout so it resolves an EMPTY/absent
-# source dir relative to itself.
+# source dir relative to itself. con-voyage-lib.sh IS copied alongside (a
+# real pack always ships it) so this case fails for the scenario it's
+# actually testing — no source checks/ dir — not an incidental missing-lib
+# error from the unrelated `source` line.
 cp "$SCRIPT" "${EMPTY_SCRIPT_DIR}/cv-ensure-gate-scripts.sh"
+cp "$LIB" "${EMPTY_SCRIPT_DIR}/con-voyage-lib.sh"
 RIG6="${SANDBOX}/rig6"
 mkdir -p "$RIG6"
 OUT="$(bash "${EMPTY_SCRIPT_DIR}/cv-ensure-gate-scripts.sh" "$RIG6" 2>&1)"
 RC=$?
 if [ "$RC" -ne 0 ]; then pass "missing source checks/ dir exits non-zero"; else fail "missing source checks/ dir should fail, got exit 0"; fi
 if [ -d "${RIG6}/.gc" ]; then fail "partial .gc/ directory was created despite the failure"; else pass "no partial .gc/ directory was created"; fi
+
+# ===========================================================================
+# CASE 7 — a symlinked destination is refused, not read/replaced through
+# (fk-eqhgl security review LOW finding #2, fk-6z17l review response).
+# ===========================================================================
+start_case "7: a symlinked destination is refused outright, target content untouched"
+RIG7="${SANDBOX}/rig7"
+mkdir -p "${RIG7}/.gc/scripts/checks"
+TARGET7="${RIG7}/secret-target.sh"
+printf 'SECRET-TARGET-CONTENT\n' > "$TARGET7"
+# build-artifact-valid.sh sorts first in the glob (alphabetically before
+# implementation-review-approved.sh), so symlinking it guarantees the loop
+# hits and dies on it on its very first iteration — before ever reaching
+# the other shipped script.
+DEST7="${RIG7}/.gc/scripts/checks/build-artifact-valid.sh"
+ln -s "$TARGET7" "$DEST7"
+run_script "$RIG7"
+if [ "$RC" -ne 0 ]; then
+  pass "script fails loud when a destination is a symlink"
+else
+  fail "script should refuse a symlinked destination, got exit 0"
+fi
+assert_eq "SECRET-TARGET-CONTENT" "$(cat "$TARGET7" 2>/dev/null)" "the symlink target's content is untouched"
+if [ -e "${DEST7}.prev" ]; then
+  fail "refusing up front must not leak the symlink target's content into a .prev file"
+else
+  pass "no .prev file was created — the target's content was never duplicated"
+fi
+if [ -L "$DEST7" ]; then pass "the symlink itself is left exactly as it was"; else fail "the symlink should be untouched on refusal"; fi
+if [ -f "${RIG7}/.gc/scripts/checks/implementation-review-approved.sh" ]; then
+  fail "the script should die on the first symlink hit, not seed the OTHER script too"
+else
+  pass "the script died before seeding any other file once it hit the symlinked destination"
+fi
 
 # ===========================================================================
 # Summary

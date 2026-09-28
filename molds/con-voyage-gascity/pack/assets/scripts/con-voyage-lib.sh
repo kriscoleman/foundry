@@ -236,6 +236,82 @@ cv_resolve_base_branch() {
   esac
 }
 
+# cv_ensure_current_copy SRC DEST [--exec] — seed/replace DEST from SRC so
+# that "ensure" means present AND current (fk-6z17l), not "present once,
+# frozen forever". Shared by cv-ensure-gate-scripts.sh and
+# cv-ensure-build-artifact-validator.sh, which used to each carry their own
+# near-identical copy of this cmp/backup/replace sequence at 3 call sites
+# across the two files (fk-elkyf review, fk-u7ycf simplicity finding #4).
+#
+# - DEST missing: copied straight from SRC.
+# - DEST present and byte-identical to SRC: untouched, true no-op.
+# - DEST present and different: the old content is backed up to
+#   "<DEST>.prev" first, then SRC is staged into a same-directory temp file
+#   and atomically renamed onto DEST (same-filesystem `mv`, so DEST is never
+#   observable half-written).
+# - Pass --exec to set the executable bit on the written file (skip it for
+#   non-executable assets like YAML schemas).
+#
+# Echoes exactly one of: seeded | updated | current — callers use this to
+# drive their own per-file log line and counters (the wording/prefix differs
+# per caller, so that stays in the caller, not here). Whether DEST existed
+# on entry is tracked explicitly rather than inferred from ".prev" existing
+# afterward, so a destination that was deleted by hand after an earlier
+# stale-replace (leaving an orphaned .prev behind) still correctly reports
+# "seeded", not "updated", on the next run.
+#
+# Hardening folded in from the fk-elkyf review (fk-eqhgl, fk-hgulh — all LOW,
+# none were live defects, applied here so every call site gets them for
+# free rather than needing the same fix repeated at each one):
+#   - refuses outright if DEST is a symlink (`-L`), before touching it at
+#     all. Un-refused, both the `cmp` read and the `.prev` backup `cp` would
+#     read through the symlink, duplicating whatever it points at into a new
+#     regular file — the atomic `mv` at the end already replaces (de-symlinks)
+#     the live path correctly, but that doesn't help the two reads before it.
+#   - stages the temp file via `mktemp` (unpredictable name, created with
+#     O_EXCL) instead of a `.tmp.$$` PID suffix, which is guessable and lets
+#     a pre-planted symlink at that exact path get written through by `cp`.
+#   - treats a `cmp` exit status > 1 ("trouble", e.g. unreadable SRC) as a
+#     hard failure distinct from exit 1 ("differs"), rather than routing both
+#     into the replace branch.
+#
+# Every failure returns non-zero with nothing on stdout; the caller decides
+# its own die()-message wording, so this function only writes a short note
+# to stderr and never exits the caller's shell itself.
+cv_ensure_current_copy() {
+  local src="$1" dest="$2" mode="${3:-}"
+
+  if [ -L "$dest" ]; then
+    echo "cv_ensure_current_copy: refusing to replace symlinked ${dest}" >&2
+    return 1
+  fi
+
+  local existed=0
+  if [ -e "$dest" ]; then
+    existed=1
+    local cmp_rc=0
+    cmp -s "$src" "$dest" || cmp_rc=$?
+    if [ "$cmp_rc" -eq 0 ]; then
+      echo "current"
+      return 0
+    elif [ "$cmp_rc" -gt 1 ]; then
+      echo "cv_ensure_current_copy: could not compare ${src} and ${dest}" >&2
+      return 1
+    fi
+    cp "$dest" "${dest}.prev" || return 1
+  fi
+
+  local tmp
+  tmp="$(mktemp "${dest}.XXXXXX")" || return 1
+  cp "$src" "$tmp" || { rm -f "$tmp"; return 1; }
+  if [ "$mode" = "--exec" ]; then
+    chmod +x "$tmp" || { rm -f "$tmp"; return 1; }
+  fi
+  mv -f "$tmp" "$dest" || { rm -f "$tmp"; return 1; }
+
+  if [ "$existed" -eq 1 ]; then echo "updated"; else echo "seeded"; fi
+}
+
 # cv_ensure_branch_based_on DIR BASE_BRANCH — make DIR's current HEAD sit on
 # top of BASE_BRANCH (fk-qppb4 requirement 2: GitHub stacked PRs).
 #

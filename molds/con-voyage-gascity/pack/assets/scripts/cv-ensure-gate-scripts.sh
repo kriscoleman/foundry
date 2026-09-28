@@ -59,6 +59,8 @@ USAGE
 }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=con-voyage-lib.sh
+source "${SCRIPT_DIR}/con-voyage-lib.sh"
 SOURCE_DIR="${SCRIPT_DIR}/checks"
 
 RIG_ROOT="${1:-}"
@@ -81,25 +83,24 @@ present=0
 for src in "${SOURCE_SCRIPTS[@]}"; do
   name="$(basename "$src")"
   dest="${DEST_DIR}/${name}"
-  if [ -e "$dest" ]; then
-    if cmp -s "$src" "$dest"; then
+  copy_status="$(cv_ensure_current_copy "$src" "$dest" --exec)" || die "could not ensure ${dest} from ${src}"
+  case "$copy_status" in
+    current)
       echo "cv-ensure-gate-scripts: ${name} already present and current at ${dest} — left untouched"
       present=$((present+1))
-      continue
-    fi
-    cp "$dest" "${dest}.prev" || die "could not back up stale ${dest} to ${dest}.prev"
-    tmp="${dest}.tmp.$$"
-    cp "$src" "$tmp" || die "could not stage ${src} to ${tmp}"
-    chmod +x "$tmp" || die "could not set the exec bit on ${tmp}"
-    mv -f "$tmp" "$dest" || die "could not move ${tmp} to ${dest}"
-    echo "cv-ensure-gate-scripts: ${name} was stale — replaced at ${dest} (previous copy backed up to ${dest}.prev)"
-    updated=$((updated+1))
-    continue
-  fi
-  cp "$src" "$dest" || die "could not copy ${src} to ${dest}"
-  chmod +x "$dest" || die "could not set the exec bit on ${dest}"
-  echo "cv-ensure-gate-scripts: seeded ${name} -> ${dest}"
-  seeded=$((seeded+1))
+      ;;
+    updated)
+      echo "cv-ensure-gate-scripts: ${name} was stale — replaced at ${dest} (previous copy backed up to ${dest}.prev)"
+      updated=$((updated+1))
+      ;;
+    seeded)
+      echo "cv-ensure-gate-scripts: seeded ${name} -> ${dest}"
+      seeded=$((seeded+1))
+      ;;
+    *)
+      die "unexpected status '${copy_status}' ensuring ${dest}"
+      ;;
+  esac
 done
 
 echo "cv-ensure-gate-scripts: done (${seeded} seeded, ${updated} updated, ${present} already present and current, ${#SOURCE_SCRIPTS[@]} total)"

@@ -763,6 +763,90 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# cv_ensure_current_copy (fk-6z17l review hardening, fk-elkyf synthesis LOW
+# findings #1/#2/#4 — mktemp over a PID suffix, refuse a symlinked
+# destination, and be the ONE shared implementation cv-ensure-gate-scripts.sh
+# and cv-ensure-build-artifact-validator.sh both call instead of each
+# carrying 3 near-identical copies of this sequence).
+# ---------------------------------------------------------------------------
+CP_SANDBOX="${SANDBOX}/ensure-current-copy"
+mkdir -p "$CP_SANDBOX"
+
+start_case "cv_ensure_current_copy: destination missing -> seeds it, echoes 'seeded'"
+printf 'pack content\n' > "${CP_SANDBOX}/src1"
+DEST1="${CP_SANDBOX}/dest1"
+out="$(cv_ensure_current_copy "${CP_SANDBOX}/src1" "$DEST1")"; rc=$?
+assert_eq "0" "$rc" "exit 0 seeding a missing destination"
+assert_eq "seeded" "$out" "echoes 'seeded' for a missing destination"
+assert_eq "pack content" "$(cat "$DEST1" 2>/dev/null)" "destination content matches source after seeding"
+if [ -e "${DEST1}.prev" ]; then
+  echo "  FAIL: a fresh seed should never create a .prev backup" >&2
+  FAILURES=$((FAILURES+1))
+else
+  echo "  PASS: no .prev backup created for a fresh seed"
+fi
+
+start_case "cv_ensure_current_copy: destination already identical -> true no-op, echoes 'current'"
+printf 'pack content\n' > "${CP_SANDBOX}/src2"
+DEST2="${CP_SANDBOX}/dest2"
+printf 'pack content\n' > "$DEST2"
+before_mtime="$(cd "$CP_SANDBOX" && stat -f '%m' dest2 2>/dev/null || stat -c '%Y' dest2 2>/dev/null)"
+out="$(cv_ensure_current_copy "${CP_SANDBOX}/src2" "$DEST2")"; rc=$?
+assert_eq "0" "$rc" "exit 0 when content already matches"
+assert_eq "current" "$out" "echoes 'current' when content already matches"
+if [ -e "${DEST2}.prev" ]; then
+  echo "  FAIL: an already-current destination should never get a .prev backup" >&2
+  FAILURES=$((FAILURES+1))
+else
+  echo "  PASS: no .prev backup created for an already-current destination"
+fi
+
+start_case "cv_ensure_current_copy: destination stale -> replaced atomically, old content backed up, echoes 'updated'"
+printf 'new pack content\n' > "${CP_SANDBOX}/src3"
+DEST3="${CP_SANDBOX}/dest3"
+printf 'old stale content\n' > "$DEST3"
+out="$(cv_ensure_current_copy "${CP_SANDBOX}/src3" "$DEST3")"; rc=$?
+assert_eq "0" "$rc" "exit 0 replacing a stale destination"
+assert_eq "updated" "$out" "echoes 'updated' when stale content is replaced"
+assert_eq "new pack content" "$(cat "$DEST3" 2>/dev/null)" "destination content matches source after replacement"
+assert_eq "old stale content" "$(cat "${DEST3}.prev" 2>/dev/null)" "the stale content was backed up to <dest>.prev"
+
+start_case "cv_ensure_current_copy: --exec sets the executable bit; omitting it does not"
+printf '#!/bin/sh\necho hi\n' > "${CP_SANDBOX}/src4"
+DEST4_EXEC="${CP_SANDBOX}/dest4-exec"
+DEST4_DATA="${CP_SANDBOX}/dest4-data"
+cv_ensure_current_copy "${CP_SANDBOX}/src4" "$DEST4_EXEC" --exec >/dev/null
+cv_ensure_current_copy "${CP_SANDBOX}/src4" "$DEST4_DATA" >/dev/null
+if [ -x "$DEST4_EXEC" ]; then echo "  PASS: --exec sets the executable bit"; else echo "  FAIL: --exec did not set the executable bit" >&2; FAILURES=$((FAILURES+1)); fi
+if [ -x "$DEST4_DATA" ]; then echo "  FAIL: omitting --exec should not set the executable bit" >&2; FAILURES=$((FAILURES+1)); else echo "  PASS: omitting --exec leaves the executable bit unset"; fi
+
+start_case "cv_ensure_current_copy: a symlinked destination is refused outright, never read through or replaced through (fk-eqhgl LOW finding #2)"
+printf 'src content\n' > "${CP_SANDBOX}/src5"
+TARGET5="${CP_SANDBOX}/secret-target5"
+printf 'SECRET-TARGET-CONTENT\n' > "$TARGET5"
+DEST5="${CP_SANDBOX}/dest5-symlink"
+ln -s "$TARGET5" "$DEST5"
+out="$(cv_ensure_current_copy "${CP_SANDBOX}/src5" "$DEST5" 2>/dev/null)"; rc=$?
+if [ "$rc" -ne 0 ]; then echo "  PASS: refuses (non-zero exit) when destination is a symlink"; else echo "  FAIL: should refuse a symlinked destination, got exit 0" >&2; FAILURES=$((FAILURES+1)); fi
+assert_eq "" "$out" "nothing is echoed to stdout on refusal"
+assert_eq "SECRET-TARGET-CONTENT" "$(cat "$TARGET5" 2>/dev/null)" "the symlink target's content is untouched"
+if [ -e "${DEST5}.prev" ]; then
+  echo "  FAIL: refusing up front must not leak the symlink target's content into a .prev file" >&2
+  FAILURES=$((FAILURES+1))
+else
+  echo "  PASS: no .prev file created — the target's content was never duplicated"
+fi
+if [ -L "$DEST5" ]; then echo "  PASS: the symlink itself is left exactly as it was"; else echo "  FAIL: the symlink should be untouched on refusal" >&2; FAILURES=$((FAILURES+1)); fi
+
+start_case "cv_ensure_current_copy: a leftover .prev from an earlier run does not make a fresh seed misreport as 'updated'"
+printf 'pack content\n' > "${CP_SANDBOX}/src6"
+DEST6="${CP_SANDBOX}/dest6"
+printf 'orphaned backup from a prior run\n' > "${DEST6}.prev"
+out="$(cv_ensure_current_copy "${CP_SANDBOX}/src6" "$DEST6")"; rc=$?
+assert_eq "0" "$rc" "exit 0 seeding a missing destination that has a stale sibling .prev file"
+assert_eq "seeded" "$out" "still echoes 'seeded' (not 'updated') when the destination itself was missing"
+
+# ---------------------------------------------------------------------------
 # zsh portability (fk-k14n REWORK — operator PR comment + new bug report):
 # `status` is a special/read-only parameter in zsh (it mirrors `$?`), so
 # `local status` followed by an assignment (`status="$x"` or

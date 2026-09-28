@@ -37,6 +37,7 @@ set -uo pipefail
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOLD_DIR="$(cd "${TEST_DIR}/.." && pwd)"
 SCRIPT="${MOLD_DIR}/pack/assets/scripts/cv-ensure-build-artifact-validator.sh"
+LIB="${MOLD_DIR}/pack/assets/scripts/con-voyage-lib.sh"
 SOURCE_VALIDATOR="${MOLD_DIR}/pack/assets/scripts/validate_build_artifact.py"
 SOURCE_SCHEMAS_DIR="${MOLD_DIR}/pack/assets/schemas/build"
 
@@ -232,7 +233,12 @@ mkdir -p "${EMPTY_PACK_SCRIPTS}"
 # Deliberately do NOT create a sibling validate_build_artifact.py or a
 # ../schemas/build dir, and copy the script under test into this fake pack
 # layout so it resolves missing/empty sources relative to itself.
+# con-voyage-lib.sh IS copied alongside (a real pack always ships it) so this
+# case fails for the scenario it's actually testing — no source
+# validator/schemas — not an incidental missing-lib error from the unrelated
+# `source` line.
 cp "$SCRIPT" "${EMPTY_PACK_SCRIPTS}/cv-ensure-build-artifact-validator.sh"
+cp "$LIB" "${EMPTY_PACK_SCRIPTS}/con-voyage-lib.sh"
 RIG6="${SANDBOX}/rig6"
 mkdir -p "$RIG6"
 OUT="$(bash "${EMPTY_PACK_SCRIPTS}/cv-ensure-build-artifact-validator.sh" "$RIG6" 2>&1)"
@@ -240,6 +246,39 @@ RC=$?
 if [ "$RC" -ne 0 ]; then pass "missing source validator/schemas exits non-zero"; else fail "missing source validator/schemas should fail, got exit 0"; fi
 if [ -e "${RIG6}/.gc" ]; then fail "partial .gc/ directory was created despite the failure"; else pass "no partial .gc/ directory was created"; fi
 if [ -e "${RIG6}/schemas" ]; then fail "partial schemas/ directory was created despite the failure"; else pass "no partial schemas/ directory was created"; fi
+
+# ===========================================================================
+# CASE 7 — a symlinked validator destination is refused, not read/replaced
+# through (fk-eqhgl security review LOW finding #2, fk-6z17l review
+# response). The validator is the FIRST thing the script writes, so this
+# also proves it dies before ever touching the schema files.
+# ===========================================================================
+start_case "7: a symlinked validator destination is refused outright, target content untouched"
+RIG7="${SANDBOX}/rig7"
+mkdir -p "${RIG7}/.gc/scripts" "${RIG7}/schemas/build"
+TARGET7="${RIG7}/secret-target.py"
+printf 'SECRET-TARGET-CONTENT\n' > "$TARGET7"
+DEST7_VALIDATOR="${RIG7}/.gc/scripts/validate_build_artifact.py"
+ln -s "$TARGET7" "$DEST7_VALIDATOR"
+run_script "$RIG7"
+if [ "$RC" -ne 0 ]; then
+  pass "script fails loud when the validator destination is a symlink"
+else
+  fail "script should refuse a symlinked validator destination, got exit 0"
+fi
+assert_eq "SECRET-TARGET-CONTENT" "$(cat "$TARGET7" 2>/dev/null)" "the symlink target's content is untouched"
+if [ -e "${DEST7_VALIDATOR}.prev" ]; then
+  fail "refusing up front must not leak the symlink target's content into a .prev file"
+else
+  pass "no .prev file was created — the target's content was never duplicated"
+fi
+if [ -L "$DEST7_VALIDATOR" ]; then pass "the symlink itself is left exactly as it was"; else fail "the symlink should be untouched on refusal"; fi
+SEEDED_ANY_SCHEMA=0
+for src in "${SOURCE_SCHEMA_FILES[@]}"; do
+  name="$(basename "$src")"
+  [ -f "${RIG7}/schemas/build/${name}" ] && SEEDED_ANY_SCHEMA=1
+done
+assert_eq "0" "$SEEDED_ANY_SCHEMA" "the script died on the symlinked validator before seeding any schema file"
 
 # ===========================================================================
 # Summary
