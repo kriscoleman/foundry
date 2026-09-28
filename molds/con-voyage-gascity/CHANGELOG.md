@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.11.0](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.10.1...con-voyage-gascity-v0.11.0) (2026-09-28)
+
+
+### Features
+
+* **con-voyage:** city-wide AskUserQuestion stall watchdog (fk-o9ntx) ([8a75988](https://github.com/kriscoleman/foundry/commit/8a75988631c17583b41d0b7e7b103330cc1188bc))
+
+
+### Bug Fixes
+
+* harden con-voyage-askuserquestion-watchdog against silent gc call failures (review fk-6vf0c) ([49d1921](https://github.com/kriscoleman/foundry/commit/49d1921d339ba8c9632867e2f1a891c90afffeef))
+
 ## [0.10.1](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.10.0...con-voyage-gascity-v0.10.1) (2026-09-28)
 
 
