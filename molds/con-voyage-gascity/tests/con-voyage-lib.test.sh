@@ -806,6 +806,74 @@ cv_bead_claim_non_routable "rb-open" 2>/dev/null
 assert_log_count '--city' 0 "cv_bead_claim_non_routable never passes --city"
 
 # ---------------------------------------------------------------------------
+# $GC unset -> defaults to "gc" on PATH, never a silent no-op (fk-v8hqr:
+# follow-on from fk-4q6ib BLOCKING-2, which fixed this same bare-"$GC" pattern
+# for cv_bead_metadata alone — con-voyage-lib.sh had ~11 more call sites doing
+# the same thing, so any caller that forgot to set $GC before sourcing this
+# file silently no-op'd instead of falling through to a real "gc" on PATH).
+#
+# Each case unsets $GC in a fresh subshell, puts the stub directory on PATH so
+# a bare "gc" resolves to it, sources the lib there, and proves the call still
+# reaches the stub. Before the fix, `"$GC" ...` with $GC empty tries to run a
+# command literally named "" — that never touches PATH or the stub, so
+# STUB_GC_LOG stays empty for that call instead of recording it.
+# ---------------------------------------------------------------------------
+start_case "cv_convoy_target: \$GC unset -> still invokes gc (defaults to \"gc\" on PATH), not a silent no-op"
+: > "$GC_LOG"
+PATH="${STUBDIR}:${PATH}" bash -c "unset GC; source '$LIB'; cv_convoy_target 'fk-gcuconvoy'" >/dev/null 2>/dev/null
+assert_log_count 'convoy status fk-gcuconvoy --json' 1 "a caller that forgets to set \$GC still reaches gc convoy status"
+
+start_case "bead_status: \$GC unset -> still invokes gc (defaults to \"gc\" on PATH), not a silent no-op"
+: > "$GC_LOG"
+PATH="${STUBDIR}:${PATH}" bash -c "unset GC; source '$LIB'; bead_status 'rb-open' assignee" >/dev/null 2>/dev/null
+assert_log_count 'bd show rb-open --json' 1 "a caller that forgets to set \$GC still reaches gc bd show"
+
+start_case "implementor_alive: \$GC unset -> still invokes gc (defaults to \"gc\" on PATH), not a silent no-op"
+: > "$GC_LOG"
+PATH="${STUBDIR}:${PATH}" GC_CITY="$GC_CITY" bash -c "unset GC; source '$LIB'; implementor_alive 'gc__gap-analyst-rc-1'" >/dev/null 2>/dev/null
+assert_log_count 'session list --json' 1 "a caller that forgets to set \$GC still reaches gc session list"
+
+start_case "session_id_for_ident: \$GC unset -> still invokes gc (defaults to \"gc\" on PATH), not a silent no-op"
+: > "$GC_LOG"
+PATH="${STUBDIR}:${PATH}" GC_CITY="$GC_CITY" bash -c "unset GC; source '$LIB'; session_id_for_ident 'gc__gap-analyst-rc-1'" >/dev/null 2>/dev/null
+assert_log_count 'session list --json' 1 "a caller that forgets to set \$GC still reaches gc session list"
+
+start_case "first_alive_session_id_for_route: \$GC unset -> still invokes gc (defaults to \"gc\" on PATH), not a silent no-op"
+: > "$GC_LOG"
+PATH="${STUBDIR}:${PATH}" GC_CITY="$GC_CITY" bash -c "unset GC; source '$LIB'; first_alive_session_id_for_route 'foundry-kc/gc.gap-analyst'" >/dev/null 2>/dev/null
+assert_log_count 'session list --json' 1 "a caller that forgets to set \$GC still reaches gc session list"
+
+start_case "close_if_open: \$GC unset -> still invokes gc (defaults to \"gc\" on PATH), not a silent no-op"
+: > "$GC_LOG"
+PATH="${STUBDIR}:${PATH}" bash -c "unset GC; source '$LIB'; close_if_open 'rb-open' 'landed: x'" >/dev/null 2>/dev/null
+assert_log_count 'bd close rb-open' 1 "a caller that forgets to set \$GC still reaches gc bd close"
+
+start_case "cv_bead_mark_in_progress: \$GC unset -> still invokes gc (defaults to \"gc\" on PATH), not a silent no-op"
+: > "$GC_LOG"
+PATH="${STUBDIR}:${PATH}" bash -c "unset GC; source '$LIB'; cv_bead_mark_in_progress 'rb-open'" >/dev/null 2>/dev/null
+assert_log_count 'bd update rb-open --claim' 1 "a caller that forgets to set \$GC still claims the bead"
+
+start_case "cv_bead_close: \$GC unset -> still invokes gc (defaults to \"gc\" on PATH), not a silent no-op"
+: > "$GC_LOG"
+PATH="${STUBDIR}:${PATH}" bash -c "unset GC; source '$LIB'; cv_bead_close 'rb-open' 'landed' 'fix pushed'" >/dev/null 2>/dev/null
+assert_log_count 'bd close rb-open --reason landed: fix pushed' 1 "a caller that forgets to set \$GC still closes the bead"
+
+start_case "cv_resolve_work_bead: \$GC unset -> still invokes gc (defaults to \"gc\" on PATH), resolves the tracked work bead instead of a silent fail-safe to the input"
+export STUB_BDSHOW_JSON_fk_gcuwb='{"id":"fk-gcuwb","issue_type":"convoy","metadata":{"gc.synthetic":"true"},"dependencies":[{"id":"fk-gcuwb-real","dependency_type":"tracks"}]}'
+result="$(PATH="${STUBDIR}:${PATH}" bash -c "unset GC; source '$LIB'; cv_resolve_work_bead 'fk-gcuwb'" 2>/dev/null)"
+assert_eq "fk-gcuwb-real" "$result" "a caller that forgets to set \$GC still resolves the tracked work bead"
+
+start_case "cv_bead_work_dir: \$GC unset -> still invokes gc (defaults to \"gc\" on PATH), reads the real work_dir instead of a silent empty"
+export STUB_BDSHOW_JSON_fk_gcuwd='{"id":"fk-gcuwd","metadata":{"work_dir":"/rig/worktrees/fk-gcuwd"}}'
+result="$(PATH="${STUBDIR}:${PATH}" bash -c "unset GC; source '$LIB'; cv_bead_work_dir 'fk-gcuwd'" 2>/dev/null)"
+assert_eq "/rig/worktrees/fk-gcuwd" "$result" "a caller that forgets to set \$GC still reads the real work_dir"
+
+start_case "cv_bead_claim_non_routable: \$GC unset -> still invokes gc (defaults to \"gc\" on PATH), not a silent no-op"
+: > "$GC_LOG"
+PATH="${STUBDIR}:${PATH}" bash -c "unset GC; source '$LIB'; cv_bead_claim_non_routable 'rb-open'" >/dev/null 2>/dev/null
+assert_log_count "bd update rb-open --assignee ${CV_WORK_BEAD_OWNER} --status in_progress" 1 "a caller that forgets to set \$GC still claims the bead under the non-routable owner identity"
+
+# ---------------------------------------------------------------------------
 # close_if_open: CV_CLOSE_RC / exit-status handling (fk-7v3r COMPOUNDING fix —
 # a swallowed `bd close` failure used to let con-voyage-finalize.sh delete its
 # own retry record right after, self-destructing the idempotent-retry safety
