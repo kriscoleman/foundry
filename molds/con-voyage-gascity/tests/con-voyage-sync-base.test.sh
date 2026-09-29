@@ -321,9 +321,9 @@ fi
 # Structural checks — the helper must actually be wired into every
 # code-writing step's START, not just exist unused in the lib.
 # ===========================================================================
-BUILD_MD="${MOLD_DIR}/pack/assets/workflows/con-voyage/{target}.build.md"
-APPLY_MD="${MOLD_DIR}/pack/assets/workflows/con-voyage/{target}.apply-review-findings.md"
-CI_REPAIR_MD="${MOLD_DIR}/pack/assets/workflows/con-voyage-ci-repair/{target}.ci-repair.md"
+BUILD_MD="${MOLD_DIR}/pack/assets/workflows/con-voyage/main.build.md"
+APPLY_MD="${MOLD_DIR}/pack/assets/workflows/con-voyage/main.apply-review-findings.md"
+CI_REPAIR_MD="${MOLD_DIR}/pack/assets/workflows/con-voyage-ci-repair/main.ci-repair.md"
 for f in "$BUILD_MD" "$APPLY_MD" "$CI_REPAIR_MD"; do
   if [ ! -f "$f" ]; then
     echo "FATAL: workflow file under test not found at ${f}" >&2
