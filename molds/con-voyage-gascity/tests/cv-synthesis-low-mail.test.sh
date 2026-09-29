@@ -277,6 +277,44 @@ fixture_unparseable() {
   } > "$path"
 }
 
+# fixture_bold_none PATH LOW_COUNT [TRAILING] — a zero-BLOCKING section whose
+# body is the dominant real-world bold shape, "**None.**", not the plain
+# "None." fixture() emits. Optional TRAILING appends trailing prose after the
+# bold marker ("**None.** <prose>") — the second variant BLOCKING-1's fix
+# must also tolerate. Reproduces the exact 7-of-59 on-disk-document miss:
+# the old zero-case regex only matched an unbolded "none"/"n/a" prefix, so a
+# leading "*" made it fail the match, fall through to `return -1`
+# (UNPARSEABLE), and `die` instead of sending the LOW-only mail.
+fixture_bold_none() {
+  local path="$1" low="$2" trailing="${3:-}"
+  {
+    echo "# Con-voyage Review Synthesis — root fixture (iteration 1)"
+    echo
+    echo "## 1. Overall verdict: **approve**"
+    echo
+    echo "## 2. BLOCKING findings (must fix before landing)"
+    echo
+    if [ -n "$trailing" ]; then
+      echo "**None.** Zero BLOCKING findings from any of the active lanes."
+    else
+      echo "**None.**"
+    fi
+    echo
+    echo "## 3. LOW findings (surface to human for decision)"
+    echo
+    for i in $(seq 1 "$low"); do
+      echo "### LOW-${i} — sample low finding ${i}"
+      echo "- **Lanes:** simplicity (LOW-${i})"
+      echo "- **File:line:** \`some/file.go:$((i + 10))\`"
+      echo "- **Finding:** a minor concern."
+      echo
+    done
+    echo "## 4. Lanes approved with no findings"
+    echo
+    echo "None."
+  } > "$path"
+}
+
 ROOT_ID="fk-root1"
 WORK_BEAD="fk-work1"
 PR_OR_BRANCH="con-voyage/fk-root1"
@@ -471,6 +509,35 @@ assert_eq "1" "$RC" "script exits 1 when gc mail send hangs past the timeout"
 assert_eq "1" "$(printf '%s' "$OUT" | grep -qi 'timed out' && echo 1 || echo 0)" "failure message says it timed out, not a generic send failure"
 assert_eq "1" "$([ "$ELAPSED" -lt 10 ] && echo 1 || echo 0)" "returned quickly (~1s bound), not after the full 20s hang (elapsed=${ELAPSED}s)"
 assert_log_count "$GC_LOG" "^bd update ${ROOT_ID} .*code_review\\.low_mail_sent=true" 0 "never claims a mail was sent when the send actually hung"
+
+# ===========================================================================
+# CASE 15 — zero-BLOCKING body is bold "**None.**" (the dominant real-world
+#   shape, per iteration-2's code-review sweep: 7 of 59 on-disk synthesis
+#   docs hit this and `die`d instead of sending the LOW-only mail): mail
+#   still fires, correct count.
+# ===========================================================================
+start_case "15: bold **None.** zero-BLOCKING body -> mail still fires, correct count"
+setup_case_env "15"
+SYNTHESIS_FILE="${SANDBOX}/synthesis-15.md"
+fixture_bold_none "$SYNTHESIS_FILE" 3
+run_script
+assert_eq "0" "$RC" "script exits 0 rather than dying on the bold zero-case body"
+assert_log_count "$GC_LOG" '^mail send mayor ' 1 "mail still sent for a bold **None.** BLOCKING body"
+assert_log_count "$GC_LOG" "LOW-only: ${WORK_BEAD} ${PR_OR_BRANCH} .* 3 LOW" 1 "count is correct (3), not a die on UNPARSEABLE"
+
+# ===========================================================================
+# CASE 16 — same bold "**None.**" shape with trailing prose after the marker
+#   ("**None.** Zero BLOCKING findings from any of the active lanes."): same
+#   contract, must not require the body be nothing but the marker itself.
+# ===========================================================================
+start_case "16: bold **None.** with trailing prose -> mail still fires, correct count"
+setup_case_env "16"
+SYNTHESIS_FILE="${SANDBOX}/synthesis-16.md"
+fixture_bold_none "$SYNTHESIS_FILE" 2 trailing
+run_script
+assert_eq "0" "$RC" "script exits 0 rather than dying on the bold zero-case body with trailing prose"
+assert_log_count "$GC_LOG" '^mail send mayor ' 1 "mail still sent for a bold **None.** BLOCKING body with trailing prose"
+assert_log_count "$GC_LOG" "LOW-only: ${WORK_BEAD} ${PR_OR_BRANCH} .* 2 LOW" 1 "count is correct (2), not a die on UNPARSEABLE"
 
 # ===========================================================================
 # Summary
