@@ -1270,13 +1270,19 @@ close_if_open() {
     # per beads@v1.3.0-rc.2, a bead is pinned by having `status: "pinned"`,
     # so check the already-fetched bead_state directly instead of a
     # nonexistent JSON key (which was always empty, making the guard dead
-    # code). `is_blocked` IS a real JSON bool field, but only readable now
-    # that bead_status stringifies it instead of crashing (see bead_status).
-    local is_blocked_val
-    IFS=$'\x1f' read -r _ is_blocked_val <<< "$(bead_status "$bead_id" is_blocked)"
-    if [ "$bead_state" = "pinned" ] || [ "$is_blocked_val" = "True" ]; then
+    # code).
+    #
+    # fk-16zsa iter-3 BLOCKING-1: `is_blocked` is likewise never a real
+    # signal here — `bd show --json` never emits an `is_blocked` key at all
+    # (it's written only into journal snapshots per bd's
+    # internal/types/types.go, `omitempty`), so the check above was always
+    # comparing against an empty string and could never refuse a genuinely
+    # blocked bead. `bd` does represent "blocked" as a normal `status` value
+    # (`StatusBlocked = "blocked"`) — the same field the pinned check
+    # already reads for free, no second `bd show` needed.
+    if [ "$bead_state" = "pinned" ] || [ "$bead_state" = "blocked" ]; then
       CV_CLOSE_RC=1
-      echo "close_if_open: WARNING: refusing to --force close ${bead_id} (status=${bead_state}, is_blocked=${is_blocked_val:-False}); not a plain assignee-guard case, leaving it open for retry/escalation" >&2
+      echo "close_if_open: WARNING: refusing to --force close ${bead_id} (status=${bead_state}); not a plain assignee-guard case, leaving it open for retry/escalation" >&2
       return 0
     fi
   fi
