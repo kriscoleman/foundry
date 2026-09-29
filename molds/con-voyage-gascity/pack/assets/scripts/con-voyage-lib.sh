@@ -1255,6 +1255,19 @@ for s in sessions:
 # (fk-22bq4) instead of `bd close --force` silently overriding a hold it
 # was never meant to.
 #
+# fk-16zsa iter-5: the behavior-based check above is not sufficient by
+# itself. Real `bd` 1.3.0 returns the assignee-mismatch refusal text FIRST
+# when a bead is BOTH assignee-mismatched and pinned/gate-blocked, so the
+# pin/gate refusal is never emitted and the grep above matches anyway —
+# `--force` fires and silently overrides the hold. Every FORCE call site
+# hits this: con-voyage's setup step claims every work bead as
+# `CV_WORK_BEAD_OWNER`, so this monitor's actor is *always*
+# assignee-mismatched relative to the work bead, whether or not it is also
+# held. Before retrying `--force` on an assignee-mismatch refusal, also
+# positively confirm the bead is neither pinned nor gate-blocked via
+# `bead_pinned_or_blocked` (the real primitives: `bd blocked` and `bd list
+# --pinned`), not the refusal text alone.
+#
 # CV_CLOSE_RC (fk-7v3r): set on every call to the real `bd close` exit status
 # — 0 for a no-op (empty id / already closed) and for a successful close,
 # non-zero when `bd close` itself fails OR the FORCE path refuses to
@@ -1264,6 +1277,68 @@ for s in sessions:
 # close. A caller that must not proceed past a failed close (e.g.
 # con-voyage-finalize.sh deleting its retry record) checks CV_CLOSE_RC
 # immediately after the call instead of the call's own return code.
+# bead_pinned_or_blocked BEAD_ID — exit 0 (true) if BEAD_ID is currently
+# pinned (`bd list --pinned`) or dependency/gate-blocked (`bd blocked`).
+# close_if_open's FORCE path uses this to distinguish "assignee-mismatched
+# only" (safe to --force) from "assignee-mismatched AND held" (must not
+# --force) once bd's own refusal text is ambiguous between the two (see
+# close_if_open's header comment, fk-16zsa iter-5).
+#
+# FAIL-SAFE: exit 0 (treated as pinned/blocked, i.e. refuse to force) for an
+# empty BEAD_ID or either `bd` lookup failing/returning unparseable JSON —
+# force-closing a bead this check failed to positively clear is the unsafe
+# direction, unlike cv_lane_has_open_blocking_dependency above where
+# fail-safe means "take no watchdog action".
+bead_pinned_or_blocked() {
+  local bead_id="$1"
+  [ -n "${bead_id// /}" ] || return 0
+  local gc_bin="${GC:-gc}"
+  local json
+  json=$("$gc_bin" bd blocked --json 2>/dev/null) || {
+    echo "bead_pinned_or_blocked: WARNING: bd blocked lookup failed for ${bead_id}; treating as blocked" >&2
+    return 0
+  }
+  if printf '%s' "$json" | python3 -c "
+import sys, json
+bead_id = sys.argv[1]
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+if not isinstance(data, list):
+    sys.exit(0)
+for item in data:
+    if isinstance(item, dict) and item.get('id') == bead_id:
+        sys.exit(0)
+sys.exit(1)
+" "$bead_id"; then
+    return 0
+  fi
+
+  json=$("$gc_bin" bd list --pinned --json 2>/dev/null) || {
+    echo "bead_pinned_or_blocked: WARNING: bd list --pinned lookup failed for ${bead_id}; treating as blocked" >&2
+    return 0
+  }
+  if printf '%s' "$json" | python3 -c "
+import sys, json
+bead_id = sys.argv[1]
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+if not isinstance(data, list):
+    sys.exit(0)
+for item in data:
+    if isinstance(item, dict) and item.get('id') == bead_id:
+        sys.exit(0)
+sys.exit(1)
+" "$bead_id"; then
+    return 0
+  fi
+
+  return 1
+}
+
 close_if_open() {
   local bead_id="$1" reason="$2" pr_label="${3:-}" known_status="${4:-}" force="${5:-}"
   CV_CLOSE_RC=0
@@ -1281,7 +1356,8 @@ close_if_open() {
       close_rc=0
     else
       close_rc=$?
-      if printf '%s' "$close_output" | grep -q -- 'reclaim or use --force to override'; then
+      if printf '%s' "$close_output" | grep -q -- 'reclaim or use --force to override' \
+         && ! bead_pinned_or_blocked "$bead_id"; then
         if close_output="$("$gc_bin" bd close "$bead_id" --reason "$reason" --force 2>&1)"; then
           close_rc=0
         else

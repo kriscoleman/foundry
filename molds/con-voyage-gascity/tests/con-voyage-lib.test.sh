@@ -50,6 +50,12 @@ trap cleanup EXIT
 #     plain close fails with a refusal message that does NOT match the
 #     assignee-guard text (a real pin or gate hold), so close_if_open must
 #     never retry with --force.
+# fk-16zsa iter-5: real `bd` returns the assignee-guard message FIRST even
+# when a bead is ALSO pinned/gate-blocked, masking the pin/gate refusal
+# entirely — so close_if_open now calls bead_pinned_or_blocked (`bd blocked
+# --json` / `bd list --pinned --json`) as a second, independent check before
+# trusting the assignee-guard text. STUB_BDBLOCKED_JSON / STUB_BDPINNED_JSON
+# stand in for those two calls' JSON bodies (default `[]`, i.e. neither).
 # Other subcommands no-op. EVERY invocation (including `bd show`) is also
 # appended to STUB_GC_LOG, one space-joined argv per line, so
 # cv_bead_mark_in_progress/cv_bead_close tests can assert exactly which
@@ -96,6 +102,14 @@ if [ "${args[$i]:-}" = "bd" ] && [ "${args[$((i+1))]:-}" = "close" ]; then
     echo "Error: cannot close ${id}: unsatisfied gate blocks closure" >&2
     exit 1
   fi
+  exit 0
+fi
+if [ "${args[$i]:-}" = "bd" ] && [ "${args[$((i+1))]:-}" = "blocked" ]; then
+  printf '%s' "${STUB_BDBLOCKED_JSON:-[]}"
+  exit 0
+fi
+if [ "${args[$i]:-}" = "bd" ] && [ "${args[$((i+1))]:-}" = "list" ]; then
+  printf '%s' "${STUB_BDPINNED_JSON:-[]}"
   exit 0
 fi
 if [ "${args[$i]:-}" = "session" ] && [ "${args[$((i+1))]:-}" = "list" ]; then
@@ -297,6 +311,11 @@ export STUB_BDSHOW_JSON_rb_closed='{"id":"rb-closed","status":"closed","assignee
 # from the STUB_BDCLOSE_*_REFUSAL_* vars on the `bd close` stub instead.
 export STUB_BDSHOW_JSON_rb_pinned='{"id":"rb-pinned","status":"open","assignee":"someone"}'
 export STUB_BDSHOW_JSON_rb_blocked='{"id":"rb-blocked","status":"open","assignee":"someone"}'
+# fk-16zsa iter-5: an open bead that is ALSO pinned/gate-blocked — bd's own
+# close refusal text can't tell this apart from rb-open (see the FORCE case
+# further below), so bead_pinned_or_blocked must positively confirm the hold.
+export STUB_BDSHOW_JSON_rb_masked='{"id":"rb-masked","status":"open","assignee":"someone"}'
+export STUB_BDSHOW_JSON_rb_masked2='{"id":"rb-masked2","status":"open","assignee":"someone"}'
 
 start_case "cv_bead_mark_in_progress: empty bead id -> no-op, no bd call"
 : > "$GC_LOG"
@@ -982,6 +1001,32 @@ close_if_open "rb-open" "landed: x" "" "" FORCE 2>/dev/null
 unset STUB_BDCLOSE_ASSIGNEE_MISMATCH_rb_open
 assert_eq "0" "$CV_CLOSE_RC" "a plain assignee-guard case still forces through"
 assert_log_count 'bd close rb-open --reason .*--force' 1 "bd close was retried with --force"
+
+# fk-16zsa iter-5 BLOCKING: a bead that is BOTH assignee-mismatched AND
+# gate-blocked/pinned. Real `bd` emits only the assignee-guard text in this
+# case (the earlier iter-4 cases above only ever exercise ONE refusal reason
+# in isolation), so a text-only check on bd's refusal output cannot tell
+# this apart from the safe plain-assignee-mismatch case above. close_if_open
+# must independently confirm via bead_pinned_or_blocked before forcing.
+start_case "close_if_open: FORCE on a bead that is assignee-mismatched AND gate-blocked -> the masking assignee refusal text is not trusted alone, bd blocked confirms the hold, never forces"
+: > "$GC_LOG"
+export STUB_BDCLOSE_ASSIGNEE_MISMATCH_rb_masked=1
+export STUB_BDBLOCKED_JSON='[{"id":"rb-masked"}]'
+close_if_open "rb-masked" "landed: x" "" "" FORCE 2>/dev/null
+unset STUB_BDCLOSE_ASSIGNEE_MISMATCH_rb_masked
+unset STUB_BDBLOCKED_JSON
+assert_eq "1" "$CV_CLOSE_RC" "an assignee-refusal-masked gate hold is never overridden with --force"
+assert_log_count 'bd close rb-masked --reason .*--force' 0 "the masked gate hold is never forced"
+
+start_case "close_if_open: FORCE on a bead that is assignee-mismatched AND pinned -> the masking assignee refusal text is not trusted alone, bd list --pinned confirms the hold, never forces"
+: > "$GC_LOG"
+export STUB_BDCLOSE_ASSIGNEE_MISMATCH_rb_masked2=1
+export STUB_BDPINNED_JSON='[{"id":"rb-masked2"}]'
+close_if_open "rb-masked2" "landed: x" "" "" FORCE 2>/dev/null
+unset STUB_BDCLOSE_ASSIGNEE_MISMATCH_rb_masked2
+unset STUB_BDPINNED_JSON
+assert_eq "1" "$CV_CLOSE_RC" "an assignee-refusal-masked pin is never overridden with --force"
+assert_log_count 'bd close rb-masked2 --reason .*--force' 0 "the masked pin is never forced"
 
 # ---------------------------------------------------------------------------
 # cv_with_timeout (fk-rri7q LOW-D): portable poll+kill call bound for hosts
