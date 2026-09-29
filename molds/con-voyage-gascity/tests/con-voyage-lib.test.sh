@@ -983,6 +983,53 @@ assert_eq "0" "$rc" "exit 0 seeding a missing destination that has a stale sibli
 assert_eq "seeded" "$out" "still echoes 'seeded' (not 'updated') when the destination itself was missing"
 
 # ---------------------------------------------------------------------------
+# fk-jjumm review iteration 3 (BLOCKING-1): the taper's poll/waited accounting
+# used to run through `awk`'s locale-aware `%.3f` formatting, so under a
+# comma-decimal LC_NUMERIC the poll interval came out as e.g. "0,100" — a
+# value `sleep` rejects outright. That turned the poll into a busy-spin that
+# advanced `waited` on fork speed alone, timing healthy commands out well
+# before the real bound. Only run this if the box actually has a
+# comma-decimal locale installed; skip (not fail) otherwise, since locale
+# availability varies by host/CI image and isn't itself what this case tests.
+# ---------------------------------------------------------------------------
+if command -v locale >/dev/null 2>&1 && locale -a 2>/dev/null | grep -i '^de_DE\.utf-\?8$' >/dev/null; then
+  # A command that exits INSTANTLY never enters the poll loop at all (the
+  # `kill -0` check already fails on the first pass), so it can't exercise
+  # the poll/waited accounting this case targets. Wrap a real ~1s `sleep`
+  # under a generous 30s bound instead — matching the synthesis's own
+  # reproduction (`cv_with_timeout 30 'sleep 1'`) — so at least one full poll
+  # iteration (and therefore the locale-sensitive arithmetic) actually runs.
+  start_case "cv_with_timeout: a comma-decimal LC_NUMERIC locale does not busy-spin or false-timeout a healthy command"
+  t0=$(date +%s)
+  out="$(LC_ALL=de_DE.UTF-8 cv_with_timeout 30 sleep 1; echo "rc=$?")"
+  t1=$(date +%s)
+  elapsed=$((t1 - t0))
+  assert_eq "rc=0" "$out" "a healthy ~1s command under a generous 30s bound still succeeds, not falsely timed out (rc=124) by a locale-broken poll"
+  if [ "$elapsed" -lt 10 ]; then
+    echo "  PASS: returned in ${elapsed}s — not busy-spun to a false early timeout"
+  else
+    echo "  FAIL: took ${elapsed}s — expected a healthy ~1s command to return promptly, not be held up" >&2
+    FAILURES=$((FAILURES+1))
+  fi
+
+  start_case "cv_with_timeout: a comma-decimal LC_NUMERIC locale still bounds a genuinely hung command"
+  t0=$(date +%s)
+  out="$(LC_ALL=de_DE.UTF-8 cv_with_timeout 1 sleep 20)"
+  rc=$?
+  t1=$(date +%s)
+  elapsed=$((t1 - t0))
+  assert_eq "124" "$rc" "a hung command is still killed and reported as a timeout under a comma-decimal locale"
+  if [ "$elapsed" -lt 10 ]; then
+    echo "  PASS: returned in ${elapsed}s — bounded, not a runaway busy-spin"
+  else
+    echo "  FAIL: took ${elapsed}s — expected the 1s bound to apply under this locale too" >&2
+    FAILURES=$((FAILURES+1))
+  fi
+else
+  echo "  SKIP: de_DE.UTF-8 locale not installed on this host; comma-decimal LC_NUMERIC case not exercised"
+fi
+
+# ---------------------------------------------------------------------------
 # zsh portability (fk-k14n REWORK — operator PR comment + new bug report):
 # `status` is a special/read-only parameter in zsh (it mirrors `$?`), so
 # `local status` followed by an assignment (`status="$x"` or

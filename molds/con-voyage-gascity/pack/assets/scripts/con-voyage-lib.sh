@@ -1689,10 +1689,23 @@ cv_with_timeout() {
   # the shell many more, much earlier chances to reap the child between
   # checks, without changing the ceiling: the slowest this can ever detect a
   # timeout is one poll interval late, capped at 1s, identical to before.
-  local waited="0"
-  local poll="0.05"
+  #
+  # fk-jjumm review iteration 3 (BLOCKING-1/2): tracking the taper as
+  # fractional-second strings via `awk` was both a locale bug (`awk`'s
+  # `%.3f` honors LC_NUMERIC; a comma-decimal locale produces a value
+  # `sleep` rejects outright, turning the poll into a busy-spin that fires
+  # the timeout against wall-clock time never actually slept through) and a
+  # needless latency tax (each fork/exec eats back the fast-path savings the
+  # taper exists to deliver). The sequence is a fixed integer progression
+  # (50, 100, 200, 400, 800, 1000, 1000, ...ms), so it's tracked in native
+  # bash integer arithmetic instead; only `sleep`'s own argument needs a
+  # fractional-seconds string, produced by the `printf` builtin (locale-safe,
+  # no fork).
+  local waited_ms=0
+  local poll_ms=50
+  local secs_ms=$((secs * 1000))
   while kill -0 "$cmd_pid" 2>/dev/null; do
-    if awk -v w="$waited" -v s="$secs" 'BEGIN { exit !(w >= s) }'; then
+    if [ "$waited_ms" -ge "$secs_ms" ]; then
       if command -v pgrep >/dev/null 2>&1; then
         local child_pid
         for child_pid in $(pgrep -P "$cmd_pid" 2>/dev/null); do
@@ -1703,9 +1716,12 @@ cv_with_timeout() {
       wait "$cmd_pid" 2>/dev/null
       return 124
     fi
-    sleep "$poll"
-    waited=$(awk -v w="$waited" -v p="$poll" 'BEGIN { printf "%.3f", w + p }')
-    poll=$(awk -v p="$poll" 'BEGIN { np = p * 2; if (np > 1) np = 1; printf "%.3f", np }')
+    local poll_s
+    printf -v poll_s '%d.%03d' $((poll_ms / 1000)) $((poll_ms % 1000))
+    sleep "$poll_s"
+    waited_ms=$((waited_ms + poll_ms))
+    poll_ms=$((poll_ms * 2))
+    [ "$poll_ms" -gt 1000 ] && poll_ms=1000
   done
   wait "$cmd_pid" 2>/dev/null
   return "$?"
