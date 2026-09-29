@@ -1030,6 +1030,35 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# fk-i7d7b review iteration 4 (BLOCKING-1, qa-test): removing `awk` from the
+# poll loop's taper accounting replaced it with bash's native `$(( ))`
+# arithmetic, which applies C-style octal parsing to any leading-zero digit
+# string — a rule `awk` never had. An operator-supplied "010" silently
+# misparsed as octal (decimal 8, not 10), and "08" hard-crashed the
+# arithmetic expansion AFTER the command was already backgrounded, orphaning
+# it with no supervising poll loop ever entered. Forcing base-10 via `10#`
+# fixes both without touching the taper algorithm itself.
+# ---------------------------------------------------------------------------
+start_case "cv_with_timeout: a leading-zero decimal bound (010) is read as decimal 10, not octal 8"
+t0=$(date +%s)
+out="$(cv_with_timeout 010 sleep 9; echo "rc=$?")"
+t1=$(date +%s)
+elapsed=$((t1 - t0))
+assert_eq "rc=0" "$out" "a 9s command under a decimal-10s bound succeeds; under the octal bug '010' misreads as 8 and this would instead time out (rc=124) at ~8s"
+if [ "$elapsed" -lt 15 ]; then
+  echo "  PASS: returned in ${elapsed}s — bound read as decimal 10, not octal 8"
+else
+  echo "  FAIL: took ${elapsed}s — unexpectedly slow for a 9s command under a 10s bound" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
+start_case "cv_with_timeout: a leading-zero bound with an 8/9 digit (08) does not crash or orphan the child"
+out="$(cv_with_timeout 08 true 2>&1)"
+rc=$?
+assert_eq "0" "$rc" "no arithmetic error aborts the function before the command completes"
+assert_eq "" "$out" "no stderr from a bad octal-literal arithmetic expansion ('08: value too great for base')"
+
+# ---------------------------------------------------------------------------
 # zsh portability (fk-k14n REWORK — operator PR comment + new bug report):
 # `status` is a special/read-only parameter in zsh (it mirrors `$?`), so
 # `local status` followed by an assignment (`status="$x"` or

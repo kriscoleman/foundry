@@ -1703,7 +1703,14 @@ cv_with_timeout() {
   # no fork).
   local waited_ms=0
   local poll_ms=50
-  local secs_ms=$((secs * 1000))
+  # fk-i7d7b review iteration 4 (BLOCKING-1): bash's arithmetic evaluator
+  # applies C-style octal parsing to any leading-zero digit string (a rule
+  # the `awk` this replaced never had), so an operator-supplied "010" here
+  # silently misparses as decimal 8 and "08" hard-crashes the arithmetic
+  # expansion after the child is already backgrounded, orphaning it. The
+  # `10#` base-10 literal prefix forces decimal interpretation regardless of
+  # leading zeros.
+  local secs_ms=$((10#$secs * 1000))
   while kill -0 "$cmd_pid" 2>/dev/null; do
     if [ "$waited_ms" -ge "$secs_ms" ]; then
       if command -v pgrep >/dev/null 2>&1; then
