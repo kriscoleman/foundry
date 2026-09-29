@@ -144,6 +144,12 @@ chmod +x "${STUBDIR}/gh"
 # stderr (fk-16zsa iter-4: close_if_open's FORCE path is behavior-based —
 # it only retries with --force when the plain close's refusal matches this
 # exact text — so the stub must emit it, not just fail/succeed on exit code).
+# STUB_BDBLOCKED_IDS / STUB_BDPINNED_IDS (fk-16zsa iter-5): newline-delimited
+# bead ids that `bd blocked --json` / `bd list --pinned --json` report —
+# close_if_open's FORCE path calls both via bead_pinned_or_blocked before
+# trusting an assignee-guard refusal as force-safe. Unset/empty (the default
+# for every case below) means neither call reports the id, matching a
+# genuinely-only-assignee-mismatched bead.
 # ---------------------------------------------------------------------------
 cat > "${STUBDIR}/gc" <<'GC_STUB'
 #!/usr/bin/env bash
@@ -191,6 +197,22 @@ case "$sub" in
           echo "Error: cannot close ${close_id}: assignee is \"con-voyage:work-bead\", actor is \"mayor\"; reclaim or use --force to override" >&2
           exit 1
         fi
+      fi
+      exit 0
+    fi
+    if [ "$bdsub" = "blocked" ]; then
+      if [ -n "${STUB_BDBLOCKED_IDS:-}" ]; then
+        printf '%s\n' "$STUB_BDBLOCKED_IDS" | awk 'NF{printf "{\"id\":\"%s\"},", $0}' | sed 's/,$//' | awk '{printf "[%s]", $0}'
+      else
+        printf '[]'
+      fi
+      exit 0
+    fi
+    if [ "$bdsub" = "list" ]; then
+      if [ -n "${STUB_BDPINNED_IDS:-}" ]; then
+        printf '%s\n' "$STUB_BDPINNED_IDS" | awk 'NF{printf "{\"id\":\"%s\"},", $0}' | sed 's/,$//' | awk '{printf "[%s]", $0}'
+      else
+        printf '[]'
       fi
       exit 0
     fi
