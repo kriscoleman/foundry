@@ -155,7 +155,7 @@ def count_section(label):
     if bullets:
         return len(bullets)
     body = "\n".join(sec).strip()
-    if not body or re.match(r'(?i)^(none|n/a)\b', body):
+    if not body or re.match(r'(?i)^[\s*_]*(none|n/a)\b', body):
         return 0
     return -1
 
