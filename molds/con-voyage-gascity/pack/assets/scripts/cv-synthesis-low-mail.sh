@@ -199,18 +199,23 @@ case "$BLOCKING_COUNT" in
   UNPARSEABLE) die "${SYNTHESIS_FILE}'s BLOCKING findings section has content but no recognized finding shape (### sub-heading or top-level '-' bullet) — refusing to guess 0" ;;
   ''|*[!0-9]*) die "${SYNTHESIS_FILE}: could not determine a BLOCKING count" ;;
 esac
+[ -z "$BLOCKING_MISMATCH" ] || die "${SYNTHESIS_FILE} frontmatter claims blocking_count=${BLOCKING_MISMATCH} but ${BLOCKING_COUNT} BLOCKING sub-heading(s) were actually parsed — refusing to trust a self-inconsistent doc"
+
+# The BLOCKING>0 no-op exit must run before any LOW-count validation: LOW has
+# no bearing on an iterate doc's mail decision, so a LOW-count frontmatter
+# mismatch must never block the no-op path (it only matters once we're
+# actually about to consume LOW_COUNT below).
+if [ "$BLOCKING_COUNT" -gt 0 ]; then
+  echo "cv-synthesis-low-mail: ${BLOCKING_COUNT} BLOCKING finding(s) present — iterate path owns escalation, no LOW mail"
+  exit 0
+fi
+
 case "$LOW_COUNT" in
   NOSECTION) die "${SYNTHESIS_FILE} has no '## ... LOW findings' section — cannot determine verdict" ;;
   UNPARSEABLE) die "${SYNTHESIS_FILE}'s LOW findings section has content but no recognized finding shape (### sub-heading or top-level '-' bullet) — refusing to guess 0" ;;
   ''|*[!0-9]*) die "${SYNTHESIS_FILE}: could not determine a LOW count" ;;
 esac
-[ -z "$BLOCKING_MISMATCH" ] || die "${SYNTHESIS_FILE} frontmatter claims blocking_count=${BLOCKING_MISMATCH} but ${BLOCKING_COUNT} BLOCKING sub-heading(s) were actually parsed — refusing to trust a self-inconsistent doc"
 [ -z "$LOW_MISMATCH" ] || die "${SYNTHESIS_FILE} frontmatter claims low_count=${LOW_MISMATCH} but ${LOW_COUNT} LOW sub-heading(s) were actually parsed — refusing to trust a self-inconsistent doc"
-
-if [ "$BLOCKING_COUNT" -gt 0 ]; then
-  echo "cv-synthesis-low-mail: ${BLOCKING_COUNT} BLOCKING finding(s) present — iterate path owns escalation, no LOW mail"
-  exit 0
-fi
 
 if [ "$LOW_COUNT" -eq 0 ]; then
   echo "cv-synthesis-low-mail: 0 BLOCKING / 0 LOW — nothing to escalate"
