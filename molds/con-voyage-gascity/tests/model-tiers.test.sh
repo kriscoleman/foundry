@@ -108,10 +108,10 @@ start_case "pack.toml declares all three tier providers on builtin:claude with d
 # so — unlike opencode's fireworks pins — no options_schema re-declaration is
 # needed here.
 check_provider_block() {
-  local tier="$1" model="$2"
-  result="$(python3 - "$tier" "$model" "${PACK_DIR}/pack.toml" <<'PY'
+  local tier="$1" model="$2" effort="$3"
+  result="$(python3 - "$tier" "$model" "$effort" "${PACK_DIR}/pack.toml" <<'PY'
 import sys, tomllib
-tier, model, path = sys.argv[1], sys.argv[2], sys.argv[3]
+tier, model, effort, path = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 with open(path, 'rb') as fh:
     data = tomllib.load(fh)
 prov = (data.get('providers') or {}).get(tier)
@@ -121,22 +121,37 @@ if prov is None:
 if prov.get('base') != 'builtin:claude':
     print('bad-base:' + str(prov.get('base')))
     raise SystemExit(0)
-if (prov.get('option_defaults') or {}).get('model') != model:
-    print('bad-model:' + str((prov.get('option_defaults') or {}).get('model')))
+defaults = prov.get('option_defaults') or {}
+if defaults.get('model') != model:
+    print('bad-model:' + str(defaults.get('model')))
+    raise SystemExit(0)
+if effort == '<unset>':
+    if 'effort' in defaults:
+        print('unexpected-effort:' + str(defaults.get('effort')))
+        raise SystemExit(0)
+elif defaults.get('effort') != effort:
+    print('bad-effort:' + str(defaults.get('effort')))
     raise SystemExit(0)
 print('ok')
 PY
 )"
   case "$result" in
-    ok)                    pass "[providers.${tier}] claude tier, model=${model}" ;;
-    missing)               fail "pack.toml missing [providers.${tier}]" ;;
-    bad-base:*|bad-model:*) fail "[providers.${tier}] ${result}" ;;
-    *)                     fail "[providers.${tier}] unexpected parse result: ${result}" ;;
+    ok)                     pass "[providers.${tier}] claude tier, model=${model}, effort=${effort}" ;;
+    missing)                fail "pack.toml missing [providers.${tier}]" ;;
+    bad-base:*|bad-model:*|bad-effort:*|unexpected-effort:*)
+                            fail "[providers.${tier}] ${result}" ;;
+    *)                      fail "[providers.${tier}] unexpected parse result: ${result}" ;;
   esac
 }
-check_provider_block cv-review-intensive "opus"
-check_provider_block cv-review-standard "sonnet"
-check_provider_block cv-review-light "haiku"
+# Every cv-review-* claude provider must ship an EXPLICIT effort — otherwise
+# it silently inherits builtin:claude's own default, which is "max". Nobody
+# defaults to max; effort matches tier (intensive=high, standard=medium,
+# light=low). If a tier's model genuinely can't take an effort flag, it must
+# be explicitly `<unset>` here with a comment explaining why, not silently
+# absent.
+check_provider_block cv-review-intensive "opus" "high"
+check_provider_block cv-review-standard "sonnet" "medium"
+check_provider_block cv-review-light "haiku" "low"
 
 # ---------------------------------------------------------------------------
 start_case "the con-voyage-rate-limit-lookout order ships, city-scoped, with fallback pools wired"

@@ -55,18 +55,30 @@ schema = 2
 # it fails config validation ("not a valid choice") without an explicit
 # choice carrying flag_args. builtin:claude's haiku/sonnet/opus aliases are
 # already known choices, so the claude defaults below need no such dance.
+#
+# Each claude tier below also pins an explicit `effort` (light=low,
+# standard=medium, intensive=high). builtin:claude's own default is
+# effort=max, so a tier provider that left `effort` unset would silently
+# inherit max for every lane, including the light/hygiene lenses that never
+# needed it. Nobody defaults to max; effort matches tier. The opencode +
+# fireworks example above intentionally carries no `effort` key — that
+# option belongs to builtin:claude, not builtin:opencode, and opencode mode
+# controls throughput via model choice alone.
 # ---------------------------------------------------------------------------
 [providers.cv-review-light]
 base = "builtin:claude"
 [providers.cv-review-light.option_defaults]
 model = "haiku"
+effort = "low"
 
 [providers.cv-review-standard]
 base = "builtin:claude"
 [providers.cv-review-standard.option_defaults]
 model = "sonnet"
+effort = "medium"
 
 [providers.cv-review-intensive]
 base = "builtin:claude"
 [providers.cv-review-intensive.option_defaults]
 model = "opus"
+effort = "high"
