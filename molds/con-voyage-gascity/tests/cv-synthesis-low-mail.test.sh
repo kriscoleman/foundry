@@ -540,6 +540,50 @@ assert_log_count "$GC_LOG" '^mail send mayor ' 1 "mail still sent for a bold **N
 assert_log_count "$GC_LOG" "LOW-only: ${WORK_BEAD} ${PR_OR_BRANCH} .* 2 LOW" 1 "count is correct (2), not a die on UNPARSEABLE"
 
 # ===========================================================================
+# CASE 17 — BLOCKING > 0 doc whose YAML frontmatter `low_count` disagrees
+#   with the body's actual LOW sub-heading count (root fk-5vupw iteration-3
+#   code-review BLOCKING-1: the LOW_MISMATCH guard used to run before the
+#   BLOCKING>0 no-op exit, so this legitimate iterate doc `die`d instead of
+#   no-op'ing — LOW has no bearing on an iterate doc's mail decision).
+# ===========================================================================
+start_case "17: BLOCKING>0 with mismatched LOW frontmatter -> no-op exit 0, not a die"
+setup_case_env "17"
+SYNTHESIS_FILE="${SANDBOX}/synthesis-17.md"
+{
+  echo "---"
+  echo "blocking_count: 1"
+  echo "low_count: 7"
+  echo "---"
+  echo "# Con-voyage Review Synthesis — root fixture (iteration 1)"
+  echo
+  echo "## 1. Overall verdict: **iterate**"
+  echo
+  echo "## 2. BLOCKING findings (must fix before landing)"
+  echo
+  echo "### BLOCKING-1 — sample blocking finding 1"
+  echo "- **Lanes:** security (BLOCKING-1)"
+  echo "- **File:line:** \`some/file.go:1\`"
+  echo "- **Finding:** something must be fixed."
+  echo
+  echo "## 3. LOW findings (surface to human for decision)"
+  echo
+  for i in $(seq 1 8); do
+    echo "### LOW-${i} — sample low finding ${i}"
+    echo "- **Lanes:** simplicity (LOW-${i})"
+    echo "- **File:line:** \`some/file.go:$((i + 10))\`"
+    echo "- **Finding:** a minor concern."
+    echo
+  done
+  echo "## 4. Lanes approved with no findings"
+  echo
+  echo "None."
+} > "$SYNTHESIS_FILE"
+run_script
+assert_eq "0" "$RC" "script exits 0 (BLOCKING no-op) instead of dying on the unrelated LOW-count mismatch"
+assert_log_count "$GC_LOG" 'mail send' 0 "no mail sent while BLOCKING findings remain, even with a LOW mismatch"
+assert_log_count "$GC_LOG" 'bd update' 0 "no metadata recorded either"
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 echo
