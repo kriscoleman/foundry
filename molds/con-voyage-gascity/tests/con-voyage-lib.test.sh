@@ -39,6 +39,17 @@ trap cleanup EXIT
 # printing nothing and the lib falls back). For `bd close <id>` it exits 1
 # when STUB_BDCLOSE_FAIL_<id>=1 (used by the close_if_open exit-status tests,
 # fk-7v3r) — unset/0 behaves like every other no-op subcommand (exit 0).
+# fk-16zsa iter-4: close_if_open's FORCE path is now behavior-based (it
+# inspects bd's own refusal text rather than a status field), so three more
+# vars simulate the real `bd close` refusal shapes it must tell apart:
+#   STUB_BDCLOSE_ASSIGNEE_MISMATCH_<id>=1 — a plain (non-forced) close fails
+#     with the real assignee-guard message ("...reclaim or use --force to
+#     override"); a --force retry succeeds. This is the one refusal FORCE
+#     is meant to override.
+#   STUB_BDCLOSE_PIN_REFUSAL_<id>=1 / STUB_BDCLOSE_GATE_REFUSAL_<id>=1 — a
+#     plain close fails with a refusal message that does NOT match the
+#     assignee-guard text (a real pin or gate hold), so close_if_open must
+#     never retry with --force.
 # Other subcommands no-op. EVERY invocation (including `bd show`) is also
 # appended to STUB_GC_LOG, one space-joined argv per line, so
 # cv_bead_mark_in_progress/cv_bead_close tests can assert exactly which
@@ -62,8 +73,27 @@ if [ "${args[$i]:-}" = "bd" ] && [ "${args[$((i+1))]:-}" = "show" ]; then
 fi
 if [ "${args[$i]:-}" = "bd" ] && [ "${args[$((i+1))]:-}" = "close" ]; then
   id="${args[$((i+2))]:-}"
+  has_force=0
+  for a in "${args[@]:$((i+2))}"; do
+    [ "$a" = "--force" ] && has_force=1
+  done
   var="STUB_BDCLOSE_FAIL_${id//-/_}"
   if [ "${!var:-0}" = "1" ]; then
+    exit 1
+  fi
+  var="STUB_BDCLOSE_ASSIGNEE_MISMATCH_${id//-/_}"
+  if [ "${!var:-0}" = "1" ] && [ "$has_force" = "0" ]; then
+    echo "Error: cannot close ${id}: assignee is \"someone\", actor is \"mayor\"; reclaim or use --force to override" >&2
+    exit 1
+  fi
+  var="STUB_BDCLOSE_PIN_REFUSAL_${id//-/_}"
+  if [ "${!var:-0}" = "1" ]; then
+    echo "Error: cannot close ${id}: issue is pinned" >&2
+    exit 1
+  fi
+  var="STUB_BDCLOSE_GATE_REFUSAL_${id//-/_}"
+  if [ "${!var:-0}" = "1" ]; then
+    echo "Error: cannot close ${id}: unsatisfied gate blocks closure" >&2
     exit 1
   fi
   exit 0
@@ -261,8 +291,12 @@ assert_log_count 'bd close rb-repair --reason superseded: PR #83 merged' 1 "comp
 # ---------------------------------------------------------------------------
 export STUB_BDSHOW_JSON_rb_open='{"id":"rb-open","status":"open","assignee":""}'
 export STUB_BDSHOW_JSON_rb_closed='{"id":"rb-closed","status":"closed","assignee":"someone"}'
-export STUB_BDSHOW_JSON_rb_pinned='{"id":"rb-pinned","status":"pinned","assignee":"someone","is_blocked":false}'
-export STUB_BDSHOW_JSON_rb_blocked='{"id":"rb-blocked","status":"blocked","assignee":"someone"}'
+# fk-16zsa iter-4: real `bd` never sets status="pinned"/"blocked" for these
+# cases (pin is an orthogonal flag, a dependency/gate block leaves status
+# "open") — these fixtures now use the real shape; the refusal signal comes
+# from the STUB_BDCLOSE_*_REFUSAL_* vars on the `bd close` stub instead.
+export STUB_BDSHOW_JSON_rb_pinned='{"id":"rb-pinned","status":"open","assignee":"someone"}'
+export STUB_BDSHOW_JSON_rb_blocked='{"id":"rb-blocked","status":"open","assignee":"someone"}'
 
 start_case "cv_bead_mark_in_progress: empty bead id -> no-op, no bd call"
 : > "$GC_LOG"
@@ -914,33 +948,38 @@ unset STUB_BDCLOSE_FAIL_rb_open
 assert_eq "0" "$rc" "close_if_open's own return code stays 0 even on a bd close failure (con-voyage-pr-watch.sh calls this under set -e as a bare statement)"
 
 # ---------------------------------------------------------------------------
-# close_if_open FORCE: pin/gate pre-check (fk-16zsa iter-2 BLOCKING-1 — the
-# iteration-1 guard never actually refused anything, because "pinned" isn't
-# a `bd show --json` field and the `is_blocked` bool crashed bead_status's
-# reader into a swallowed empty; fk-16zsa iter-3 BLOCKING-1 — `is_blocked`
-# is likewise never emitted by real `bd show --json`, only by journal
-# snapshots, so even after the stringify fix the check could never fire
-# against real bd output. A blocked bead surfaces instead as
-# status="blocked", the same field the pinned check already reads). These
-# stub beads exercise the pre-check against the real bd status shapes it
-# must read (status="pinned", status="blocked"), not a schema key that
-# never existed.
+# close_if_open FORCE: behavior-based pin/gate detection (fk-16zsa iter-2/3
+# BLOCKING — a `status`-field compare against "pinned"/"blocked"/is_blocked
+# is always dead code, because real `bd show --json` never sets any of
+# those for a genuinely pinned or dependency/gate-blocked bead. fk-16zsa
+# iter-4: detect the refusal from bd's own close output instead — only a
+# plain close's failure text matching the assignee-guard message is safe to
+# retry with --force; any other refusal (pin, gate, anything else) must
+# leave the bead open.
 # ---------------------------------------------------------------------------
-start_case "close_if_open: FORCE on a pinned bead -> refuses, CV_CLOSE_RC=1, no bd close call"
+start_case "close_if_open: FORCE on a pinned bead -> plain close refused for a non-assignee reason, refuses to force, CV_CLOSE_RC=1"
 : > "$GC_LOG"
+export STUB_BDCLOSE_PIN_REFUSAL_rb_pinned=1
 close_if_open "rb-pinned" "landed: x" "" "" FORCE 2>/dev/null
-assert_eq "1" "$CV_CLOSE_RC" "a pinned bead refuses the forced close"
-assert_log_count 'bd close' 0 "the refuse-branch never calls bd close at all"
+unset STUB_BDCLOSE_PIN_REFUSAL_rb_pinned
+assert_eq "1" "$CV_CLOSE_RC" "a pinned bead's non-assignee refusal is never retried with --force"
+assert_log_count 'bd close rb-pinned' 1 "only the plain close was attempted"
+assert_log_count 'bd close rb-pinned.*--force' 0 "the refuse-branch never retries with --force"
 
-start_case "close_if_open: FORCE on a blocked bead -> refuses, CV_CLOSE_RC=1, no bd close call"
+start_case "close_if_open: FORCE on a gate-blocked bead -> plain close refused for a non-assignee reason, refuses to force, CV_CLOSE_RC=1"
 : > "$GC_LOG"
+export STUB_BDCLOSE_GATE_REFUSAL_rb_blocked=1
 close_if_open "rb-blocked" "landed: x" "" "" FORCE 2>/dev/null
-assert_eq "1" "$CV_CLOSE_RC" "a blocked bead refuses the forced close"
-assert_log_count 'bd close' 0 "the refuse-branch never calls bd close at all"
+unset STUB_BDCLOSE_GATE_REFUSAL_rb_blocked
+assert_eq "1" "$CV_CLOSE_RC" "a gate-blocked bead's non-assignee refusal is never retried with --force"
+assert_log_count 'bd close rb-blocked' 1 "only the plain close was attempted"
+assert_log_count 'bd close rb-blocked.*--force' 0 "the refuse-branch never retries with --force"
 
-start_case "close_if_open: FORCE on a plain open bead (not pinned/blocked) -> proceeds, calls bd close --force"
+start_case "close_if_open: FORCE on a plain assignee-mismatch bead -> plain close refused for the assignee reason, retries and succeeds with --force"
 : > "$GC_LOG"
+export STUB_BDCLOSE_ASSIGNEE_MISMATCH_rb_open=1
 close_if_open "rb-open" "landed: x" "" "" FORCE 2>/dev/null
+unset STUB_BDCLOSE_ASSIGNEE_MISMATCH_rb_open
 assert_eq "0" "$CV_CLOSE_RC" "a plain assignee-guard case still forces through"
 assert_log_count 'bd close rb-open --reason .*--force' 1 "bd close was retried with --force"
 

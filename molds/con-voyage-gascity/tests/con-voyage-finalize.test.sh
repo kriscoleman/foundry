@@ -139,8 +139,11 @@ chmod +x "${STUBDIR}/gh"
 # id's `bd close` succeeds (exit 0). Fails UNCONDITIONALLY, --force included
 # (simulates a genuine bd-close error, not the assignee guard below).
 # STUB_BDCLOSE_REQUIRES_FORCE_IDS (fk-c1xa): newline-delimited bead ids for
-# which `bd close` exits 1 UNLESS `--force`/`-f` is present in argv (simulates
-# real bd's "assignee is %q, actor is %q; reclaim or use --force" guard).
+# which `bd close` exits 1 UNLESS `--force`/`-f` is present in argv, with
+# real bd's "assignee is %q, actor is %q; reclaim or use --force" text on
+# stderr (fk-16zsa iter-4: close_if_open's FORCE path is behavior-based —
+# it only retries with --force when the plain close's refusal matches this
+# exact text — so the stub must emit it, not just fail/succeed on exit code).
 # ---------------------------------------------------------------------------
 cat > "${STUBDIR}/gc" <<'GC_STUB'
 #!/usr/bin/env bash
@@ -184,7 +187,10 @@ case "$sub" in
         for a in "${args[@]}"; do
           [ "$a" = "--force" ] || [ "$a" = "-f" ] && has_force=1
         done
-        [ "$has_force" = "1" ] || exit 1
+        if [ "$has_force" != "1" ]; then
+          echo "Error: cannot close ${close_id}: assignee is \"con-voyage:work-bead\", actor is \"mayor\"; reclaim or use --force to override" >&2
+          exit 1
+        fi
       fi
       exit 0
     fi
