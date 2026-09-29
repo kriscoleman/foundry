@@ -1072,8 +1072,8 @@ release_lock() {
 }
 
 # bead_status BEAD_ID FIELD — prints "<status><0x1f><FIELD-value>". FIELD is
-# any top-level key `bd show --json` returns (this pack asks for "assignee",
-# "updated_at", or "is_blocked"). A non-string JSON value (e.g. the
+# any top-level key `bd show --json` returns (this pack asks for "assignee"
+# or "updated_at"). A non-string JSON value (e.g. the
 # `is_blocked` bool) is stringified ("True"/"False") rather than passed
 # through raw — Python's `True or ''` short-circuits to `True`, and
 # concatenating that against the leading status string used to raise
@@ -1221,13 +1221,13 @@ for s in sessions:
 # decide it needs closing) skip the redundant second `bd show` — when empty
 # (the default), the status is fetched fresh, same as before.
 #
-# FORCE (fk-c1xa): when non-empty, passes `--force` to `bd close` — but ONLY
-# after confirming the assignee mismatch is actually the sole blocker.
-# `bd close --force` is not assignee-scoped: per `bd close --help` it also
-# "Force close[s] pinned issues or unsatisfied gates", and a plain `bd close`
-# refuses a bead whose `assignee` differs from the caller's own actor
-# ("cannot close %s: assignee is %q, actor is %q; reclaim or use --force to
-# override") — con-voyage's own setup step claims a work bead as
+# FORCE (fk-c1xa): when non-empty, retries with `--force` to `bd close` —
+# but ONLY after confirming the assignee mismatch is actually the sole
+# blocker. `bd close --force` is not assignee-scoped: per `bd close --help`
+# it also "Force close[s] pinned issues or unsatisfied gates", and a plain
+# `bd close` refuses a bead whose `assignee` differs from the caller's own
+# actor ("cannot close %s: assignee is %q, actor is %q; reclaim or use
+# --force to override") — con-voyage's own setup step claims a work bead as
 # `con-voyage:work-bead`, so this monitor's own actor (e.g. "mayor") never
 # matches and every close silently no-ops without --force. Live evidence:
 # fk-8b5fl/#100, fk-htx5p/#101, fk-q2pon/#103, fk-o9ntx/#105 all sat
@@ -1236,15 +1236,29 @@ for s in sessions:
 # lifecycle of once a PR reaches a terminal state (the work bead + its
 # convoy) — never for a repair bead another lens/session may still be
 # working, which is why every OTHER close_if_open call site in this pack
-# leaves FORCE unset (unchanged behavior). Even then, FORCE never silently
-# overrides a human `pinned` hold or an unresolved dependency/gate (see the
-# pinned/is_blocked pre-check below) — those are left open for the caller's
-# normal escalation path (fk-22bq4).
+# leaves FORCE unset (unchanged behavior).
+#
+# fk-16zsa iter-2/3/4: three iterations in a row tried to detect a human
+# `pinned` hold or an unresolved dependency/gate block by comparing the
+# already-fetched `status` field against a literal string ("pinned",
+# "blocked", `is_blocked`) — every one of those was dead code, because none
+# of those states is what real `bd show --json` actually sets: `pinned` is
+# an orthogonal flag never surfaced in `status` at all (only via `bd list
+# --pinned`), and a genuinely dependency/gate-blocked bead's `status` stays
+# `open`. This can't be a `status`-field compare, so instead it's
+# BEHAVIOR-based: try a PLAIN `bd close` first (no --force) and inspect
+# bd's own refusal text. Only retry with --force when bd refused for
+# exactly the assignee-mismatch reason this FORCE param exists to override
+# ("... reclaim or use --force to override"); any other refusal (a real
+# pin, an unsatisfied gate, or anything else) is left alone — the bead
+# stays open (non-zero CV_CLOSE_RC) for the caller's normal escalation path
+# (fk-22bq4) instead of `bd close --force` silently overriding a hold it
+# was never meant to.
 #
 # CV_CLOSE_RC (fk-7v3r): set on every call to the real `bd close` exit status
 # — 0 for a no-op (empty id / already closed) and for a successful close,
-# non-zero when `bd close` itself fails OR the FORCE pre-check refuses to
-# override a pinned/blocked bead (fk-22bq4). The function's OWN return value
+# non-zero when `bd close` itself fails OR the FORCE path refuses to
+# override a non-assignee refusal (fk-22bq4). The function's OWN return value
 # stays 0 in every case: con-voyage-pr-watch.sh calls this as a bare statement
 # under `set -e` and must never abort mid-scan over a single PR's failed
 # close. A caller that must not proceed past a failed close (e.g.
@@ -1260,36 +1274,34 @@ close_if_open() {
   fi
   [ -n "$bead_state" ] && [ "$bead_state" != "closed" ] || return 0
   local gc_bin="${GC:-gc}"
+
+  local close_output close_rc
   if [ -n "$force" ]; then
-    # fk-22bq4: --force overrides a pin or an unsatisfied gate too, not just
-    # the assignee guard this call site exists for. Refuse to force through
-    # either one — leave the bead open (non-zero CV_CLOSE_RC) so the caller's
-    # normal retry/escalation path handles it instead of a silent override.
-    #
-    # fk-16zsa iter-2 BLOCKING-1: "pinned" is not a `bd show --json` field —
-    # per beads@v1.3.0-rc.2, a bead is pinned by having `status: "pinned"`,
-    # so check the already-fetched bead_state directly instead of a
-    # nonexistent JSON key (which was always empty, making the guard dead
-    # code).
-    #
-    # fk-16zsa iter-3 BLOCKING-1: `is_blocked` is likewise never a real
-    # signal here — `bd show --json` never emits an `is_blocked` key at all
-    # (it's written only into journal snapshots per bd's
-    # internal/types/types.go, `omitempty`), so the check above was always
-    # comparing against an empty string and could never refuse a genuinely
-    # blocked bead. `bd` does represent "blocked" as a normal `status` value
-    # (`StatusBlocked = "blocked"`) — the same field the pinned check
-    # already reads for free, no second `bd show` needed.
-    if [ "$bead_state" = "pinned" ] || [ "$bead_state" = "blocked" ]; then
-      CV_CLOSE_RC=1
-      echo "close_if_open: WARNING: refusing to --force close ${bead_id} (status=${bead_state}); not a plain assignee-guard case, leaving it open for retry/escalation" >&2
-      return 0
+    if close_output="$("$gc_bin" bd close "$bead_id" --reason "$reason" 2>&1)"; then
+      close_rc=0
+    else
+      close_rc=$?
+      if printf '%s' "$close_output" | grep -q -- 'reclaim or use --force to override'; then
+        if close_output="$("$gc_bin" bd close "$bead_id" --reason "$reason" --force 2>&1)"; then
+          close_rc=0
+        else
+          close_rc=$?
+        fi
+      else
+        CV_CLOSE_RC=1
+        echo "close_if_open: WARNING: refusing to --force close ${bead_id} (status=${bead_state}); bd close refused for a non-assignee reason, likely a pin or unsatisfied gate, leaving it open for retry/escalation: ${close_output}" >&2
+        return 0
+      fi
+    fi
+  else
+    if close_output="$("$gc_bin" bd close "$bead_id" --reason "$reason" 2>&1)"; then
+      close_rc=0
+    else
+      close_rc=$?
     fi
   fi
-  local -a close_args=(bd close "$bead_id" --reason "$reason")
-  [ -z "$force" ] || close_args+=(--force)
-  local close_output
-  if close_output="$("$gc_bin" "${close_args[@]}" 2>&1)"; then
+
+  if [ "$close_rc" -eq 0 ]; then
     if [ -n "$pr_label" ]; then
       echo "con-voyage-pr-watch: [PART A] ${pr_label}: closed prior open repair bead ${bead_id} (was status=${bead_state})"
     fi
@@ -1297,7 +1309,7 @@ close_if_open() {
       echo "close_if_open: --force close of ${bead_id} succeeded; bd close output: ${close_output}"
     fi
   else
-    CV_CLOSE_RC=$?
+    CV_CLOSE_RC=$close_rc
     echo "close_if_open: WARNING: bd close failed for ${bead_id} (status=${bead_state}, rc=${CV_CLOSE_RC}); leaving it open for retry" >&2
     if [ -n "$close_output" ]; then
       echo "close_if_open: bd close output: ${close_output}" >&2
