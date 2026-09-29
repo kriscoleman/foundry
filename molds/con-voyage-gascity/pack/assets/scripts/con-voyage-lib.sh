@@ -1072,9 +1072,15 @@ release_lock() {
 }
 
 # bead_status BEAD_ID FIELD — prints "<status><0x1f><FIELD-value>". FIELD is
-# any top-level key `bd show --json` returns (this pack only ever asks for
-# "assignee" or "updated_at"). Empty SEP-only output for an empty bead id, a
-# `bd show` failure, or a bead unknown to gc.
+# any top-level key `bd show --json` returns (this pack asks for "assignee",
+# "updated_at", or "is_blocked"). A non-string JSON value (e.g. the
+# `is_blocked` bool) is stringified ("True"/"False") rather than passed
+# through raw — Python's `True or ''` short-circuits to `True`, and
+# concatenating that against the leading status string used to raise
+# TypeError, which the trailing `|| printf` fallback silently swallowed into
+# an empty (indistinguishable from "not blocked") result (fk-16zsa iter-2
+# BLOCKING-1). Empty SEP-only output for an empty bead id, a `bd show`
+# failure, or a bead unknown to gc.
 bead_status() {
   local bead_id="$1" field="$2"
   local SEP=$'\x1f'
@@ -1097,7 +1103,9 @@ if isinstance(data, list):
 if not isinstance(data, dict):
     print(SEP)
     raise SystemExit(0)
-print((data.get('status') or '') + SEP + (data.get(field) or ''))
+field_val = data.get(field)
+field_val = '' if field_val is None else str(field_val)
+print((data.get('status') or '') + SEP + field_val)
 " "$field" 2>/dev/null || printf '%s' "$SEP"
 }
 
@@ -1257,12 +1265,18 @@ close_if_open() {
     # the assignee guard this call site exists for. Refuse to force through
     # either one — leave the bead open (non-zero CV_CLOSE_RC) so the caller's
     # normal retry/escalation path handles it instead of a silent override.
-    local pinned_val is_blocked_val
-    IFS=$'\x1f' read -r _ pinned_val <<< "$(bead_status "$bead_id" pinned)"
+    #
+    # fk-16zsa iter-2 BLOCKING-1: "pinned" is not a `bd show --json` field —
+    # per beads@v1.3.0-rc.2, a bead is pinned by having `status: "pinned"`,
+    # so check the already-fetched bead_state directly instead of a
+    # nonexistent JSON key (which was always empty, making the guard dead
+    # code). `is_blocked` IS a real JSON bool field, but only readable now
+    # that bead_status stringifies it instead of crashing (see bead_status).
+    local is_blocked_val
     IFS=$'\x1f' read -r _ is_blocked_val <<< "$(bead_status "$bead_id" is_blocked)"
-    if [ -n "$pinned_val" ] || [ -n "$is_blocked_val" ]; then
+    if [ "$bead_state" = "pinned" ] || [ "$is_blocked_val" = "True" ]; then
       CV_CLOSE_RC=1
-      echo "close_if_open: WARNING: refusing to --force close ${bead_id} (status=${bead_state}, pinned=${pinned_val:-false}, is_blocked=${is_blocked_val:-false}); not a plain assignee-guard case, leaving it open for retry/escalation" >&2
+      echo "close_if_open: WARNING: refusing to --force close ${bead_id} (status=${bead_state}, is_blocked=${is_blocked_val:-False}); not a plain assignee-guard case, leaving it open for retry/escalation" >&2
       return 0
     fi
   fi

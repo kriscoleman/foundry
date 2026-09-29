@@ -261,6 +261,8 @@ assert_log_count 'bd close rb-repair --reason superseded: PR #83 merged' 1 "comp
 # ---------------------------------------------------------------------------
 export STUB_BDSHOW_JSON_rb_open='{"id":"rb-open","status":"open","assignee":""}'
 export STUB_BDSHOW_JSON_rb_closed='{"id":"rb-closed","status":"closed","assignee":"someone"}'
+export STUB_BDSHOW_JSON_rb_pinned='{"id":"rb-pinned","status":"pinned","assignee":"someone","is_blocked":false}'
+export STUB_BDSHOW_JSON_rb_blocked='{"id":"rb-blocked","status":"open","assignee":"someone","is_blocked":true}'
 
 start_case "cv_bead_mark_in_progress: empty bead id -> no-op, no bd call"
 : > "$GC_LOG"
@@ -910,6 +912,33 @@ export STUB_BDCLOSE_FAIL_rb_open=1
 close_if_open "rb-open" "landed: x" 2>/dev/null || rc=$?
 unset STUB_BDCLOSE_FAIL_rb_open
 assert_eq "0" "$rc" "close_if_open's own return code stays 0 even on a bd close failure (con-voyage-pr-watch.sh calls this under set -e as a bare statement)"
+
+# ---------------------------------------------------------------------------
+# close_if_open FORCE: pin/gate pre-check (fk-16zsa iter-2 BLOCKING-1 — the
+# iteration-1 guard never actually refused anything, because "pinned" isn't
+# a `bd show --json` field and the `is_blocked` bool crashed bead_status's
+# reader into a swallowed empty). These stub beads exercise the pre-check
+# against the real bd status/field shapes it must read (status="pinned",
+# and a genuine JSON `is_blocked: true`), not a schema key that never
+# existed.
+# ---------------------------------------------------------------------------
+start_case "close_if_open: FORCE on a pinned bead -> refuses, CV_CLOSE_RC=1, no bd close call"
+: > "$GC_LOG"
+close_if_open "rb-pinned" "landed: x" "" "" FORCE 2>/dev/null
+assert_eq "1" "$CV_CLOSE_RC" "a pinned bead refuses the forced close"
+assert_log_count 'bd close' 0 "the refuse-branch never calls bd close at all"
+
+start_case "close_if_open: FORCE on an is_blocked bead -> refuses, CV_CLOSE_RC=1, no bd close call"
+: > "$GC_LOG"
+close_if_open "rb-blocked" "landed: x" "" "" FORCE 2>/dev/null
+assert_eq "1" "$CV_CLOSE_RC" "an is_blocked bead refuses the forced close"
+assert_log_count 'bd close' 0 "the refuse-branch never calls bd close at all"
+
+start_case "close_if_open: FORCE on a plain open bead (not pinned/blocked) -> proceeds, calls bd close --force"
+: > "$GC_LOG"
+close_if_open "rb-open" "landed: x" "" "" FORCE 2>/dev/null
+assert_eq "0" "$CV_CLOSE_RC" "a plain assignee-guard case still forces through"
+assert_log_count 'bd close rb-open --reason .*--force' 1 "bd close was retried with --force"
 
 # ---------------------------------------------------------------------------
 # cv_with_timeout (fk-rri7q LOW-D): portable poll+kill call bound for hosts
