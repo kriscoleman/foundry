@@ -584,6 +584,56 @@ assert_log_count "$GC_LOG" 'mail send' 0 "no mail sent while BLOCKING findings r
 assert_log_count "$GC_LOG" 'bd update' 0 "no metadata recorded either"
 
 # ===========================================================================
+# CASE 18 — BLOCKING == 0 doc whose YAML frontmatter `low_count` disagrees
+#   with the body's actual LOW sub-heading count (root fk-5vupw iteration-4
+#   code-review BLOCKING-1: on the terminal LOW-only path, the LOW_MISMATCH
+#   guard still `die`d on frontmatter/body drift even though the parsed body
+#   count is already authoritative and is exactly what the mail body below
+#   is built from — suppressing the very escalation mail this script exists
+#   to send). Frontmatter under-claims (low_count: 2) against 3 actual
+#   ### LOW-<n> sub-headings in the body: the body count must win, the
+#   mismatch must only warn (not die), and the mail must still fire.
+# ===========================================================================
+start_case "18: BLOCKING==0 with mismatched LOW frontmatter -> warns, mails anyway, body count wins"
+setup_case_env "18"
+SYNTHESIS_FILE="${SANDBOX}/synthesis-18.md"
+{
+  echo "---"
+  echo "blocking_count: 0"
+  echo "low_count: 2"
+  echo "---"
+  echo "# Con-voyage Review Synthesis — root fixture (iteration 1)"
+  echo
+  echo "## 1. Overall verdict: **approve**"
+  echo
+  echo "## 2. BLOCKING findings (must fix before landing)"
+  echo
+  echo "None."
+  echo
+  echo "## 3. LOW findings (surface to human for decision)"
+  echo
+  for i in $(seq 1 3); do
+    echo "### LOW-${i} — sample low finding ${i}"
+    echo "- **Lanes:** simplicity (LOW-${i})"
+    echo "- **File:line:** \`some/file.go:$((i + 10))\`"
+    echo "- **Finding:** a minor concern."
+    echo
+  done
+  echo "## 4. Lanes approved with no findings"
+  echo
+  echo "None."
+} > "$SYNTHESIS_FILE"
+run_script
+assert_eq "0" "$RC" "script exits 0 (mails) instead of dying on the LOW-count frontmatter/body mismatch"
+assert_log_count "$GC_LOG" '^mail send mayor ' 1 "mail still sent to the mayor despite the frontmatter drift"
+assert_log_count "$GC_LOG" "^bd update ${ROOT_ID} .*code_review\\.low_mail_id=msg-1" 1 "mail id recorded on the root bead"
+assert_log_count "$GC_LOG" "LOW-only: ${WORK_BEAD} ${PR_OR_BRANCH} .* 3 LOW" 1 "subject uses the parsed body count (3), not the stale frontmatter count (2)"
+case "$OUT" in
+  *"WARNING"*"low_count=2"*"3 LOW"*) pass "warns about the mismatch on stderr/stdout instead of dying silently" ;;
+  *) fail "expected a WARNING mentioning frontmatter low_count=2 vs 3 parsed LOW sub-heading(s), got: ${OUT}" ;;
+esac
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 echo
