@@ -301,14 +301,18 @@ process_pr_record() {
       # empty too: this branch never resolves it (no `gh pr view` call),
       # and it is meaningless without an in-flight rework to guard.
       state_write "$a_dedup_key" "$clean_implementor" "" "clean" "" "" "" "" "" "0" "0" ""
-      # A PR going clean means any prior mint-failure streak for this
-      # dedup_key is no longer relevant — clear the counter/escalation
-      # markers so a LATER, unrelated failure starts a fresh cap budget
-      # instead of inheriting an already-exhausted one and silently
-      # SKIPping forever (mirrors the reset already done on a successful
-      # mint below).
-      rm -f "${CV_STATE_DIR}/${a_dedup_key}.mint-failures" "${CV_STATE_DIR}/${a_dedup_key}.mint-escalated"
     fi
+    # A PR going clean means any prior mint-failure streak for this
+    # dedup_key is no longer relevant — clear the counter/escalation
+    # markers so a LATER, unrelated failure starts a fresh cap budget
+    # instead of inheriting an already-exhausted one and silently
+    # SKIPping forever (mirrors the reset already done on a successful
+    # mint below). Must NOT be gated on the clean-transition guard above:
+    # a mint-failure streak never calls state_write, so last_handled_state
+    # never moves off "clean" during the streak — on a PR's second (or
+    # later) clean observation the guard above is false and this would
+    # never run, leaving stale markers forever (fk-n4c1a review BLOCKING-1).
+    rm -f "${CV_STATE_DIR}/${a_dedup_key}.mint-failures" "${CV_STATE_DIR}/${a_dedup_key}.mint-escalated"
     return
   fi
 
