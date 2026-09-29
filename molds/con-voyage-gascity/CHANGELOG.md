@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.12.0](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.11.0...con-voyage-gascity-v0.12.0) (2026-09-29)
+
+
+### Features
+
+* **con-voyage:** add rig-sync order to keep rigs fast-forwarded to origin (fk-hewd2) ([a81853d](https://github.com/kriscoleman/foundry/commit/a81853d3b79a48b6c128ecc1c4913ef6fd0372af))
+* **con-voyage:** one aggregated PR review comment per round instead of per-lane spam (fk-9boht) ([d1b788c](https://github.com/kriscoleman/foundry/commit/d1b788c059327fef6f3e66e986a0cac8772dc818))
+* **con-voyage:** sync every code-writing step onto current origin/main before it starts (fk-hbsmk) ([7c65e2a](https://github.com/kriscoleman/foundry/commit/7c65e2a0ce6e8933cbe70b7b53a2d4d19323a2d0))
+
+
+### Bug Fixes
+
+* add stale-lock-steal test coverage to con-voyage-rig-sync (review fk-s850c) ([1771eee](https://github.com/kriscoleman/foundry/commit/1771eeecbf4a4beed666509d715a2e33e0dadb18))
+* bound concurrency-test hangs, add full-suite 2x coverage (review fk-78kfl) ([6f02c33](https://github.com/kriscoleman/foundry/commit/6f02c334c76c6657484e5fbac4046562ffe1e3f1))
+* clear mint-failure markers unconditionally on every clean observation (review fk-n4c1a) ([ffdd45e](https://github.com/kriscoleman/foundry/commit/ffdd45e0e63beafe058af797b3a7edbb7a7e30fa))
+* close_if_open blocked-bead check reads real status field, not dead is_blocked JSON key (review fk-e1u8v) ([6aac5ae](https://github.com/kriscoleman/foundry/commit/6aac5ae026088341a4f17a67ec8a68e1bed6c21f))
+* close_if_open FORCE guard is behavior-based, not a status-field guess (review fk-e1u8v) ([0c1cc66](https://github.com/kriscoleman/foundry/commit/0c1cc667997c2748ce536726d4b47ad05a9892a3))
+* close_if_open FORCE now confirms via bd blocked/--pinned, not refusal text alone (review fk-e1u8v) ([605caf5](https://github.com/kriscoleman/foundry/commit/605caf5637fa15fee6ba67e994ecc2317ba3a18f))
+* close_if_open FORCE refuses to override a pin or unsatisfied gate (review fk-e1u8v) ([6add74f](https://github.com/kriscoleman/foundry/commit/6add74fc1ef766f43cf5b3e1b7410c756c49a169))
+* close_if_open pin/gate FORCE guard was dead code, refuses now (review fk-e1u8v) ([da1a2b2](https://github.com/kriscoleman/foundry/commit/da1a2b2041751e607b2f3a68d6a8de2f777cbeda))
+* **con-voyage:** bound stalled git fetch in cv_ensure_branch_based_on (fk-0f459) ([755c55d](https://github.com/kriscoleman/foundry/commit/755c55dee21d96d4b8ae332dc20c0dfe5d36e652))
+* **con-voyage:** cap fallback-mint retries and roll back orphaned repair beads (fk-zvkmd) ([a36ad15](https://github.com/kriscoleman/foundry/commit/a36ad152d6e03911be1f4578f642af4469d2d5da))
+* **con-voyage:** cv-review-* tier providers ship explicit effort (fk-atuxk) ([960f0d5](https://github.com/kriscoleman/foundry/commit/960f0d5a26478802a7984da7dd56fe4584a5a92e))
+* **con-voyage:** default GC everywhere in con-voyage-lib.sh so no caller silently no-ops ([1f41e0b](https://github.com/kriscoleman/foundry/commit/1f41e0bafab8692f4f104fa08c5311531f46907f))
+* **con-voyage:** finalize monitor forces past the work-bead assignee guard (fk-c1xa) ([12fa780](https://github.com/kriscoleman/foundry/commit/12fa780567d3264ca78db01b6db3af0b93be64e3))
+* **con-voyage:** finish pack-script/lib deterministic-resolution migration (review fk-stjtk) ([2a98ae2](https://github.com/kriscoleman/foundry/commit/2a98ae26b589c9baf61d51aab80ee0af33254271))
+* **con-voyage:** gate lookout auto-flip on a live opencode spawn probe (gascity[#5436](https://github.com/kriscoleman/foundry/issues/5436)) ([6176cf2](https://github.com/kriscoleman/foundry/commit/6176cf25c13f1197cbd81044dc03aaa0ae678703))
+* **con-voyage:** migrate cv_sync_worktree_to_base to cv_pack_script ([56025b4](https://github.com/kriscoleman/foundry/commit/56025b46890f5241bc935650c5aab7dca2e4b7e0))
+* **con-voyage:** migrate synthesize-review LOW-mail resolution off find/command-v (fk-sdp0k) ([9d5858d](https://github.com/kriscoleman/foundry/commit/9d5858d5af54b9cdb463a9367d199a026a0e5571))
+* **con-voyage:** resolve step prompt files and runtime placeholders (fk-4q6ib) ([61914ec](https://github.com/kriscoleman/foundry/commit/61914ece2e793306790db5d6e4f53f57624ff167))
+* **con-voyage:** shape-agnostic finding counter + bounded store calls in cv-synthesis-low-mail.sh (review fk-tkctn) ([33dac23](https://github.com/kriscoleman/foundry/commit/33dac23e3d910ea1850c98a767f7e7eb83864535))
+* **con-voyage:** synthesis actually mails the human on a LOW-only verdict ([e616c21](https://github.com/kriscoleman/foundry/commit/e616c2151c0c7939d7185aa6f5e987b4ee0620c3))
+* **con-voyage:** use double-brace gc.run_target on ci-repair's v2 step (fk-5foqz) ([0fedc04](https://github.com/kriscoleman/foundry/commit/0fedc04704ab0e329b48515c5aa1e391b8846343))
+* eliminate locale-sensitive awk forks from cv_with_timeout's poll loop (review fk-jjumm) ([ca456f7](https://github.com/kriscoleman/foundry/commit/ca456f7b09b13ca2b55ca44d5531a73cf8702619))
+* force base-10 arithmetic in cv_with_timeout to avoid octal misparse (review fk-i7d7b) ([e1097b4](https://github.com/kriscoleman/foundry/commit/e1097b4561bf1b0d67759e8db9d6c66f39559757))
+* guard $GC default in cv_convoy_target (review fk-4q6ib) ([5219aec](https://github.com/kriscoleman/foundry/commit/5219aecf8f3fe5146f070591706ed82f3fbc57e1))
+* guard empty CONVOY_ID before base-branch resolution in publish.md (review fk-4q6ib) ([516b554](https://github.com/kriscoleman/foundry/commit/516b554f8ad659e6550a5ad61d1ebdc71695a7f2))
+* LOW_MISMATCH must warn not die on the LOW-only escalation path (review fk-5vupw) ([2c3d288](https://github.com/kriscoleman/foundry/commit/2c3d288b144f2c47a235f1d3112abe8b2ad4cc81))
+* match bold **None.** zero-case body in synthesis LOW-mail parser (review fk-5vupw) ([4982a80](https://github.com/kriscoleman/foundry/commit/4982a8089f05681950bcf97a56d155555a4a70bf))
+* point con-voyage-sync-base.test.sh CASE 7 at renamed main.*.md workflow files ([8e0a496](https://github.com/kriscoleman/foundry/commit/8e0a4964fae5e7b1a9d280ab63bebb33b1fc12f5))
+* rename regression + $GC unset in cv_bead_metadata (review fk-4q6ib) ([6bc0e11](https://github.com/kriscoleman/foundry/commit/6bc0e117c8555f6077c9dee7aa41f8ff3ea9993a))
+* reorder BLOCKING no-op exit before LOW-count validation in synthesis mail parser (review fk-5vupw) ([eac4b43](https://github.com/kriscoleman/foundry/commit/eac4b4389d3c5552e78ac4ed07b956c0bc683fd8))
+* rollback bd close drops --city and reset mint markers on PR recovery (review fk-pl4mt) ([6cfa59e](https://github.com/kriscoleman/foundry/commit/6cfa59e699ec277e25ae022941f3a88b2c1a83d4))
+* sync the real worktree and resolve cv-worktree-prep.sh deterministically (review fk-661ld) ([750a930](https://github.com/kriscoleman/foundry/commit/750a9306d73ec5de312af288c1bde9a9c15c5701))
+* taper cv_with_timeout's poll interval to avoid a ~1s tax on the fast path (review fk-jjumm) ([5b5340d](https://github.com/kriscoleman/foundry/commit/5b5340d1893a0e322ca2c72674308b7e47bdb8ca))
+
 ## [0.11.0](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.10.1...con-voyage-gascity-v0.11.0) (2026-09-28)
 
 
