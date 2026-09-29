@@ -15,12 +15,31 @@
 # (e.g. `id = "{target}.build"`, `metadata = { "gc.run_target" =
 # "{implementation_target}" }` in con-voyage.formula.toml).
 #
-# `{{var}}` is legitimate in exactly one place in this pack: a formula.toml
-# `condition` field (graph.v2's compile-time presence/equality test, e.g.
-# `condition = """{{enable_dev_ex}}"""` in con-voyage.formula.toml) — a
-# different mechanism from per-step token substitution in a description_file.
+# `{{var}}` is legitimate in two places in this pack, both formula.toml
+# compile-time mechanisms distinct from per-step description_file token
+# substitution:
+#   1. A `condition` field (graph.v2's compile-time presence/equality test,
+#      e.g. `condition = """{{enable_dev_ex}}"""` in con-voyage.formula.toml).
+#   2. A native `[[steps]]` (graph.v2, `[requires] formula_compiler`) step's
+#      `gc.run_target` metadata value, when it references a formula var.
+#      fk-5foqz: the single-brace form here (as this file originally, and
+#      incorrectly, recommended) is NEVER resolved by the compiler for a
+#      `[[steps]]`-authored step — confirmed by `gc formula show` leaving it
+#      untouched, and by every `gc.run_target` test fixture bundled in the
+#      installed `gc` binary itself expecting double-brace for this exact
+#      field (`strings` on `gc`: `assertEqual(...["gc.run_target"],
+#      "{{implementation_target}}")`, repeated across half a dozen fixtures,
+#      never single-brace). con-voyage.formula.toml's `main.build` step looks
+#      similar but is authored via the different `[[template]]` macro
+#      construct, whose own `{var}` expansion at show/cook time is unrelated
+#      to `[[steps]]` metadata templating — this is why the two constructs
+#      need opposite brace styles for the "same-looking" field.
+#      `formula-v2-run-target.test.sh` owns this specific invariant in
+#      detail; this suite's CASE 3 only carves out the narrow exception so it
+#      does not fight that suite over the same field.
 # This suite never touches formula.toml condition fields; it only sweeps
-# description_file assets, where no such mechanism exists.
+# description_file assets (where no such mechanism exists) plus, in CASE 3,
+# a narrow check of formula.toml metadata fields for the historical bug class.
 #
 # Two independent checks:
 #   1. RENDER — simulate the confirmed real substitution rule against the
@@ -132,21 +151,37 @@ fi
 echo "  (swept ${node_count} formula-dispatched description_file assets)"
 
 # ===========================================================================
-# CASE 3 — no formula.toml metadata field uses the double-brace bug form
-# (the condition-field mechanism is a different, legitimate use of {{var}}
-# and must be left untouched — this asserts both halves)
+# CASE 3 — no formula.toml metadata field uses the double-brace bug form,
+# EXCEPT a native [[steps]]+v2 step's gc.run_target (fk-5foqz: the only field
+# where double-brace is the correct, compiler-resolved form — see the header
+# comment and formula-v2-run-target.test.sh for the full evidence). The
+# condition-field mechanism is a separate, legitimate use of {{var}} and must
+# be left untouched too — this asserts all three cases.
 # ===========================================================================
-start_case "formula.toml metadata fields use single-brace substitution; condition fields keep double-brace"
+start_case "formula.toml metadata fields use single-brace substitution (run_target on a [[steps]]+v2 formula excepted); condition fields keep double-brace"
 
 metadata_bug_hits=0
 for formula in "${MOLD_DIR}"/pack/formulas/*.toml; do
+  is_v2_steps=false
+  if grep -qE '^\[requires\]' "$formula" && grep -qE '^formula_compiler[[:space:]]*=' "$formula" \
+      && grep -qE '^\[\[steps\]\]' "$formula"; then
+    is_v2_steps=true
+  fi
+
   if grep -nE '"gc\.[a-zA-Z_.]+"[[:space:]]*=[[:space:]]*"\{\{[a-zA-Z_]' "$formula" >/tmp/rpb-metadata-hits.$$ 2>/dev/null; then
-    metadata_bug_hits=$((metadata_bug_hits + $(wc -l < /tmp/rpb-metadata-hits.$$)))
-    fail "$(basename "$formula") has a double-braced metadata value: $(cat /tmp/rpb-metadata-hits.$$)"
+    while IFS= read -r hit; do
+      [ -n "$hit" ] || continue
+      if [ "$is_v2_steps" = true ] && [[ "$hit" == *'"gc.run_target"'* ]]; then
+        pass "$(basename "$formula") — double-braced gc.run_target on a [[steps]]+v2 formula (expected, compiler-resolved form): ${hit}"
+      else
+        metadata_bug_hits=$((metadata_bug_hits + 1))
+        fail "$(basename "$formula") has a double-braced metadata value: ${hit}"
+      fi
+    done < /tmp/rpb-metadata-hits.$$
   fi
   rm -f /tmp/rpb-metadata-hits.$$
 done
-[ "$metadata_bug_hits" -eq 0 ] && pass "no formula.toml metadata field uses a double-braced value"
+[ "$metadata_bug_hits" -eq 0 ] && pass "no formula.toml metadata field uses an unexpected double-braced value"
 
 condition_field_count=0
 for formula in "${MOLD_DIR}"/pack/formulas/*.toml; do

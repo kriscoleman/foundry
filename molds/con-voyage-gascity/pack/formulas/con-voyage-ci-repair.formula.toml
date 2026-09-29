@@ -132,5 +132,5 @@ default = "enabled"
 [[steps]]
 id = "ci-repair"
 title = "Repair CI failures on PR branch"
-metadata = { "gc.run_target" = "{implementation_target}" }
+metadata = { "gc.run_target" = "{{implementation_target}}" }
 description_file = "../assets/workflows/con-voyage-ci-repair/{target}.ci-repair.md"
