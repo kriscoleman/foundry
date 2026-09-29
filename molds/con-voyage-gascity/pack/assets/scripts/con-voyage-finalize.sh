@@ -326,15 +326,20 @@ for CV_STATE_DIR in "${CV_STATE_DIRS_ALL[@]}"; do
     #    "con-voyage:work-bead"; this monitor's own actor never matches, so
     #    `bd close` refuses without --force — this monitor is the sole owner
     #    of the work bead's lifecycle once its PR is terminal, so forcing past
-    #    that guard here is safe (unlike the repair beads below, which stay
-    #    unforced — another lens/session may still legitimately hold one).
+    #    that assignee guard here is safe (unlike the repair beads below,
+    #    which stay unforced — another lens/session may still legitimately
+    #    hold one). close_if_open's own FORCE pre-check (fk-22bq4) still
+    #    refuses to override a human `pinned` hold or an unresolved
+    #    dependency/gate on this bead — those fall through to the
+    #    still-open/retry branch below instead of being force-closed.
     close_if_open "$FS_WORK_BEAD" "$reason" "" "" 1
     work_bead_close_rc="$CV_CLOSE_RC"
 
     # 2. Close the con-voyage convoy if we recorded one and it is still open. A
     #    synthetic input convoy autocloses when its tracked work bead closes, but
     #    close it explicitly too (idempotent) so a non-autoclosing convoy is not
-    #    left dangling. FORCE=1 for the same reason as the work bead above.
+    #    left dangling. FORCE=1 for the same reason as the work bead above,
+    #    with the same pin/gate pre-check protecting it (fk-22bq4).
     convoy_close_rc=0
     if [ -n "${FS_CONVOY_ID// /}" ] && [ "$FS_CONVOY_ID" != "$FS_WORK_BEAD" ]; then
       close_if_open "$FS_CONVOY_ID" "con-voyage finalized: ${reason}" "" "" 1
