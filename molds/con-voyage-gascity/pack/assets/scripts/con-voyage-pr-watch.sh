@@ -301,6 +301,13 @@ process_pr_record() {
       # empty too: this branch never resolves it (no `gh pr view` call),
       # and it is meaningless without an in-flight rework to guard.
       state_write "$a_dedup_key" "$clean_implementor" "" "clean" "" "" "" "" "" "0" "0" ""
+      # A PR going clean means any prior mint-failure streak for this
+      # dedup_key is no longer relevant — clear the counter/escalation
+      # markers so a LATER, unrelated failure starts a fresh cap budget
+      # instead of inheriting an already-exhausted one and silently
+      # SKIPping forever (mirrors the reset already done on a successful
+      # mint below).
+      rm -f "${CV_STATE_DIR}/${a_dedup_key}.mint-failures" "${CV_STATE_DIR}/${a_dedup_key}.mint-escalated"
     fi
     return
   fi
@@ -625,7 +632,13 @@ print(author + SEP + ("1" if skip_awaiting_human else "0"))
         # bead unless we close it now. Never leave a repair bead half-formed:
         # either its content lands atomically (the sling succeeds) or the
         # bead is rolled back.
-        "$GC" --city "$GC_CITY" bd close "$repair_bead_id" \
+        # $repair_bead_id is already rig-prefixed (minted above with
+        # --rig "$a_rig") — the same fk-mr07/fk-7v3r bug class: `--city`
+        # alone (no `--rig`) routes an already-rig-prefixed id to the CITY
+        # store instead of its owning rig's, so `bd close` silently "Issue
+        # not found"s. Rely on cwd auto-detection instead, matching every
+        # other already-fixed bd call in this pack (see :442-451).
+        "$GC" bd close "$repair_bead_id" \
           --reason "rollback: sling to ${a_route} failed for ${a_full}#${a_num}, bead never received its real content" \
           2>&1 || echo "con-voyage-pr-watch: [PART A] WARNING: rollback close of orphaned bead ${repair_bead_id} failed for ${a_full}#${a_num}; it may be left bare" >&2
         # Non-fatal: continue to next PR / Part B.

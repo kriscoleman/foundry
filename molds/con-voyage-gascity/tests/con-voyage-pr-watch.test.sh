@@ -404,8 +404,18 @@ case "$sub" in
           # (non-empty failed_checks), since this fixture predates per-state
           # classification (CV-B) and its cases are about AUTHOR SCOPING, not
           # state variety — STUB_BACKFILL_MODE=states below covers state variety.
+          #
+          # STUB_PR11_CLEAN=1 flips #11 itself to actionable:false (clean),
+          # same dedup_key (owner/repo/number unchanged) — lets a test drive
+          # #11 through a fail -> clean -> fail cycle without switching modes
+          # (fk-zvkmd BLOCKING-2: mint-failure markers must reset on clean).
+          if [ "${STUB_PR11_CLEAN:-0}" = "1" ]; then
+            printf '{"results":[\n'
+            printf '  {"actionable":false,"owner":"kriscoleman","repo":"foundry","number":11,"title":"author-scope pr monitor","head_ref_name":"fix/con-voyage-author-scope-pr-monitor","head_sha":"%s","repair_route":"vandoor/gc.implementation-worker","state":"clean","failed_checks":[],"merge_state_status":"CLEAN"},\n' "${STUB_HEAD_SHA:-aaa111}"
+          else
           printf '{"results":[\n'
           printf '  {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":11,"title":"author-scope pr monitor","head_ref_name":"fix/con-voyage-author-scope-pr-monitor","head_sha":"%s","repair_route":"vandoor/gc.implementation-worker","state":"blocked","failed_checks":["ci"],"merge_state_status":"UNSTABLE"},\n' "${STUB_HEAD_SHA:-aaa111}"
+          fi
           cat <<'JSON'
   {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":500,"title":"someone elses pr","head_ref_name":"feature/x","head_sha":"bbb500","repair_route":"vandoor/gc.implementation-worker","state":"blocked","failed_checks":["ci"],"merge_state_status":"UNSTABLE"},
   {"actionable":true,"owner":"kriscoleman","repo":"foundry","number":600,"title":"dep bump","head_ref_name":"deps/y","head_sha":"ccc600","repair_route":"vandoor/gc.implementation-worker","state":"blocked","failed_checks":["ci"],"merge_state_status":"UNSTABLE"},
@@ -2407,6 +2417,73 @@ if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.state" ]; then
 else
   pass "no main state record written across the capped, always-failing mint cycles"
 fi
+
+# ===========================================================================
+# CASE 43 — fk-zvkmd review fix (BLOCKING-2): the mint-failure counter and
+#   escalation sentinel must be cleared once the PR that tripped them goes
+#   clean, so a LATER, unrelated failure gets a fresh cap budget instead of
+#   inheriting an already-exhausted one and silently SKIPping forever.
+#
+#   Drive #11 through: 4 failing cycles (3 to reach the cap, a 4th where the
+#   cap check fires BEFORE minting and sends the escalation mail — same
+#   shape as CASE 42) -> 1 clean cycle (recovery) -> 1 failing cycle again.
+#   The final cycle must mint a fresh repair bead (not log the idempotent
+#   "already escalated" SKIP).
+# ===========================================================================
+start_case "43: fk-zvkmd — mint-failure markers reset when a capped/escalated PR recovers (clean), allowing a later failure to mint fresh"
+setup_case_env "43"
+
+for cyc in 1 2 3 4; do
+  GC_LOG_CYC="${SANDBOX}/gc-43-${cyc}.log"; : > "$GC_LOG_CYC"
+  env GH="${STUBDIR}/gh" GC="${STUBDIR}/gc" GC_CITY="$CITY_DIR" \
+    CV_STATE_DIR="$STATE_DIR" STUB_GH_LOG="${SANDBOX}/gh-43-${cyc}.log" \
+    STUB_GC_LOG="$GC_LOG_CYC" CV_PR_AUTHOR="kriscoleman" \
+    STUB_GH_USER_LOGIN="kriscoleman" STUB_SLING_FAIL=1 \
+    STUB_BD_CREATE_ID="va-43-bead" \
+    bash "$SCRIPT" >/dev/null 2>&1
+done
+if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.mint-escalated" ]; then
+  pass "escalation sentinel present after 3 failed cycles (cap reached)"
+else
+  fail "expected the escalation sentinel to exist after 3 consecutive failed mint cycles"
+fi
+
+# Cycle 4: PR #11 goes clean. Must clear both mint-failure markers.
+GC_LOG_CLEAN="${SANDBOX}/gc-43-clean.log"; : > "$GC_LOG_CLEAN"
+env GH="${STUBDIR}/gh" GC="${STUBDIR}/gc" GC_CITY="$CITY_DIR" \
+  CV_STATE_DIR="$STATE_DIR" STUB_GH_LOG="${SANDBOX}/gh-43-clean.log" \
+  STUB_GC_LOG="$GC_LOG_CLEAN" CV_PR_AUTHOR="kriscoleman" \
+  STUB_GH_USER_LOGIN="kriscoleman" STUB_PR11_CLEAN=1 \
+  bash "$SCRIPT" >/dev/null 2>&1
+if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.mint-failures" ]; then
+  fail "mint-failures counter still present after PR #11 went clean"
+else
+  pass "mint-failures counter cleared once PR #11 went clean"
+fi
+if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.mint-escalated" ]; then
+  fail "escalation sentinel still present after PR #11 went clean"
+else
+  pass "escalation sentinel cleared once PR #11 went clean"
+fi
+
+# Cycle 5: PR #11 fails again. Must mint fresh (bd create), not SKIP as
+# already-escalated.
+GC_LOG_REFAIL="${SANDBOX}/gc-43-refail.log"; : > "$GC_LOG_REFAIL"
+OUT="$(
+  env GH="${STUBDIR}/gh" GC="${STUBDIR}/gc" GC_CITY="$CITY_DIR" \
+    CV_STATE_DIR="$STATE_DIR" STUB_GH_LOG="${SANDBOX}/gh-43-refail.log" \
+    STUB_GC_LOG="$GC_LOG_REFAIL" CV_PR_AUTHOR="kriscoleman" \
+    STUB_GH_USER_LOGIN="kriscoleman" STUB_SLING_FAIL=1 \
+    STUB_BD_CREATE_ID="va-43-refail-bead" \
+    bash "$SCRIPT" 2>&1
+)"; RC=$?
+assert_eq "0" "$RC" "the post-recovery re-failure cycle exits 0"
+if printf '%s' "$OUT" | grep -q 'SKIP kriscoleman/foundry#11 — mint already escalated'; then
+  fail "a stale escalation from before the PR recovered incorrectly suppressed the new, unrelated failure"
+else
+  pass "no stale-escalation SKIP logged — the recovered PR's later failure got a fresh cap budget"
+fi
+assert_log_count "$GC_LOG_REFAIL" 'bd create .*--silent' 1 "a fresh repair bead is minted after the PR recovered and failed again"
 
 # ===========================================================================
 # Summary
