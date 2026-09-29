@@ -215,7 +215,15 @@ case "$LOW_COUNT" in
   UNPARSEABLE) die "${SYNTHESIS_FILE}'s LOW findings section has content but no recognized finding shape (### sub-heading or top-level '-' bullet) — refusing to guess 0" ;;
   ''|*[!0-9]*) die "${SYNTHESIS_FILE}: could not determine a LOW count" ;;
 esac
-[ -z "$LOW_MISMATCH" ] || die "${SYNTHESIS_FILE} frontmatter claims low_count=${LOW_MISMATCH} but ${LOW_COUNT} LOW sub-heading(s) were actually parsed — refusing to trust a self-inconsistent doc"
+# Unlike BLOCKING_MISMATCH above, a LOW-count frontmatter mismatch on this
+# path must never be fatal: LOW_COUNT is already authoritative (parsed from
+# the body's actual ### LOW-<n> sub-headings, the same value the mail body
+# below is built from), so dying here would suppress the exact escalation
+# mail this script exists to send over a stale/wrong frontmatter annotation.
+# Warn loudly and keep going.
+if [ -n "$LOW_MISMATCH" ]; then
+  echo "cv-synthesis-low-mail: WARNING — ${SYNTHESIS_FILE} frontmatter claims low_count=${LOW_MISMATCH} but ${LOW_COUNT} LOW sub-heading(s) were actually parsed; trusting the parsed body count and continuing" >&2
+fi
 
 if [ "$LOW_COUNT" -eq 0 ]; then
   echo "cv-synthesis-low-mail: 0 BLOCKING / 0 LOW — nothing to escalate"
