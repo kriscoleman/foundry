@@ -2333,6 +2333,82 @@ fi
 assert_eq "va-41-bead" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "inflight_rework")" "state records the newly-minted bead after recovering from the stale lock"
 
 # ===========================================================================
+# CASE 42 — fk-zvkmd: a persistently failing fallback mint (bd create
+#   succeeds but the ci-repair sling keeps failing every cycle) must NOT
+#   create an unbounded stream of orphaned, description-less repair beads.
+#   Live production symptom: ~61 such bare beads over ~12h, one per
+#   ~11-minute pr-watch cycle, because each failed sling left its
+#   pre-created bead behind untouched and — since no state record is ever
+#   written on a failed dispatch (CASE 11/13 pin that retry behavior) — the
+#   very next cycle had no memory of the failure and minted a brand-new
+#   bead from scratch.
+#
+#   Fix under test:
+#     1. a per-PR mint-failure counter (CV_STATE_DIR/<dedup_key>.mint-failures,
+#        separate from the main per-PR state record) caps consecutive failed
+#        mint/sling attempts at CV_MINT_MAX_ATTEMPTS (default 3) — the cap
+#        check runs BEFORE any `bd create`.
+#     2. every orphaned bare bead a failed sling leaves behind is rolled
+#        back (`bd close`) immediately, instead of being abandoned open.
+#     3. once the cap is reached, the script sends exactly ONE escalation
+#        mail (not one per cycle) and mints nothing further — a
+#        CV_STATE_DIR/<dedup_key>.mint-escalated sentinel makes that
+#        short-circuit idempotent across every later cycle.
+#
+#   We drive 5 consecutive cycles against the SAME state dir with
+#   STUB_SLING_FAIL=1 throughout (sling always fails) and total the mint
+#   attempts, rollbacks, and mail sends across all 5.
+# ===========================================================================
+start_case "42: fk-zvkmd — capped fallback-mint retries roll back orphans and escalate once, not unboundedly"
+setup_case_env "42"
+
+TOTAL_CREATE=0
+TOTAL_CLOSE=0
+TOTAL_MAIL=0
+for cyc in 1 2 3 4 5; do
+  GC_LOG_CYC="${SANDBOX}/gc-42-${cyc}.log"; : > "$GC_LOG_CYC"
+  OUT="$(
+    env GH="${STUBDIR}/gh" GC="${STUBDIR}/gc" GC_CITY="$CITY_DIR" \
+      CV_STATE_DIR="$STATE_DIR" STUB_GH_LOG="${SANDBOX}/gh-42-${cyc}.log" \
+      STUB_GC_LOG="$GC_LOG_CYC" CV_PR_AUTHOR="kriscoleman" \
+      STUB_GH_USER_LOGIN="kriscoleman" STUB_SLING_FAIL=1 \
+      STUB_BD_CREATE_ID="va-42-bead" \
+      bash "$SCRIPT" 2>&1
+  )"; RC=$?
+  assert_eq "0" "$RC" "cycle ${cyc} exits 0 (a capped/escalated mint is non-fatal)"
+  TOTAL_CREATE=$((TOTAL_CREATE + $(log_count "$GC_LOG_CYC" 'bd create .*--silent')))
+  TOTAL_CLOSE=$((TOTAL_CLOSE + $(log_count "$GC_LOG_CYC" 'bd close va-42-bead')))
+  TOTAL_MAIL=$((TOTAL_MAIL + $(log_count "$GC_LOG_CYC" 'mail send')))
+  if [ "$cyc" -eq 4 ] && printf '%s' "$OUT" | grep -q 'ESCALATE kriscoleman/foundry#11'; then
+    pass "cycle 4 (the 4th attempt, past the cap of 3) logs the ESCALATE line"
+  elif [ "$cyc" -eq 4 ]; then
+    fail "expected cycle 4 to log the ESCALATE line once the cap is reached"
+  fi
+  if [ "$cyc" -eq 5 ] && printf '%s' "$OUT" | grep -q 'SKIP kriscoleman/foundry#11 — mint already escalated'; then
+    pass "cycle 5 (after escalation) logs an idempotent SKIP, not a second ESCALATE"
+  elif [ "$cyc" -eq 5 ]; then
+    fail "expected cycle 5 to log the idempotent already-escalated SKIP"
+  fi
+done
+
+# Exactly CV_MINT_MAX_ATTEMPTS (3) mint attempts are ever made across all 5
+# cycles — the cap guard runs BEFORE bd create on cycles 4 and 5.
+assert_eq "3" "$TOTAL_CREATE" "at most CV_MINT_MAX_ATTEMPTS (3) repair beads are ever pre-created across 5 cycles of a persistently failing sling"
+# Every one of those 3 orphaned bare beads is rolled back, not abandoned.
+assert_eq "3" "$TOTAL_CLOSE" "every orphaned bare bead created by a failed sling is rolled back (bd close)"
+# Exactly one escalation mail across all 5 cycles, not one per cycle.
+assert_eq "1" "$TOTAL_MAIL" "exactly one escalation mail is sent once the mint-attempt cap is reached, not one per cycle"
+
+# The main per-PR state record is never written — every attempt failed, so
+# there was never a real dispatch to record (mirrors CASE 11/13's existing
+# retry discipline; this cap must not change that contract).
+if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.state" ]; then
+  fail "state record written despite every sling attempt failing (would misrepresent a dispatch that never happened)"
+else
+  pass "no main state record written across the capped, always-failing mint cycles"
+fi
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 echo

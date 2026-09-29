@@ -100,6 +100,23 @@
 #                   minutes) — same default and semantics as
 #                   con-voyage-repair-watchdog.sh, which shares this lock
 #                   implementation (con-voyage-lib.sh).
+#   CV_MINT_MAX_ATTEMPTS  Consecutive failed fallback-mint attempts (bd create
+#                   succeeded but the ci-repair sling failed, or bd create
+#                   itself failed) allowed for the SAME PR before this script
+#                   stops retrying and escalates instead (fk-zvkmd: an
+#                   unbounded retry left ~61 orphaned, description-less
+#                   repair beads behind in production, one per ~11-minute
+#                   cycle, because each failed sling left its pre-created
+#                   bead behind and was retried from scratch next cycle).
+#                   Default: 3. Tracked per-PR in
+#                   CV_STATE_DIR/<dedup_key>.mint-failures — a lightweight
+#                   counter separate from the main per-PR state record (which
+#                   deliberately records nothing on a failed dispatch, so a
+#                   transient failure is still retried — see PART A).
+#   CV_ESCALATE_TARGET  Mail recipient once CV_MINT_MAX_ATTEMPTS is reached
+#                   for a PR. Default: the reserved `human` alias (same
+#                   default as con-voyage-repair-watchdog.sh's own
+#                   escalation target).
 #
 # Exit codes:
 #   0 — completed (some or all monitors may have had no actionable PRs)
@@ -133,6 +150,8 @@ CV_IMPLEMENTOR="${CV_IMPLEMENTOR:-gc.implementation-worker}"
 CV_AUTHOR_GATE="${CV_AUTHOR_GATE:-enabled}"
 CV_CONFLICT_STRATEGY="${CV_CONFLICT_STRATEGY:-rebase}"
 CV_LOCK_STALE_SECONDS="${CV_LOCK_STALE_SECONDS:-300}"
+CV_MINT_MAX_ATTEMPTS="${CV_MINT_MAX_ATTEMPTS:-3}"
+CV_ESCALATE_TARGET="${CV_ESCALATE_TARGET:-human}"
 
 # AUTHOR SCOPING (see HARD INVARIANT in the header). The single GitHub login
 # whose PRs this monitor may act on. Defaults to the authenticated gh login.
@@ -162,6 +181,13 @@ CV_AGENT_PREFIX_PATTERN='^🤖 \*\*Automated con-voyage agent\*\*'
 # con-voyage-repair-watchdog.sh, which shares the same lock implementation.
 case "$CV_LOCK_STALE_SECONDS" in
   *[!0-9]*|'') CV_LOCK_STALE_SECONDS="300" ;;
+esac
+
+# Same posture as CV_LOCK_STALE_SECONDS above: a malformed override must
+# fail safe (fall back to the documented default) rather than break the
+# mint-attempt cap comparison below.
+case "$CV_MINT_MAX_ATTEMPTS" in
+  *[!0-9]*|'') CV_MINT_MAX_ATTEMPTS="3" ;;
 esac
 
 # ---------------------------------------------------------------------------
@@ -482,6 +508,51 @@ print(author + SEP + ("1" if skip_awaiting_human else "0"))
       echo "con-voyage-pr-watch: [PART A] WARNING: mail to implementor ${st_implementor} failed for ${a_full}#${a_num}; will retry next cycle" >&2
     fi
   else
+    # MINT-ATTEMPT CAP (fk-zvkmd): a fallback mint that keeps failing (bd
+    # create failing, or the ci-repair sling being rejected every cycle —
+    # e.g. a broken formula/route) must never be retried unboundedly. State
+    # is deliberately never written on a failed dispatch (see the comment
+    # above the final `state_write` in this function), so without a
+    # dedicated counter every retry looks identical to the FIRST attempt and
+    # pre-creates a FRESH bare repair bead each cycle — in production this
+    # produced ~61 orphaned, description-less repair beads over ~12h, one
+    # per ~11-minute cycle, because a persistently failing sling left every
+    # pre-created bead behind and was retried from scratch next cycle. Track
+    # consecutive failures per-PR in a lightweight counter file (separate
+    # from the per-PR state record above, so it does not interact with that
+    # record's own in-flight/skip/reset semantics), and once
+    # CV_MINT_MAX_ATTEMPTS is reached, stop minting entirely and notify a
+    # human exactly once instead of continuing to mint.
+    mint_fail_file="${CV_STATE_DIR}/${dedup_key}.mint-failures"
+    mint_escalated_file="${CV_STATE_DIR}/${dedup_key}.mint-escalated"
+    mint_fail_count=0
+    if [ -f "$mint_fail_file" ]; then
+      mint_fail_count="$(cat "$mint_fail_file" 2>/dev/null || echo 0)"
+      case "$mint_fail_count" in *[!0-9]*|'') mint_fail_count=0 ;; esac
+    fi
+
+    if [ "$mint_fail_count" -ge "$CV_MINT_MAX_ATTEMPTS" ]; then
+      if [ -f "$mint_escalated_file" ]; then
+        # Idempotent short-circuit: already escalated for this exact streak
+        # of failures. The marker file IS the "still decided not to
+        # dispatch" state this guard persists — checking it (rather than
+        # re-sending mail) is what makes the short-circuit safe to
+        # re-evaluate every cycle without side effects.
+        echo "con-voyage-pr-watch: [PART A] SKIP ${a_full}#${a_num} — mint already escalated after ${mint_fail_count} failed attempt(s); not re-minting (dedup: ${dedup_key})"
+      else
+        echo "con-voyage-pr-watch: [PART A] ESCALATE ${a_full}#${a_num} — ${mint_fail_count} failed mint/sling attempt(s), notifying ${CV_ESCALATE_TARGET} and stopping automatic re-mint"
+        if "$GC" --city "$GC_CITY" mail send "$CV_ESCALATE_TARGET" \
+          -s "con-voyage pr-watch: giving up on minting a repair for ${a_full}#${a_num}" \
+          -m "Repair-bead mint/sling for ${a_full}#${a_num} (branch ${a_branch}, ${a_failure_kind}) has failed ${mint_fail_count} consecutive attempt(s). This monitor is stopping automatic re-mint for this PR — please take a look." \
+          2>&1; then
+          : > "$mint_escalated_file"
+        else
+          echo "con-voyage-pr-watch: [PART A] WARNING: escalation mail to ${CV_ESCALATE_TARGET} failed for ${a_full}#${a_num}; will retry next cycle" >&2
+        fi
+      fi
+      return
+    fi
+
     # CROSS-RIG MINT GUARD (fk-4o74 Fix-1 round 1, finding #1): derive the
     # target rig from the repair_route (the part BEFORE the first "/",
     # e.g. "vandoor" from "vandoor/gc.implementation-worker") HERE,
@@ -522,6 +593,8 @@ print(author + SEP + ("1" if skip_awaiting_human else "0"))
 
       if [ -z "${repair_bead_id// /}" ]; then
         echo "con-voyage-pr-watch: [PART A] WARNING: failed to create repair bead for ${a_full}#${a_num}; will retry next cycle" >&2
+        mint_fail_count=$((mint_fail_count + 1))
+        printf '%s\n' "$mint_fail_count" > "$mint_fail_file"
       elif "$GC" --city "$GC_CITY" sling "$a_route" "$repair_bead_id" \
         --on con-voyage-ci-repair \
         --var "title=${a_title}" \
@@ -538,8 +611,23 @@ print(author + SEP + ("1" if skip_awaiting_human else "0"))
         new_inflight="$repair_bead_id"
         new_implementor=""
         echo "con-voyage-pr-watch: [PART A] ${a_full}#${a_num}: repair bead ${repair_bead_id} created/attached and routed to ${a_route} (fallback — no live implementor)"
+        # A successful mint clears any prior failure streak — the next
+        # failure (if this bead's own dispatch later stalls) starts a fresh
+        # cap budget rather than inheriting an unrelated earlier streak.
+        rm -f "$mint_fail_file" "$mint_escalated_file"
       else
         echo "con-voyage-pr-watch: [PART A] WARNING: repair-bead sling failed for ${a_full}#${a_num} (bead ${repair_bead_id}); will retry next cycle" >&2
+        mint_fail_count=$((mint_fail_count + 1))
+        printf '%s\n' "$mint_fail_count" > "$mint_fail_file"
+        # ROLLBACK (fk-zvkmd, FIX EXPECTATION 3): the bead WAS pre-created,
+        # but the sling that attaches its real description/metadata/assignee
+        # just failed — it exists as a permanent bare, content-less task
+        # bead unless we close it now. Never leave a repair bead half-formed:
+        # either its content lands atomically (the sling succeeds) or the
+        # bead is rolled back.
+        "$GC" --city "$GC_CITY" bd close "$repair_bead_id" \
+          --reason "rollback: sling to ${a_route} failed for ${a_full}#${a_num}, bead never received its real content" \
+          2>&1 || echo "con-voyage-pr-watch: [PART A] WARNING: rollback close of orphaned bead ${repair_bead_id} failed for ${a_full}#${a_num}; it may be left bare" >&2
         # Non-fatal: continue to next PR / Part B.
       fi
     fi
