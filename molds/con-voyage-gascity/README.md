@@ -208,11 +208,17 @@ profiles a city picks between, not something you build from scratch:
   tier providers itself (`[providers.cv-review-*]` in `pack/pack.toml`), so casting
   the pack into any city yields working reviewers with no city changes:
 
-| Tier provider | Default model (claude mode) | Lenses |
-|---|---|---|
-| `cv-review-intensive` (large) | opus | `cv-security-reviewer`, `cv-code-reviewer`, `cv-go-principal-engineer`, `cv-frontend-principal-engineer`, `cv-data-db-engineer`, `cv-api-platform-contract` |
-| `cv-review-standard` (medium) | sonnet | `cv-qa-test-engineer`, `cv-sre-reliability`, `cv-compliance-privacy`, `cv-product-owner`, `cv-founder-cto`, `cv-dev-ex-reviewer` |
-| `cv-review-light` (small) | haiku | `cv-standards-janitor`, `cv-documentation`, `cv-marketing`, `cv-design-ux` |
+| Tier provider | Default model (claude mode) | Effort | Lenses |
+|---|---|---|---|
+| `cv-review-intensive` (large) | opus | high | `cv-security-reviewer`, `cv-code-reviewer`, `cv-go-principal-engineer`, `cv-frontend-principal-engineer`, `cv-data-db-engineer`, `cv-api-platform-contract` |
+| `cv-review-standard` (medium) | sonnet | medium | `cv-qa-test-engineer`, `cv-sre-reliability`, `cv-compliance-privacy`, `cv-product-owner`, `cv-founder-cto`, `cv-dev-ex-reviewer` |
+| `cv-review-light` (small) | haiku | low | `cv-standards-janitor`, `cv-documentation`, `cv-marketing`, `cv-design-ux` |
+
+Every claude-mode tier provider ships an explicit `effort` — builtin:claude's
+own default is `max`, and nobody defaults to max; effort matches tier. The
+opencode + fireworks mode below has no `effort` equivalent — that option is
+claude-specific, and opencode mode controls cost/throughput via model choice
+alone.
 
 ### Switching to opencode + fireworks mode
 
