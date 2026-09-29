@@ -10,8 +10,9 @@ panel/page/component family) and the repo's design tokens and shared
 components — not just against itself.
 
 1. **Class tokens** — radius, border, color, spacing, and typography must
-   match the convention already used by this element's siblings, or the
-   deviation must be justified.
+   match the convention already used by this element's siblings. A
+   justified deviation is still drift: report it at least LOW, with the
+   justification noted as context, not as an exemption from reporting.
 2. **Component reuse** — a new element that duplicates an existing shared
    component instead of reusing it is drift, not a style choice.
 3. **Copy and verb consistency** — new copy (labels, messages, actions)
@@ -19,10 +20,14 @@ components — not just against itself.
    action elsewhere in the product.
 
 Every drift is a finding with the changed `file:line`, the established
-convention it breaks (cite the sibling's `file:line`), and the exact fix.
-Severity: drift that is visible to users, or that diverges from a shared
-component, is at least LOW. It is BLOCKING when the diff forks an existing
-shared component instead of reusing it — a duplicate implementation becomes
-a second source of truth. Every other drift in this checklist defaults to
-LOW.
+convention it breaks (cite the sibling's `file:line`), and the exact fix —
+even when the deviation is justified, cite both file:lines and note the
+justification as context.
+
+Severity — decide in this order:
+- **BLOCKING**: the diff forks an existing shared component instead of
+  reusing it (a duplicate implementation becomes a second source of truth).
+- **LOW at minimum**: the drift is visible to users, or diverges from a
+  shared component.
+- **LOW by default**: every other drift in this checklist.
 {{ end }}
