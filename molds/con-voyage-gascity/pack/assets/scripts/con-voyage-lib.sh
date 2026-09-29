@@ -1213,10 +1213,13 @@ for s in sessions:
 # decide it needs closing) skip the redundant second `bd show` — when empty
 # (the default), the status is fetched fresh, same as before.
 #
-# FORCE (fk-c1xa): when non-empty, passes `--force` to `bd close`. `bd`
-# refuses to close a bead whose `assignee` differs from the caller's own
-# actor ("cannot close %s: assignee is %q, actor is %q; reclaim or use
-# --force to override") — con-voyage's own setup step claims a work bead as
+# FORCE (fk-c1xa): when non-empty, passes `--force` to `bd close` — but ONLY
+# after confirming the assignee mismatch is actually the sole blocker.
+# `bd close --force` is not assignee-scoped: per `bd close --help` it also
+# "Force close[s] pinned issues or unsatisfied gates", and a plain `bd close`
+# refuses a bead whose `assignee` differs from the caller's own actor
+# ("cannot close %s: assignee is %q, actor is %q; reclaim or use --force to
+# override") — con-voyage's own setup step claims a work bead as
 # `con-voyage:work-bead`, so this monitor's own actor (e.g. "mayor") never
 # matches and every close silently no-ops without --force. Live evidence:
 # fk-8b5fl/#100, fk-htx5p/#101, fk-q2pon/#103, fk-o9ntx/#105 all sat
@@ -1225,11 +1228,15 @@ for s in sessions:
 # lifecycle of once a PR reaches a terminal state (the work bead + its
 # convoy) — never for a repair bead another lens/session may still be
 # working, which is why every OTHER close_if_open call site in this pack
-# leaves FORCE unset (unchanged behavior).
+# leaves FORCE unset (unchanged behavior). Even then, FORCE never silently
+# overrides a human `pinned` hold or an unresolved dependency/gate (see the
+# pinned/is_blocked pre-check below) — those are left open for the caller's
+# normal escalation path (fk-22bq4).
 #
 # CV_CLOSE_RC (fk-7v3r): set on every call to the real `bd close` exit status
 # — 0 for a no-op (empty id / already closed) and for a successful close,
-# non-zero when `bd close` itself fails. The function's OWN return value
+# non-zero when `bd close` itself fails OR the FORCE pre-check refuses to
+# override a pinned/blocked bead (fk-22bq4). The function's OWN return value
 # stays 0 in every case: con-voyage-pr-watch.sh calls this as a bare statement
 # under `set -e` and must never abort mid-scan over a single PR's failed
 # close. A caller that must not proceed past a failed close (e.g.
@@ -1245,15 +1252,36 @@ close_if_open() {
   fi
   [ -n "$bead_state" ] && [ "$bead_state" != "closed" ] || return 0
   local gc_bin="${GC:-gc}"
+  if [ -n "$force" ]; then
+    # fk-22bq4: --force overrides a pin or an unsatisfied gate too, not just
+    # the assignee guard this call site exists for. Refuse to force through
+    # either one — leave the bead open (non-zero CV_CLOSE_RC) so the caller's
+    # normal retry/escalation path handles it instead of a silent override.
+    local pinned_val is_blocked_val
+    IFS=$'\x1f' read -r _ pinned_val <<< "$(bead_status "$bead_id" pinned)"
+    IFS=$'\x1f' read -r _ is_blocked_val <<< "$(bead_status "$bead_id" is_blocked)"
+    if [ -n "$pinned_val" ] || [ -n "$is_blocked_val" ]; then
+      CV_CLOSE_RC=1
+      echo "close_if_open: WARNING: refusing to --force close ${bead_id} (status=${bead_state}, pinned=${pinned_val:-false}, is_blocked=${is_blocked_val:-false}); not a plain assignee-guard case, leaving it open for retry/escalation" >&2
+      return 0
+    fi
+  fi
   local -a close_args=(bd close "$bead_id" --reason "$reason")
   [ -z "$force" ] || close_args+=(--force)
-  if "$gc_bin" "${close_args[@]}" >/dev/null 2>&1; then
+  local close_output
+  if close_output="$("$gc_bin" "${close_args[@]}" 2>&1)"; then
     if [ -n "$pr_label" ]; then
       echo "con-voyage-pr-watch: [PART A] ${pr_label}: closed prior open repair bead ${bead_id} (was status=${bead_state})"
+    fi
+    if [ -n "$force" ] && [ -n "$close_output" ]; then
+      echo "close_if_open: --force close of ${bead_id} succeeded; bd close output: ${close_output}"
     fi
   else
     CV_CLOSE_RC=$?
     echo "close_if_open: WARNING: bd close failed for ${bead_id} (status=${bead_state}, rc=${CV_CLOSE_RC}); leaving it open for retry" >&2
+    if [ -n "$close_output" ]; then
+      echo "close_if_open: bd close output: ${close_output}" >&2
+    fi
   fi
   return 0
 }
