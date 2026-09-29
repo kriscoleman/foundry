@@ -2486,6 +2486,89 @@ fi
 assert_log_count "$GC_LOG_REFAIL" 'bd create .*--silent' 1 "a fresh repair bead is minted after the PR recovered and failed again"
 
 # ===========================================================================
+# CASE 44 — fk-n4c1a review fix (BLOCKING-1): the mint-marker reset must NOT
+#   be gated behind the clean-*transition* guard (`ST_LAST_STATE != "clean"`).
+#   A mint-failure streak never calls state_write, so last_handled_state never
+#   moves off "clean" during the streak — CASE 43 enters its recovery cycle
+#   with ST_LAST_STATE="" (no leading clean cycle), so the guard happens to
+#   fire regardless of the bug and cannot catch it. This case diverges by
+#   recording a LEADING clean cycle first, so the guard is already false by
+#   the time the PR recovers a second time — only that ordering proves the
+#   rm -f actually runs unconditionally.
+#
+#   Drive #11 through: 1 clean cycle (leading, records last_handled_state=
+#   clean) -> 4 failing cycles (3 to reach the cap, a 4th that sends the
+#   escalation mail) -> 1 clean cycle (recovery, ST_LAST_STATE is already
+#   "clean" so the transition guard is false) -> 1 failing cycle again. The
+#   final cycle must mint a fresh repair bead (not log the idempotent
+#   "already escalated" SKIP).
+# ===========================================================================
+start_case "44: fk-n4c1a — mint-failure markers reset on a PR's SECOND clean observation, even though the clean-transition guard is false"
+setup_case_env "44"
+
+# Leading clean cycle: records last_handled_state=clean before any failure.
+GC_LOG_LEAD="${SANDBOX}/gc-44-lead.log"; : > "$GC_LOG_LEAD"
+env GH="${STUBDIR}/gh" GC="${STUBDIR}/gc" GC_CITY="$CITY_DIR" \
+  CV_STATE_DIR="$STATE_DIR" STUB_GH_LOG="${SANDBOX}/gh-44-lead.log" \
+  STUB_GC_LOG="$GC_LOG_LEAD" CV_PR_AUTHOR="kriscoleman" \
+  STUB_GH_USER_LOGIN="kriscoleman" STUB_PR11_CLEAN=1 \
+  bash "$SCRIPT" >/dev/null 2>&1
+
+for cyc in 1 2 3 4; do
+  GC_LOG_CYC="${SANDBOX}/gc-44-${cyc}.log"; : > "$GC_LOG_CYC"
+  env GH="${STUBDIR}/gh" GC="${STUBDIR}/gc" GC_CITY="$CITY_DIR" \
+    CV_STATE_DIR="$STATE_DIR" STUB_GH_LOG="${SANDBOX}/gh-44-${cyc}.log" \
+    STUB_GC_LOG="$GC_LOG_CYC" CV_PR_AUTHOR="kriscoleman" \
+    STUB_GH_USER_LOGIN="kriscoleman" STUB_SLING_FAIL=1 \
+    STUB_BD_CREATE_ID="va-44-bead" \
+    bash "$SCRIPT" >/dev/null 2>&1
+done
+if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.mint-escalated" ]; then
+  pass "escalation sentinel present after 3 failed mint cycles following a leading clean cycle"
+else
+  fail "expected the escalation sentinel to exist after 3 consecutive failed mint cycles"
+fi
+
+# Recovery cycle: PR #11 goes clean a SECOND time. ST_LAST_STATE is already
+# "clean" from the leading cycle, so the `!= "clean"` transition guard is
+# false here — the marker reset must run anyway.
+GC_LOG_CLEAN="${SANDBOX}/gc-44-clean.log"; : > "$GC_LOG_CLEAN"
+env GH="${STUBDIR}/gh" GC="${STUBDIR}/gc" GC_CITY="$CITY_DIR" \
+  CV_STATE_DIR="$STATE_DIR" STUB_GH_LOG="${SANDBOX}/gh-44-clean.log" \
+  STUB_GC_LOG="$GC_LOG_CLEAN" CV_PR_AUTHOR="kriscoleman" \
+  STUB_GH_USER_LOGIN="kriscoleman" STUB_PR11_CLEAN=1 \
+  bash "$SCRIPT" >/dev/null 2>&1
+if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.mint-failures" ]; then
+  fail "mint-failures counter still present after PR #11's second clean observation"
+else
+  pass "mint-failures counter cleared on PR #11's second clean observation"
+fi
+if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.mint-escalated" ]; then
+  fail "escalation sentinel still present after PR #11's second clean observation"
+else
+  pass "escalation sentinel cleared on PR #11's second clean observation"
+fi
+
+# Final cycle: PR #11 fails again. Must mint fresh (bd create), not SKIP as
+# already-escalated.
+GC_LOG_REFAIL2="${SANDBOX}/gc-44-refail.log"; : > "$GC_LOG_REFAIL2"
+OUT="$(
+  env GH="${STUBDIR}/gh" GC="${STUBDIR}/gc" GC_CITY="$CITY_DIR" \
+    CV_STATE_DIR="$STATE_DIR" STUB_GH_LOG="${SANDBOX}/gh-44-refail.log" \
+    STUB_GC_LOG="$GC_LOG_REFAIL2" CV_PR_AUTHOR="kriscoleman" \
+    STUB_GH_USER_LOGIN="kriscoleman" STUB_SLING_FAIL=1 \
+    STUB_BD_CREATE_ID="va-44-refail-bead" \
+    bash "$SCRIPT" 2>&1
+)"; RC=$?
+assert_eq "0" "$RC" "the post-second-recovery re-failure cycle exits 0"
+if printf '%s' "$OUT" | grep -q 'SKIP kriscoleman/foundry#11 — mint already escalated'; then
+  fail "a stale escalation surviving the second clean transition incorrectly suppressed the new, unrelated failure"
+else
+  pass "no stale-escalation SKIP logged — the twice-recovered PR's later failure got a fresh cap budget"
+fi
+assert_log_count "$GC_LOG_REFAIL2" 'bd create .*--silent' 1 "a fresh repair bead is minted after the PR's second recovery and a later failure"
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 echo
