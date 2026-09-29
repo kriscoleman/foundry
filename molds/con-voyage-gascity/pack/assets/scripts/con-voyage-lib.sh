@@ -1199,19 +1199,33 @@ for s in sessions:
 " "$route"
 }
 
-# close_if_open BEAD_ID REASON [PR_LABEL] [KNOWN_STATUS] — closes BEAD_ID if
-# it is currently open (any status other than empty/unknown or "closed").
-# No-op if BEAD_ID is empty or already closed/unknown. When PR_LABEL is
-# given, logs a standard SUPERSEDE line tagged with it (con-voyage-pr-watch.sh's
-# 3 call sites, which share this one "read status, close if open, log"
-# sequence across the clean-PR path, the genuinely-in-flight supersede, and
-# the legacy stale-marker sweep); omitted, the caller logs its own labeled
-# line instead (con-voyage-repair-watchdog.sh's call site). KNOWN_STATUS lets
-# a caller that already fetched this SAME bead's status earlier in the same
-# iteration (e.g. the watchdog's tracked-bead DEAD/STALLED branch, which
-# already called `bead_status ... updated_at` to decide it needs closing)
-# skip the redundant second `bd show` — when empty (the default), the status
-# is fetched fresh, same as before.
+# close_if_open BEAD_ID REASON [PR_LABEL] [KNOWN_STATUS] [FORCE] — closes
+# BEAD_ID if it is currently open (any status other than empty/unknown or
+# "closed"). No-op if BEAD_ID is empty or already closed/unknown. When
+# PR_LABEL is given, logs a standard SUPERSEDE line tagged with it
+# (con-voyage-pr-watch.sh's 3 call sites, which share this one "read status,
+# close if open, log" sequence across the clean-PR path, the genuinely-in-
+# flight supersede, and the legacy stale-marker sweep); omitted, the caller
+# logs its own labeled line instead (con-voyage-repair-watchdog.sh's call
+# site). KNOWN_STATUS lets a caller that already fetched this SAME bead's
+# status earlier in the same iteration (e.g. the watchdog's tracked-bead
+# DEAD/STALLED branch, which already called `bead_status ... updated_at` to
+# decide it needs closing) skip the redundant second `bd show` — when empty
+# (the default), the status is fetched fresh, same as before.
+#
+# FORCE (fk-c1xa): when non-empty, passes `--force` to `bd close`. `bd`
+# refuses to close a bead whose `assignee` differs from the caller's own
+# actor ("cannot close %s: assignee is %q, actor is %q; reclaim or use
+# --force to override") — con-voyage's own setup step claims a work bead as
+# `con-voyage:work-bead`, so this monitor's own actor (e.g. "mayor") never
+# matches and every close silently no-ops without --force. Live evidence:
+# fk-8b5fl/#100, fk-htx5p/#101, fk-q2pon/#103, fk-o9ntx/#105 all sat
+# in_progress with a merged PR and a live finalize record until force-closed
+# by hand. Only pass FORCE for beads this monitor exclusively owns the
+# lifecycle of once a PR reaches a terminal state (the work bead + its
+# convoy) — never for a repair bead another lens/session may still be
+# working, which is why every OTHER close_if_open call site in this pack
+# leaves FORCE unset (unchanged behavior).
 #
 # CV_CLOSE_RC (fk-7v3r): set on every call to the real `bd close` exit status
 # — 0 for a no-op (empty id / already closed) and for a successful close,
@@ -1222,7 +1236,7 @@ for s in sessions:
 # con-voyage-finalize.sh deleting its retry record) checks CV_CLOSE_RC
 # immediately after the call instead of the call's own return code.
 close_if_open() {
-  local bead_id="$1" reason="$2" pr_label="${3:-}" known_status="${4:-}"
+  local bead_id="$1" reason="$2" pr_label="${3:-}" known_status="${4:-}" force="${5:-}"
   CV_CLOSE_RC=0
   [ -n "${bead_id// /}" ] || return 0
   local bead_state="$known_status"
@@ -1231,7 +1245,9 @@ close_if_open() {
   fi
   [ -n "$bead_state" ] && [ "$bead_state" != "closed" ] || return 0
   local gc_bin="${GC:-gc}"
-  if "$gc_bin" bd close "$bead_id" --reason "$reason" >/dev/null 2>&1; then
+  local -a close_args=(bd close "$bead_id" --reason "$reason")
+  [ -z "$force" ] || close_args+=(--force)
+  if "$gc_bin" "${close_args[@]}" >/dev/null 2>&1; then
     if [ -n "$pr_label" ]; then
       echo "con-voyage-pr-watch: [PART A] ${pr_label}: closed prior open repair bead ${bead_id} (was status=${bead_state})"
     fi

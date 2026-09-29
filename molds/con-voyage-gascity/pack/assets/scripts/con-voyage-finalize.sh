@@ -34,14 +34,21 @@
 #   1. Author-scope check (skip records not authored by CV_PR_AUTHOR).
 #   2. Poll the PR's terminal state via ONE `gh pr view` (pr_finalize_state).
 #   3. MERGED / CLOSED-without-merge:
-#        - close the WORK BEAD with an accurate reason
+#        - close the WORK BEAD with an accurate reason, FORCED (fk-c1xa: `bd`
+#          refuses a close whose actor doesn't match the bead's assignee —
+#          con-voyage's setup step claims work beads as "con-voyage:work-bead",
+#          which this monitor's own actor never matches — and this monitor is
+#          the sole owner of a work bead's lifecycle once its PR is terminal)
 #          ("landed: PR #N merged" | "abandoned: PR #N closed without merge")
-#        - close the con-voyage convoy (convoy_id) if still open
+#        - close the con-voyage convoy (convoy_id) if still open, also forced
 #        - RELEASE the long-lived implementor (best-effort mail; this monitor
 #          never force-kills a session — see the release note below)
 #        - remove the ".finalize" record (its job is done)
 #      All idempotent: a re-poll after the record is gone is a clean no-op, and
-#      re-closing an already-closed bead/convoy is guarded by close_if_open.
+#      re-closing an already-closed bead/convoy is guarded by close_if_open. A
+#      close that STILL fails even with --force mails CV_ESCALATE_TARGET once
+#      (deduped via a sibling ".mayor-notified" marker) and keeps the record
+#      for retry — see the ".finalize" loop's tail below.
 #   4. Still OPEN: reflect the PR's live phase on the work bead as a `cv=`
 #      dimension label so the dashboard shows where the PR is — `awaiting_merge`
 #      when clean, `repairing` when CI is red / a rebase is needed. Idempotent
@@ -85,6 +92,10 @@
 #   CV_RELEASE_IMPLEMENTOR  When "1" (default), mail the recorded implementor a
 #                   release note on finalize. Set "0" to skip the release mail
 #                   (the bead/convoy close still happens).
+#   CV_ESCALATE_TARGET  Mail recipient (default: "mayor") when a forced
+#                   work-bead/convoy close still fails — a real `bd close`
+#                   error, not the assignee guard --force already handles.
+#                   Mailed once per record (fk-c1xa).
 #
 # Exit codes:
 #   0 — completed (some, all, or none of the records needed action)
@@ -113,6 +124,11 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/con-voyage-lib.sh"
 CV_STATE_DIR="${CV_STATE_DIR:-$(cv_default_state_dir)}"
 CV_PR_AUTHOR="${CV_PR_AUTHOR:-}"
 CV_RELEASE_IMPLEMENTOR="${CV_RELEASE_IMPLEMENTOR:-1}"
+# CV_ESCALATE_TARGET (fk-c1xa): mail recipient when a forced work-bead/convoy
+# close still fails (a real `bd close` error, not the assignee guard the
+# --force above already handles). Mirrors con-voyage-repair-watchdog.sh's own
+# CV_ESCALATE_TARGET convention.
+CV_ESCALATE_TARGET="${CV_ESCALATE_TARGET:-mayor}"
 
 # ---------------------------------------------------------------------------
 # Preflight checks
@@ -305,17 +321,23 @@ for CV_STATE_DIR in "${CV_STATE_DIRS_ALL[@]}"; do
     reason="$(cv_close_reason_for_pr "$pr_state" "$FS_PR_NUMBER")"
     echo "con-voyage-finalize: FINALIZE ${label} — PR ${pr_state}; closing work bead ${FS_WORK_BEAD} (${reason})"
 
-    # 1. Close the work bead (idempotent — no-op if already closed).
-    close_if_open "$FS_WORK_BEAD" "$reason"
+    # 1. Close the work bead (idempotent — no-op if already closed). FORCE=1
+    #    (fk-c1xa): con-voyage's setup step claims the work bead as
+    #    "con-voyage:work-bead"; this monitor's own actor never matches, so
+    #    `bd close` refuses without --force — this monitor is the sole owner
+    #    of the work bead's lifecycle once its PR is terminal, so forcing past
+    #    that guard here is safe (unlike the repair beads below, which stay
+    #    unforced — another lens/session may still legitimately hold one).
+    close_if_open "$FS_WORK_BEAD" "$reason" "" "" 1
     work_bead_close_rc="$CV_CLOSE_RC"
 
     # 2. Close the con-voyage convoy if we recorded one and it is still open. A
     #    synthetic input convoy autocloses when its tracked work bead closes, but
     #    close it explicitly too (idempotent) so a non-autoclosing convoy is not
-    #    left dangling.
+    #    left dangling. FORCE=1 for the same reason as the work bead above.
     convoy_close_rc=0
     if [ -n "${FS_CONVOY_ID// /}" ] && [ "$FS_CONVOY_ID" != "$FS_WORK_BEAD" ]; then
-      close_if_open "$FS_CONVOY_ID" "con-voyage finalized: ${reason}"
+      close_if_open "$FS_CONVOY_ID" "con-voyage finalized: ${reason}" "" "" 1
       convoy_close_rc="$CV_CLOSE_RC"
     fi
 
@@ -345,10 +367,30 @@ for CV_STATE_DIR in "${CV_STATE_DIRS_ALL[@]}"; do
     #    re-running a close that already succeeded is a safe no-op. Do this LAST
     #    so a crash before here just re-runs the (idempotent) close next cycle.
     if [ "$work_bead_close_rc" -eq 0 ] && [ "$convoy_close_rc" -eq 0 ]; then
-      rm -f "$finalize_file"
+      rm -f "$finalize_file" "${finalize_file}.mayor-notified"
       echo "con-voyage-finalize: done ${label} — finalize record removed"
     else
       echo "con-voyage-finalize: WARNING: ${label} — bd close failed (work_bead_rc=${work_bead_close_rc}, convoy_rc=${convoy_close_rc}); keeping finalize record for retry next cycle" >&2
+      # fk-c1xa: a close that still fails even with --force is a real error
+      # (not the assignee guard --force above already handles) and needs a
+      # human/mayor to look — but only once per record, so a 5-minute
+      # cooldown order does not re-mail every cycle while it retries. The
+      # marker file (sibling to the record, removed alongside it on eventual
+      # success) is the dedup: present => already notified for this record.
+      notified_marker="${finalize_file}.mayor-notified"
+      if [ ! -f "$notified_marker" ]; then
+        if "$GC" mail send "$CV_ESCALATE_TARGET" \
+          -s "con-voyage finalize: stuck closing ${label}" \
+          -m "PR ${label} is ${pr_state} but finalize could not close it out: work_bead ${FS_WORK_BEAD} (rc=${work_bead_close_rc}), convoy ${FS_CONVOY_ID:-<none>} (rc=${convoy_close_rc}). The finalize record is being kept and retried every cycle, but this has already failed once even with --force — please take a look." \
+          2>&1; then
+          : > "$notified_marker"
+          echo "con-voyage-finalize: notified ${CV_ESCALATE_TARGET} about ${label}'s stuck close"
+        else
+          echo "con-voyage-finalize: WARNING: escalation mail to ${CV_ESCALATE_TARGET} failed for ${label}; will retry next cycle" >&2
+        fi
+      else
+        echo "con-voyage-finalize: OK ${label} — already notified ${CV_ESCALATE_TARGET} about this stuck close; not re-mailing"
+      fi
     fi
   done
 done

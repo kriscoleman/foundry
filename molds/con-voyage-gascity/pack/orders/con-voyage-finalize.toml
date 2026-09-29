@@ -50,7 +50,9 @@ exec = "$PACK_DIR/assets/scripts/con-voyage-finalize.sh"
 # CV_PR_AUTHOR is the single GitHub login whose PRs this monitor may finalize.
 # CV_RELEASE_IMPLEMENTOR toggles the release note to the long-lived implementor
 # on finalize (default "1" = send it; "0" = skip the mail, still close the
-# bead/convoy).
+# bead/convoy). CV_ESCALATE_TARGET (fk-c1xa) is who gets mailed if a forced
+# work-bead/convoy close still fails outright.
 [order.env]
 CV_PR_AUTHOR = "kriscoleman"
 CV_RELEASE_IMPLEMENTOR = "1"
+CV_ESCALATE_TARGET = "mayor"

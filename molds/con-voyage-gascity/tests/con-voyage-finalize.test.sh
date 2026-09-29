@@ -136,7 +136,11 @@ chmod +x "${STUBDIR}/gh"
 # treated as unknown/closed (close_if_open no-ops).
 # STUB_BDCLOSE_FAIL_IDS: newline-delimited bead ids for which `bd close` exits
 # 1 (simulates the fk-7v3r "bd close silently fails" scenario) — every other
-# id's `bd close` succeeds (exit 0).
+# id's `bd close` succeeds (exit 0). Fails UNCONDITIONALLY, --force included
+# (simulates a genuine bd-close error, not the assignee guard below).
+# STUB_BDCLOSE_REQUIRES_FORCE_IDS (fk-c1xa): newline-delimited bead ids for
+# which `bd close` exits 1 UNLESS `--force`/`-f` is present in argv (simulates
+# real bd's "assignee is %q, actor is %q; reclaim or use --force" guard).
 # ---------------------------------------------------------------------------
 cat > "${STUBDIR}/gc" <<'GC_STUB'
 #!/usr/bin/env bash
@@ -174,6 +178,13 @@ case "$sub" in
       close_id="${args[$((i+2))]:-}"
       if [ -n "${STUB_BDCLOSE_FAIL_IDS:-}" ] && printf '%s\n' "$STUB_BDCLOSE_FAIL_IDS" | grep -qx -- "$close_id"; then
         exit 1
+      fi
+      if [ -n "${STUB_BDCLOSE_REQUIRES_FORCE_IDS:-}" ] && printf '%s\n' "$STUB_BDCLOSE_REQUIRES_FORCE_IDS" | grep -qx -- "$close_id"; then
+        has_force=0
+        for a in "${args[@]}"; do
+          [ "$a" = "--force" ] || [ "$a" = "-f" ] && has_force=1
+        done
+        [ "$has_force" = "1" ] || exit 1
       fi
       exit 0
     fi
@@ -876,6 +887,74 @@ assert_out_contains "con-voyage-finalize: scanning 3 state dir" "logs the resolv
 assert_out_contains "${STATE_DIR}" "scan-set log names this order's own primary directory"
 assert_out_contains "${RIG_31A}/.gc/cv-pr-watch" "scan-set log names the first registered rig's directory"
 assert_out_contains "${RIG_31B}/.gc/cv-pr-watch" "scan-set log names the second registered rig's directory"
+
+# ===========================================================================
+# CASE 32 — fk-c1xa: an assignee-guarded work bead (con-voyage's setup step
+#   claims it as "con-voyage:work-bead", so a plain `bd close` run as this
+#   monitor's own actor is refused: "assignee is %q, actor is %q; reclaim or
+#   use --force") still closes, because this monitor now forces the work-bead
+#   and convoy closes it exclusively owns once the PR is terminal. Live
+#   evidence: fk-8b5fl/#100, fk-htx5p/#101, fk-q2pon/#103, fk-o9ntx/#105 all
+#   sat in_progress with a merged PR until force-closed by hand.
+# ===========================================================================
+start_case "32: assignee-guarded work bead + merged PR -> closed with --force, record removed"
+setup_case_env "32"
+write_finalize "$STATE_DIR" "cv-finalize-kriscoleman-foundry-101" \
+  "fk-w101" "fk-c101" "kriscoleman/foundry" "101" "kriscoleman" "foundry/impl-17" "awaiting_merge"
+run_script "${DEFAULT_ENV[@]}" \
+  STUB_PR_MAP="kriscoleman/foundry|101|MERGED|2026-09-26T10:00:00Z|2026-09-26T10:00:00Z|||" \
+  STUB_BDSHOW_MAP=$'fk-w101|in_progress\nfk-c101|open' \
+  STUB_BDCLOSE_REQUIRES_FORCE_IDS=$'fk-w101\nfk-c101'
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd close fk-w101 --reason .*--force' 1 "work bead close was retried/sent with --force"
+assert_log_count "$GC_LOG" 'bd close fk-c101 --reason .*--force' 1 "convoy close was also forced"
+assert_file_absent "${STATE_DIR}/cv-finalize-kriscoleman-foundry-101.finalize" "finalize record removed — the forced close succeeded"
+assert_log_count "$GC_LOG" 'mail send mayor' 0 "no mayor escalation mail needed — the forced close succeeded"
+
+# ===========================================================================
+# CASE 33 — fk-c1xa: a close that fails even WITH --force (a real `bd close`
+#   error, not the assignee guard) must keep the finalize record for retry
+#   AND mail CV_ESCALATE_TARGET (default "mayor") — but only ONCE, not every
+#   5-minute cooldown cycle, via a sibling ".mayor-notified" marker.
+# ===========================================================================
+start_case "33: forced close still fails -> record kept, mayor mailed once (not re-mailed on retry)"
+setup_case_env "33"
+write_finalize "$STATE_DIR" "cv-finalize-kriscoleman-foundry-102" \
+  "fk-w102" "fk-c102" "kriscoleman/foundry" "102" "kriscoleman" "foundry/impl-18" "awaiting_merge"
+run_script "${DEFAULT_ENV[@]}" \
+  STUB_PR_MAP="kriscoleman/foundry|102|MERGED|2026-09-26T10:00:00Z|2026-09-26T10:00:00Z|||" \
+  STUB_BDSHOW_MAP=$'fk-w102|in_progress\nfk-c102|open' \
+  STUB_BDCLOSE_FAIL_IDS="fk-w102"
+assert_eq "0" "$RC" "first run still exits 0 (a stuck close is logged, not fatal)"
+assert_file_present "${STATE_DIR}/cv-finalize-kriscoleman-foundry-102.finalize" "record kept for retry after the forced close still failed"
+assert_log_count "$GC_LOG" 'mail send mayor' 1 "mayor mailed once about the stuck close"
+assert_file_present "${STATE_DIR}/cv-finalize-kriscoleman-foundry-102.finalize.mayor-notified" "dedup marker written alongside the kept record"
+# Re-run against the SAME state dir/log (next cooldown cycle) — still stuck,
+# but must NOT mail a second time.
+run_script "${DEFAULT_ENV[@]}" \
+  STUB_PR_MAP="kriscoleman/foundry|102|MERGED|2026-09-26T10:00:00Z|2026-09-26T10:00:00Z|||" \
+  STUB_BDSHOW_MAP=$'fk-w102|in_progress\nfk-c102|open' \
+  STUB_BDCLOSE_FAIL_IDS="fk-w102"
+assert_eq "0" "$RC" "second run also exits 0"
+assert_log_count "$GC_LOG" 'mail send mayor' 1 "still only ONE mayor mail total across both cycles (deduped)"
+assert_file_present "${STATE_DIR}/cv-finalize-kriscoleman-foundry-102.finalize" "record still kept — the close is still stuck"
+
+# ===========================================================================
+# CASE 34 — fk-c1xa: once the stuck close finally succeeds (e.g. an operator
+#   fixes the underlying assignee/permission issue), the record AND its
+#   dedup marker are both removed — no orphaned marker left behind forever.
+# ===========================================================================
+start_case "34: once the stuck close finally succeeds, both the record and its dedup marker are removed"
+setup_case_env "34"
+write_finalize "$STATE_DIR" "cv-finalize-kriscoleman-foundry-103" \
+  "fk-w103" "fk-c103" "kriscoleman/foundry" "103" "kriscoleman" "foundry/impl-19" "awaiting_merge"
+: > "${STATE_DIR}/cv-finalize-kriscoleman-foundry-103.finalize.mayor-notified"
+run_script "${DEFAULT_ENV[@]}" \
+  STUB_PR_MAP="kriscoleman/foundry|103|MERGED|2026-09-26T10:00:00Z|2026-09-26T10:00:00Z|||" \
+  STUB_BDSHOW_MAP=$'fk-w103|in_progress\nfk-c103|open'
+assert_eq "0" "$RC" "script exits 0"
+assert_file_absent "${STATE_DIR}/cv-finalize-kriscoleman-foundry-103.finalize" "finalize record removed now that the close succeeds"
+assert_file_absent "${STATE_DIR}/cv-finalize-kriscoleman-foundry-103.finalize.mayor-notified" "stale dedup marker cleaned up alongside the record"
 
 # ===========================================================================
 # Summary
