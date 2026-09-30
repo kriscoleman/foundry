@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.2](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.12.1...con-voyage-gascity-v0.12.2) (2026-09-30)
+
+
+### Bug Fixes
+
+* **con-voyage:** cv-synthesis-low-mail.sh must not merge stderr into --json parse (fk-pu523) ([13328df](https://github.com/kriscoleman/foundry/commit/13328dfdf4ba46301ed992e7a688f8feedde017b))
+
 ## [0.12.1](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.12.0...con-voyage-gascity-v0.12.1) (2026-09-30)
 
 
