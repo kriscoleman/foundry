@@ -242,16 +242,20 @@ REPO_FULL="<owner/repo>"
 PR_AUTHOR="$(gh api user --jq .login 2>/dev/null || echo kriscoleman)"  # operator login
 # The long-lived implementor session the facilitator dispatched this con-voyage
 # to (Phase 3: "the same implementor the formula put on the work bead"), in
-# "<rig>/<session>" form. This is the session the finalize monitor mails a
-# release note to when the PR lands, and the session pr-watch routes new human
-# PR feedback to instead of the generic pool default (fk-krsvc). Resolve it
-# deterministically from $ROOT_ID's OWN metadata rather than leaving it to be
-# hand-filled: the build/apply-review-findings steps (routed to
-# implementation_target) stamp the workflow root's gc.build.implementor_session
-# with their OWN claimed step bead's gc.session_name every time either one
-# runs, and gc.routed_to on the same root carries that session's rig prefix
-# ("<rig>/gc.implementation-worker"). $ROOT_ID is already resolved above; do
-# not guess it or re-derive it here.
+# BARE gc.session_name form (e.g. "gc__implementation-worker-rc-hq87kl") — the
+# SAME form PART A of con-voyage-pr-watch.sh already uses successfully for its
+# own `mail send "$st_implementor"` dispatch, and the only form
+# `implementor_alive`/`session_id_for_ident` actually match against (they
+# check a session's id/alias/name/session_name fields; none of those is a
+# "<rig>/<session_name>" concatenation). This is the session the finalize
+# monitor mails a release note to when the PR lands, and the session pr-watch
+# routes new human PR feedback to instead of the generic pool default
+# (fk-krsvc). Resolve it deterministically from $ROOT_ID's OWN metadata rather
+# than leaving it to be hand-filled: the build/apply-review-findings steps
+# (routed to implementation_target) stamp the workflow root's
+# gc.build.implementor_session with their OWN claimed step bead's bare
+# gc.session_name every time either one runs. $ROOT_ID is already resolved
+# above; do not guess it or re-derive it here.
 #
 # gc.build.implementor_session is a DEDICATED write-once-per-run key, unlike
 # gc.session_name on the same root bead: gc.session_name is re-stamped by
@@ -262,6 +266,19 @@ PR_AUTHOR="$(gh api user --jq .login 2>/dev/null || echo kriscoleman)"  # operat
 # root flipped between a code-reviewer and a gap-analyst session seconds
 # apart, never the implementor — and being wrong-but-non-empty, it silently
 # passed the old empty-value fallback guard below).
+#
+# A prior version of this block prepended $ROOT_ID's own gc.routed_to rig
+# ("<rig>/<session_name>") before writing IMPLEMENTOR, on the theory that a
+# rig-qualified handle was needed downstream. It is not: PART A's
+# implementor-liveness dispatch, `implementor_alive`, and `mail send` all
+# already work directly off the bare session_name (that is what a bead's own
+# `assignee` field IS — see the same-session write-back a few hundred lines
+# into con-voyage-pr-watch.sh's PART A). The prefixed form matched none of
+# `implementor_alive`'s checked fields, so the liveness gate was always false
+# for a real, alive implementor and every PART B route silently fell back to
+# the pool — confirmed live against `gc session list --json`: bare
+# session_name resolves ALIVE, the "<rig>/<session_name>" form this block used
+# to produce resolves DEAD. Write the bare form through unchanged instead.
 IMPLEMENTOR=""
 {
   CV_TOPLEVEL="${GC_RIG_ROOT:-}"
@@ -273,16 +290,11 @@ IMPLEMENTOR=""
   CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
   [ -f "$CV_LIB" ] || CV_LIB=""
   if [ -n "$CV_LIB" ]; then
-    ROOT_ROUTED_TO="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.routed_to)"
-    IMPLEMENTOR_SESSION="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.build.implementor_session)"
-    ROOT_RIG="${ROOT_ROUTED_TO%%/*}"
-    if [ -n "$ROOT_RIG" ] && [ -n "$IMPLEMENTOR_SESSION" ]; then
-      IMPLEMENTOR="${ROOT_RIG}/${IMPLEMENTOR_SESSION}"
-    fi
+    IMPLEMENTOR="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.build.implementor_session)"
   fi
 }
 if [ -z "$IMPLEMENTOR" ]; then
-  echo "con-voyage publish: WARNING: could not resolve implementor_session from workflow root ${ROOT_ID}'s gc.routed_to/gc.build.implementor_session metadata — finalize record will have an empty implementor_session; the release mail and pr-watch's implementor-first feedback routing will fall back to the generic pool for this PR (fk-krsvc)" >&2
+  echo "con-voyage publish: WARNING: could not resolve implementor_session from workflow root ${ROOT_ID}'s gc.build.implementor_session metadata — finalize record will have an empty implementor_session; the release mail and pr-watch's implementor-first feedback routing will fall back to the generic pool for this PR (fk-krsvc)" >&2
 fi
 
 # 1. Record the PR on the work bead + append a PR line (best-effort).
@@ -305,16 +317,12 @@ gc bd set-state "$WORK_BEAD" cv=awaiting_merge --reason "con-voyage: PR opened, 
 #    is the multi-rig CITY root, not any one rig's own root, so defaulting to
 #    it here previously landed a finalize record at the city level while the
 #    monitor scanned the rig level — confirmed live, PR #59's record sat
-#    orphaned there until moved by hand. This block is a single contiguous
-#    fenced ```bash block, so it CAN source a shell lib like the pack's other
-#    scripts do — no need to duplicate the resolver's algorithm here too.
+#    orphaned there until moved by hand. This is the same fenced ```bash block
+#    as the IMPLEMENTOR resolution above (not a separate script invocation),
+#    so $CV_LIB is already resolved and still in scope — reuse it rather than
+#    re-deriving CV_TOPLEVEL/CV_PACK_ROOT/CV_LIB a second time in one script.
 if [ -z "${CV_STATE_DIR:-}" ]; then
-  CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
-  CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
-  [ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
-  CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
-  [ -f "$CV_LIB" ] || CV_LIB=""
-  if [ -n "$CV_LIB" ]; then
+  if [ -n "${CV_LIB:-}" ]; then
     CV_STATE_DIR="$(source "$CV_LIB" && cv_default_state_dir)"
   fi
   [ -n "${CV_STATE_DIR:-}" ] || CV_STATE_DIR="${GC_CITY:-.}/.gc/cv-pr-watch"
