@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.12.3](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.12.2...con-voyage-gascity-v0.12.3) (2026-09-30)
+
+
+### Bug Fixes
+
+* address con-voyage review-loop gate findings (review fk-gfedd) ([ed3ba3d](https://github.com/kriscoleman/foundry/commit/ed3ba3d6bff89df0248f69ff5634254f46e5de7b))
+* apply same GC_RIG_ROOT sync bootstrap fix to main.build.md (review fk-n7qn1) ([4ca681c](https://github.com/kriscoleman/foundry/commit/4ca681cd094854b3776c30808f332dda1e508f45))
+* **con-voyage:** cv_pack_root falls back on a stale worktree pack copy (fk-fzebe) ([9d4888d](https://github.com/kriscoleman/foundry/commit/9d4888d1f15dff4074812f5bc65d3c5570248833))
+* **con-voyage:** declare poll_s once outside cv_with_timeout's loop ([145b7d4](https://github.com/kriscoleman/foundry/commit/145b7d410a9592d88f68a8e600792a5c98441a71))
+* **con-voyage:** gate review-loop lane reopen on apply-review-findings landing a fix (fk-itiq6) ([965010a](https://github.com/kriscoleman/foundry/commit/965010a3e5428784b74068866831d10421c87d3c))
+* **con-voyage:** prepare-build syncs a freshly-created worktree to origin's current base (fk-grepg) ([8904769](https://github.com/kriscoleman/foundry/commit/89047690cd5254f2daa28dd010a22b4c3b94cf89))
+* **con-voyage:** resolve apply-review-findings sync bootstrap via GC_RIG_ROOT (fk-n7qn1) ([efccbef](https://github.com/kriscoleman/foundry/commit/efccbefb1cc50a8f18bd21108ad0520bd40ad09f))
+* **con-voyage:** rig-sync no longer treats untracked paths as dirty (fk-vgmb3) ([cea5301](https://github.com/kriscoleman/foundry/commit/cea53016434f5fec7b37d9cd46782ef8b83de753))
+* **con-voyage:** sweep orphaned ci-repair beads by title when their PR merges (fk-nrfio) ([309e0d3](https://github.com/kriscoleman/foundry/commit/309e0d3ac3cd498d2618a84d7f0798cf57ef7b7a))
+
 ## [0.12.2](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.12.1...con-voyage-gascity-v0.12.2) (2026-09-30)
 
 
