@@ -79,6 +79,15 @@ run_script() {
   RC=$?
 }
 
+# run_script_stdout — like run_script, but keeps stdout and stderr separate
+# (OUT = stdout only, RC = exit code) so a subcommand's documented
+# stdout-only data contract (behind-count's bare integer, cv_sync_worktree_to_base's
+# bare word) can be asserted without diagnostic lines leaking into the value.
+run_script_stdout() {
+  OUT="$(bash "$SCRIPT" "$@" 2>/dev/null)"
+  RC=$?
+}
+
 OUT=""
 RC=0
 
@@ -709,6 +718,99 @@ run_script ensure-branch "$NOTGIT" "con-voyage/x"
 if [ "$RC" -ne 0 ]; then pass "ensure-branch exits non-zero for a non-git directory"; else fail "expected non-zero exit for a non-git directory"; fi
 run_script ensure-branch
 if [ "$RC" -ne 0 ]; then pass "ensure-branch exits non-zero with no directory argument"; else fail "expected non-zero exit with no directory argument"; fi
+
+# ===========================================================================
+# CASE 30 — `behind-count <dir> [base-ref]` (fk-2klp2): prints how many
+#   commits the resolved base is ahead of <dir>'s merge-base with it — the
+#   raw staleness measurement prepare-build uses to decide whether an
+#   adopted source-anchor branch is too old to short-circuit onto safely.
+#   Base resolution mirrors built/guard/resolve-base. Always exits 0 on a
+#   successful measurement (even "0 commits behind"); non-zero only when no
+#   base ref can be resolved at all (fail-safe: caller cannot measure
+#   staleness, so it must not treat that as "definitely stale").
+# ===========================================================================
+start_case "30a: behind-count reports 0 when dir already contains base"
+REPO30="$(mk_repo repo30)"
+WT30="${SANDBOX}/repo30-worktree"
+git_c "$REPO30" worktree add -q --detach "$WT30" HEAD
+run_script_stdout behind-count "$WT30" main
+assert_eq "0" "$RC" "behind-count exits 0 when a base ref resolves"
+assert_eq "0" "$OUT" "behind-count reports 0 commits behind when dir already contains base"
+
+start_case "30b: behind-count reports N once base advances N commits beyond dir's merge-base"
+for i in 1 2 3; do
+  printf 'upstream change %s\n' "$i" > "${REPO30}/upstream-${i}.txt"
+  git_c "$REPO30" add "upstream-${i}.txt"
+  git_c "$REPO30" commit -q -m "chore: upstream change ${i}"
+done
+run_script_stdout behind-count "$WT30" main
+assert_eq "0" "$RC" "behind-count still exits 0"
+assert_eq "3" "$OUT" "behind-count reports 3 commits behind after 3 new commits landed on base"
+
+start_case "30c: behind-count validates its arguments the same way built does"
+run_script behind-count "$NOTGIT"
+if [ "$RC" -ne 0 ]; then pass "behind-count exits non-zero for a non-git directory"; else fail "expected non-zero exit for a non-git directory"; fi
+run_script behind-count
+if [ "$RC" -ne 0 ]; then pass "behind-count exits non-zero with no directory argument"; else fail "expected non-zero exit with no directory argument"; fi
+
+start_case "30d: behind-count fails safe (0, non-zero exit) when no base ref resolves"
+REPO30D="${SANDBOX}/repo30d"
+mkdir -p "$REPO30D"
+git_c "$REPO30D" init -q -b trunk
+printf 'placeholder\n' > "${REPO30D}/README.md"
+git_c "$REPO30D" add README.md
+git_c "$REPO30D" commit -q -m "init"
+WT30D="${SANDBOX}/repo30d-worktree"
+git_c "$REPO30D" worktree add -q --detach "$WT30D" HEAD
+run_script_stdout behind-count "$WT30D"
+if [ "$RC" -ne 0 ]; then pass "behind-count fails safe: non-zero exit when no base resolves"; else fail "expected non-zero exit when no base resolves"; fi
+assert_eq "0" "$OUT" "behind-count reports 0 (not a fabricated large number) when it cannot measure"
+
+# ===========================================================================
+# CASE 31 — `would-conflict <dir> [base-ref]` (fk-2klp2): non-destructively
+#   tests (via `git merge-tree --write-tree`, no working-tree/index mutation)
+#   whether merging <dir>'s HEAD with the resolved base would conflict — the
+#   second staleness signal prepare-build uses so an adopted branch that
+#   touches the same lines the base has since changed doesn't get short-
+#   circuited into a build that can only end in a doomed rebase.
+#   Exit 0 means "WOULD CONFLICT" (the affirmative/actionable signal, same
+#   convention as `built`); exit 1 means "would merge cleanly".
+# ===========================================================================
+start_case "31a: would-conflict reports clean (exit 1) when dir and base touch different files"
+REPO31="$(mk_repo repo31)"
+WT31="${SANDBOX}/repo31-worktree"
+git_c "$REPO31" worktree add -q --detach "$WT31" HEAD
+printf 'anchor-only change\n' > "${WT31}/anchor-file.txt"
+git_c "$WT31" add anchor-file.txt
+git_c "$WT31" commit -q -m "feat: anchor-only change"
+printf 'base-only change\n' > "${REPO31}/base-file.txt"
+git_c "$REPO31" add base-file.txt
+git_c "$REPO31" commit -q -m "chore: base-only change"
+run_script would-conflict "$WT31" main
+assert_eq "1" "$RC" "would-conflict exits 1 (clean) when the two histories touch disjoint files"
+
+start_case "31b: would-conflict reports a real conflict (exit 0) when both sides edit the same line"
+REPO31B="$(mk_repo repo31b)"
+WT31B="${SANDBOX}/repo31b-worktree"
+git_c "$REPO31B" worktree add -q --detach "$WT31B" HEAD
+printf 'anchor version\n' > "${WT31B}/README.md"
+git_c "$WT31B" add README.md
+git_c "$WT31B" commit -q -m "feat: anchor edits README"
+printf 'base version, incompatible\n' > "${REPO31B}/README.md"
+git_c "$REPO31B" add README.md
+git_c "$REPO31B" commit -q -m "chore: base edits the same README line differently"
+run_script would-conflict "$WT31B" main
+assert_eq "0" "$RC" "would-conflict exits 0 (conflict) when both sides edit the same content"
+
+start_case "31c: would-conflict validates its arguments the same way built/behind-count do"
+run_script would-conflict "$NOTGIT"
+if [ "$RC" -ne 0 ]; then pass "would-conflict exits non-zero for a non-git directory"; else fail "expected non-zero exit for a non-git directory"; fi
+run_script would-conflict
+if [ "$RC" -ne 0 ]; then pass "would-conflict exits non-zero with no directory argument"; else fail "expected non-zero exit with no directory argument"; fi
+
+start_case "31d: would-conflict fails safe (non-zero, no false conflict) when no base ref resolves"
+run_script would-conflict "$WT30D"
+if [ "$RC" -ne 0 ]; then pass "would-conflict fails safe: non-zero exit when no base resolves"; else fail "expected non-zero exit when no base resolves"; fi
 
 # ===========================================================================
 # Summary

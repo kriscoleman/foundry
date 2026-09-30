@@ -1795,6 +1795,74 @@ if work_dir and bead_id:
   return 0
 }
 
+# cv_anchor_too_stale DIR [MAX_BEHIND] [BASE-REF] — fk-2klp2: the staleness
+# guard prepare-build runs before short-circuiting onto an adopted
+# source-anchor branch (either the current convoy's own EXISTING_WORK_DIR, or
+# an earlier anchor found via cv_find_prior_built_anchor).
+#
+# EVIDENCE (fk-0f1 / con-voyage root fk-vzgjt, 2026-09-30): prepare-build
+# adopted a work bead's old source-anchor branch that was ~146 commits behind
+# origin/main (built on release 0.5.0), with no staleness guard, so it
+# short-circuited straight into the review pipeline and could only end in a
+# big rebase conflict.
+#
+# Prints "<behind_count> <would_conflict:0|1>" on stdout and returns 0 (TOO
+# STALE — do not short-circuit) when EITHER:
+#   - DIR is more than MAX_BEHIND commits behind the resolved base, or
+#   - a non-destructive merge-tree check says merging DIR onto the base would
+#     conflict.
+# Returns 1 (fine to adopt) otherwise, INCLUDING the fail-safe case where no
+# base ref can be resolved at all — an unmeasurable anchor is not proof of
+# staleness.
+#
+# MAX_BEHIND: an empty or non-numeric value falls back to the
+# CV_STALE_ANCHOR_MAX_BEHIND env var, then to a built-in default of 50.
+#
+# Delegates the two underlying measurements to cv-worktree-prep.sh's own
+# behind-count/would-conflict subcommands (already unit-tested directly in
+# tests/cv-worktree-prep.test.sh) rather than reimplementing the git plumbing
+# here.
+cv_anchor_too_stale() {
+  local dir="$1" max_behind="${2:-}" base_arg="${3:-}"
+
+  local prep_script
+  prep_script="$(cv_pack_script cv-worktree-prep.sh)"
+  if [ -z "$prep_script" ] || [ ! -x "$prep_script" ]; then
+    echo "cv-lib: cv_anchor_too_stale: cv-worktree-prep.sh not found — failing safe (not stale)" >&2
+    return 1
+  fi
+
+  case "$max_behind" in
+    ''|*[!0-9]*) max_behind="${CV_STALE_ANCHOR_MAX_BEHIND:-50}" ;;
+  esac
+  case "$max_behind" in
+    ''|*[!0-9]*) max_behind=50 ;;
+  esac
+
+  local behind_count behind_rc
+  behind_count="$("$prep_script" behind-count "$dir" "$base_arg" 2>/dev/null)"
+  behind_rc=$?
+  if [ "$behind_rc" -ne 0 ]; then
+    echo "cv-lib: cv_anchor_too_stale: no base ref resolved for ${dir} — failing safe (not stale)" >&2
+    return 1
+  fi
+  case "$behind_count" in
+    ''|*[!0-9]*) behind_count=0 ;;
+  esac
+
+  local would_conflict=0
+  if "$prep_script" would-conflict "$dir" "$base_arg" >/dev/null 2>&1; then
+    would_conflict=1
+  fi
+
+  printf '%s %s\n' "$behind_count" "$would_conflict"
+
+  if [ "$behind_count" -gt "$max_behind" ] || [ "$would_conflict" = "1" ]; then
+    return 0
+  fi
+  return 1
+}
+
 # cv_dependency_outcome BEAD_ID DEP_TITLE — print the `gc.outcome` metadata
 # value of BEAD_ID's direct dependency whose `title` exactly matches
 # DEP_TITLE, or empty if no such dependency exists, it has no recorded

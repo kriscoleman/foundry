@@ -253,6 +253,39 @@ fi
 # there too) — this case just pins that expectation locally for anyone
 # reading this suite in isolation.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# fk-2klp2: prepare-build must not adopt a stale source-anchor branch — an
+# adopted branch far behind base, or one that would conflict merging onto
+# base, must NOT short-circuit; an explicit fresh_build=true var must always
+# skip anchor reuse entirely. The threshold/conflict logic itself is unit
+# tested directly in con-voyage-anchor-staleness.test.sh; this suite only
+# pins that prepare-build.md is actually wired to call it.
+# ---------------------------------------------------------------------------
+start_case "formula: fresh_build and cv_stale_anchor_max_behind vars are declared"
+assert_contains "$FORMULA" '[vars.fresh_build]' "fresh_build var is declared"
+assert_contains "$FORMULA" '[vars.cv_stale_anchor_max_behind]' "cv_stale_anchor_max_behind var is declared"
+
+start_case "prepare-build.md: reads fresh_build and cv_stale_anchor_max_behind off the workflow root"
+assert_contains "$PREPARE_BUILD_MD" 'cv_bead_metadata "$ROOT_ID" gc.var.fresh_build' "reads gc.var.fresh_build"
+assert_contains "$PREPARE_BUILD_MD" 'cv_bead_metadata "$ROOT_ID" gc.var.cv_stale_anchor_max_behind' "reads gc.var.cv_stale_anchor_max_behind"
+
+start_case "prepare-build.md: fresh_build=true skips both the existing-anchor and prior-anchor short-circuit paths"
+assert_contains "$PREPARE_BUILD_MD" 'if [ "$FRESH_BUILD" = "true" ]; then' "branches explicitly on fresh_build=true"
+assert_contains "$PREPARE_BUILD_MD" 'if [ "$SHORT_CIRCUIT" = "false" ] && [ "$FRESH_BUILD" != "true" ]; then' "skips prior-anchor lookup entirely when fresh_build=true"
+
+start_case "prepare-build.md: an adopted existing anchor is checked with cv_anchor_too_stale before short-circuiting"
+assert_contains "$PREPARE_BUILD_MD" 'cv_anchor_too_stale "$EXISTING_WORK_DIR"' "calls cv_anchor_too_stale on the existing anchor"
+assert_contains "$PREPARE_BUILD_MD" 'too stale to short-circuit onto — building fresh from the current base instead' "logs the too-stale decision instead of silently adopting it"
+
+start_case "prepare-build.md: a prior work-bead anchor is also checked with cv_anchor_too_stale before short-circuiting"
+assert_contains "$PREPARE_BUILD_MD" 'cv_anchor_too_stale "$PRIOR_ANCHOR_DIR"' "calls cv_anchor_too_stale on the prior anchor"
+
+start_case "prepare-build.md: records gc.build.stale_anchor as reference context when a guard rejects an anchor"
+assert_contains "$PREPARE_BUILD_MD" 'gc.build.stale_anchor=' "records gc.build.stale_anchor on the workflow root"
+
+start_case "lib.sh: exposes cv_anchor_too_stale for the prepare-build staleness guard"
+assert_contains "$LIB" "cv_anchor_too_stale()" "cv_anchor_too_stale is defined"
+
 start_case "the two new workflow nodes carry the pack's communal-duty and shell-safety reminders"
 # shellcheck source=../pack/assets/scripts/con-voyage-lib.sh
 source "$LIB"
