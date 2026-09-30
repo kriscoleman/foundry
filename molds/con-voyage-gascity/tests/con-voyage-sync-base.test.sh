@@ -324,7 +324,8 @@ fi
 BUILD_MD="${MOLD_DIR}/pack/assets/workflows/con-voyage/main.build.md"
 APPLY_MD="${MOLD_DIR}/pack/assets/workflows/con-voyage/main.apply-review-findings.md"
 CI_REPAIR_MD="${MOLD_DIR}/pack/assets/workflows/con-voyage-ci-repair/main.ci-repair.md"
-for f in "$BUILD_MD" "$APPLY_MD" "$CI_REPAIR_MD"; do
+PREPARE_MD="${MOLD_DIR}/pack/assets/workflows/con-voyage/main.prepare-build.md"
+for f in "$BUILD_MD" "$APPLY_MD" "$CI_REPAIR_MD" "$PREPARE_MD"; do
   if [ ! -f "$f" ]; then
     echo "FATAL: workflow file under test not found at ${f}" >&2
     exit 2
@@ -381,6 +382,43 @@ case "$(cat "$APPLY_MD")" in
   *"sync"*"recreated"*|*"recreated"*"sync"*) pass "apply-review-findings.md's prose accounts for a recreated/rebased sync result forcing iterate" ;;
   *) fail "expected apply-review-findings.md to call out that a sync-induced change (recreated/rebased) also forces verdict=iterate" ;;
 esac
+
+start_case "prepare-build.md: syncs a freshly-created worktree to origin's current base before handing it off (fk-grepg)"
+# fk-grepg: `git worktree add "$WORKTREE" --detach HEAD` bases a brand new
+# worktree on whatever the SHARED rig-root checkout's HEAD happens to be at
+# that instant, not on origin's current default branch. If a concurrent
+# workflow has left the rig root on its own feature branch, every fresh
+# worktree created here silently inherits that branch's commits (confirmed
+# live: worktrees/fk-qzq0p and worktrees/fk-5r71y both inherited
+# fk-atuxk's already-merged commit 8052f36 this way). The fresh-bead branch
+# must call cv_sync_worktree_to_base on $WORKTREE right after creating it, the
+# same structural fix build.md/apply-review-findings.md/ci-repair.md already
+# apply at their own start (fk-hbsmk) — cv_sync_worktree_to_base's own
+# CASE 3 above already proves this recreates a stale/contaminated fresh
+# worktree from the real origin/main tip, so this is a wiring check only, not
+# a re-test of that behavior.
+assert_md_contains "$PREPARE_MD" 'cv_sync_worktree_to_base "$WORKTREE"' "prepare-build.md calls cv_sync_worktree_to_base on \$WORKTREE"
+if grep -qF 'cv_sync_worktree_to_base "$(pwd)"' "$PREPARE_MD"; then
+  fail "prepare-build.md must never sync via ambient \$(pwd) — that syncs the shared rig-root launcher checkout, not the freshly created worktree (fk-hbsmk B1 class)"
+else
+  pass "no ambient-\$(pwd) sync call regressed back in"
+fi
+worktree_add_line_prepare="$(md_line_of "$PREPARE_MD" 'git worktree add "$WORKTREE" --detach HEAD')"
+sync_line_prepare="$(md_line_of "$PREPARE_MD" 'cv_sync_worktree_to_base "$WORKTREE"')"
+# fk-ki8je's earlier PRIOR_ANCHOR_DIR reuse branch has its own, EARLIER
+# occurrence of this exact work_dir line — grab the LAST occurrence, which is
+# the fresh-bead branch's, the one this sync call must actually precede.
+work_dir_line_prepare="$(grep -nF -- 'gc bd update "$CONVOY_ID" --set-metadata "work_dir=${WORKTREE}"' "$PREPARE_MD" | tail -1 | cut -d: -f1)"
+if [ -n "$worktree_add_line_prepare" ] && [ -n "$sync_line_prepare" ] && [ "$worktree_add_line_prepare" -lt "$sync_line_prepare" ]; then
+  pass "sync call (line ${sync_line_prepare}) comes after worktree creation (line ${worktree_add_line_prepare})"
+else
+  fail "expected the sync call to come after 'git worktree add \"\$WORKTREE\" --detach HEAD'"
+fi
+if [ -n "$sync_line_prepare" ] && [ -n "$work_dir_line_prepare" ] && [ "$sync_line_prepare" -lt "$work_dir_line_prepare" ]; then
+  pass "sync call (line ${sync_line_prepare}) precedes persisting work_dir on the convoy (line ${work_dir_line_prepare})"
+else
+  fail "expected the sync call to precede persisting work_dir, so a contaminated worktree is never handed off as resolved"
+fi
 
 start_case "ci-repair.md: syncs the shared workspace before checking out the PR branch"
 assert_md_contains "$CI_REPAIR_MD" 'cv_sync_worktree_to_base' "ci-repair.md calls cv_sync_worktree_to_base"
