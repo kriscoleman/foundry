@@ -500,7 +500,13 @@ cv_ensure_branch_based_on() {
 # rather than silently proceed on an unconfirmed base:
 #   - the fetch itself fails or times out (CV_SYNC_FETCH_TIMEOUT_SECONDS,
 #     default 60s, bounded via cv_with_timeout — macOS has no timeout(1))
+#     -> returns 1 (transient/environmental; a caller may retry)
 #   - the rebase hits a conflict (aborted immediately, HEAD restored)
+#     -> returns 2 (deterministic content conflict; fk-hcxre: retrying
+#        reproduces the identical conflict every time, so this is a DISTINCT,
+#        terminal exit code a caller must not treat like the transient case
+#        above — the conflicted paths are also reported on stderr via a
+#        `SYNC_CONFLICT_PATHS=path1,path2,...` marker line)
 #
 # Base resolution and branch-naming are both DELEGATED to
 # cv-worktree-prep.sh — never reimplemented here, so this can never disagree
@@ -523,7 +529,8 @@ cv_ensure_branch_based_on() {
 # rebased (nothing else — callers capture it via command substitution, the
 # same contract cv_resolve_base_branch/resolve-base already use). All
 # diagnostics go to stderr. Prints nothing to stdout and returns non-zero on
-# any failure.
+# any failure: 1 for a transient/environmental failure, 2 for a deterministic
+# content conflict (see above).
 #
 cv_sync_worktree_to_base() {
   local dir="$1" branch_name="${2:-}"
@@ -601,9 +608,22 @@ cv_sync_worktree_to_base() {
 
   echo "cv-lib: rebasing ${dir} onto ${base_ref} (${ahead} commit(s) of its own)" >&2
   if ! git -C "$dir" rebase --onto "$base_sha" "$mb" >&2; then
+    # fk-hcxre: a rebase conflict is a DETERMINISTIC content conflict, not a
+    # transient failure — retrying it (fetch/ensure-branch/environment style
+    # failures below still return 1) just reproduces the identical conflict.
+    # Capture the conflicted paths and return a distinct exit code (2) so a
+    # caller can treat this as terminal instead of burning further retry
+    # attempts on the same base+head (evidence: con-voyage root fk-vzgjt
+    # failed main.build 3/3 identical attempts on this exact cause before the
+    # root was left stranded in_progress). Read the conflict markers BEFORE
+    # `rebase --abort` — abort discards the in-progress rebase state that is
+    # the only place git records which paths were unmerged.
+    local conflict_paths
+    conflict_paths="$(git -C "$dir" diff --name-only --diff-filter=U 2>/dev/null | tr '\n' ',' | sed 's/,$//')"
     git -C "$dir" rebase --abort >/dev/null 2>&1 || true
     echo "cv-lib: ERROR cv_sync_worktree_to_base: rebase of ${dir} onto ${base_ref} failed (conflict) — aborted, tree left clean; resolve manually before continuing" >&2
-    return 1
+    echo "cv-lib: SYNC_CONFLICT_PATHS=${conflict_paths}" >&2
+    return 2
   fi
   echo "cv-lib: ${dir} is now based on ${base_ref}" >&2
   printf 'rebased\n'
