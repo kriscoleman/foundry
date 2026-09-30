@@ -61,6 +61,10 @@ trap cleanup EXIT
 # same simulated-hang idiom as con-voyage-review-watchdog.test.sh, used to
 # prove the cv_with_timeout wrap (fk-72l6i BLOCKING-3) actually bounds these
 # calls rather than trusting cv_with_timeout's own tests by proxy.
+# STUB_MAIL_WARN=1 makes a successful `mail send` also print a realistic gc
+# warning line to stderr ahead of the JSON on stdout (fk-pu523: reproduces
+# ".gc/site.toml declares a binding for unknown rig ..." landing on stderr
+# next to a valid --json reply on stdout).
 # ---------------------------------------------------------------------------
 cat > "${STUBDIR}/gc" <<'GC_STUB'
 #!/usr/bin/env bash
@@ -81,6 +85,9 @@ case "${args[0]:-}" in
       if [ "${STUB_MAIL_FAIL:-0}" = "1" ]; then
         echo "gc mail send: simulated failure" >&2
         exit 1
+      fi
+      if [ "${STUB_MAIL_WARN:-0}" = "1" ]; then
+        echo ".gc/site.toml declares a binding for unknown rig \"stale-rig\" — ignoring" >&2
       fi
       n=$(( $(cat "${STUB_COUNTER_FILE}") + 1 ))
       echo "$n" > "${STUB_COUNTER_FILE}"
@@ -632,6 +639,25 @@ case "$OUT" in
   *"WARNING"*"low_count=2"*"3 LOW"*) pass "warns about the mismatch on stderr/stdout instead of dying silently" ;;
   *) fail "expected a WARNING mentioning frontmatter low_count=2 vs 3 parsed LOW sub-heading(s), got: ${OUT}" ;;
 esac
+
+# ===========================================================================
+# CASE 19 — `gc mail send ... --json` prints a warning line on stderr ahead
+#   of the valid JSON on stdout (fk-pu523: send_mail() used to capture stdout
+#   and stderr together with `2>&1`, so a warning like
+#   ".gc/site.toml declares a binding for unknown rig ..." landed ahead of
+#   the JSON and json.load() threw, MAIL_ID came back empty, and the script
+#   died claiming "gc mail send to mayor returned no message id" even though
+#   the mail actually sent). stderr must never corrupt the --json stdout
+#   parse; the message id must still be parsed and recorded.
+# ===========================================================================
+start_case "19: gc mail send warns on stderr alongside valid --json on stdout -> still parses the message id"
+setup_case_env "19"
+SYNTHESIS_FILE="${SANDBOX}/synthesis-19.md"
+fixture "$SYNTHESIS_FILE" 0 2
+run_script STUB_MAIL_WARN="1"
+assert_eq "0" "$RC" "script exits 0 even though gc printed a warning on stderr"
+assert_log_count "$GC_LOG" '^mail send mayor ' 1 "mail still sent to the mayor"
+assert_log_count "$GC_LOG" "^bd update ${ROOT_ID} .*code_review\\.low_mail_id=msg-1" 1 "message id parsed correctly despite the stderr warning ahead of the JSON"
 
 # ===========================================================================
 # Summary

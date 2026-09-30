@@ -280,13 +280,16 @@ SUBJECT="LOW-only: ${WORK_BEAD} ${PR_OR_BRANCH} — ${LOW_COUNT} LOW"
 
 send_mail() {
   local to="$1"
-  local out rc
-  out="$(cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" "$GC" mail send "$to" -s "$SUBJECT" -m "$(cat "$BODY_FILE")" --json 2>&1)"
+  local out err rc err_file
+  err_file="$(mktemp)"
+  out="$(cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" "$GC" mail send "$to" -s "$SUBJECT" -m "$(cat "$BODY_FILE")" --json 2>"$err_file")"
   rc=$?
+  err="$(cat "$err_file" 2>/dev/null)"
+  rm -f "$err_file"
   if [ "$rc" -eq 124 ]; then
     die "gc mail send to ${to} timed out after ${CV_LENS_STORE_TIMEOUT_SECONDS}s"
   elif [ "$rc" -ne 0 ]; then
-    die "gc mail send to ${to} failed: ${out}"
+    die "gc mail send to ${to} failed: ${out}${err:+ ${err}}"
   fi
   printf '%s' "$out" | python3 -c "
 import json, sys
