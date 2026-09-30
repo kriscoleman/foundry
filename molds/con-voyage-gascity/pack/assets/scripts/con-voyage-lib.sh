@@ -2058,6 +2058,13 @@ cv_with_timeout() {
   # `10#` base-10 literal prefix forces decimal interpretation regardless of
   # leading zeros.
   local secs_ms=$((10#$secs * 1000))
+  # fk-4i2er: `poll_s` must be declared ONCE, outside this loop. Under zsh,
+  # re-declaring a `local` that is already local to the enclosing function
+  # (as a fresh `local poll_s` on every iteration was doing) makes zsh treat
+  # it as an inspection form and print "poll_s=<value>" to stdout instead of
+  # silently redeclaring it the way bash does — corrupting any caller that
+  # captures this function's stdout (e.g. `WORK_BEAD=$(cv_with_timeout ...)`).
+  local poll_s
   while kill -0 "$cmd_pid" 2>/dev/null; do
     if [ "$waited_ms" -ge "$secs_ms" ]; then
       if command -v pgrep >/dev/null 2>&1; then
@@ -2070,7 +2077,6 @@ cv_with_timeout() {
       wait "$cmd_pid" 2>/dev/null
       return 124
     fi
-    local poll_s
     printf -v poll_s '%d.%03d' $((poll_ms / 1000)) $((poll_ms % 1000))
     sleep "$poll_s"
     waited_ms=$((waited_ms + poll_ms))
