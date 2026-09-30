@@ -2579,7 +2579,8 @@ start_case "45: fk-krsvc — PART B routes to the PR's own recorded implementor_
 setup_case_env "45"
 printf 'work_bead=va-45\nconvoy_id=cv-45\nrepo_full=kriscoleman/foundry\npr_number=11\npr_author=kriscoleman\nimplementor_session=gc__implementation-worker-rc-45\nlast_phase=awaiting_merge\n' \
   > "${STATE_DIR}/cv-finalize-kriscoleman-foundry-11.finalize"
-run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_SESSION_LIST_JSON='{"sessions":[{"id":"gc__implementation-worker-rc-45","state":"active"}]}'
 assert_eq "0" "$RC" "script exits 0"
 assert_log_count "$GC_LOG" 'sling gc__implementation-worker-rc-45 --stdin STDIN: Human PR feedback on kriscoleman/foundry#11' 1 "routes to the PR's own recorded implementor_session, not the pool"
 assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 0 "does NOT fall back to the generic pool route when a finalize record has a real implementor_session"
@@ -2617,6 +2618,30 @@ if printf '%s' "$OUT" | grep -q 'no recorded implementor_session (missing/empty 
   pass "logs an explicit fallback reason for an empty implementor_session, not just a missing file"
 else
   fail "expected an explicit fallback-reason log line when implementor_session is empty"
+fi
+
+# ===========================================================================
+# CASE 48 — review fk-hbsmk BLOCKING-2: a .finalize record with a NON-EMPTY
+#   implementor_session that is no longer a live session (drained, evicted,
+#   or the city restarted while the PR sat awaiting_merge) must NOT pin
+#   route_target to that dead session forever — it falls back to the pool
+#   route, with an explicit log line distinguishing "dead" from "missing".
+#   STUB_SESSION_LIST_JSON returns an empty sessions array (the default),
+#   so the recorded session resolves as not alive.
+# ===========================================================================
+start_case "48: fk-hbsmk BLOCKING-2 — a recorded but dead implementor_session falls back to the pool route, with an explicit log line"
+setup_case_env "48"
+printf 'work_bead=va-48\nconvoy_id=cv-48\nrepo_full=kriscoleman/foundry\npr_number=11\npr_author=kriscoleman\nimplementor_session=gc__implementation-worker-rc-dead\nlast_phase=awaiting_merge\n' \
+  > "${STATE_DIR}/cv-finalize-kriscoleman-foundry-11.finalize"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_SESSION_LIST_JSON='{"sessions":[]}'
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin STDIN: Human PR feedback on kriscoleman/foundry#11' 1 "falls back to the generic pool route when the recorded implementor_session is dead"
+assert_log_count "$GC_LOG" "sling gc__implementation-worker-rc-dead --stdin" 0 "never slings to the dead recorded session"
+if printf '%s' "$OUT" | grep -q "recorded implementor_session 'gc__implementation-worker-rc-dead' is dead/unresolvable — falling back to pool route gc.implementation-worker"; then
+  pass "logs an explicit dead-session fallback reason, distinct from the missing/empty case"
+else
+  fail "expected an explicit dead-session fallback-reason log line"
 fi
 
 # ===========================================================================

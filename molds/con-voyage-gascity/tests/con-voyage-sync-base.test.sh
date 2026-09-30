@@ -678,6 +678,36 @@ else
   fail "expected the sync call to precede the PR-branch checkout"
 fi
 
+# ===========================================================================
+# review fk-hbsmk BLOCKING-1: both implementor-routed steps (build.md and
+# apply-review-findings.md) stamp a dedicated gc.build.implementor_session
+# key on the workflow root from THEIR OWN claimed step bead's gc.session_name
+# — never leaving publish.md to read the root's mutable, last-writer-wins
+# gc.session_name (re-stamped by every session_affinity=require step that
+# touches the root, including review lanes, the synthesizer, and publish
+# itself).
+# ===========================================================================
+start_case "build.md: stamps gc.build.implementor_session on the workflow root from its own claimed bead's gc.session_name"
+assert_md_contains "$BUILD_MD" 'gc.build.implementor_session=' "build.md sets gc.build.implementor_session on \$ROOT_ID"
+assert_md_contains "$BUILD_MD" 'gc bd show "$GC_BEAD_ID" --json' "reads its OWN claimed step bead, not the workflow root"
+stamp_line_build="$(md_line_of "$BUILD_MD" 'gc.build.implementor_session=')"
+cd_line_build="$(md_line_of "$BUILD_MD" 'cd "$WORKTREE"')"
+if [ -n "$cd_line_build" ] && [ -n "$stamp_line_build" ] && [ "$cd_line_build" -lt "$stamp_line_build" ]; then
+  pass "the implementor-session stamp (line ${stamp_line_build}) runs after \$WORKTREE is resolved (line ${cd_line_build})"
+else
+  fail "expected the implementor-session stamp to run after \$WORKTREE is resolved"
+fi
+
+start_case "apply-review-findings.md: stamps gc.build.implementor_session on the workflow root from its own claimed bead's gc.session_name"
+assert_md_contains "$APPLY_MD" 'gc.build.implementor_session=' "apply-review-findings.md sets gc.build.implementor_session on \$ROOT_ID"
+assert_md_contains "$APPLY_MD" 'gc bd show "$GC_BEAD_ID" --json' "reads its OWN claimed step bead, not the workflow root"
+stamp_line_apply="$(md_line_of "$APPLY_MD" 'gc.build.implementor_session=')"
+if [ -n "$stamp_line_apply" ] && [ -n "$sync_line_apply" ] && [ "$stamp_line_apply" -lt "$sync_line_apply" ]; then
+  pass "the implementor-session stamp (line ${stamp_line_apply}) runs before the base sync (line ${sync_line_apply}), so it re-stamps every iteration this step runs"
+else
+  fail "expected the implementor-session stamp to precede the base sync"
+fi
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "ALL CASES PASSED"

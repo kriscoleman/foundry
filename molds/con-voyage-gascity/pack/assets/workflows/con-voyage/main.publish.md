@@ -246,11 +246,22 @@ PR_AUTHOR="$(gh api user --jq .login 2>/dev/null || echo kriscoleman)"  # operat
 # release note to when the PR lands, and the session pr-watch routes new human
 # PR feedback to instead of the generic pool default (fk-krsvc). Resolve it
 # deterministically from $ROOT_ID's OWN metadata rather than leaving it to be
-# hand-filled: gc.session_affinity=require on the build/apply-review-findings
-# steps keeps stamping the workflow root's gc.session_name with whichever
-# implementation_target session is currently active, and gc.routed_to on the
-# same root carries that session's rig prefix ("<rig>/gc.implementation-worker").
-# $ROOT_ID is already resolved above; do not guess it or re-derive it here.
+# hand-filled: the build/apply-review-findings steps (routed to
+# implementation_target) stamp the workflow root's gc.build.implementor_session
+# with their OWN claimed step bead's gc.session_name every time either one
+# runs, and gc.routed_to on the same root carries that session's rig prefix
+# ("<rig>/gc.implementation-worker"). $ROOT_ID is already resolved above; do
+# not guess it or re-derive it here.
+#
+# gc.build.implementor_session is a DEDICATED write-once-per-run key, unlike
+# gc.session_name on the same root bead: gc.session_name is re-stamped by
+# EVERY session_affinity=require step that touches the root (every review
+# lane, the synthesizer, the publisher itself too), so reading it here used
+# to resolve to whichever role last ran against the root — never reliably the
+# implementor (review fk-hbsmk BLOCKING-1: confirmed live, this convoy's own
+# root flipped between a code-reviewer and a gap-analyst session seconds
+# apart, never the implementor — and being wrong-but-non-empty, it silently
+# passed the old empty-value fallback guard below).
 IMPLEMENTOR=""
 {
   CV_TOPLEVEL="${GC_RIG_ROOT:-}"
@@ -263,15 +274,15 @@ IMPLEMENTOR=""
   [ -f "$CV_LIB" ] || CV_LIB=""
   if [ -n "$CV_LIB" ]; then
     ROOT_ROUTED_TO="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.routed_to)"
-    ROOT_SESSION_NAME="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.session_name)"
+    IMPLEMENTOR_SESSION="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.build.implementor_session)"
     ROOT_RIG="${ROOT_ROUTED_TO%%/*}"
-    if [ -n "$ROOT_RIG" ] && [ -n "$ROOT_SESSION_NAME" ]; then
-      IMPLEMENTOR="${ROOT_RIG}/${ROOT_SESSION_NAME}"
+    if [ -n "$ROOT_RIG" ] && [ -n "$IMPLEMENTOR_SESSION" ]; then
+      IMPLEMENTOR="${ROOT_RIG}/${IMPLEMENTOR_SESSION}"
     fi
   fi
 }
 if [ -z "$IMPLEMENTOR" ]; then
-  echo "con-voyage publish: WARNING: could not resolve implementor_session from workflow root ${ROOT_ID}'s gc.routed_to/gc.session_name metadata — finalize record will have an empty implementor_session; the release mail and pr-watch's implementor-first feedback routing will fall back to the generic pool for this PR (fk-krsvc)" >&2
+  echo "con-voyage publish: WARNING: could not resolve implementor_session from workflow root ${ROOT_ID}'s gc.routed_to/gc.build.implementor_session metadata — finalize record will have an empty implementor_session; the release mail and pr-watch's implementor-first feedback routing will fall back to the generic pool for this PR (fk-krsvc)" >&2
 fi
 
 # 1. Record the PR on the work bead + append a PR line (best-effort).

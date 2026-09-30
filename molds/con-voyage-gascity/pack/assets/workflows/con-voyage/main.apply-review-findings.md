@@ -44,6 +44,35 @@ cd "$WORKTREE" || { echo "apply-review-findings: cd into ${WORKTREE} failed" >&2
 Do not edit files anywhere but inside `$WORKTREE`. Never edit the launcher
 checkout.
 
+## Record this step's own session as the implementor (review fk-hbsmk BLOCKING-1)
+
+Stamp `$ROOT_ID` with a dedicated `gc.build.implementor_session` key, read
+from THIS step's own claimed bead (`$GC_BEAD_ID`) — never from the workflow
+root's `gc.session_name`, which every `session_affinity=require` step
+(review lanes, the synthesizer, publish itself) re-stamps as it touches the
+root, so it never reliably names the implementor by the time publish reads
+it. This step can re-run across multiple review-loop iterations, each
+possibly claimed by a different session (fresh iteration beads per
+graph.v2), so re-stamp every time this step runs, not just once:
+
+```bash
+IMPLEMENTOR_SESSION="$(gc bd show "$GC_BEAD_ID" --json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    d = d[0] if isinstance(d, list) else d
+except Exception:
+    d = {}
+print((d.get('metadata') or {}).get('gc.session_name') or '')
+" 2>/dev/null)"
+if [ -n "$IMPLEMENTOR_SESSION" ]; then
+  gc bd update "$ROOT_ID" --set-metadata "gc.build.implementor_session=${IMPLEMENTOR_SESSION}" \
+    || echo "apply-review-findings: WARNING: could not stamp gc.build.implementor_session on workflow root ${ROOT_ID}" >&2
+else
+  echo "apply-review-findings: WARNING: could not resolve this step's own gc.session_name to stamp as implementor_session on ${ROOT_ID}" >&2
+fi
+```
+
 ## Sync the worktree to the current base (fk-hbsmk)
 
 Before reading the review synthesis or touching any file, sync `$WORKTREE`
