@@ -262,6 +262,83 @@ else
   echo "  PASS: no stderr noise when cwd is outside any git repo"
 fi
 
+# ===========================================================================
+# CASE 5 — stale worktree copy (fk-fzebe): the worktree's own
+# con-voyage-lib.sh is missing a function the city cast defines — the exact
+# 2026-09-30 incident (cv_bead_metadata / cv_root_bead_id "command not
+# found" because the rig root was parked 40 commits behind main). cv_pack_root
+# must not silently hand back the stale worktree copy: it falls back to the
+# city cast and warns on stderr naming both paths.
+# ===========================================================================
+start_case "5: a worktree copy missing a function the city cast defines is treated as stale — falls back to the city cast with a stderr warning"
+WT5="${SANDBOX}/case5-worktree"
+CITY5="${SANDBOX}/case5-city"
+mkdir -p "${WT5}/molds/con-voyage-gascity/pack/assets/scripts"
+git -C "$WT5" init -q -b main
+cat > "${WT5}/molds/con-voyage-gascity/pack/assets/scripts/con-voyage-lib.sh" <<'EOF'
+# stale worktree copy — missing cv_root_bead_id
+cv_bead_metadata() { :; }
+EOF
+mkdir -p "${CITY5}/packs/con-voyage/assets/scripts"
+cat > "${CITY5}/packs/con-voyage/assets/scripts/con-voyage-lib.sh" <<'EOF'
+# current city cast copy — carries a function the worktree copy above lacks
+cv_bead_metadata() { :; }
+cv_root_bead_id() { :; }
+EOF
+
+(
+  cd "$WT5" || exit 2
+  export GC_CITY="$CITY5"
+  cv_pack_root
+) > "${SANDBOX}/case5.out" 2>"${SANDBOX}/case5.err"
+CASE5_ROOT="$(cat "${SANDBOX}/case5.out")"
+assert_eq "$CASE5_ROOT" "${CITY5}/packs/con-voyage" \
+  "cv_pack_root falls back to the city cast when the worktree copy is missing a function the city cast defines"
+if grep -q "$WT5" "${SANDBOX}/case5.err" 2>/dev/null && grep -q "$CITY5" "${SANDBOX}/case5.err" 2>/dev/null; then
+  echo "  PASS: stderr warning names both the stale worktree path and the city cast path"
+else
+  echo "  FAIL: expected a stderr warning naming both paths, got: $(cat "${SANDBOX}/case5.err")" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
+# ===========================================================================
+# CASE 6 — a worktree copy that is NEWER than or EQUAL to the city cast (it
+# defines every function the city cast does, plus possibly more) must still
+# win — no regression of fk-8dfxt/CASE 1 once the staleness guard exists.
+# ===========================================================================
+start_case "6: a worktree copy that is newer than or equal to the city cast still wins (no fk-8dfxt regression)"
+WT6="${SANDBOX}/case6-worktree"
+CITY6="${SANDBOX}/case6-city"
+mkdir -p "${WT6}/molds/con-voyage-gascity/pack/assets/scripts"
+git -C "$WT6" init -q -b main
+cat > "${WT6}/molds/con-voyage-gascity/pack/assets/scripts/con-voyage-lib.sh" <<'EOF'
+# ahead-of-city worktree copy — carries everything the city cast has, plus a
+# brand-new function the city cast does not have yet
+cv_bead_metadata() { :; }
+cv_root_bead_id() { :; }
+cv_brand_new_function() { :; }
+EOF
+mkdir -p "${CITY6}/packs/con-voyage/assets/scripts"
+cat > "${CITY6}/packs/con-voyage/assets/scripts/con-voyage-lib.sh" <<'EOF'
+cv_bead_metadata() { :; }
+cv_root_bead_id() { :; }
+EOF
+
+(
+  cd "$WT6" || exit 2
+  export GC_CITY="$CITY6"
+  cv_pack_root
+) > "${SANDBOX}/case6.out" 2>"${SANDBOX}/case6.err"
+CASE6_ROOT="$(cat "${SANDBOX}/case6.out")"
+assert_eq "$CASE6_ROOT" "${WT6}/molds/con-voyage-gascity/pack" \
+  "cv_pack_root still returns the worktree's own pack dir when it is newer than or equal to the city cast"
+if [ -s "${SANDBOX}/case6.err" ]; then
+  echo "  FAIL: unexpected stderr warning for an up-to-date worktree copy: $(cat "${SANDBOX}/case6.err")" >&2
+  FAILURES=$((FAILURES+1))
+else
+  echo "  PASS: no stale-copy warning for an up-to-date worktree copy"
+fi
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "ALL CASES PASSED"

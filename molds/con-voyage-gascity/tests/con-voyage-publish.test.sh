@@ -214,6 +214,31 @@ else
   FAILURES=$((FAILURES+1))
 fi
 
+# ===========================================================================
+# CASE 11 — fk-fzebe: a comment-aggregate failure (e.g. a version-skewed pack
+#   copy whose cv-pr-comment.sh predates the comment-aggregate subcommand) is
+#   surfaced as an escalation, not a silent skip. Before this fix the block
+#   ran "$CV_BIN" comment-aggregate ... with no exit-status check at all, so
+#   a failing call left nothing behind for a human to find — the PR shipped
+#   without its aggregated review comment and nobody was told (the actual
+#   2026-09-30 incident this bead reports). This must still never fail the
+#   publish step itself (WHY: the PR body already carries the verdict).
+# ===========================================================================
+start_case "11: a failed comment-aggregate call is escalated to the mayor, not silently dropped"
+assert_contains 'if ! CV_AGGREGATE_OUT="$("$CV_BIN" comment-aggregate "$PR_NUMBER" --repo "$REPO_FULL" \' "the comment-aggregate call's exit status is captured, not fired-and-forgotten"
+assert_contains 'echo "cv-pr-comment.sh comment-aggregate failed: ${CV_AGGREGATE_OUT}" >&2' "a failure is logged to stderr with the actual captured output"
+assert_contains 'gc mail send mayor \' "a failure is escalated via gc mail, not just logged where nobody reads it"
+assert_contains 'con-voyage publish: aggregated review comment failed for PR ${PR_NUMBER}' "the escalation mail names the failing PR"
+
+aggregate_call_line="$(line_of 'if ! CV_AGGREGATE_OUT="$("$CV_BIN" comment-aggregate "$PR_NUMBER" --repo "$REPO_FULL" \')"
+mail_call_line="$(line_of 'gc mail send mayor \')"
+if [ -n "$aggregate_call_line" ] && [ -n "$mail_call_line" ] && [ "$aggregate_call_line" -lt "$mail_call_line" ]; then
+  echo "  PASS: the comment-aggregate call (line ${aggregate_call_line}) precedes the escalation mail (line ${mail_call_line}), so the mail only fires on the captured failure"
+else
+  echo "  FAIL: expected the comment-aggregate call to precede the escalation mail" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "ALL CASES PASSED"

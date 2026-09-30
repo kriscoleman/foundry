@@ -26,6 +26,25 @@
 #
 # Requires: bash 4+, gc CLI, python3, git.
 
+# cv_pack_root_has_required_functions TOPLEVEL_LIB CITY_LIB — internal
+# staleness probe for cv_pack_root (fk-fzebe). Returns 0 when every function
+# CITY_LIB defines is also defined by TOPLEVEL_LIB (the worktree copy is at
+# least as complete as the city cast), 1 when TOPLEVEL_LIB is missing one or
+# more of them — the signal that it is an OLDER copy than the city cast, not
+# just a different one. Sources each file in its own `bash -c` subshell
+# (never the caller's shell, whether bash or zsh — see cv_pack_script's doc
+# comment above on why a caller's shell must never be assumed) purely to list
+# its function names via `declare -F`; neither subshell executes anything the
+# sourced file doesn't already run at source time (this file defines
+# functions only, per the header comment).
+cv_pack_root_has_required_functions() {
+  local toplevel_lib="$1" city_lib="$2" missing
+  missing="$(comm -23 \
+    <(bash -c "source '${city_lib}' >/dev/null 2>&1; declare -F" 2>/dev/null | awk '{print $3}' | sort) \
+    <(bash -c "source '${toplevel_lib}' >/dev/null 2>&1; declare -F" 2>/dev/null | awk '{print $3}' | sort))"
+  [ -z "$missing" ]
+}
+
 # cv_pack_root — print this pack's asset root, resolved deterministically
 # (fk-q2pon), never by searching $GC_CITY for whichever copy sorts first:
 #   1. `git rev-parse --show-toplevel` — shell-agnostic (unlike
@@ -35,14 +54,31 @@
 #      dogfooding run with cwd inside a rig checkout or one of its worktrees
 #      uses THAT copy, so a step under test loads the same code it is
 #      testing instead of a stale sibling elsewhere under $GC_CITY
-#      (fk-8dfxt).
-#   2. Otherwise, $GC_CITY/packs/con-voyage — the live pack cast a normal,
-#      non-dogfooding cast rig actually runs from.
+#      (fk-8dfxt) — UNLESS that copy is stale (fk-fzebe): if the city cast at
+#      $GC_CITY/packs/con-voyage defines a function the toplevel copy is
+#      missing, the toplevel copy is an older version-skewed checkout (e.g. a
+#      rig root parked behind origin/main), not a dogfooding target, and
+#      loading it silently produces "command not found" for whatever the
+#      missing function backed (the 2026-09-30 incident this guards against).
+#      Fall back to the city cast instead, with a one-line stderr warning
+#      naming both paths — fail soft rather than closed, since the city cast
+#      is always a usable, current copy.
+#   2. Otherwise (no toplevel copy, or the staleness check above tripped),
+#      $GC_CITY/packs/con-voyage — the live pack cast a normal, non-dogfooding
+#      cast rig actually runs from.
 # Always returns one of these two paths; never a list of candidates.
 cv_pack_root() {
-  local toplevel
+  local toplevel toplevel_lib city_root city_lib
   toplevel="$(git rev-parse --show-toplevel 2>/dev/null)"
   if [ -n "$toplevel" ] && [ -f "${toplevel}/molds/con-voyage-gascity/pack/assets/scripts/con-voyage-lib.sh" ]; then
+    toplevel_lib="${toplevel}/molds/con-voyage-gascity/pack/assets/scripts/con-voyage-lib.sh"
+    city_root="${GC_CITY:-.}/packs/con-voyage"
+    city_lib="${city_root}/assets/scripts/con-voyage-lib.sh"
+    if [ -f "$city_lib" ] && ! cv_pack_root_has_required_functions "$toplevel_lib" "$city_lib"; then
+      echo "cv_pack_root: WARNING: ${toplevel_lib} is missing function(s) the city cast at ${city_lib} defines — treating it as a stale/version-skewed copy and falling back to the city cast (fk-fzebe)" >&2
+      printf '%s' "$city_root"
+      return 0
+    fi
     printf '%s' "${toplevel}/molds/con-voyage-gascity/pack"
     return 0
   fi

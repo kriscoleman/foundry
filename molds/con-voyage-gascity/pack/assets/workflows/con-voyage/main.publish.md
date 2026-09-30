@@ -201,17 +201,26 @@ on):
    [ -f "$CV_BIN" ] || CV_BIN=""
    [ -n "$CV_BIN" ] && [ -x "$CV_BIN" ] || { echo "cv-pr-comment.sh not found — skipping the aggregated review comment (PR body already carries the verdict)" >&2; }
    if [ -n "$CV_BIN" ] && [ -x "$CV_BIN" ]; then
-     "$CV_BIN" comment-aggregate "$PR_NUMBER" --repo "$REPO_FULL" \
+     if ! CV_AGGREGATE_OUT="$("$CV_BIN" comment-aggregate "$PR_NUMBER" --repo "$REPO_FULL" \
        --manifest <path to the assembled JSON manifest> \
        --city-root "${GC_CITY:-.}" \
-       --formula con-voyage --agent "<rig>/gc.publisher"
+       --formula con-voyage --agent "<rig>/gc.publisher" 2>&1)"; then
+       echo "cv-pr-comment.sh comment-aggregate failed: ${CV_AGGREGATE_OUT}" >&2
+       gc mail send mayor \
+         -s "con-voyage publish: aggregated review comment failed for PR ${PR_NUMBER}" \
+         -m "cv-pr-comment.sh comment-aggregate failed (a version-skewed pack copy missing the subcommand is one known cause, fk-fzebe): ${CV_AGGREGATE_OUT}" \
+         2>&1 || echo "note: escalation mail failed too (continuing)" >&2
+     fi
    fi
    ```
 
 A failure here (script missing, or the hygiene scan blocking on a
 token-shaped string) must never fail the publish step itself or block the
 PR — the PR body already carries the verdict; the aggregated comment is a
-posterity convenience on top of it. Log the failure and continue.
+posterity convenience on top of it. Log the failure to stderr AND escalate
+it to the mayor (fk-fzebe: a failure here was previously a silent skip a PR
+could ship past unnoticed) and continue — never fail the publish step over
+this.
 
 ### After the PR opens — update the WORK BEAD and arm the finalize monitor
 
