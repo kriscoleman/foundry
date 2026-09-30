@@ -1419,6 +1419,10 @@ SITE_TOML
     FAILURES=$((FAILURES+1))
   fi
 
+  start_case "cv_with_timeout under zsh: no poll_s noise leaks into captured stdout across multiple poll iterations (fk-4i2er)"
+  zsh_multi_out="$(zsh -c "source '$LIB'; cv_with_timeout 5 sh -c 'sleep 0.5; printf done'")"
+  assert_eq "done" "$zsh_multi_out" "cv_with_timeout under zsh: stdout capture is clean across multiple poll iterations, no poll_s= leakage"
+
   # acquire_lock/release_lock (fk-8b5fl): newly lifted into this file from
   # con-voyage-repair-watchdog.sh so con-voyage-pr-watch.sh can share the same
   # lock instead of duplicating it. Neither function's local variable names
