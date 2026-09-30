@@ -239,6 +239,19 @@ else
   FAILURES=$((FAILURES+1))
 fi
 
+# ===========================================================================
+# CASE 12 — review fk-hbsmk BLOCKING-1: IMPLEMENTOR is resolved from the
+#   dedicated gc.build.implementor_session key (stamped by the implementor
+#   step itself), never from the workflow root's mutable gc.session_name
+#   (which every session_affinity=require step re-stamps as it touches the
+#   root — review lanes, the synthesizer, and publish itself — so it never
+#   reliably names the implementor by the time publish reads it).
+# ===========================================================================
+start_case "12: fk-hbsmk BLOCKING-1 — IMPLEMENTOR is resolved from gc.build.implementor_session, not the root's mutable gc.session_name"
+assert_contains 'cv_bead_metadata "$ROOT_ID" gc.build.implementor_session' "reads the dedicated implementor_session key stamped by build.md/apply-review-findings.md"
+assert_not_contains 'cv_bead_metadata "$ROOT_ID" gc.session_name' "no longer reads the root's mutable, last-writer-wins gc.session_name"
+assert_contains 'IMPLEMENTOR="${ROOT_RIG}/${IMPLEMENTOR_SESSION}"' "builds IMPLEMENTOR from the dedicated key's value, not ROOT_SESSION_NAME"
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "ALL CASES PASSED"

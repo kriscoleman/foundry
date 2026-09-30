@@ -1076,14 +1076,25 @@ print((d.get('author') or {}).get('login', ''))" 2>/dev/null || echo "")
     # Prefer it over the generic pool route so feedback on an awaiting-merge PR
     # reaches the SAME session that built it, not a fresh pool worker with no
     # context. Fall back to the pool route with an explicit log line — never
-    # silently — when there is no record yet or its implementor_session is
-    # empty (e.g. the publish step could not resolve one).
+    # silently — when there is no record yet, its implementor_session is
+    # empty (e.g. the publish step could not resolve one), OR the recorded
+    # session is no longer alive (review fk-hbsmk BLOCKING-2: the DONE
+    # criteria require this fallback "when [implementor_session] is missing
+    # or the session is dead" — a recorded-but-dead session used to pin
+    # route_target forever with no liveness check, unlike PART A's identical
+    # dispatch decision a few hundred lines above, which already gates on
+    # implementor_alive). A drained/evicted implementor, or a city restart,
+    # while a PR sits awaiting_merge is a real, hours-to-days-long window.
     finalize_read "cv-finalize-${owner}-${repo}-${pr_number}"
-    if [ -n "${FS_IMPLEMENTOR// /}" ]; then
+    if [ -n "${FS_IMPLEMENTOR// /}" ] && implementor_alive "$FS_IMPLEMENTOR"; then
       route_target="$FS_IMPLEMENTOR"
     else
       route_target="$pool_route_target"
-      echo "con-voyage-pr-watch: [PART B] ${full_repo}#${pr_number}: no recorded implementor_session (missing/empty .finalize record) — falling back to pool route ${route_target}"
+      if [ -n "${FS_IMPLEMENTOR// /}" ]; then
+        echo "con-voyage-pr-watch: [PART B] ${full_repo}#${pr_number}: recorded implementor_session '${FS_IMPLEMENTOR}' is dead/unresolvable — falling back to pool route ${route_target}"
+      else
+        echo "con-voyage-pr-watch: [PART B] ${full_repo}#${pr_number}: no recorded implementor_session (missing/empty .finalize record) — falling back to pool route ${route_target}"
+      fi
     fi
 
     # State file tracks seen node-ID strings per PR (keyed by repo+PR number)
