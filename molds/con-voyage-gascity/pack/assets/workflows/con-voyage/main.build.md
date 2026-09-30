@@ -102,9 +102,15 @@ if [ -z "$CV_LIB" ]; then
   echo "con-voyage build: con-voyage-lib.sh not found — cannot sync ${WORKTREE} to its current base" >&2
   exit 1
 fi
-SYNC_RESULT="$(export CV_PACK_ROOT; source "$CV_LIB" && cv_sync_worktree_to_base "$WORKTREE" "con-voyage/${CONVOY_ID}")" \
-  || { echo "con-voyage build: failed to sync ${WORKTREE} to its current base — refusing to start on a possibly-stale/unconfirmed base" >&2; exit 1; }
-echo "con-voyage build: worktree sync: ${SYNC_RESULT}"
+SYNC_ERR_FILE="$(mktemp)"
+SYNC_RESULT="$(export CV_PACK_ROOT; source "$CV_LIB" && cv_sync_worktree_to_base "$WORKTREE" "con-voyage/${CONVOY_ID}" 2>"$SYNC_ERR_FILE")"
+SYNC_RC=$?
+SYNC_ERR_TEXT="$(cat "$SYNC_ERR_FILE")"
+rm -f "$SYNC_ERR_FILE"
+echo "$SYNC_ERR_TEXT" >&2
+if [ "$SYNC_RC" -eq 0 ]; then
+  echo "con-voyage build: worktree sync: ${SYNC_RESULT}"
+fi
 ```
 
 `CV_TOPLEVEL` for this bootstrap call is resolved from `GC_RIG_ROOT` first —
@@ -127,6 +133,98 @@ landed on origin/main as of this change, so the snippet above uses the same
 absolute pack-path fallback fk-q2pon introduces rather than adding a new
 first-match `find`. Whichever of the two PRs lands second should rebase and
 may be able to simplify this block to a `cv_pack_script` call.)
+
+### A deterministic sync conflict is terminal, not retryable (fk-hcxre)
+
+`cv_sync_worktree_to_base` returns a DISTINCT exit code for a deterministic
+content conflict (`2`) versus a transient/environmental failure (`1`, e.g. a
+fetch failure). Do not treat them the same way. Evidence (2026-09-30, con-
+voyage root fk-vzgjt, mail rc-wisp-smmo329): main.build failed 3/3 attempts
+on the IDENTICAL rebase conflict, because every attempt just re-ran the same
+doomed rebase and consumed one of this step's `max_attempts = 3` graph.v2
+retries — after which the root was left stranded `in_progress` with no open
+steps. A content conflict cannot be fixed by retrying; retrying only burns
+attempts and strands the root.
+
+If `$SYNC_RC` is `2`, close this step AND the con-voyage root as a single
+terminal outcome, right here — do not `exit 1` (that would consume another
+`max_attempts` retry on the identical conflict) and do not continue to any
+later section in this file:
+
+```bash
+if [ "$SYNC_RC" -eq 2 ]; then
+  SYNC_CONFLICT_PATHS="$(printf '%s\n' "$SYNC_ERR_TEXT" | sed -n 's/^cv-lib: SYNC_CONFLICT_PATHS=//p' | tail -1)"
+
+  CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+  CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+  [ -f "${CV_PACK_ROOT}/assets/scripts/cv-worktree-prep.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+  CV_PREP="${CV_PACK_ROOT}/assets/scripts/cv-worktree-prep.sh"
+  [ -f "$CV_PREP" ] || CV_PREP=""
+  BASE_REF="unknown"
+  BEHIND_COUNT="unknown"
+  if [ -n "$CV_PREP" ]; then
+    BASE_REF="$(bash "$CV_PREP" resolve-base "$WORKTREE" 2>/dev/null || echo unknown)"
+    BEHIND_COUNT="$(git -C "$WORKTREE" rev-list --count "HEAD..${BASE_REF}" 2>/dev/null || echo unknown)"
+  fi
+  STALE_BRANCH="$(git -C "$WORKTREE" symbolic-ref -q --short HEAD 2>/dev/null || echo "con-voyage/${CONVOY_ID}")"
+
+  # Mail the mayor exactly once for this root (idempotent across a re-run of
+  # this same terminal path): check the dedup flag on $ROOT_ID before
+  # sending, same pattern cv-synthesis-low-mail.sh uses for
+  # code_review.low_mail_sent.
+  ALREADY_MAILED="$(gc bd show "$ROOT_ID" --json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    d = d[0] if isinstance(d, list) else d
+except Exception:
+    d = {}
+print((d.get('metadata') or {}).get('gc.build.sync_conflict_mail_sent') or '')
+" 2>/dev/null)"
+  if [ "$ALREADY_MAILED" != "true" ]; then
+    MAIL_BODY="con-voyage build: deterministic sync conflict on ${STALE_BRANCH} (root ${ROOT_ID}).
+
+Branch: ${STALE_BRANCH}
+Behind base (${BASE_REF}): ${BEHIND_COUNT} commit(s)
+Conflicted path(s): ${SYNC_CONFLICT_PATHS:-unknown}
+
+This branch cannot be rebased onto the current base without manual conflict
+resolution. Recommend reimplementing the change from the current base rather
+than retrying — this step has stopped retrying and the con-voyage root has
+been closed as abandoned."
+    MAIL_ID="$(gc mail send mayor -s "con-voyage sync conflict: ${STALE_BRANCH} (root ${ROOT_ID})" -m "$MAIL_BODY" --json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = {}
+print((d.get('message') or {}).get('id') or '')
+" 2>/dev/null)"
+    [ -n "$MAIL_ID" ] && gc bd update "$ROOT_ID" --set-metadata 'gc.build.sync_conflict_mail_sent=true' --set-metadata "gc.build.sync_conflict_mail_id=${MAIL_ID}" >/dev/null 2>&1
+  fi
+
+  bd update "$CLAIMED_BEAD_ID" \
+    --set-metadata 'gc.outcome=fail' \
+    --set-metadata 'gc.failure_class=sync_conflict' \
+    --set-metadata "gc.sync_conflict.paths=${SYNC_CONFLICT_PATHS:-unknown}" \
+    --set-metadata "gc.sync_conflict.behind_base=${BEHIND_COUNT}"
+  bd close "$CLAIMED_BEAD_ID" --reason "sync_conflict: ${STALE_BRANCH} cannot be rebased onto ${BASE_REF} (conflicted: ${SYNC_CONFLICT_PATHS:-unknown}); not retrying"
+
+  source "$CV_LIB" && cv_bead_close "$ROOT_ID" abandoned "sync conflict on ${STALE_BRANCH}, ${BEHIND_COUNT} commit(s) behind ${BASE_REF} (conflicted: ${SYNC_CONFLICT_PATHS:-unknown}) — reimplement from base"
+
+  exit 0
+fi
+```
+
+If `$SYNC_RC` is any other non-zero value (transient/environmental), the
+existing retryable behavior is unchanged:
+
+```bash
+if [ "$SYNC_RC" -ne 0 ]; then
+  echo "con-voyage build: failed to sync ${WORKTREE} to its current base — refusing to start on a possibly-stale/unconfirmed base" >&2
+  exit 1
+fi
+```
 
 ## Short-circuit: a pre-built branch already exists
 

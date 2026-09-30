@@ -225,10 +225,18 @@ assert_eq "$own_commit_msg4" "$(git_c "$WT4" log -1 --format=%s)" "own commit me
 assert_eq "con-voyage/repo4-worktree" "$(git_c "$WT4" symbolic-ref --short HEAD 2>/dev/null)" "stays on its own named branch"
 
 # ===========================================================================
-# CASE 5 — rebase conflict -> fails closed: non-zero exit, HEAD restored to
-#   its pre-sync commit, no leftover rebase state, never falls back to merge.
+# CASE 5 — rebase conflict -> fails closed: a DISTINCT exit code (2), HEAD
+#   restored to its pre-sync commit, no leftover rebase state, never falls
+#   back to merge. fk-hcxre: a deterministic content conflict must be
+#   distinguishable from a transient failure (exit 1 stays reserved for
+#   fetch/ensure-branch/no-origin style failures — see case 6) so a caller
+#   can treat this one as terminal instead of blindly retrying an identical
+#   conflict 3 times (con-voyage root fk-vzgjt, 2026-09-30: main.build failed
+#   3/3 attempts on the exact same rebase conflict before the root was left
+#   stranded in_progress). The conflicted paths must also be reported on
+#   stderr so a caller can record them without re-deriving them itself.
 # ===========================================================================
-start_case "5: conflicting rebase -> non-zero exit, clean tree, HEAD restored"
+start_case "5: conflicting rebase -> exit 2 (distinct from transient exit 1), clean tree, HEAD restored, conflicted paths reported"
 UPSTREAM5="${SANDBOX}/repo5-upstream.git"
 git init -q -b main --bare "$UPSTREAM5"
 REPO5="$(mk_repo repo5)"
@@ -249,10 +257,14 @@ git_c "$REPO5" commit -q -m "feat: upstream also touches README (conflicts)"
 git_c "$REPO5" push -q origin main
 err5="$(cv_sync_worktree_to_base "$WT5" 2>&1 >/dev/null)"
 rc5=$?
-assert_eq "1" "$rc5" "returns non-zero on a rebase conflict"
+assert_eq "2" "$rc5" "returns exit code 2 (distinct terminal signal) on a deterministic rebase conflict"
 case "$err5" in
   *"conflict"*) pass "error message calls out the conflict" ;;
   *) fail "expected an explanatory conflict error message, got: ${err5}" ;;
+esac
+case "$err5" in
+  *"SYNC_CONFLICT_PATHS="*"README.md"*) pass "reports the conflicted path(s) on stderr via a machine-readable SYNC_CONFLICT_PATHS= marker" ;;
+  *) fail "expected a SYNC_CONFLICT_PATHS= marker naming README.md, got: ${err5}" ;;
 esac
 assert_eq "$before_sha5" "$(git_c "$WT5" rev-parse HEAD)" "HEAD is restored to its pre-sync commit (rebase --abort ran)"
 # WT5 is a LINKED worktree (`git worktree add`), so `${WT5}/.git` is a plain
@@ -371,6 +383,39 @@ if [ -n "$rig_root_line_build" ] && [ -n "$worktree_toplevel_line_build" ] && [ 
   pass "GC_RIG_ROOT is tried (line ${rig_root_line_build}) before falling back to the worktree's own toplevel (line ${worktree_toplevel_line_build})"
 else
   fail "expected GC_RIG_ROOT resolution to precede the worktree-toplevel fallback (a worktree whose own mold predates cv_sync_worktree_to_base must not be the only source tried)"
+fi
+
+# ===========================================================================
+# fk-hcxre: build.md must treat a deterministic sync conflict (exit 2) as
+# terminal — close this step AND the con-voyage root, mail the mayor once,
+# and stop, rather than `exit 1`-ing into another graph.v2 retry attempt on
+# the identical conflict (con-voyage root fk-vzgjt: 3/3 identical attempts,
+# root left stranded in_progress).
+# ===========================================================================
+start_case "build.md: a sync-conflict (exit 2) is terminal — closes the step and the root, mails once, never re-exits 1"
+assert_md_contains "$BUILD_MD" 'SYNC_RC" -eq 2' "build.md branches specifically on the distinct sync-conflict exit code (2)"
+assert_md_contains "$BUILD_MD" "gc.outcome=fail" "build.md records gc.outcome=fail on a sync conflict"
+assert_md_contains "$BUILD_MD" "gc.failure_class=sync_conflict" "build.md records a distinct gc.failure_class=sync_conflict"
+assert_md_contains "$BUILD_MD" "SYNC_CONFLICT_PATHS=" "build.md parses the conflicted paths reported by cv_sync_worktree_to_base"
+assert_md_contains "$BUILD_MD" "cv_bead_close \"\$ROOT_ID\" abandoned" "build.md closes the con-voyage ROOT bead as abandoned on a sync conflict, so it never sits stranded in_progress"
+assert_md_contains "$BUILD_MD" "gc.build.sync_conflict_mail_sent" "build.md dedups the mayor mail via a root-bead metadata flag (mirrors cv-synthesis-low-mail.sh's code_review.low_mail_sent pattern)"
+
+sync_conflict_line_build="$(md_line_of "$BUILD_MD" 'SYNC_RC" -eq 2')"
+if [ -n "$sync_conflict_line_build" ] && [ -n "$shortcircuit_line_build" ] && [ "$sync_conflict_line_build" -lt "$shortcircuit_line_build" ]; then
+  pass "the sync-conflict terminal branch (line ${sync_conflict_line_build}) runs before the short-circuit decision (line ${shortcircuit_line_build}), so it can never be skipped"
+else
+  fail "expected the sync-conflict terminal branch to precede the short-circuit decision"
+fi
+
+# Negative control: the OLD unconditional "sync failed -> exit 1" one-liner
+# (which retried a deterministic conflict identically to a transient one)
+# must be gone from the main sync call itself — it must only appear inside
+# the transient-failure branch (SYNC_RC -ne 0), not as a blanket `||` on the
+# cv_sync_worktree_to_base call.
+if grep -qF 'cv_sync_worktree_to_base "$WORKTREE" "con-voyage/${CONVOY_ID}")" \' "$BUILD_MD"; then
+  fail "build.md must not treat every cv_sync_worktree_to_base failure identically via a blanket ||-exit-1 (fk-hcxre: a conflict must branch separately)"
+else
+  pass "no blanket ||-exit-1 regressed back onto the cv_sync_worktree_to_base call"
 fi
 
 start_case "apply-review-findings.md: calls cv_sync_worktree_to_base at the start and treats a change as iterate"
