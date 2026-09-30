@@ -154,38 +154,47 @@ if [ "$SHORT_CIRCUIT" = "false" ] && [ "$FRESH_BUILD" != "true" ]; then
 
     gc bd update "$CONVOY_ID" --set-metadata "work_dir=${WORKTREE}" \
       || { echo "con-voyage prepare-build: failed to persist work_dir on ${CONVOY_ID}" >&2; exit 1; }
-  else
-    # Fresh bead: create or reuse the deterministic worktree, same convention
-    # do-work/prepare-worktree.md uses ($(pwd)/worktrees/<source-anchor-id>).
-    if [ -d "$WORKTREE" ]; then
-      git -C "$WORKTREE" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
-        || { echo "con-voyage prepare-build: ${WORKTREE} exists but is not a git worktree for this repository — failing closed" >&2; exit 1; }
-    else
-      git worktree add "$WORKTREE" --detach HEAD \
-        || { echo "con-voyage prepare-build: git worktree add failed for ${WORKTREE}" >&2; exit 1; }
-    fi
-    "$CV_WT_PREP" exclude "$WORKTREE" || echo "note: cv-worktree-prep.sh exclude failed for ${WORKTREE} (continuing)"
-
-    # fk-grepg: `git worktree add ... --detach HEAD` bases the new worktree on
-    # whatever the SHARED rig-root checkout's HEAD happens to be at this
-    # instant, not on origin's current default branch. If a concurrent
-    # workflow has left the rig root on its own feature branch, a fresh
-    # worktree silently inherits that branch's commits (confirmed live:
-    # worktrees/fk-qzq0p and worktrees/fk-5r71y both inherited fk-atuxk's
-    # already-merged commit 8052f36 this way). Force a sync to the CURRENT
-    # origin default right after creation — the same structural fix
-    # build.md/apply-review-findings.md/ci-repair.md already apply at their
-    # own start (fk-hbsmk) — so a contaminated worktree is never handed off
-    # as "resolved" even briefly, rather than relying solely on a downstream
-    # step to catch it later.
-    SYNC_RESULT="$(source "$CV_LIB" && cv_sync_worktree_to_base "$WORKTREE" "con-voyage/${CONVOY_ID}")" \
-      || { echo "con-voyage prepare-build: failed to sync fresh worktree ${WORKTREE} to its current base — refusing to hand off a possibly-contaminated worktree" >&2; exit 1; }
-    echo "con-voyage prepare-build: worktree sync: ${SYNC_RESULT}"
-
-    gc bd update "$CONVOY_ID" --set-metadata "work_dir=${WORKTREE}" \
-      || { echo "con-voyage prepare-build: failed to persist work_dir on ${CONVOY_ID}" >&2; exit 1; }
-    echo "con-voyage prepare-build: fresh source anchor ${CONVOY_ID} — worktree ready at ${WORKTREE}; the build step will run its first TDD round"
   fi
+fi
+
+# fk-hlj5m: the deterministic worktree create/reuse must run regardless of
+# fresh_build — it is not part of the prior-anchor lookup/adoption gated
+# above by FRESH_BUILD, it is the only block that actually creates the
+# worktree a fresh_build=true run still needs. Keeping it fenced behind
+# `$FRESH_BUILD != "true"` left WORKTREE pointing at a directory that was
+# never created, so the very next step (build.md) aborted with "prepare-build
+# did not run or failed silently" on every fresh_build=true sling.
+if [ "$SHORT_CIRCUIT" = "false" ]; then
+  # Fresh bead: create or reuse the deterministic worktree, same convention
+  # do-work/prepare-worktree.md uses ($(pwd)/worktrees/<source-anchor-id>).
+  if [ -d "$WORKTREE" ]; then
+    git -C "$WORKTREE" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+      || { echo "con-voyage prepare-build: ${WORKTREE} exists but is not a git worktree for this repository — failing closed" >&2; exit 1; }
+  else
+    git worktree add "$WORKTREE" --detach HEAD \
+      || { echo "con-voyage prepare-build: git worktree add failed for ${WORKTREE}" >&2; exit 1; }
+  fi
+  "$CV_WT_PREP" exclude "$WORKTREE" || echo "note: cv-worktree-prep.sh exclude failed for ${WORKTREE} (continuing)"
+
+  # fk-grepg: `git worktree add ... --detach HEAD` bases the new worktree on
+  # whatever the SHARED rig-root checkout's HEAD happens to be at this
+  # instant, not on origin's current default branch. If a concurrent
+  # workflow has left the rig root on its own feature branch, a fresh
+  # worktree silently inherits that branch's commits (confirmed live:
+  # worktrees/fk-qzq0p and worktrees/fk-5r71y both inherited fk-atuxk's
+  # already-merged commit 8052f36 this way). Force a sync to the CURRENT
+  # origin default right after creation — the same structural fix
+  # build.md/apply-review-findings.md/ci-repair.md already apply at their
+  # own start (fk-hbsmk) — so a contaminated worktree is never handed off
+  # as "resolved" even briefly, rather than relying solely on a downstream
+  # step to catch it later.
+  SYNC_RESULT="$(source "$CV_LIB" && cv_sync_worktree_to_base "$WORKTREE" "con-voyage/${CONVOY_ID}")" \
+    || { echo "con-voyage prepare-build: failed to sync fresh worktree ${WORKTREE} to its current base — refusing to hand off a possibly-contaminated worktree" >&2; exit 1; }
+  echo "con-voyage prepare-build: worktree sync: ${SYNC_RESULT}"
+
+  gc bd update "$CONVOY_ID" --set-metadata "work_dir=${WORKTREE}" \
+    || { echo "con-voyage prepare-build: failed to persist work_dir on ${CONVOY_ID}" >&2; exit 1; }
+  echo "con-voyage prepare-build: fresh source anchor ${CONVOY_ID} — worktree ready at ${WORKTREE}; the build step will run its first TDD round"
 fi
 ```
 
