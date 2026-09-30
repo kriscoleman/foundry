@@ -418,6 +418,174 @@ else
   pass "no blanket ||-exit-1 regressed back onto the cv_sync_worktree_to_base call"
 fi
 
+# ===========================================================================
+# review fk-hcxre BLOCKING-1/2 (root fk-fqaft): the terminal `SYNC_RC -eq 2`
+# block above was only ever checked with static `assert_md_contains` greps,
+# never actually run — so neither the unbounded/swallowed `gc mail send` nor
+# the unverified `cv_bead_close` could be caught by "ALL CASES PASSED". Pull
+# the real block out of the markdown source (never a hand-copied duplicate,
+# so it can't drift from what a worker actually executes) and run it for
+# real, against a stubbed `gc`/`bd` that can simulate a hang, a failure, and
+# a root that refuses to close.
+# ===========================================================================
+extract_bash_block() {
+  local file="$1" needle="$2"
+  python3 -c "
+import re, sys
+text = open(sys.argv[1]).read()
+needle = sys.argv[2]
+for block in re.findall(r'\`\`\`bash\n(.*?)\n\`\`\`', text, re.S):
+    if needle in block:
+        print(block)
+        break
+" "$file" "$needle"
+}
+
+TERMINAL_BLOCK="$(extract_bash_block "$BUILD_MD" 'SYNC_RC" -eq 2')"
+if [ -z "$TERMINAL_BLOCK" ]; then
+  fail "could not extract the SYNC_RC-eq-2 terminal block out of ${BUILD_MD} — cannot exercise it"
+else
+  TERM_WT="$(mk_repo "terminal-block-wt")"
+
+  # A second stub bindir layered in FRONT of the shared $STUBDIR: overrides
+  # gc/bd per scenario while still falling through to the shared stub for
+  # anything cv_sync_worktree_to_base itself would need (not exercised here).
+  TERM_STUBDIR="${SANDBOX}/terminal-stubbin"
+  mkdir -p "$TERM_STUBDIR" "${SANDBOX}/terminal-state"
+
+  cat > "${TERM_STUBDIR}/bd" <<'BD_STUB'
+#!/usr/bin/env bash
+# The block's own direct `bd update`/`bd close` calls on $CLAIMED_BEAD_ID —
+# not under test here, always a harmless no-op.
+exit 0
+BD_STUB
+  chmod +x "${TERM_STUBDIR}/bd"
+
+  # gc is a Python script (not bash) so it can parse --json output cleanly
+  # and keep call-counting state without fighting word-splitting.
+  cat > "${TERM_STUBDIR}/gc" <<'GC_STUB'
+#!/usr/bin/env python3
+import json, os, sys, time
+
+state_dir = os.environ["TERM_STATE_DIR"]
+mail_mode = os.environ.get("STUB_MAIL_MODE", "ok")
+root_always_open = os.environ.get("STUB_ROOT_ALWAYS_OPEN", "false") == "true"
+
+def bump(name):
+    path = os.path.join(state_dir, name)
+    n = 0
+    if os.path.exists(path):
+        n = int(open(path).read().strip() or "0")
+    n += 1
+    open(path, "w").write(str(n))
+    return n
+
+args = sys.argv[1:]
+
+if args[:2] == ["mail", "send"]:
+    n = bump("mail_calls")
+    if mail_mode == "timeout":
+        time.sleep(5)
+        sys.exit(0)
+    if mail_mode == "fail":
+        sys.stderr.write("stub gc: mail send failed\n")
+        sys.exit(1)
+    print(json.dumps({"message": {"id": "stub-mail-%d" % n}}))
+    sys.exit(0)
+
+if args[:2] == ["bd", "show"]:
+    closed_marker = os.path.join(state_dir, "root_closed")
+    status = "closed" if (not root_always_open and os.path.exists(closed_marker)) else "in_progress"
+    print(json.dumps({"id": args[2] if len(args) > 2 else "", "status": status, "metadata": {}}))
+    sys.exit(0)
+
+if args[:2] == ["bd", "update"]:
+    sys.exit(0)
+
+if args[:2] == ["bd", "close"]:
+    bump("bd_close_calls")
+    if not root_always_open:
+        open(os.path.join(state_dir, "root_closed"), "w").write("1")
+    sys.exit(0)
+
+sys.exit(0)
+GC_STUB
+  chmod +x "${TERM_STUBDIR}/gc"
+
+  run_terminal_block() {
+    # PATH: TERM_STUBDIR first (mail-timeout/root-status control), then
+    # STUBDIR (real cv-worktree-prep.sh's own PATH assumptions), then the
+    # real PATH (git, python3, mktemp, sed).
+    env -i \
+      PATH="${TERM_STUBDIR}:${STUBDIR}:${PATH}" \
+      HOME="${HOME:-}" \
+      TERM_STATE_DIR="${SANDBOX}/terminal-state" \
+      STUB_MAIL_MODE="$1" \
+      STUB_ROOT_ALWAYS_OPEN="$2" \
+      CV_LENS_STORE_TIMEOUT_SECONDS=1 \
+      SYNC_RC=2 \
+      SYNC_ERR_TEXT="" \
+      WORKTREE="$TERM_WT" \
+      CONVOY_ID="fk-termconvoy" \
+      ROOT_ID="fk-termroot" \
+      CLAIMED_BEAD_ID="fk-termclaim" \
+      CV_LIB="$LIB" \
+      GC_CITY="." \
+      bash -c "cd '$TERM_WT' && $TERMINAL_BLOCK"
+  }
+
+  reset_terminal_state() { rm -f "${SANDBOX}/terminal-state"/*; }
+
+  start_case "build.md terminal block: gc mail send timing out is never swallowed"
+  reset_terminal_state
+  TERM_STDERR="$(run_terminal_block timeout false 2>&1 1>/dev/null)"
+  TERM_RC=$?
+  assert_eq "1" "$TERM_RC" "the block exits non-zero when the sync-conflict mail times out (never silently continues to close the root)"
+  case "$TERM_STDERR" in
+    *"timed out"*) pass "stderr reports the mail timeout" ;;
+    *) fail "expected stderr to report the mail timeout, got: ${TERM_STDERR}" ;;
+  esac
+  if [ -f "${SANDBOX}/terminal-state/bd_close_calls" ]; then
+    fail "root close must not run after an unconfirmed/timed-out mayor mail — cv_bead_close was still invoked"
+  else
+    pass "cv_bead_close never ran after the mail timed out"
+  fi
+
+  start_case "build.md terminal block: a failing gc mail send is never swallowed"
+  reset_terminal_state
+  TERM_STDERR="$(run_terminal_block fail false 2>&1 1>/dev/null)"
+  TERM_RC=$?
+  assert_eq "1" "$TERM_RC" "the block exits non-zero when the sync-conflict mail send fails"
+  case "$TERM_STDERR" in
+    *"mayor NOT notified"*) pass "stderr makes the un-notified mayor explicit" ;;
+    *) fail "expected stderr to call out the mayor was not notified, got: ${TERM_STDERR}" ;;
+  esac
+
+  start_case "build.md terminal block: a root that never closes gets a retry, then an escalation mail — not a silent exit 0"
+  reset_terminal_state
+  TERM_STDERR="$(run_terminal_block ok true 2>&1 1>/dev/null)"
+  TERM_RC=$?
+  assert_eq "0" "$TERM_RC" "the block still exits 0 once it has escalated (this is a terminal path, not a retryable one)"
+  assert_eq "2" "$(cat "${SANDBOX}/terminal-state/bd_close_calls" 2>/dev/null || echo 0)" "cv_bead_close was retried exactly once after the first attempt left the root open"
+  assert_eq "2" "$(cat "${SANDBOX}/terminal-state/mail_calls" 2>/dev/null || echo 0)" "a second, distinct mail (the root-failed-to-close escalation) was sent in addition to the original sync-conflict mail"
+  case "$TERM_STDERR" in
+    *"escalated to mayor"*) pass "stderr records the escalation" ;;
+    *) fail "expected stderr to record the root-close escalation, got: ${TERM_STDERR}" ;;
+  esac
+
+  start_case "build.md terminal block: happy path — root closes on the first attempt, no retry, no escalation"
+  reset_terminal_state
+  TERM_STDERR="$(run_terminal_block ok false 2>&1 1>/dev/null)"
+  TERM_RC=$?
+  assert_eq "0" "$TERM_RC" "the block exits 0 when the mail sends and the root closes cleanly"
+  assert_eq "1" "$(cat "${SANDBOX}/terminal-state/bd_close_calls" 2>/dev/null || echo 0)" "cv_bead_close ran exactly once — no wasted retry on the happy path"
+  assert_eq "1" "$(cat "${SANDBOX}/terminal-state/mail_calls" 2>/dev/null || echo 0)" "only the original sync-conflict mail was sent — no escalation on the happy path"
+  case "$TERM_STDERR" in
+    *"escalated to mayor"*) fail "the happy path must never escalate, got: ${TERM_STDERR}" ;;
+    *) pass "no escalation on the happy path" ;;
+  esac
+fi
+
 start_case "apply-review-findings.md: calls cv_sync_worktree_to_base at the start and treats a change as iterate"
 # review fk-hbsmk B1 (con-voyage synthesis root fk-gg5d6): the previous
 # looser check here (bare function-name substring) could not tell

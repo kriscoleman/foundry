@@ -168,10 +168,18 @@ if [ "$SYNC_RC" -eq 2 ]; then
   fi
   STALE_BRANCH="$(git -C "$WORKTREE" symbolic-ref -q --short HEAD 2>/dev/null || echo "con-voyage/${CONVOY_ID}")"
 
+  CV_LENS_STORE_TIMEOUT_SECONDS="${CV_LENS_STORE_TIMEOUT_SECONDS:-30}"
+  case "$CV_LENS_STORE_TIMEOUT_SECONDS" in
+    *[!0-9]*|'') CV_LENS_STORE_TIMEOUT_SECONDS="30" ;;
+  esac
+
   # Mail the mayor exactly once for this root (idempotent across a re-run of
   # this same terminal path): check the dedup flag on $ROOT_ID before
   # sending, same pattern cv-synthesis-low-mail.sh uses for
-  # code_review.low_mail_sent.
+  # code_review.low_mail_sent. The send itself is bounded and its failure is
+  # never swallowed (review fk-hcxre BLOCKING-1): an unbounded or silently
+  # dropped call here can burn the step's lease or leave the mayor never told
+  # about the stranded root.
   ALREADY_MAILED="$(gc bd show "$ROOT_ID" --json 2>/dev/null | python3 -c "
 import json, sys
 try:
@@ -192,7 +200,19 @@ This branch cannot be rebased onto the current base without manual conflict
 resolution. Recommend reimplementing the change from the current base rather
 than retrying — this step has stopped retrying and the con-voyage root has
 been closed as abandoned."
-    MAIL_ID="$(gc mail send mayor -s "con-voyage sync conflict: ${STALE_BRANCH} (root ${ROOT_ID})" -m "$MAIL_BODY" --json 2>/dev/null | python3 -c "
+    MAIL_ERR_FILE="$(mktemp)"
+    MAIL_OUT="$(source "$CV_LIB" && cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" gc mail send mayor -s "con-voyage sync conflict: ${STALE_BRANCH} (root ${ROOT_ID})" -m "$MAIL_BODY" --json 2>"$MAIL_ERR_FILE")"
+    MAIL_RC=$?
+    MAIL_ERR_TEXT="$(cat "$MAIL_ERR_FILE" 2>/dev/null)"
+    rm -f "$MAIL_ERR_FILE"
+    if [ "$MAIL_RC" -eq 124 ]; then
+      echo "con-voyage build: gc mail send to mayor timed out after ${CV_LENS_STORE_TIMEOUT_SECONDS}s on sync conflict for ${STALE_BRANCH} (root ${ROOT_ID}) — mayor NOT notified" >&2
+      exit 1
+    elif [ "$MAIL_RC" -ne 0 ]; then
+      echo "con-voyage build: gc mail send to mayor failed on sync conflict for ${STALE_BRANCH} (root ${ROOT_ID}): ${MAIL_OUT}${MAIL_ERR_TEXT:+ ${MAIL_ERR_TEXT}} — mayor NOT notified" >&2
+      exit 1
+    fi
+    MAIL_ID="$(printf '%s' "$MAIL_OUT" | python3 -c "
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -200,7 +220,11 @@ except Exception:
     d = {}
 print((d.get('message') or {}).get('id') or '')
 " 2>/dev/null)"
-    [ -n "$MAIL_ID" ] && gc bd update "$ROOT_ID" --set-metadata 'gc.build.sync_conflict_mail_sent=true' --set-metadata "gc.build.sync_conflict_mail_id=${MAIL_ID}" >/dev/null 2>&1
+    if [ -z "$MAIL_ID" ]; then
+      echo "con-voyage build: gc mail send to mayor returned no message id on sync conflict for ${STALE_BRANCH} (root ${ROOT_ID}) — mayor NOT confirmed notified" >&2
+      exit 1
+    fi
+    gc bd update "$ROOT_ID" --set-metadata 'gc.build.sync_conflict_mail_sent=true' --set-metadata "gc.build.sync_conflict_mail_id=${MAIL_ID}" >/dev/null 2>&1
   fi
 
   bd update "$CLAIMED_BEAD_ID" \
@@ -210,7 +234,26 @@ print((d.get('message') or {}).get('id') or '')
     --set-metadata "gc.sync_conflict.behind_base=${BEHIND_COUNT}"
   bd close "$CLAIMED_BEAD_ID" --reason "sync_conflict: ${STALE_BRANCH} cannot be rebased onto ${BASE_REF} (conflicted: ${SYNC_CONFLICT_PATHS:-unknown}); not retrying"
 
-  source "$CV_LIB" && cv_bead_close "$ROOT_ID" abandoned "sync conflict on ${STALE_BRANCH}, ${BEHIND_COUNT} commit(s) behind ${BASE_REF} (conflicted: ${SYNC_CONFLICT_PATHS:-unknown}) — reimplement from base"
+  # Close the root, then re-verify it actually closed (review fk-hcxre
+  # BLOCKING-2): cv_bead_close is documented fail-safe — a `bd close`
+  # failure is warned and swallowed, returning 0 either way — so an
+  # unconditional `exit 0` right after it can silently leave the root
+  # in_progress with no open steps, the exact stranded-root symptom this
+  # terminal path exists to fix. Retry once, then escalate to the mayor with
+  # a distinct mail on a second failure rather than exiting clean.
+  ROOT_CLOSE_REASON="sync conflict on ${STALE_BRANCH}, ${BEHIND_COUNT} commit(s) behind ${BASE_REF} (conflicted: ${SYNC_CONFLICT_PATHS:-unknown}) — reimplement from base"
+  source "$CV_LIB" && cv_bead_close "$ROOT_ID" abandoned "$ROOT_CLOSE_REASON"
+  ROOT_STATE="$(source "$CV_LIB" && IFS=$'\x1f' read -r s _ <<< "$(bead_status "$ROOT_ID")" && printf '%s' "$s")"
+  if [ "$ROOT_STATE" != "closed" ]; then
+    source "$CV_LIB" && cv_bead_close "$ROOT_ID" abandoned "$ROOT_CLOSE_REASON"
+    ROOT_STATE="$(source "$CV_LIB" && IFS=$'\x1f' read -r s _ <<< "$(bead_status "$ROOT_ID")" && printf '%s' "$s")"
+  fi
+  if [ "$ROOT_STATE" != "closed" ]; then
+    ESCALATE_ERR_FILE="$(mktemp)"
+    source "$CV_LIB" && cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" gc mail send mayor -s "con-voyage root failed to close: ${ROOT_ID}" -m "con-voyage build: root ${ROOT_ID} did not close after two attempts following a sync conflict on ${STALE_BRANCH}. Last known status: ${ROOT_STATE:-unknown}. Manual close required." --json >/dev/null 2>"$ESCALATE_ERR_FILE"
+    rm -f "$ESCALATE_ERR_FILE"
+    echo "con-voyage build: root ${ROOT_ID} failed to close after two attempts (status: ${ROOT_STATE:-unknown}) — escalated to mayor" >&2
+  fi
 
   exit 0
 fi
