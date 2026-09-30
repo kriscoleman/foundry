@@ -90,7 +90,10 @@ and fresh-bead paths below — this is a ref-level sync, not a source-file
 change, so it does not conflict with "do not touch source files":
 
 ```bash
-CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_TOPLEVEL="${GC_RIG_ROOT:-}"
+if [ -z "$CV_TOPLEVEL" ] || [ ! -f "${CV_TOPLEVEL}/molds/con-voyage-gascity/pack/assets/scripts/con-voyage-lib.sh" ]; then
+  CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+fi
 CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
 [ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
 CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
@@ -99,10 +102,23 @@ if [ -z "$CV_LIB" ]; then
   echo "con-voyage build: con-voyage-lib.sh not found — cannot sync ${WORKTREE} to its current base" >&2
   exit 1
 fi
-SYNC_RESULT="$(source "$CV_LIB" && cv_sync_worktree_to_base "$WORKTREE" "con-voyage/${CONVOY_ID}")" \
+SYNC_RESULT="$(export CV_PACK_ROOT; source "$CV_LIB" && cv_sync_worktree_to_base "$WORKTREE" "con-voyage/${CONVOY_ID}")" \
   || { echo "con-voyage build: failed to sync ${WORKTREE} to its current base — refusing to start on a possibly-stale/unconfirmed base" >&2; exit 1; }
 echo "con-voyage build: worktree sync: ${SYNC_RESULT}"
 ```
+
+`CV_TOPLEVEL` for this bootstrap call is resolved from `GC_RIG_ROOT` first —
+every gc-spawned session already carries it, and recast+go-live keeps the
+rig root's own mold cast current — falling back to `$WORKTREE`'s own git
+toplevel only when `GC_RIG_ROOT` is unset or its mold copy is missing
+`con-voyage-lib.sh` outright (fk-n7qn1: a worktree whose checked-out branch
+predates `cv_sync_worktree_to_base`'s introduction has no copy of the
+function in its own mold cast, so sourcing solely from the worktree's own
+toplevel can never self-heal — the call meant to sync the worktree needs
+code the worktree does not have). `CV_PACK_ROOT` still reflects whichever
+toplevel was actually resolved, so `cv_sync_worktree_to_base` gets a
+deterministic `cv-worktree-prep.sh` lookup instead of that helper's own
+`command -v || find`-style fallback.
 
 (NOTE for reviewers: fk-q2pon is concurrently replacing this same
 `command -v || find`-style resolution pattern across this file with a

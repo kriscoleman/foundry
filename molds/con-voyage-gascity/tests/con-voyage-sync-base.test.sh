@@ -356,6 +356,23 @@ else
   fail "expected the sync call to precede the short-circuit decision"
 fi
 
+start_case "build.md: CV_LIB bootstrap prefers GC_RIG_ROOT over the worktree's own (possibly stale) mold copy (fk-n7qn1)"
+# Same class of bug as apply-review-findings.md below, and fatal here too
+# (this call sits before the short-circuit decision, so it aborts the whole
+# build step): a worktree whose checked-out branch predates
+# cv_sync_worktree_to_base's introduction has no copy of the function in its
+# own mold cast, so resolving CV_LIB solely from the worktree's own
+# `git rev-parse --show-toplevel` can never self-heal. GC_RIG_ROOT must be
+# tried first.
+assert_md_contains "$BUILD_MD" 'CV_TOPLEVEL="${GC_RIG_ROOT:-}"' "build.md's sync bootstrap starts from GC_RIG_ROOT, not the worktree's own git toplevel"
+rig_root_line_build="$(md_line_of "$BUILD_MD" 'CV_TOPLEVEL="${GC_RIG_ROOT:-}"')"
+worktree_toplevel_line_build="$(md_line_of "$BUILD_MD" '  CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"')"
+if [ -n "$rig_root_line_build" ] && [ -n "$worktree_toplevel_line_build" ] && [ "$rig_root_line_build" -lt "$worktree_toplevel_line_build" ]; then
+  pass "GC_RIG_ROOT is tried (line ${rig_root_line_build}) before falling back to the worktree's own toplevel (line ${worktree_toplevel_line_build})"
+else
+  fail "expected GC_RIG_ROOT resolution to precede the worktree-toplevel fallback (a worktree whose own mold predates cv_sync_worktree_to_base must not be the only source tried)"
+fi
+
 start_case "apply-review-findings.md: calls cv_sync_worktree_to_base at the start and treats a change as iterate"
 # review fk-hbsmk B1 (con-voyage synthesis root fk-gg5d6): the previous
 # looser check here (bare function-name substring) could not tell
