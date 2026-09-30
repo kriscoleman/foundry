@@ -17,8 +17,91 @@ Loop rules (authoritative at the finding level, not the verdict level):
 - No BLOCKING, LOWs only: stop and surface the findings to the human. They decide
   proceed or send back. Do not decide this yourself.
 
-Re-run mechanics: before each cycle, reopen the completed review bead with
-gc bd reopen <review-bead>, then re-run. Do not create new review beads per cycle.
+## Gate lane reopen on apply-review-findings landing a fix (fk-itiq6)
+
+CONFIRMED LIVE (fk-lhjn3 iteration 5, 2026-09-29): the next cycle's lane
+re-reviews ran and wrote reports 13-17 minutes after synthesis flagged a
+BLOCKING finding, while this cycle's own apply-review-findings bead did not
+even get claimed until ~4 hours later — 7 review lanes burned a full pass
+reviewing a commit nobody had touched yet. Nothing mechanically checked that
+apply-review-findings had actually landed a fix before lanes were reopened;
+it was entirely on agent discretion.
+
+Before reopening any lane bead for the next cycle, poll for this cycle's
+sibling `apply-review-findings` bead and require it to be closed with
+`gc.outcome=pass` and either a `code_review.fix_commit` or
+`code_review.verdict=done`. Never reopen lanes while that bead is still
+open/unclaimed. If it has not closed within `{cv_lens_claim_seconds}`
+seconds, escalate to `{cv_lens_escalate_target}` once and keep waiting rather
+than reopening speculatively:
+
+```bash
+GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
+ROOT_ID="${GC_ROOT_BEAD_ID:-$GC_BEAD_ID}"
+THIS_JSON="$(gc bd show "$GC_BEAD_ID" --json 2>/dev/null)"
+THIS_STEP_ID="$(printf '%s' "$THIS_JSON" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+d = d[0] if isinstance(d, list) else d
+print((d.get('metadata') or {}).get('gc.step_id') or '')
+" 2>/dev/null)"
+THIS_ATTEMPT="$(printf '%s' "$THIS_JSON" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+d = d[0] if isinstance(d, list) else d
+print((d.get('metadata') or {}).get('gc.attempt') or '0')
+" 2>/dev/null)"
+APPLY_STEP_ID="${THIS_STEP_ID%.con-voyage-review-loop}.apply-review-findings"
+
+CV_LENS_GATE_TIMEOUT_SECONDS="{cv_lens_claim_seconds}"
+case "$CV_LENS_GATE_TIMEOUT_SECONDS" in
+  *[!0-9]*|'') CV_LENS_GATE_TIMEOUT_SECONDS="300" ;;
+esac
+CV_LENS_ESCALATE_TARGET="{cv_lens_escalate_target}"
+
+gate_start=$(date +%s)
+mailed=0
+while :; do
+  MATCH_JSON="$(bd list --all --metadata-field "gc.root_bead_id=${ROOT_ID}" --json --limit=0 2>/dev/null || printf '[]')"
+  read -r apply_status apply_outcome apply_fix_commit apply_verdict <<< "$(printf '%s' "$MATCH_JSON" | python3 -c "
+import json, sys
+attempt = '$THIS_ATTEMPT'
+step = '$APPLY_STEP_ID'
+data = json.load(sys.stdin)
+best = None
+for b in data:
+    meta = b.get('metadata') or {}
+    if meta.get('gc.attempt') != attempt or meta.get('gc.step_id') != step:
+        continue
+    best = b
+if best is None:
+    print('-', '-', '-', '-')
+else:
+    meta = best.get('metadata') or {}
+    print(best.get('status') or '-', meta.get('gc.outcome') or '-', meta.get('code_review.fix_commit') or '-', meta.get('code_review.verdict') or '-')
+" 2>/dev/null)"
+
+  if [ "$apply_status" = "closed" ] && [ "$apply_outcome" = "pass" ] && { [ "$apply_verdict" = "done" ] || [ "$apply_fix_commit" != "-" ]; }; then
+    echo "review loop: ${APPLY_STEP_ID} landed (fix_commit=${apply_fix_commit}, verdict=${apply_verdict}) — safe to reopen lanes"
+    break
+  fi
+
+  elapsed=$(( $(date +%s) - gate_start ))
+  if [ "$elapsed" -ge "$CV_LENS_GATE_TIMEOUT_SECONDS" ] && [ "$mailed" -eq 0 ]; then
+    gc mail send "$CV_LENS_ESCALATE_TARGET" \
+      -s "con-voyage review loop: ${APPLY_STEP_ID} has not landed a fix after ${elapsed}s" \
+      -m "Waiting on ${APPLY_STEP_ID} (attempt ${THIS_ATTEMPT}) to close with gc.outcome=pass and a fix commit or verdict=done before reopening review lanes. Current status=${apply_status} outcome=${apply_outcome}." \
+      2>&1 || echo "note: escalation mail failed for ${APPLY_STEP_ID} (continuing to wait)"
+    mailed=1
+  fi
+  sleep 30
+done
+```
+
+Only after the gate above reports it is safe should you reopen the lane
+beads for the next cycle: reopen the completed review bead with
+`gc bd reopen <review-bead>`, then re-run. Do not create new review beads
+per cycle.
 
 ## Verify review-lane claims and re-dispatch stalled lenses (fk-loo1 FIX-F)
 
