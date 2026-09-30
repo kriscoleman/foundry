@@ -975,12 +975,17 @@ for monitor_repo in "${MONITOR_REPOS[@]}"; do
   owner_repo="${monitor_repo%%|*}"
   owner="${owner_repo%%/*}"
   repo="${owner_repo#*/}"
-  # Route human feedback to THIS repo's rig worker. A bare "gc.implementation-worker"
+  # Pool fallback route for THIS repo's rig worker. A bare "gc.implementation-worker"
   # is not a valid sling target — it must be rig-scoped (mirrors PART A's repair_route).
+  # This is only the FALLBACK: each PR below first tries its own recorded
+  # implementor_session from the publish step's .finalize record (fk-krsvc) so
+  # feedback reaches the SAME session that built the PR, not a fresh pool
+  # worker. pool_route_target is used only when that record is missing or its
+  # implementor_session is empty.
   if [ -n "$monitor_rig" ] && [ "$monitor_rig" != "$monitor_repo" ]; then
-    route_target="${monitor_rig}/${CV_IMPLEMENTOR}"
+    pool_route_target="${monitor_rig}/${CV_IMPLEMENTOR}"
   else
-    route_target="${CV_IMPLEMENTOR}"
+    pool_route_target="${CV_IMPLEMENTOR}"
   fi
   if [ -z "$owner" ] || [ -z "$repo" ]; then
     echo "con-voyage-pr-watch: [PART B] skipping malformed entry '${monitor_repo}'" >&2
@@ -1063,6 +1068,22 @@ print((d.get('author') or {}).get('login', ''))" 2>/dev/null || echo "")
     if [ "$pr_author" != "$CV_PR_AUTHOR" ]; then
       echo "con-voyage-pr-watch: [PART B] DROP ${full_repo}#${pr_number} (author='${pr_author:-<unresolved>}' != '${CV_PR_AUTHOR}') — not routing any comment" >&2
       continue
+    fi
+
+    # Resolve THIS PR's own implementor from its .finalize record (fk-krsvc),
+    # written by the publish step under the same dedup_key convention the
+    # con-voyage-finalize monitor uses ("cv-finalize-<owner>-<repo>-<pr_number>").
+    # Prefer it over the generic pool route so feedback on an awaiting-merge PR
+    # reaches the SAME session that built it, not a fresh pool worker with no
+    # context. Fall back to the pool route with an explicit log line — never
+    # silently — when there is no record yet or its implementor_session is
+    # empty (e.g. the publish step could not resolve one).
+    finalize_read "cv-finalize-${owner}-${repo}-${pr_number}"
+    if [ -n "${FS_IMPLEMENTOR// /}" ]; then
+      route_target="$FS_IMPLEMENTOR"
+    else
+      route_target="$pool_route_target"
+      echo "con-voyage-pr-watch: [PART B] ${full_repo}#${pr_number}: no recorded implementor_session (missing/empty .finalize record) — falling back to pool route ${route_target}"
     fi
 
     # State file tracks seen node-ID strings per PR (keyed by repo+PR number)
@@ -1359,7 +1380,7 @@ print(','.join(sorted(x['id'] for x in items)))" 2>/dev/null || echo "unknown")
     # issues), with the title as the first line and a blank line before the body.
     if printf '%s\n\n%s\n' "$route_title" "$route_body" \
       | "$GC" --city "$GC_CITY" sling "$route_target" --stdin 2>&1; then
-      echo "con-voyage-pr-watch: [PART B] ${full_repo}#${pr_number}: routed to ${CV_IMPLEMENTOR}"
+      echo "con-voyage-pr-watch: [PART B] ${full_repo}#${pr_number}: routed to ${route_target}"
       # Persist updated seen-IDs only on successful route
       if [ -n "$updated_seen_ids" ]; then
         printf '%s\n' "$updated_seen_ids" | save_seen_ids "$state_file"

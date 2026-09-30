@@ -243,10 +243,36 @@ PR_AUTHOR="$(gh api user --jq .login 2>/dev/null || echo kriscoleman)"  # operat
 # The long-lived implementor session the facilitator dispatched this con-voyage
 # to (Phase 3: "the same implementor the formula put on the work bead"), in
 # "<rig>/<session>" form. This is the session the finalize monitor mails a
-# release note to when the PR lands. Leave it EMPTY if you cannot resolve it —
-# the finalize monitor still closes the work bead + convoy; only the release
-# note is skipped.
-IMPLEMENTOR="<rig>/<the long-lived implementor session, or empty>"
+# release note to when the PR lands, and the session pr-watch routes new human
+# PR feedback to instead of the generic pool default (fk-krsvc). Resolve it
+# deterministically from $ROOT_ID's OWN metadata rather than leaving it to be
+# hand-filled: gc.session_affinity=require on the build/apply-review-findings
+# steps keeps stamping the workflow root's gc.session_name with whichever
+# implementation_target session is currently active, and gc.routed_to on the
+# same root carries that session's rig prefix ("<rig>/gc.implementation-worker").
+# $ROOT_ID is already resolved above; do not guess it or re-derive it here.
+IMPLEMENTOR=""
+{
+  CV_TOPLEVEL="${GC_RIG_ROOT:-}"
+  if [ -z "$CV_TOPLEVEL" ] || [ ! -f "${CV_TOPLEVEL}/molds/con-voyage-gascity/pack/assets/scripts/con-voyage-lib.sh" ]; then
+    CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+  fi
+  CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+  [ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+  CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+  [ -f "$CV_LIB" ] || CV_LIB=""
+  if [ -n "$CV_LIB" ]; then
+    ROOT_ROUTED_TO="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.routed_to)"
+    ROOT_SESSION_NAME="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.session_name)"
+    ROOT_RIG="${ROOT_ROUTED_TO%%/*}"
+    if [ -n "$ROOT_RIG" ] && [ -n "$ROOT_SESSION_NAME" ]; then
+      IMPLEMENTOR="${ROOT_RIG}/${ROOT_SESSION_NAME}"
+    fi
+  fi
+}
+if [ -z "$IMPLEMENTOR" ]; then
+  echo "con-voyage publish: WARNING: could not resolve implementor_session from workflow root ${ROOT_ID}'s gc.routed_to/gc.session_name metadata — finalize record will have an empty implementor_session; the release mail and pr-watch's implementor-first feedback routing will fall back to the generic pool for this PR (fk-krsvc)" >&2
+fi
 
 # 1. Record the PR on the work bead + append a PR line (best-effort).
 gc bd update "$WORK_BEAD" --set-metadata "pr_url=${PR_URL}" \

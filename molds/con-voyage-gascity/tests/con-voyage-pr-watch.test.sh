@@ -2569,6 +2569,57 @@ fi
 assert_log_count "$GC_LOG_REFAIL2" 'bd create .*--silent' 1 "a fresh repair bead is minted after the PR's second recovery and a later failure"
 
 # ===========================================================================
+# CASE 45 — fk-krsvc: PART B prefers the PR's OWN recorded implementor_session
+#   (from the publish step's .finalize record, dedup key
+#   "cv-finalize-<owner>-<repo>-<pr_number>") over the generic pool route, so
+#   human feedback on an awaiting-merge PR reaches the SAME session that built
+#   the PR instead of a fresh, context-less pool worker.
+# ===========================================================================
+start_case "45: fk-krsvc — PART B routes to the PR's own recorded implementor_session, not the pool"
+setup_case_env "45"
+printf 'work_bead=va-45\nconvoy_id=cv-45\nrepo_full=kriscoleman/foundry\npr_number=11\npr_author=kriscoleman\nimplementor_session=gc__implementation-worker-rc-45\nlast_phase=awaiting_merge\n' \
+  > "${STATE_DIR}/cv-finalize-kriscoleman-foundry-11.finalize"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling gc__implementation-worker-rc-45 --stdin STDIN: Human PR feedback on kriscoleman/foundry#11' 1 "routes to the PR's own recorded implementor_session, not the pool"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 0 "does NOT fall back to the generic pool route when a finalize record has a real implementor_session"
+
+# ===========================================================================
+# CASE 46 — fk-krsvc: with no .finalize record at all, PART B falls back to
+#   the generic pool route AND logs an explicit fallback reason — never
+#   silently defaulting to the pool.
+# ===========================================================================
+start_case "46: fk-krsvc — missing finalize record falls back to the pool route, with an explicit log line"
+setup_case_env "46"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin STDIN: Human PR feedback on kriscoleman/foundry#11' 1 "falls back to the generic pool route when no finalize record exists"
+if printf '%s' "$OUT" | grep -q 'no recorded implementor_session (missing/empty .finalize record) — falling back to pool route gc.implementation-worker'; then
+  pass "logs an explicit fallback reason instead of silently defaulting to the pool"
+else
+  fail "expected an explicit fallback-reason log line when no finalize record exists"
+fi
+
+# ===========================================================================
+# CASE 47 — fk-krsvc: a .finalize record that exists but has an EMPTY
+#   implementor_session (publish could not resolve one) is treated the same
+#   as a missing record — fall back to the pool route, with the same explicit
+#   log line, not a silent empty-string sling target.
+# ===========================================================================
+start_case "47: fk-krsvc — empty implementor_session in an existing finalize record also falls back, with the same explicit log line"
+setup_case_env "47"
+printf 'work_bead=va-47\nconvoy_id=cv-47\nrepo_full=kriscoleman/foundry\npr_number=11\npr_author=kriscoleman\nimplementor_session=\nlast_phase=awaiting_merge\n' \
+  > "${STATE_DIR}/cv-finalize-kriscoleman-foundry-11.finalize"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin STDIN: Human PR feedback on kriscoleman/foundry#11' 1 "falls back to the generic pool route when implementor_session is empty"
+if printf '%s' "$OUT" | grep -q 'no recorded implementor_session (missing/empty .finalize record) — falling back to pool route gc.implementation-worker'; then
+  pass "logs an explicit fallback reason for an empty implementor_session, not just a missing file"
+else
+  fail "expected an explicit fallback-reason log line when implementor_session is empty"
+fi
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 echo
