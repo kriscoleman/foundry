@@ -420,6 +420,24 @@ else
   fail "expected the sync call to precede persisting work_dir, so a contaminated worktree is never handed off as resolved"
 fi
 
+start_case "apply-review-findings.md: CV_LIB bootstrap prefers GC_RIG_ROOT over the worktree's own (possibly stale) mold copy (fk-n7qn1)"
+# fk-n7qn1: if the worktree's own branch predates cv_sync_worktree_to_base's
+# introduction into con-voyage-lib.sh, its own molds/con-voyage-gascity copy
+# lacks the function entirely, so resolving CV_LIB solely from the
+# worktree's own `git -C "$WORKTREE" rev-parse --show-toplevel` can never
+# self-heal — the very call meant to sync the worktree needs a copy of the
+# function the worktree does not have. GC_RIG_ROOT (every gc-spawned session
+# already carries it) always points at the rig root, which recast+go-live
+# keeps current, so it must be tried first.
+assert_md_contains "$APPLY_MD" 'CV_TOPLEVEL="${GC_RIG_ROOT:-}"' "apply-review-findings.md's sync bootstrap starts from GC_RIG_ROOT, not the worktree's own git toplevel"
+rig_root_line_apply="$(md_line_of "$APPLY_MD" 'CV_TOPLEVEL="${GC_RIG_ROOT:-}"')"
+worktree_toplevel_line_apply="$(md_line_of "$APPLY_MD" 'git -C "$WORKTREE" rev-parse --show-toplevel')"
+if [ -n "$rig_root_line_apply" ] && [ -n "$worktree_toplevel_line_apply" ] && [ "$rig_root_line_apply" -lt "$worktree_toplevel_line_apply" ]; then
+  pass "GC_RIG_ROOT is tried (line ${rig_root_line_apply}) before falling back to the worktree's own toplevel (line ${worktree_toplevel_line_apply})"
+else
+  fail "expected GC_RIG_ROOT resolution to precede the worktree-toplevel fallback (a worktree whose own mold predates cv_sync_worktree_to_base must not be the only source tried)"
+fi
+
 start_case "ci-repair.md: syncs the shared workspace before checking out the PR branch"
 assert_md_contains "$CI_REPAIR_MD" 'cv_sync_worktree_to_base' "ci-repair.md calls cv_sync_worktree_to_base"
 sync_line_repair="$(md_line_of "$CI_REPAIR_MD" 'cv_sync_worktree_to_base')"
