@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.1](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.12.0...con-voyage-gascity-v0.12.1) (2026-09-30)
+
+
+### Bug Fixes
+
+* **con-voyage:** con-voyage-rate-limit-lookout.sh must be 100755 (fk-4gqm0) ([4092ac4](https://github.com/kriscoleman/foundry/commit/4092ac4c3f228d0024cb0a54605b405b2a1c8aaa))
+
 ## [0.12.0](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.11.0...con-voyage-gascity-v0.12.0) (2026-09-29)
 
 
