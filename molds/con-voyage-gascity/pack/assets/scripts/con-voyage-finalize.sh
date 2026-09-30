@@ -321,6 +321,15 @@ for CV_STATE_DIR in "${CV_STATE_DIRS_ALL[@]}"; do
     reason="$(cv_close_reason_for_pr "$pr_state" "$FS_PR_NUMBER")"
     echo "con-voyage-finalize: FINALIZE ${label} — PR ${pr_state}; closing work bead ${FS_WORK_BEAD} (${reason})"
 
+    # TITLE SWEEP (fk-nrfio): a work bead's PR is the same PR con-voyage-pr-
+    # watch.sh mints CI-repair beads against, so close every open repair bead
+    # for this repo+PR HERE too — this covers the case where no ".state"
+    # record survived to be picked up by the repair-state sweep below (e.g. a
+    # dedup-key change, or the record having already been removed by a prior
+    # cycle). Independent of the work-bead close outcome, and idempotent.
+    repair_reason_for_work_pr="$(cv_repair_close_reason_for_pr "$pr_state" "$FS_PR_NUMBER")"
+    cv_sweep_repair_beads_by_title "$FS_REPO_FULL" "$FS_PR_NUMBER" "$repair_reason_for_work_pr"
+
     # 1. Close the work bead (idempotent — no-op if already closed). FORCE=1
     #    (fk-c1xa): con-voyage's setup step claims the work bead as
     #    "con-voyage:work-bead"; this monitor's own actor never matches, so
@@ -476,6 +485,13 @@ for CV_STATE_DIR in "${CV_STATE_DIRS_ALL[@]}"; do
     repair_reason="$(cv_repair_close_reason_for_pr "$pr_state" "$primary_pr_number")"
     echo "con-voyage-finalize: FINALIZE ${label} — repair record, PR ${pr_state}; closing tracked repair bead ${primary_inflight:-<none>} (superseded: ${repair_reason})"
     cv_bead_close "$primary_inflight" "superseded" "$repair_reason"
+
+    # TITLE SWEEP (fk-nrfio): close every OTHER still-open repair bead for this
+    # exact repo+PR too, not just the one this record currently tracks — see
+    # cv_sweep_repair_beads_by_title's own doc comment for why the tracked
+    # ".state" record alone misses orphans from a past retry storm.
+    echo "con-voyage-finalize: ${label} — sweeping any other open repair beads by title for this PR"
+    cv_sweep_repair_beads_by_title "$primary_repo_full" "$primary_pr_number" "$repair_reason" "$primary_inflight"
 
     # Sweep sibling records: any OTHER ".state" file for the IDENTICAL repo+PR
     # (e.g. a stale/differently-keyed record) must never leave its own tracked

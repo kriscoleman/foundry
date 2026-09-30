@@ -209,6 +209,31 @@ case "$sub" in
       exit 0
     fi
     if [ "$bdsub" = "list" ]; then
+      has_title=0
+      title_val=""
+      j=0
+      while [ "$j" -lt "${#args[@]}" ]; do
+        if [ "${args[$j]}" = "--title-contains" ]; then
+          has_title=1
+          title_val="${args[$((j+1))]:-}"
+        fi
+        j=$((j+1))
+      done
+      if [ "$has_title" = "1" ]; then
+        # STUB_TITLE_MATCH_MAP: newline rows "<title_prefix>|<id1>,<id2>,..."
+        # (fk-nrfio: cv_sweep_repair_beads_by_title's `bd list --title-contains`
+        # call).
+        match_ids=""
+        if [ -n "${STUB_TITLE_MATCH_MAP:-}" ]; then
+          match_ids="$(printf '%s\n' "$STUB_TITLE_MATCH_MAP" | awk -F'|' -v t="$title_val" '$1==t{print $2; exit}')"
+        fi
+        if [ -n "$match_ids" ]; then
+          printf '%s' "$match_ids" | tr ',' '\n' | awk 'NF{printf "{\"id\":\"%s\"},", $0}' | sed 's/,$//' | awk '{printf "[%s]", $0}'
+        else
+          printf '[]'
+        fi
+        exit 0
+      fi
       if [ -n "${STUB_BDPINNED_IDS:-}" ]; then
         printf '%s\n' "$STUB_BDPINNED_IDS" | awk 'NF{printf "{\"id\":\"%s\"},", $0}' | sed 's/,$//' | awk '{printf "[%s]", $0}'
       else
@@ -983,6 +1008,72 @@ run_script "${DEFAULT_ENV[@]}" \
 assert_eq "0" "$RC" "script exits 0"
 assert_file_absent "${STATE_DIR}/cv-finalize-kriscoleman-foundry-103.finalize" "finalize record removed now that the close succeeds"
 assert_file_absent "${STATE_DIR}/cv-finalize-kriscoleman-foundry-103.finalize.mayor-notified" "stale dedup marker cleaned up alongside the record"
+
+# ===========================================================================
+# CASE 35 — fk-nrfio: a merged PR with N ORPHANED repair beads that the
+#   ".state" record does NOT track (only the most-recently-minted bead's id is
+#   ever recorded as inflight_rework — every earlier mint from a retry storm
+#   falls out of tracking) must still all close via the title-based sweep, not
+#   just the one tracked bead. Acceptance: "Given a merged PR with N open
+#   repair beads, When the watch/finalize cycle runs, Then all N close with a
+#   reason."
+# ===========================================================================
+start_case "35: merged PR with untracked orphan repair beads -> ALL close via title sweep"
+setup_case_env "35"
+write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-replicated-docs-4580" \
+  "" "rw-tracked" "checks_failed" "kriscoleman" "vandoor/gc.implementation-worker" \
+  "kriscoleman/replicated-docs" "4580" "fix/g" "1" "0"
+run_script "${DEFAULT_ENV[@]}" \
+  STUB_PR_MAP="kriscoleman/replicated-docs|4580|MERGED|2026-09-28T16:45:00Z|2026-09-28T16:45:00Z|||" \
+  STUB_BDSHOW_MAP=$'rw-tracked|open\nrw-orphan-1|open\nrw-orphan-2|open' \
+  STUB_TITLE_MATCH_MAP="Repair GitHub PR kriscoleman/replicated-docs#4580 (|rw-tracked,rw-orphan-1,rw-orphan-2"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd close rw-tracked .*superseded: PR #4580 merged' 1 "the tracked bead closes"
+assert_log_count "$GC_LOG" 'bd close rw-orphan-1 .*superseded: PR #4580 merged' 1 "untracked orphan 1 closes via title sweep"
+assert_log_count "$GC_LOG" 'bd close rw-orphan-2 .*superseded: PR #4580 merged' 1 "untracked orphan 2 closes via title sweep"
+assert_file_absent "${STATE_DIR}/cv-ci-repair-kriscoleman-replicated-docs-4580.state" ".state record removed"
+
+# ===========================================================================
+# CASE 36 — fk-nrfio: idempotent re-run — a second cycle against the SAME PR
+#   (record already gone, orphans already closed) makes no further close
+#   calls. Acceptance: "a re-run is a no-op."
+# ===========================================================================
+start_case "36: idempotent re-run after the title sweep already closed everything"
+setup_case_env "36"
+write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-replicated-docs-4581" \
+  "" "rw-tracked2" "checks_failed" "kriscoleman" "vandoor/gc.implementation-worker" \
+  "kriscoleman/replicated-docs" "4581" "fix/h" "1" "0"
+PRMAP36="kriscoleman/replicated-docs|4581|MERGED|2026-09-28T16:50:00Z|2026-09-28T16:50:00Z|||"
+run_script "${DEFAULT_ENV[@]}" \
+  STUB_PR_MAP="$PRMAP36" \
+  STUB_BDSHOW_MAP=$'rw-tracked2|open\nrw-orphan-3|open' \
+  STUB_TITLE_MATCH_MAP="Repair GitHub PR kriscoleman/replicated-docs#4581 (|rw-tracked2,rw-orphan-3"
+assert_eq "0" "$RC" "first run exits 0"
+assert_log_count "$GC_LOG" 'bd close rw-orphan-3' 1 "orphan closed on first run"
+: > "$GC_LOG"; : > "$GH_LOG"
+run_script "${DEFAULT_ENV[@]}" \
+  STUB_PR_MAP="$PRMAP36" \
+  STUB_BDSHOW_MAP=$'rw-tracked2|closed\nrw-orphan-3|closed' \
+  STUB_TITLE_MATCH_MAP="Repair GitHub PR kriscoleman/replicated-docs#4581 (|rw-tracked2,rw-orphan-3"
+assert_eq "0" "$RC" "second run exits 0 (idempotent)"
+assert_log_count "$GC_LOG" 'bd close' 0 "second run makes zero bd close calls (record already gone, orphans already closed)"
+
+# ===========================================================================
+# CASE 37 — fk-nrfio: a work bead's ".finalize" record has no companion
+#   ".state" record at all (e.g. it was already swept in a prior cycle) — the
+#   ".finalize" loop's own title sweep must still close any open repair beads
+#   for that same repo+PR.
+# ===========================================================================
+start_case "37: finalize loop sweeps repair beads by title with no .state record present"
+setup_case_env "37"
+write_finalize "$STATE_DIR" "cv-finalize-kriscoleman-foundry-110" \
+  "fk-w110" "fk-c110" "kriscoleman/foundry" "110" "kriscoleman" "foundry/impl-20" "awaiting_merge"
+run_script "${DEFAULT_ENV[@]}" \
+  STUB_PR_MAP="kriscoleman/foundry|110|MERGED|2026-09-28T17:00:00Z|2026-09-28T17:00:00Z|||" \
+  STUB_BDSHOW_MAP=$'fk-w110|in_progress\nfk-c110|open\nrw-orphan-4|open' \
+  STUB_TITLE_MATCH_MAP="Repair GitHub PR kriscoleman/foundry#110 (|rw-orphan-4"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd close rw-orphan-4 .*superseded: PR #110 merged' 1 "orphan repair bead closes from the .finalize loop's own title sweep"
 
 # ===========================================================================
 # Summary

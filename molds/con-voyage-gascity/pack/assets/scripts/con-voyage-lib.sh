@@ -1479,6 +1479,70 @@ cv_bead_close() {
   return 0
 }
 
+# cv_sweep_repair_beads_by_title REPO PR_NUMBER REASON [EXCLUDE_ID] — close
+# EVERY still-open bead whose title matches "Repair GitHub PR
+# <REPO>#<PR_NUMBER> (" (case-insensitive), other than EXCLUDE_ID (when given —
+# a bead the caller already closed itself, e.g. its ".state" record's own
+# tracked inflight_rework; skipping it here avoids one redundant close call,
+# since cv_bead_close already checks live status before acting either way).
+# This covers orphans regardless of whether they are the one this monitor's
+# own ".state" record currently tracks (fk-nrfio: replicated-docs accumulated
+# 212 open,
+# unassigned repair beads for the SAME merged PR #4580 because the per-PR
+# ".state" record's `inflight_rework` field is overwritten on every re-mint —
+# ONLY the most recently minted bead is ever tracked, so every earlier mint
+# from a retry storm — e.g. the fk-zvkmd unbounded-retry window, before the
+# mint-attempt cap landed — falls out of tracking and is orphaned forever, even
+# though the ".state" record itself still exists and still resolves this PR).
+#
+# `bd list --title-contains` is a case-insensitive substring match, so a bare
+# "PR <repo>#83" would also match "#830", "#831", etc. Anchoring on the
+# trailing " (" (the literal character that always follows the PR number in
+# the title this pack mints — see con-voyage-pr-watch.sh's `repair_title`)
+# makes the match exact on the PR number while still being agnostic to the
+# failure_kind/title text that follows.
+#
+# FAIL-SAFE: an empty REPO/PR_NUMBER, a `bd list` failure, or no matches is a
+# silent no-op — never aborts the caller. Each matched bead is closed via
+# cv_bead_close (outcome "superseded"), which is itself idempotent, so running
+# this twice (e.g. once from the ".finalize" work-bead loop and once from the
+# ".state" repair loop for the same repo+PR) is always safe: the second call
+# finds nothing left open.
+cv_sweep_repair_beads_by_title() {
+  local repo="$1" pr_number="$2" reason="$3" exclude_id="${4:-}"
+  [ -n "${repo// /}" ] && [ -n "${pr_number// /}" ] || return 0
+  case "$pr_number" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  local gc_bin="${GC:-gc}"
+  local title_prefix="Repair GitHub PR ${repo}#${pr_number} ("
+  local json
+  json=$("$gc_bin" bd list --title-contains "$title_prefix" --limit 0 --json 2>/dev/null) || json=""
+  [ -n "$json" ] || return 0
+  local ids
+  ids=$(printf '%s' "$json" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    data = []
+if isinstance(data, dict):
+    data = data.get('issues') or data.get('items') or []
+if not isinstance(data, list):
+    data = []
+for item in data:
+    if isinstance(item, dict) and item.get('id'):
+        print(item['id'])
+" 2>/dev/null) || ids=""
+  [ -n "${ids// /}" ] || return 0
+  while IFS= read -r id; do
+    [ -n "${id// /}" ] || continue
+    [ -n "${exclude_id// /}" ] && [ "$id" = "$exclude_id" ] && continue
+    cv_bead_close "$id" "superseded" "$reason"
+  done <<< "$ids"
+  return 0
+}
+
 # ===========================================================================
 # WORK-BEAD LIFECYCLE HELPERS (fk-p7j9 / fk-hsca)
 #
