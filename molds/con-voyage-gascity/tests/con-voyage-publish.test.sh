@@ -250,7 +250,20 @@ fi
 start_case "12: fk-hbsmk BLOCKING-1 — IMPLEMENTOR is resolved from gc.build.implementor_session, not the root's mutable gc.session_name"
 assert_contains 'cv_bead_metadata "$ROOT_ID" gc.build.implementor_session' "reads the dedicated implementor_session key stamped by build.md/apply-review-findings.md"
 assert_not_contains 'cv_bead_metadata "$ROOT_ID" gc.session_name' "no longer reads the root's mutable, last-writer-wins gc.session_name"
-assert_contains 'IMPLEMENTOR="${ROOT_RIG}/${IMPLEMENTOR_SESSION}"' "builds IMPLEMENTOR from the dedicated key's value, not ROOT_SESSION_NAME"
+
+# ===========================================================================
+# CASE 12 — review fk-3sch0 BLOCKING-1 (iteration 2): IMPLEMENTOR is written
+#   in the BARE gc.session_name form implementor_alive/mail send actually
+#   match against, never the "<rig>/<session_name>" concatenation. That
+#   prefixed form matched none of implementor_alive's checked fields
+#   (id/alias/name/session_name), so PART B's liveness gate was always false
+#   for a real, alive implementor. Guards against reintroducing the
+#   ROOT_RIG-prefixed form CASE 11 previously asserted for.
+# ===========================================================================
+start_case "12: fk-3sch0 BLOCKING-1 — IMPLEMENTOR is the bare gc.build.implementor_session value, no rig prefix"
+assert_contains 'IMPLEMENTOR="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.build.implementor_session)"' "IMPLEMENTOR is assigned directly from the dedicated key's bare value"
+assert_not_contains 'IMPLEMENTOR="${ROOT_RIG}/${IMPLEMENTOR_SESSION}"' "no longer prepends ROOT_RIG — that prefixed form is DEAD to implementor_alive"
+assert_not_contains 'ROOT_ROUTED_TO="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.routed_to)"' "no longer derives a rig prefix from the root's gc.routed_to for this purpose"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
