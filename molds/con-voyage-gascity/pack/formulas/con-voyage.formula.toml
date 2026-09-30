@@ -29,6 +29,25 @@ default = "con-voyage.cv-go-principal-engineer"
 description = "Role target used to apply con-voyage review findings, and to run the initial build phase's TDD round when the target bead has no pre-built branch yet."
 default = "gc.implementation-worker"
 
+[vars.fresh_build]
+description = """
+Set true to force prepare-build to ignore any existing or prior source-anchor
+branch and always build fresh from the current base, regardless of
+staleness. Use this to force a fresh build when re-slinging would otherwise
+keep adopting the same (possibly stale) anchor.
+"""
+default = "false"
+
+[vars.cv_stale_anchor_max_behind]
+description = """
+Maximum commits an adopted source-anchor branch's merge-base may sit behind
+the current base before prepare-build treats it as too stale to
+short-circuit onto and builds fresh instead. A branch that would conflict
+when merged onto the current base is always treated as too stale,
+independent of this threshold. Default 50.
+"""
+default = "50"
+
 # ---------------------------------------------------------------------------
 # Build phase — folds the do-work build in as con-voyage's own first phase
 # (fk-9aunv: "implement-then-escort — one-sling journey"), so a single sling

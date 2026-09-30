@@ -73,6 +73,25 @@
 #                   base ref resolves at all, `built` reports NOT BUILT (do
 #                   the build) rather than BUILT (skip it) — a redundant build
 #                   is far cheaper than silently skipping the only one.
+#   behind-count <dir> [base-ref]
+#                 — fk-2klp2: prints how many commits the resolved base is
+#                   ahead of <dir>'s merge-base with it — the raw staleness
+#                   measurement for an adopted (short-circuit) source-anchor
+#                   branch. Base resolution mirrors `built`/`guard`. Always
+#                   exits 0 once a base resolves, even for "0 commits
+#                   behind"; exits 1 (printing "0", never a fabricated
+#                   count) only when no base ref resolves at all — the
+#                   caller cannot measure staleness and must not treat that
+#                   as "definitely stale".
+#   would-conflict <dir> [base-ref]
+#                 — fk-2klp2: non-destructively tests (via `git merge-tree
+#                   --write-tree`, no working-tree/index mutation) whether
+#                   merging <dir>'s HEAD with the resolved base would
+#                   conflict — the second staleness signal for an adopted
+#                   source-anchor branch, alongside `behind-count`. Exit 0
+#                   means WOULD CONFLICT (the affirmative/actionable signal,
+#                   same convention as `built`); exit 1 means it would merge
+#                   cleanly, or (fail-safe) no base ref resolved at all.
 #   ensure-branch <dir> [branch-name]
 #                 — fk-tazxl: prepare-build always creates the build worktree
 #                   detached (`git worktree add --detach HEAD`), and the build
@@ -137,6 +156,8 @@ Usage:
   cv-worktree-prep.sh guard <dir> [base-ref]
   cv-worktree-prep.sh dirty <dir>
   cv-worktree-prep.sh resolve-base <dir> [explicit-base]
+  cv-worktree-prep.sh behind-count <dir> [base-ref]
+  cv-worktree-prep.sh would-conflict <dir> [base-ref]
   cv-worktree-prep.sh ensure-branch <dir> [branch-name]
 USAGE
 }
@@ -355,6 +376,54 @@ cmd_built() {
   return 1
 }
 
+cmd_behind_count() {
+  local dir="$1" base_arg="${2:-}"
+  require_git_dir "$dir" "behind-count"
+
+  local base
+  base="$(resolve_base "$dir" "$base_arg")"
+
+  if [ "$base" = "$EMPTY_TREE" ]; then
+    echo "cv-worktree-prep: behind-count — no base ref resolved for ${dir}; cannot measure staleness" >&2
+    printf '0\n'
+    return 1
+  fi
+
+  local mb
+  mb="$(git -C "$dir" merge-base "$base" HEAD 2>/dev/null || printf '%s' "$EMPTY_TREE")"
+  local behind
+  behind="$(git -C "$dir" rev-list --count "${mb}..${base}" 2>/dev/null || echo 0)"
+  case "$behind" in
+    ''|*[!0-9]*) behind=0 ;;
+  esac
+
+  echo "cv-worktree-prep: ${dir} is ${behind} commit(s) behind ${base}" >&2
+  printf '%s\n' "$behind"
+}
+
+cmd_would_conflict() {
+  local dir="$1" base_arg="${2:-}"
+  require_git_dir "$dir" "would-conflict"
+
+  local base
+  base="$(resolve_base "$dir" "$base_arg")"
+  if [ "$base" = "$EMPTY_TREE" ]; then
+    echo "cv-worktree-prep: would-conflict — no base ref resolved for ${dir}; cannot test mergeability" >&2
+    return 1
+  fi
+
+  local head_commit
+  head_commit="$(git -C "$dir" rev-parse --verify --quiet HEAD 2>/dev/null || true)"
+  [ -n "$head_commit" ] || { echo "cv-worktree-prep: would-conflict — ${dir} has no HEAD commit" >&2; return 1; }
+
+  if git -C "$dir" merge-tree --write-tree --quiet "$head_commit" "$base" >/dev/null 2>&1; then
+    echo "cv-worktree-prep: ${dir} would merge cleanly onto ${base}" >&2
+    return 1
+  fi
+  echo "cv-worktree-prep: ${dir} would CONFLICT merging onto ${base}" >&2
+  return 0
+}
+
 cmd_ensure_branch() {
   local dir="$1" name="${2:-}"
   require_git_dir "$dir" "ensure-branch"
@@ -398,10 +467,12 @@ case "$SUBCOMMAND" in
   guard) cmd_guard "${1:-}" "${2:-}" ;;
   dirty) cmd_dirty "${1:-}" ;;
   built) cmd_built "${1:-}" "${2:-}" ;;
+  behind-count) cmd_behind_count "${1:-}" "${2:-}" ;;
+  would-conflict) cmd_would_conflict "${1:-}" "${2:-}" ;;
   resolve-base) cmd_resolve_base "${1:-}" "${2:-}" ;;
   ensure-branch) cmd_ensure_branch "${1:-}" "${2:-}" ;;
   *)
     usage
-    die "unknown subcommand '${SUBCOMMAND}' (expected exclude, guard, dirty, built, resolve-base, or ensure-branch)"
+    die "unknown subcommand '${SUBCOMMAND}' (expected exclude, guard, dirty, built, resolve-base, behind-count, would-conflict, or ensure-branch)"
     ;;
 esac

@@ -71,14 +71,43 @@ EXISTING_WORK_DIR="$(source "$CV_LIB" && cv_bead_work_dir "$CONVOY_ID")"
 
 SHORT_CIRCUIT="false"
 WORKTREE="$DEFAULT_WORKTREE"
+STALE_ANCHOR=""
 
-if [ -n "$EXISTING_WORK_DIR" ] && [ -d "$EXISTING_WORK_DIR" ] && "$CV_WT_PREP" built "$EXISTING_WORK_DIR"; then
-  # Pre-built branch (backward-compat path): HEAD is already ahead of base.
-  # Reuse it as-is; the build step short-circuits its own TDD round.
-  WORKTREE="$EXISTING_WORK_DIR"
-  SHORT_CIRCUIT="true"
-  echo "con-voyage prepare-build: source anchor ${CONVOY_ID} already has a pre-built branch at ${WORKTREE} — short-circuiting the initial build"
-else
+# fk-2klp2: an explicit `fresh_build=true` sling var always ignores any
+# existing/prior anchor and forces a fresh build from the current base,
+# regardless of staleness — the operator's manual override when re-slinging
+# alone can't force it (re-slinging otherwise keeps adopting the same anchor).
+FRESH_BUILD="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.var.fresh_build)"
+STALE_MAX_BEHIND="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.var.cv_stale_anchor_max_behind)"
+if [ -n "$STALE_MAX_BEHIND" ]; then
+  export CV_STALE_ANCHOR_MAX_BEHIND="$STALE_MAX_BEHIND"
+fi
+
+if [ "$FRESH_BUILD" = "true" ]; then
+  echo "con-voyage prepare-build: fresh_build=true — ignoring any existing/prior source anchor and building fresh from the current base"
+elif [ -n "$EXISTING_WORK_DIR" ] && [ -d "$EXISTING_WORK_DIR" ] && "$CV_WT_PREP" built "$EXISTING_WORK_DIR"; then
+  # fk-2klp2: a pre-built branch this old is not automatically safe to reuse
+  # — measure how stale it is against the current base before short-circuiting
+  # onto it (evidence: fk-0f1 adopted a ~146-commits-behind branch with no
+  # guard, and could only end in a big rebase conflict).
+  STALE_INFO="$(source "$CV_LIB" && cv_anchor_too_stale "$EXISTING_WORK_DIR")"
+  STALE_RC=$?
+  if [ "$STALE_RC" -eq 0 ]; then
+    STALE_BRANCH="$(git -C "$EXISTING_WORK_DIR" branch --show-current 2>/dev/null)"
+    STALE_SHA="$(git -C "$EXISTING_WORK_DIR" rev-parse --short HEAD 2>/dev/null)"
+    STALE_ANCHOR="${STALE_BRANCH:-detached}@${STALE_SHA:-unknown}"
+    echo "con-voyage prepare-build: source anchor ${CONVOY_ID}'s existing branch at ${EXISTING_WORK_DIR} (${STALE_ANCHOR}, ${STALE_INFO}) is too stale to short-circuit onto — building fresh from the current base instead"
+  else
+    # Pre-built branch (backward-compat path): HEAD is already ahead of base
+    # and not too stale to adopt. Reuse it as-is; the build step
+    # short-circuits its own TDD round.
+    WORKTREE="$EXISTING_WORK_DIR"
+    SHORT_CIRCUIT="true"
+    echo "con-voyage prepare-build: source anchor ${CONVOY_ID} already has a pre-built branch at ${WORKTREE} — short-circuiting the initial build"
+  fi
+fi
+
+if [ "$SHORT_CIRCUIT" = "false" ] && [ "$FRESH_BUILD" != "true" ]; then
   # fk-ki8je: a fresh sling's own input convoy NEVER has a work_dir of its
   # own — do-work closes ITS OWN source anchor when it finishes, so that
   # state never carries onto a new convoy, and the branch above alone can
@@ -90,6 +119,20 @@ else
   WORK_BEAD_ID="$(source "$CV_LIB" && cv_resolve_work_bead "$CONVOY_ID")"
   if [ -n "$WORK_BEAD_ID" ] && [ "$WORK_BEAD_ID" != "$CONVOY_ID" ]; then
     read -r PRIOR_ANCHOR_ID PRIOR_ANCHOR_DIR <<< "$(source "$CV_LIB" && cv_find_prior_built_anchor "$WORK_BEAD_ID" "$CONVOY_ID")"
+  fi
+
+  # fk-2klp2: the same staleness guard applies to a prior work-bead anchor —
+  # an old anchor found here is just as capable of being months behind base.
+  if [ -n "$PRIOR_ANCHOR_DIR" ]; then
+    PRIOR_STALE_INFO="$(source "$CV_LIB" && cv_anchor_too_stale "$PRIOR_ANCHOR_DIR")"
+    PRIOR_STALE_RC=$?
+    if [ "$PRIOR_STALE_RC" -eq 0 ]; then
+      PRIOR_STALE_BRANCH="$(git -C "$PRIOR_ANCHOR_DIR" branch --show-current 2>/dev/null)"
+      PRIOR_STALE_SHA="$(git -C "$PRIOR_ANCHOR_DIR" rev-parse --short HEAD 2>/dev/null)"
+      STALE_ANCHOR="${PRIOR_STALE_BRANCH:-detached}@${PRIOR_STALE_SHA:-unknown}"
+      echo "con-voyage prepare-build: work bead ${WORK_BEAD_ID}'s earlier built source anchor ${PRIOR_ANCHOR_ID} at ${PRIOR_ANCHOR_DIR} (${STALE_ANCHOR}, ${PRIOR_STALE_INFO}) is too stale to short-circuit onto — building fresh from the current base instead"
+      PRIOR_ANCHOR_DIR=""
+    fi
   fi
 
   if [ -n "$PRIOR_ANCHOR_DIR" ]; then
@@ -159,6 +202,14 @@ bd update "$ROOT_ID" \
   --set-metadata "gc.build.source_anchor_work_dir=${WORKTREE}" \
   --set-metadata "gc.build.short_circuited=${SHORT_CIRCUIT}" \
   || { echo "con-voyage prepare-build: failed to record source anchor metadata on workflow root ${ROOT_ID}" >&2; exit 1; }
+
+# fk-2klp2: when a staleness guard rejected an anchor above, hand the
+# implementor reference context instead of silently discarding what was
+# found — a stale branch/commit it rejected can still be useful history.
+if [ -n "$STALE_ANCHOR" ]; then
+  bd update "$ROOT_ID" --set-metadata "gc.build.stale_anchor=${STALE_ANCHOR}" \
+    || echo "con-voyage prepare-build: note: failed to record gc.build.stale_anchor on ${ROOT_ID} (continuing)" >&2
+fi
 ```
 
 Do not edit source files in the launcher checkout — this step is infrastructure
