@@ -31,9 +31,12 @@ Before reopening any lane bead for the next cycle, poll for this cycle's
 sibling `apply-review-findings` bead and require it to be closed with
 `gc.outcome=pass` and either a `code_review.fix_commit` or
 `code_review.verdict=done`. Never reopen lanes while that bead is still
-open/unclaimed. If it has not closed within `{cv_lens_claim_seconds}`
-seconds, escalate to `{cv_lens_escalate_target}` once and keep waiting rather
-than reopening speculatively:
+open/unclaimed. If it closes any other way (abandoned, `gc.outcome=fail`,
+force-closed) that is a terminal failure, not "still working" — stop and
+escalate distinctly instead of polling forever. If it has not closed within
+`{cv_lens_claim_seconds}` seconds, escalate to `{cv_lens_escalate_target}`
+and keep waiting rather than reopening speculatively, re-escalating on the
+same interval for as long as the wait continues:
 
 ```bash
 GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
@@ -60,7 +63,7 @@ esac
 CV_LENS_ESCALATE_TARGET="{cv_lens_escalate_target}"
 
 gate_start=$(date +%s)
-mailed=0
+last_mailed_elapsed=-1
 while :; do
   MATCH_JSON="$(bd list --all --metadata-field "gc.root_bead_id=${ROOT_ID}" --json --limit=0 2>/dev/null || printf '[]')"
   read -r apply_status apply_outcome apply_fix_commit apply_verdict <<< "$(printf '%s' "$MATCH_JSON" | python3 -c "
@@ -71,6 +74,15 @@ data = json.load(sys.stdin)
 best = None
 for b in data:
     meta = b.get('metadata') or {}
+    # Every graph.v2 step spawns a paired gc.kind=scope-check 'Finalize
+    # scope for ...' latch bead carrying the SAME gc.step_id/gc.attempt as
+    # the real work bead — skip it, or bd list's created_at-DESC ordering
+    # can make it win the 'last match wins' selection below (fk-itiq6
+    # review, BLOCKING-1: reproduced live on fk-gfedd iteration 1 and
+    # fk-lhjn3 iteration 6, where picking the scope-check bead deadlocks
+    # the gate forever since it never carries code_review.verdict/fix_commit).
+    if meta.get('gc.kind') == 'scope-check':
+        continue
     if meta.get('gc.attempt') != attempt or meta.get('gc.step_id') != step:
         continue
     best = b
@@ -86,13 +98,40 @@ else:
     break
   fi
 
+  # Terminal-failure exit (BLOCKING-2): a closed apply-review-findings bead
+  # that did NOT meet the landed-fix condition above (abandoned,
+  # gc.outcome=fail, force-closed by a human) is a normal terminal state,
+  # not "still working" — without this branch the loop polls forever,
+  # indistinguishable from a bead that simply hasn't closed yet.
+  if [ "$apply_status" = "closed" ]; then
+    echo "review loop: ${APPLY_STEP_ID} closed with outcome=${apply_outcome} (verdict=${apply_verdict}, fix_commit=${apply_fix_commit}) — not a landed fix, cannot safely reopen lanes" >&2
+    gc mail send "$CV_LENS_ESCALATE_TARGET" \
+      -s "con-voyage review loop: ${APPLY_STEP_ID} closed without a landed fix" \
+      -m "${APPLY_STEP_ID} (attempt ${THIS_ATTEMPT}) closed with status=${apply_status} outcome=${apply_outcome} verdict=${apply_verdict} fix_commit=${apply_fix_commit} — this does not satisfy the landed-fix condition (gc.outcome=pass plus verdict=done or a fix_commit), so lanes cannot be safely reopened. This needs a human decision." \
+      2>&1 || echo "note: escalation mail failed for ${APPLY_STEP_ID} (continuing)"
+    exit 1
+  fi
+
+  # Heartbeat (BLOCKING-3): bump this gate step's OWN bead every poll so a
+  # stall watchdog scanning for inactive-but-in_progress beads can tell
+  # "correctly waiting per the gate" from "actually stalled" — mirrors the
+  # touched_at pattern the sibling FIX-F lane-redispatch loop below already
+  # uses. Best-effort: a gc/bd hiccup here must never abort the gate.
+  gc bd update "$GC_BEAD_ID" --set-metadata "gc.review_gate.touched_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >/dev/null 2>&1 || true
+
+  # Periodic re-escalation (BLOCKING-3): a single one-shot mail (the old
+  # one-shot suppression flag that blocked all further escalation after the
+  # first) is indistinguishable from a lost/ignored mail once the wait runs
+  # for hours (fk-lhjn3 iteration 5:
+  # ~4h wait, well past cv_lens_claim_seconds' default 300s). Re-escalate
+  # every CV_LENS_GATE_TIMEOUT_SECONDS instead of only once.
   elapsed=$(( $(date +%s) - gate_start ))
-  if [ "$elapsed" -ge "$CV_LENS_GATE_TIMEOUT_SECONDS" ] && [ "$mailed" -eq 0 ]; then
+  if [ "$elapsed" -ge "$CV_LENS_GATE_TIMEOUT_SECONDS" ] && [ $(( elapsed - last_mailed_elapsed )) -ge "$CV_LENS_GATE_TIMEOUT_SECONDS" ]; then
     gc mail send "$CV_LENS_ESCALATE_TARGET" \
       -s "con-voyage review loop: ${APPLY_STEP_ID} has not landed a fix after ${elapsed}s" \
       -m "Waiting on ${APPLY_STEP_ID} (attempt ${THIS_ATTEMPT}) to close with gc.outcome=pass and a fix commit or verdict=done before reopening review lanes. Current status=${apply_status} outcome=${apply_outcome}." \
       2>&1 || echo "note: escalation mail failed for ${APPLY_STEP_ID} (continuing to wait)"
-    mailed=1
+    last_mailed_elapsed="$elapsed"
   fi
   sleep 30
 done
