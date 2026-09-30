@@ -261,13 +261,13 @@ assert_eq "ok" "$(rs_state_field "$STATE_DIR" "r2" "last_state")" "state records
 start_case "3: dirty rig is skipped and reported once"
 setup_case_env "3"
 ROOT3="$(make_rig r3 main)"
-echo "uncommitted" > "${ROOT3}/scratch.txt"
+echo "uncommitted" >> "${ROOT3}/README.md"
 RIGS_JSON3="{\"rigs\":[$(rig_json r3 "$ROOT3" main)]}"
 run_script STUB_RIG_LIST_JSON="$RIGS_JSON3"
 assert_eq "0" "$RC" "script exits 0"
 assert_log_count "$GC_LOG" 'mail send mayor' 1 "dirty rig mails the mayor exactly once"
 assert_eq "dirty" "$(rs_state_field "$STATE_DIR" "r3" "last_state")" "state records 'dirty'"
-if [ -f "${ROOT3}/scratch.txt" ]; then pass "uncommitted file untouched"; else fail "uncommitted file disappeared"; fi
+if grep -q "uncommitted" "${ROOT3}/README.md"; then pass "uncommitted change untouched"; else fail "uncommitted change disappeared"; fi
 
 GC_LOG_3B="${SANDBOX}/gc-3b.log"; : > "$GC_LOG_3B"
 run_script STUB_RIG_LIST_JSON="$RIGS_JSON3" STUB_GC_LOG="$GC_LOG_3B"
@@ -355,7 +355,7 @@ assert_log_count "$GC_LOG" 'mail send' 0 "no mail when rig discovery itself fail
 start_case "9: two overlapping invocations send exactly one mail"
 setup_case_env "9"
 ROOT9="$(make_rig r9 main)"
-echo "uncommitted" > "${ROOT9}/scratch.txt"
+echo "uncommitted" >> "${ROOT9}/README.md"
 RIGS_JSON9="{\"rigs\":[$(rig_json r9 "$ROOT9" main)]}"
 LOG_9A="${SANDBOX}/gc-9a.log"; : > "$LOG_9A"
 LOG_9B="${SANDBOX}/gc-9b.log"; : > "$LOG_9B"
@@ -405,7 +405,7 @@ assert_eq "1" "$LOCK_SKIPS_9" "exactly one invocation yields a lock-contention S
 start_case "10: a stale lock (crashed prior holder) is stolen and the rig is processed"
 setup_case_env "10"
 ROOT10="$(make_rig r10 main)"
-echo "uncommitted" > "${ROOT10}/scratch.txt"
+echo "uncommitted" >> "${ROOT10}/README.md"
 RIGS_JSON10="{\"rigs\":[$(rig_json r10 "$ROOT10" main)]}"
 LOCK_10="${STATE_DIR}/.locks/r10.lock"
 mkdir -p "$LOCK_10"
@@ -439,7 +439,7 @@ fi
 start_case "11: a fresh (non-stale) pre-existing lock is never stolen"
 setup_case_env "11"
 ROOT11="$(make_rig r11 main)"
-echo "uncommitted" > "${ROOT11}/scratch.txt"
+echo "uncommitted" >> "${ROOT11}/README.md"
 RIGS_JSON11="{\"rigs\":[$(rig_json r11 "$ROOT11" main)]}"
 LOCK_11="${STATE_DIR}/.locks/r11.lock"
 mkdir -p "$LOCK_11"
@@ -462,6 +462,50 @@ if [ -d "$LOCK_11" ]; then
 else
   fail "the fresh lock disappeared even though it should never have been touched"
 fi
+
+# ===========================================================================
+# CASE 12 — fk-vgmb3: an untracked worktrees/ dir (gascity's own worker
+#   worktrees) must not count as dirty. A rig root with a clean TRACKED tree,
+#   an untracked worktrees/ dir, and origin ahead must still fast-forward.
+# ===========================================================================
+start_case "12: untracked worktrees/ dir does not block a fast-forward"
+setup_case_env "12"
+ROOT12="$(make_rig r12 main)"
+BEFORE_HEAD_12="$(git -C "$ROOT12" rev-parse HEAD)"
+mkdir -p "${ROOT12}/worktrees/fk-abc12"
+printf 'scratch\n' > "${ROOT12}/worktrees/fk-abc12/scratch.txt"
+advance_origin r12 main "advance-12"
+RIGS_JSON12="{\"rigs\":[$(rig_json r12 "$ROOT12" main)]}"
+run_script STUB_RIG_LIST_JSON="$RIGS_JSON12"
+assert_eq "0" "$RC" "script exits 0"
+ORIGIN_HEAD_12="$(git -C "$ROOT12" rev-parse origin/main)"
+AFTER_HEAD_12="$(git -C "$ROOT12" rev-parse HEAD)"
+assert_eq "$ORIGIN_HEAD_12" "$AFTER_HEAD_12" "rig root fast-forwards to match origin/main despite the untracked worktrees/ dir"
+if [ "$AFTER_HEAD_12" != "$BEFORE_HEAD_12" ]; then pass "HEAD actually advanced"; else fail "HEAD did not advance"; fi
+assert_log_count "$GC_LOG" 'mail send' 0 "an untracked worktrees/ dir never mails as dirty"
+assert_eq "ok" "$(rs_state_field "$STATE_DIR" "r12" "last_state")" "state records 'ok', not 'dirty'"
+if [ -f "${ROOT12}/worktrees/fk-abc12/scratch.txt" ]; then
+  pass "the untracked worktrees/ content is left untouched"
+else
+  fail "the untracked worktrees/ content disappeared"
+fi
+
+# ===========================================================================
+# CASE 13 — a real tracked-tree edit is still reported dirty even alongside
+#   an untracked worktrees/ dir — the untracked-files exemption must not mask
+#   genuine uncommitted changes.
+# ===========================================================================
+start_case "13: a tracked edit is still dirty even with an untracked worktrees/ dir present"
+setup_case_env "13"
+ROOT13="$(make_rig r13 main)"
+mkdir -p "${ROOT13}/worktrees/fk-abc13"
+printf 'scratch\n' > "${ROOT13}/worktrees/fk-abc13/scratch.txt"
+echo "uncommitted" >> "${ROOT13}/README.md"
+RIGS_JSON13="{\"rigs\":[$(rig_json r13 "$ROOT13" main)]}"
+run_script STUB_RIG_LIST_JSON="$RIGS_JSON13"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'mail send mayor' 1 "a real tracked-tree edit still mails as dirty exactly once"
+assert_eq "dirty" "$(rs_state_field "$STATE_DIR" "r13" "last_state")" "state records 'dirty'"
 
 # ===========================================================================
 # Summary

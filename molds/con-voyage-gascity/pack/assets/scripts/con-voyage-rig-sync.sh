@@ -263,7 +263,13 @@ process_rig() {
     return
   fi
 
-  if [ -n "$(git -C "$rig_path" status --porcelain 2>/dev/null)" ]; then
+  # fk-vgmb3: --untracked-files=no — an untracked path (gascity's own
+  # worktrees/ dir, a rig's schemas/ scratch dir, etc.) must not count as
+  # dirty; only TRACKED changes should block a fast-forward. `git merge
+  # --ff-only` still refuses safely on its own if the merge would actually
+  # overwrite an untracked file, so that case stays correctly reported as
+  # 'diverged' rather than silently overwritten.
+  if [ -n "$(git -C "$rig_path" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
     report_rig_state "$rig_name" "dirty" "working tree has uncommitted changes" "$default_branch"
     return
   fi
