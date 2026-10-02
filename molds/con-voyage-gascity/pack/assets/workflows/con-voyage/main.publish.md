@@ -241,21 +241,15 @@ PR_NUMBER="<the PR number>"
 REPO_FULL="<owner/repo>"
 PR_AUTHOR="$(gh api user --jq .login 2>/dev/null || echo kriscoleman)"  # operator login
 # The long-lived implementor session the facilitator dispatched this con-voyage
-# to (Phase 3: "the same implementor the formula put on the work bead"), in
-# BARE gc.session_name form (e.g. "gc__implementation-worker-rc-hq87kl") — the
-# SAME form PART A of con-voyage-pr-watch.sh already uses successfully for its
-# own `mail send "$st_implementor"` dispatch, and the only form
-# `implementor_alive`/`session_id_for_ident` actually match against (they
-# check a session's id/alias/name/session_name fields; none of those is a
-# "<rig>/<session_name>" concatenation). This is the session the finalize
-# monitor mails a release note to when the PR lands, and the session pr-watch
-# routes new human PR feedback to instead of the generic pool default
-# (fk-krsvc). Resolve it deterministically from $ROOT_ID's OWN metadata rather
-# than leaving it to be hand-filled: the build/apply-review-findings steps
-# (routed to implementation_target) stamp the workflow root's
-# gc.build.implementor_session with their OWN claimed step bead's bare
-# gc.session_name every time either one runs. $ROOT_ID is already resolved
-# above; do not guess it or re-derive it here.
+# to (Phase 3: "the same implementor the formula put on the work bead"). This
+# is the session the finalize monitor mails a release note to when the PR
+# lands, and the session pr-watch routes new human PR feedback to instead of
+# the generic pool default (fk-krsvc). Resolve it deterministically from
+# $ROOT_ID's OWN metadata rather than leaving it to be hand-filled: the
+# build/apply-review-findings steps (routed to implementation_target) stamp
+# the workflow root's gc.build.implementor_session with their OWN claimed
+# step bead's resolved session handle every time either one runs. $ROOT_ID is
+# already resolved above; do not guess it or re-derive it here.
 #
 # gc.build.implementor_session is a DEDICATED write-once-per-run key, unlike
 # gc.session_name on the same root bead: gc.session_name is re-stamped by
@@ -267,18 +261,17 @@ PR_AUTHOR="$(gh api user --jq .login 2>/dev/null || echo kriscoleman)"  # operat
 # apart, never the implementor — and being wrong-but-non-empty, it silently
 # passed the old empty-value fallback guard below).
 #
-# A prior version of this block prepended $ROOT_ID's own gc.routed_to rig
-# ("<rig>/<session_name>") before writing IMPLEMENTOR, on the theory that a
-# rig-qualified handle was needed downstream. It is not: PART A's
-# implementor-liveness dispatch, `implementor_alive`, and `mail send` all
-# already work directly off the bare session_name (that is what a bead's own
-# `assignee` field IS — see the same-session write-back a few hundred lines
-# into con-voyage-pr-watch.sh's PART A). The prefixed form matched none of
-# `implementor_alive`'s checked fields, so the liveness gate was always false
-# for a real, alive implementor and every PART B route silently fell back to
-# the pool — confirmed live against `gc session list --json`: bare
-# session_name resolves ALIVE, the "<rig>/<session_name>" form this block used
-# to produce resolves DEAD. Write the bare form through unchanged instead.
+# The value build/apply-review-findings stamp here is the session's
+# rig-scoped `name`/`alias` handle, resolved live via `cv_session_route_handle`
+# (falling back to the bare gc.session_name only when the session can't be
+# resolved live) — that rig-scoped form is the only one confirmed to resolve
+# for `implementor_alive`, `gc sling`, AND `gc mail send` all at once (review
+# fk-pbadx BLOCKING-1: a bare gc.session_name resolves for
+# `implementor_alive`/`gc mail send` but `gc sling` rejects it live — it only
+# accepts a rig-scoped "<rig>/<agent>" handle). Do NOT hand-build a
+# "<rig>/<session_name>" concatenation here or elsewhere — that string matches
+# none of `implementor_alive`'s checked fields and always resolves DEAD; only
+# `cv_session_route_handle`'s live-resolved name/alias is safe to use.
 IMPLEMENTOR=""
 {
   CV_TOPLEVEL="${GC_RIG_ROOT:-}"

@@ -872,6 +872,35 @@ start_case "session_id_for_ident: empty ident -> empty, no gc call"
 assert_eq "" "$(session_id_for_ident "")" "empty ident short-circuits"
 assert_log_count 'session list' 0 "empty ident never calls gc session list"
 
+# ---------------------------------------------------------------------------
+# cv_session_route_handle (review fk-pbadx BLOCKING-1 / fk-hbsmk BLOCKING-1 —
+# the rig-scoped name/alias handle usable for implementor_alive, gc sling, AND
+# gc mail send simultaneously; see con-voyage-lib.sh for the full rationale)
+# ---------------------------------------------------------------------------
+start_case "cv_session_route_handle: matches by session_name form, resolves to rig-scoped name"
+export STUB_SESSION_LIST_JSON='{"sessions":[{"id":"rc-1","alias":"foundry-kc/gc.gap-analyst-1","name":"foundry-kc/gc.gap-analyst-1","session_name":"gc__gap-analyst-rc-1","template":"foundry-kc/gc.gap-analyst","state":"active"}]}'
+assert_eq "foundry-kc/gc.gap-analyst-1" "$(cv_session_route_handle "gc__gap-analyst-rc-1")" "resolves a session_name-form identity to the rig-scoped name"
+
+start_case "cv_session_route_handle: matches by alias form too"
+assert_eq "foundry-kc/gc.gap-analyst-1" "$(cv_session_route_handle "foundry-kc/gc.gap-analyst-1")" "resolves an alias-form identity to the rig-scoped name"
+
+start_case "cv_session_route_handle: name absent -> falls back to alias"
+export STUB_SESSION_LIST_JSON='{"sessions":[{"id":"rc-1","alias":"foundry-kc/gc.gap-analyst-1","session_name":"gc__gap-analyst-rc-1","template":"foundry-kc/gc.gap-analyst","state":"active"}]}'
+assert_eq "foundry-kc/gc.gap-analyst-1" "$(cv_session_route_handle "gc__gap-analyst-rc-1")" "falls back to alias when name is absent"
+
+start_case "cv_session_route_handle: closed session is not alive"
+export STUB_SESSION_LIST_JSON='{"sessions":[{"id":"rc-2","name":"foundry-kc/gc.gap-analyst-2","session_name":"gc__gap-analyst-rc-2","template":"foundry-kc/gc.gap-analyst","state":"closed"}]}'
+assert_eq "" "$(cv_session_route_handle "gc__gap-analyst-rc-2")" "a closed session never resolves"
+
+start_case "cv_session_route_handle: no match -> empty"
+export STUB_SESSION_LIST_JSON='{"sessions":[{"id":"rc-1","name":"foundry-kc/gc.gap-analyst-1","session_name":"gc__gap-analyst-rc-1","state":"active"}]}'
+assert_eq "" "$(cv_session_route_handle "gc__someone-else")" "an unmatched identity resolves empty"
+
+start_case "cv_session_route_handle: empty ident -> empty, no gc call"
+: > "$GC_LOG"
+assert_eq "" "$(cv_session_route_handle "")" "empty ident short-circuits"
+assert_log_count 'session list' 0 "empty ident never calls gc session list"
+
 start_case "first_alive_session_id_for_route: one live session for the route"
 export STUB_SESSION_LIST_JSON='{"sessions":[{"id":"rc-1","template":"foundry-kc/gc.gap-analyst","state":"active"}]}'
 assert_eq "rc-1" "$(first_alive_session_id_for_route "foundry-kc/gc.gap-analyst")" "finds the live session matching the route template"
@@ -971,6 +1000,11 @@ assert_log_count 'session list --json' 1 "a caller that forgets to set \$GC stil
 start_case "session_id_for_ident: \$GC unset -> still invokes gc (defaults to \"gc\" on PATH), not a silent no-op"
 : > "$GC_LOG"
 PATH="${STUBDIR}:${PATH}" GC_CITY="$GC_CITY" bash -c "unset GC; source '$LIB'; session_id_for_ident 'gc__gap-analyst-rc-1'" >/dev/null 2>/dev/null
+assert_log_count 'session list --json' 1 "a caller that forgets to set \$GC still reaches gc session list"
+
+start_case "cv_session_route_handle: \$GC unset -> still invokes gc (defaults to \"gc\" on PATH), not a silent no-op"
+: > "$GC_LOG"
+PATH="${STUBDIR}:${PATH}" GC_CITY="$GC_CITY" bash -c "unset GC; source '$LIB'; cv_session_route_handle 'gc__gap-analyst-rc-1'" >/dev/null 2>/dev/null
 assert_log_count 'session list --json' 1 "a caller that forgets to set \$GC still reaches gc session list"
 
 start_case "first_alive_session_id_for_route: \$GC unset -> still invokes gc (defaults to \"gc\" on PATH), not a silent no-op"
@@ -1478,6 +1512,11 @@ SITE_TOML
   export STUB_CONVOY_STATUS_JSON_fk_convoygc_zsh='{"convoy":{"fields":{"target":"release/9.0"}}}'
   zsh_convoy_result="$(PATH="${STUBDIR}:${PATH}" zsh -c "unset GC; source '$LIB'; cv_convoy_target 'fk-convoygc-zsh'")"
   assert_eq "release/9.0" "$zsh_convoy_result" "under zsh: a caller that forgets to set \$GC still resolves the stacked-PR target, not empty"
+
+  start_case "cv_session_route_handle under zsh: \$GC unset -> still resolves via default \"gc\" on PATH, not a silent no-op (same local/subshell shape as its implementor_alive/session_id_for_ident siblings in this section)"
+  zsh_route_result="$(STUB_SESSION_LIST_JSON='{"sessions":[{"id":"rc-1","alias":"foundry-kc/gc.gap-analyst-1","name":"foundry-kc/gc.gap-analyst-1","session_name":"gc__gap-analyst-rc-1","template":"foundry-kc/gc.gap-analyst","state":"active"}]}' \
+    PATH="${STUBDIR}:${PATH}" GC_CITY="$GC_CITY" zsh -c "unset GC; source '$LIB'; cv_session_route_handle 'gc__gap-analyst-rc-1'")"
+  assert_eq "foundry-kc/gc.gap-analyst-1" "$zsh_route_result" "under zsh: a caller that forgets to set \$GC still resolves the rig-scoped route handle, not empty"
 fi
 
 echo
