@@ -27,7 +27,6 @@ justification as context.
 Severity — decide in this order:
 - **BLOCKING**: the diff forks an existing shared component instead of
   reusing it (a duplicate implementation becomes a second source of truth).
-- **LOW at minimum**: the drift is visible to users, or diverges from a
-  shared component.
-- **LOW by default**: every other drift in this checklist.
+- **LOW**: all other drift — whether visible to users, diverging from shared
+  components, or elsewhere in the checklist.
 {{ end }}

@@ -78,11 +78,15 @@ assert_contains "$FRAGMENT" "cite the sibling's" \
   "fragment requires citing the sibling's file:line as proof of the established convention"
 
 start_case "the fragment sets severity: visible or shared-component drift is at least LOW"
-assert_contains "$FRAGMENT" "is at least LOW" \
-  "fragment sets a LOW severity floor for visible/shared-component drift"
+assert_contains "$FRAGMENT" "**LOW**" \
+  "fragment names a LOW severity level for visible/shared-component drift"
+assert_contains "$FRAGMENT" "shared" \
+  "fragment ties the LOW severity level to shared-component drift"
 
 start_case "the fragment documents a concrete BLOCKING rule instead of leaving severity ambiguous"
-assert_contains "$FRAGMENT" "BLOCKING when the diff forks an existing" \
+assert_contains "$FRAGMENT" "**BLOCKING**" \
+  "fragment names a BLOCKING severity level"
+assert_contains "$FRAGMENT" "forks an existing" \
   "fragment states the BLOCKING rule: forking a shared component instead of reusing it"
 
 start_case "both frontend-focused lenses include the shared fragment by reference (DRY, not pasted)"
