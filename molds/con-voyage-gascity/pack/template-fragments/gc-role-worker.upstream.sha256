@@ -1,0 +1,16 @@
+# Provenance for gc-role-worker.template.md (fk-famif).
+#
+# Vendored byte-identical per the gascity-packs GC-METH-012 derived-pack
+# contract: every third-party agent prompt includes this fragment by
+# reference (`{{ template "gc-role-worker" . }}`) rather than hand-writing
+# its own claim section, and the pack carries an exact copy of the upstream
+# shared fragment so the two can never drift silently.
+#
+# source_repo: gascity-packs
+# source_path: gascity/roles/prompts/shared/gc-role-worker.md.tmpl
+# source_sha:  3b3b89f2011e06d84459aa7bea1552382f13930a (city.toml pin at vendor time)
+#
+# Re-vendor: fetch gascity-packs at the pinned sha, sha256 the source path
+# above, copy it verbatim over gc-role-worker.template.md, and update both
+# the hash below and source_sha above.
+924a121ebd6a1119cbf5029d977b54b4b0a70c31332a609ed22809776dd7d866  gc-role-worker.template.md
