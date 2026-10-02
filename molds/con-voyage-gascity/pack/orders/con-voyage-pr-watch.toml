@@ -28,6 +28,18 @@ description = "Drive GitHub PR monitoring: CI-failure repair beads + human-comme
 trigger = "cooldown"
 interval = "10m"
 exec = "$PACK_DIR/assets/scripts/con-voyage-pr-watch.sh"
+# timeout (fk-6belo): without an explicit override, exec orders default to
+# 300s (gc's Order.TimeoutOrDefault). A live incident showed the script's own
+# dolt/store calls (bd create, gc sling) can run slow enough under pool
+# contention to approach that default, and this script also fans out a
+# `gh pr view` + optional GraphQL thread fetch per actionable/open PR across
+# BOTH Part A and Part B in the same invocation — a kill mid-cycle landed a
+# repair bead created but never attached (see the PENDING-ATTACH SELF-HEAL
+# comment in the script, which now also recovers from this if it still
+# happens). 8m keeps a solid margin under the 10m cooldown interval (so a
+# slow run never overlaps the next one) while giving the script much more
+# room than the 300s default.
+timeout = "8m"
 
 # Author-scope the monitor explicitly (belt-and-suspenders over the script's
 # gh-login default). CV_PR_AUTHOR is the single GitHub login whose PRs this
