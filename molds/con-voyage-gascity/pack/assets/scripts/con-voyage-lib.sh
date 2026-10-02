@@ -1883,6 +1883,51 @@ cv_anchor_too_stale() {
   return 1
 }
 
+# cv_discard_stale_anchor_worktree DIR BRANCH_NAME — review con-voyage/fk-29ts8
+# iteration 3 BLOCKING-1/BLOCKING-3: the fix for a too-stale EXISTING_WORK_DIR
+# (DIR == DEFAULT_WORKTREE for a convoy's own anchor) must not just remove the
+# worktree directory — `git worktree remove` never deletes the branch ref, so
+# BRANCH_NAME survives at the stale commit and the downstream
+# `git worktree add --detach HEAD` + `cv-worktree-prep.sh ensure-branch`
+# sequence then finds that stale ref already pointing somewhere other than the
+# fresh detached HEAD and refuses to move it (`ensure-branch` `die`s), turning
+# "rebuild fresh" into "abort the whole build." Deleting the stale branch ref
+# here lets ensure-branch recreate it fresh, matching the prior-anchor path's
+# behavior (its branch never survives because it is never DEFAULT_WORKTREE's
+# own ref).
+#
+# Also surfaces (not silently discards) a dirty tree or an in-progress
+# rebase/merge in DIR before the force-remove: `git worktree remove --force`
+# bypasses git's normal refusal to touch a worktree with uncommitted state,
+# and this exact scenario (a too-stale anchor left mid an interrupted rebase)
+# has already happened once in this codebase (review-fix-summary.md,
+# iteration-2 apply pass) with zero observability.
+#
+# Returns 0 and removes both the worktree and BRANCH_NAME's ref on success.
+# Returns 1 (and leaves DIR in place) if `git worktree remove --force` fails —
+# the caller must treat that as fatal, same as before this helper existed.
+cv_discard_stale_anchor_worktree() {
+  local dir="$1" branch_name="$2"
+
+  local dirty_state=""
+  if [ -n "$(git -C "$dir" status --porcelain 2>/dev/null)" ]; then
+    dirty_state="uncommitted change(s)"
+  fi
+  if git -C "$dir" rev-parse -q --verify REBASE_HEAD >/dev/null 2>&1; then
+    dirty_state="${dirty_state:+${dirty_state}, }an in-progress rebase"
+  fi
+  if git -C "$dir" rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
+    dirty_state="${dirty_state:+${dirty_state}, }an in-progress merge"
+  fi
+  if [ -n "$dirty_state" ]; then
+    echo "cv-lib: cv_discard_stale_anchor_worktree: removing too-stale worktree ${dir} with ${dirty_state} — discarding them" >&2
+  fi
+
+  git worktree remove --force "$dir" || return 1
+  git branch -D "$branch_name" >/dev/null 2>&1 || true
+  return 0
+}
+
 # cv_dependency_outcome BEAD_ID DEP_TITLE — print the `gc.outcome` metadata
 # value of BEAD_ID's direct dependency whose `title` exactly matches
 # DEP_TITLE, or empty if no such dependency exists, it has no recorded
