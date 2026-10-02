@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.13.0](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.12.6...con-voyage-gascity-v0.13.0) (2026-10-02)
+
+
+### Features
+
+* **con-voyage:** add convention-drift check to frontend review lenses (fk-yhqwj) ([cfacc04](https://github.com/kriscoleman/foundry/commit/cfacc04285cd0f83e176a25edb1e5eb715b02298))
+
+
+### Bug Fixes
+
+* clarify convention-drift justified-deviation and severity rule (review fk-qdlo9) ([e977d63](https://github.com/kriscoleman/foundry/commit/e977d63a462622d57539be3f8f05b5fa2fb4463f))
+* dedupe convention-drift check into a shared template fragment (review fk-qdlo9) ([b40a5b0](https://github.com/kriscoleman/foundry/commit/b40a5b0f30af965ea3138755d4e90c8d943e3615))
+* resync convention-drift test needles to shipped fragment wording (review fk-lhjn3) ([56c86f4](https://github.com/kriscoleman/foundry/commit/56c86f40ff682ffa9a5e8deae68758afd7cfe675))
+
 ## [0.12.6](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.12.5...con-voyage-gascity-v0.12.6) (2026-10-02)
 
 
