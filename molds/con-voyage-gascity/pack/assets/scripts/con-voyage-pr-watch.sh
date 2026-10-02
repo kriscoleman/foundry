@@ -448,6 +448,47 @@ print(author + SEP + ("1" if skip_awaiting_human else "0"))
     tracked_open=1
   fi
 
+  # PENDING-ATTACH SELF-HEAL (fk-6belo): a bare repair bead whose `bd create`
+  # succeeded but whose `gc sling --on con-voyage-ci-repair` attach never ran
+  # (this script's own process killed mid-flight between the two calls — the
+  # live trigger was the order's exec timeout under dolt store contention,
+  # see con-voyage-pr-watch.toml's new `timeout` override) is recorded in a
+  # SEPARATE side-channel marker file (never the main per-PR .state record —
+  # that file is shared with con-voyage-repair-watchdog.sh, which treats
+  # last_handled_state as a real failure_kind and would feed a garbage value
+  # straight into the ci-repair formula if it ever saw a sentinel there) the
+  # moment bd create succeeds, BEFORE the sling is attempted (see below), so a
+  # kill at any point after that still leaves a trail. Such a bead passes the
+  # tracked_open check above (it's open), but treating it as a steady-state
+  # tracked repair would be wrong: the tracked_open branch below only
+  # refreshes title/metadata on an ALREADY-attached bead, which does nothing
+  # for one that was never attached in the first place, leaving it bare
+  # forever (the live incident: vandoor#10585's va-fft3 sat bare 15+ min
+  # until a human hand-slung it). Override tracked_open so this falls
+  # through to the dispatch branch below, and remember the bare bead id so
+  # that branch retries the SAME bead instead of minting a fresh one (which
+  # would orphan the first bare bead permanently and could runaway-mint one
+  # more per cycle under sustained contention — the exact fk-zvkmd failure
+  # mode this pairs with).
+  reattach_bead_id=""
+  pending_attach_file="${CV_STATE_DIR}/${dedup_key}.pending-attach"
+  if [ -f "$pending_attach_file" ]; then
+    pending_bead_id="$(cat "$pending_attach_file" 2>/dev/null || true)"
+    pending_status=""
+    if [ -n "${pending_bead_id// /}" ]; then
+      IFS=$'\x1f' read -r pending_status _ <<< "$(bead_status "$pending_bead_id" assignee)"
+    fi
+    if [ -n "${pending_bead_id// /}" ] && [ -n "$pending_status" ] && [ "$pending_status" != "closed" ]; then
+      tracked_open=0
+      reattach_bead_id="$pending_bead_id"
+    else
+      # The bare bead is gone/closed already (handled out of band, or a
+      # previous run's rollback raced this marker write) — stale marker,
+      # drop it so it never wedges a future cycle on a dead id.
+      rm -f "$pending_attach_file"
+    fi
+  fi
+
   if [ "$tracked_open" -eq 1 ]; then
     new_last_state="$st_last_state"
     if [ "$st_last_state" = "$a_failure_kind" ]; then
@@ -579,34 +620,60 @@ print(author + SEP + ("1" if skip_awaiting_human else "0"))
     # — mirroring the empty-a_route guard above — we skip the fallback
     # mint with a WARNING rather than mis-home a bead in the city store
     # that could never route.
-    a_rig="${a_route%%/*}"
-    if [ "$a_rig" = "$a_route" ] || [ -z "$a_rig" ]; then
-      echo "con-voyage-pr-watch: [PART A] WARNING: ${a_full}#${a_num} repair_route '${a_route}' has no '<rig>/' prefix; cannot derive a target rig; skipping fallback dispatch (would mis-home the repair bead and fail cross-rig routing)" >&2
+    repair_bead_id=""
+    if [ -n "$reattach_bead_id" ]; then
+      # SELF-HEAL RE-ATTACH (fk-6belo): reuse the already-minted bare bead
+      # instead of creating a new one — see the PENDING-ATTACH SELF-HEAL
+      # comment above. No --rig derivation or bd create needed; the bead
+      # already exists in the right rig (it was minted there last cycle).
+      repair_bead_id="$reattach_bead_id"
+      echo "con-voyage-pr-watch: [PART A] ${a_full}#${a_num}: re-attempting ci-repair attach on previously-bare bead ${repair_bead_id} (self-heal, dedup: ${dedup_key})"
     else
-      # v2-formula mint (gc 1.4.1): con-voyage-ci-repair is a v2 workflow formula
-      # that references {{convoy_id}} (the repair bead id). Such a formula CANNOT
-      # be inline-created via `gc sling --on <formula> --title <text>` — gc rejects
-      # that with "inline text requires explicit target", because {{convoy_id}}
-      # has no bead to resolve against. The required form is:
-      #   gc sling <target> <BEAD> --on <formula> --var ...
-      # where <BEAD> is a PRE-CREATED bead. So we create the repair bead first,
-      # capture its id, then attach the formula to it and route it. {{convoy_id}}
-      # then resolves to that bead id inside the ci-repair prompt.
-      #
-      # --rig "$a_rig" is MANDATORY (see CROSS-RIG MINT GUARD above): it mints the
-      # bead in the target agent's rig so its prefix matches the sling target. With
-      # NO --rig the bead lands in the CITY store (prefix "rc") and the subsequent
-      # sling to a rig agent fails the cross-rig gate — the runtime bug this fixes.
-      # (--rig is a TOP-LEVEL gc flag; it must precede the `bd` subcommand.)
-      repair_bead_id=$("$GC" --city "$GC_CITY" --rig "$a_rig" bd create "$repair_title" \
-        --priority 1 \
-        --silent 2>/dev/null || true)
+      a_rig="${a_route%%/*}"
+      if [ "$a_rig" = "$a_route" ] || [ -z "$a_rig" ]; then
+        echo "con-voyage-pr-watch: [PART A] WARNING: ${a_full}#${a_num} repair_route '${a_route}' has no '<rig>/' prefix; cannot derive a target rig; skipping fallback dispatch (would mis-home the repair bead and fail cross-rig routing)" >&2
+      else
+        # v2-formula mint (gc 1.4.1): con-voyage-ci-repair is a v2 workflow formula
+        # that references {{convoy_id}} (the repair bead id). Such a formula CANNOT
+        # be inline-created via `gc sling --on <formula> --title <text>` — gc rejects
+        # that with "inline text requires explicit target", because {{convoy_id}}
+        # has no bead to resolve against. The required form is:
+        #   gc sling <target> <BEAD> --on <formula> --var ...
+        # where <BEAD> is a PRE-CREATED bead. So we create the repair bead first,
+        # capture its id, then attach the formula to it and route it. {{convoy_id}}
+        # then resolves to that bead id inside the ci-repair prompt.
+        #
+        # --rig "$a_rig" is MANDATORY (see CROSS-RIG MINT GUARD above): it mints the
+        # bead in the target agent's rig so its prefix matches the sling target. With
+        # NO --rig the bead lands in the CITY store (prefix "rc") and the subsequent
+        # sling to a rig agent fails the cross-rig gate — the runtime bug this fixes.
+        # (--rig is a TOP-LEVEL gc flag; it must precede the `bd` subcommand.)
+        repair_bead_id=$("$GC" --city "$GC_CITY" --rig "$a_rig" bd create "$repair_title" \
+          --priority 1 \
+          --silent 2>/dev/null || true)
 
-      if [ -z "${repair_bead_id// /}" ]; then
-        echo "con-voyage-pr-watch: [PART A] WARNING: failed to create repair bead for ${a_full}#${a_num}; will retry next cycle" >&2
-        mint_fail_count=$((mint_fail_count + 1))
-        printf '%s\n' "$mint_fail_count" > "$mint_fail_file"
-      elif "$GC" --city "$GC_CITY" sling "$a_route" "$repair_bead_id" \
+        if [ -z "${repair_bead_id// /}" ]; then
+          echo "con-voyage-pr-watch: [PART A] WARNING: failed to create repair bead for ${a_full}#${a_num}; will retry next cycle" >&2
+          mint_fail_count=$((mint_fail_count + 1))
+          printf '%s\n' "$mint_fail_count" > "$mint_fail_file"
+        else
+          # PENDING-ATTACH MARKER (fk-6belo): record the bare bead BEFORE
+          # attempting the sling that attaches its real content, in the
+          # SIDE-CHANNEL marker file (not the main per-PR .state record —
+          # see the PENDING-ATTACH SELF-HEAL comment above for why). If this
+          # process is killed between here and the sling's exit status (the
+          # live trigger: the order's exec timeout under dolt store
+          # contention — see con-voyage-pr-watch.toml), the next cycle's
+          # PENDING-ATTACH SELF-HEAL check above finds this marker and
+          # retries the attach on this SAME bead instead of minting a
+          # fresh one and leaving this one bare forever.
+          printf '%s\n' "$repair_bead_id" > "$pending_attach_file"
+        fi
+      fi
+    fi
+
+    if [ -n "${repair_bead_id// /}" ]; then
+      if "$GC" --city "$GC_CITY" sling "$a_route" "$repair_bead_id" \
         --on con-voyage-ci-repair \
         --var "title=${a_title}" \
         --var "pr=${a_num}" \
@@ -626,6 +693,10 @@ print(author + SEP + ("1" if skip_awaiting_human else "0"))
         # failure (if this bead's own dispatch later stalls) starts a fresh
         # cap budget rather than inheriting an unrelated earlier streak.
         rm -f "$mint_fail_file" "$mint_escalated_file"
+        # The bead is now genuinely attached — the pending-attach marker (if
+        # any; present on a self-heal re-attach, absent on a one-shot success)
+        # no longer applies.
+        rm -f "$pending_attach_file"
       else
         echo "con-voyage-pr-watch: [PART A] WARNING: repair-bead sling failed for ${a_full}#${a_num} (bead ${repair_bead_id}); will retry next cycle" >&2
         mint_fail_count=$((mint_fail_count + 1))
@@ -645,6 +716,11 @@ print(author + SEP + ("1" if skip_awaiting_human else "0"))
         "$GC" bd close "$repair_bead_id" \
           --reason "rollback: sling to ${a_route} failed for ${a_full}#${a_num}, bead never received its real content" \
           2>&1 || echo "con-voyage-pr-watch: [PART A] WARNING: rollback close of orphaned bead ${repair_bead_id} failed for ${a_full}#${a_num}; it may be left bare" >&2
+        # Clear the pending-attach marker (if any — written after bd create
+        # on a fresh mint, or pre-existing on a self-heal retry) now that the
+        # bead it pointed at is rolled back: a future cycle should see a
+        # clean slate and retry fresh, not keep pointing at a dead bead id.
+        rm -f "$pending_attach_file"
         # Non-fatal: continue to next PR / Part B.
       fi
     fi
@@ -778,9 +854,12 @@ for r in data.get('results', []):
       # values that do NOT match the design doc's `strings`-recovered guess:
       # real values seen were "conflicted" (not "dirty") and "failed" (not in
       # the original guessed set at all) alongside the expected "blocked".
-      # So: TRUST gc's own failure_kind field when present — it is
-      # already correct — and only fall back to deriving one from
-      # state/failed_checks (first-match order below) when gc omits it
+      # So: TRUST gc's own failure_kind field when present, EXCEPT that a
+      # non-empty failed_checks[] always overrides a gc-reported "blocked"
+      # (see fk-6belo precedence note on the classifier below — a live
+      # failing-required-check PR was misclassified "blocked" this way and
+      # left unrepaired). Fall back to deriving one from state/failed_checks
+      # (first-match order below) only when gc omits failure_kind entirely
       # (e.g. an older gc version).
       # shellcheck disable=SC2016
       _PY_CLASSIFY_PR='
@@ -800,10 +879,21 @@ gc_failure_kind = d.get("failure_kind", "") or ""
 
 VALID_KINDS = {"checks_failed", "merge_conflict", "behind_base", "blocked"}
 
-if gc_failure_kind in VALID_KINDS:
-    failure_kind = gc_failure_kind
-elif failed_checks:
+# PRECEDENCE (fk-6belo): a non-empty failed_checks[] ALWAYS wins, even over
+# a gc-reported failure_kind="blocked" -- a real check failure is CI-repair
+# work regardless of mergeStateStatus. Live incident: vandoor#10585 had 2
+# FAILING required checks (depot integration-test + gate) but the gc field
+# said "blocked" (mergeStateStatus=BLOCKED dominates there), so this monitor
+# misclassified a checks_failed PR as a review-escalation ("blocked"), which
+# then risked tripping the C6 "awaiting human review" skip below on a PR
+# that was actually failing CI. The gc-reported failure_kind is still
+# trusted ahead of the local state/failed_checks fallback for every OTHER
+# case (it carries richer signal than these two fields alone) -- only
+# "blocked" is downgraded, and only when failed_checks proves it wrong.
+if failed_checks:
     failure_kind = "checks_failed"
+elif gc_failure_kind in VALID_KINDS:
+    failure_kind = gc_failure_kind
 elif state == "failed":
     failure_kind = "checks_failed"
 elif state in ("dirty", "conflicted"):
