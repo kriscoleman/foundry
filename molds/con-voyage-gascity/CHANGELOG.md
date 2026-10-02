@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.12.4](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.12.3...con-voyage-gascity-v0.12.4) (2026-10-02)
+
+
+### Bug Fixes
+
+* bound and verify sync-conflict terminal mail/close in main.build.md (review fk-c24ah) ([b6ed626](https://github.com/kriscoleman/foundry/commit/b6ed62620587642678bb63a2c82822d79db4a795))
+* **con-voyage:** add cv_session_route_handle unit tests, fix stale publish.md comment (review fk-glv1a) ([b50b542](https://github.com/kriscoleman/foundry/commit/b50b54229c2d33f1610e34c165df46f675468688))
+* **con-voyage:** build step fails fast on deterministic sync-to-base conflict (fk-hcxre) ([4d4bd9b](https://github.com/kriscoleman/foundry/commit/4d4bd9b9506b773e6ee216f99bbe6458636cc60a))
+* **con-voyage:** pr-watch routes human feedback to the PR's own implementor (fk-krsvc) ([c2f8800](https://github.com/kriscoleman/foundry/commit/c2f8800c4767cba43e7eca1370a8fbc3c8d2cf3b))
+* **con-voyage:** prepare-build must not adopt a stale source-anchor branch (fk-2klp2) ([3de7d84](https://github.com/kriscoleman/foundry/commit/3de7d8428f97105494d2a2be826a8c8bfb94b8a3))
+* drop stale anchor branch ref and warn on dirty discard (review con-voyage/fk-29ts8) ([5ddbcc5](https://github.com/kriscoleman/foundry/commit/5ddbcc5557e0c2aa4b33d8781d19b37be4690c04))
+* prepare-build must create worktree on fresh_build=true (review con-voyage/fk-29ts8) ([ab0044c](https://github.com/kriscoleman/foundry/commit/ab0044c8797f1b4bf39b1953f6ec361750458dec))
+* resolve implementor_session from a dedicated key, add pr-watch liveness fallback (review fk-hbsmk) ([e46be80](https://github.com/kriscoleman/foundry/commit/e46be80dd9e2533dc05c86a33e236ec0cde26f1b))
+* stamp implementor_session with a gc sling-resolvable rig-scoped handle (review fk-pbadx) ([19c9b50](https://github.com/kriscoleman/foundry/commit/19c9b509838199532a8850c1a8873c636b27bed5))
+* too-stale EXISTING_WORK_DIR must rebuild fresh, not reuse in place (review con-voyage/fk-29ts8) ([db5c0fe](https://github.com/kriscoleman/foundry/commit/db5c0feb4e4aaef9399fa21b0f91c5bceb585332))
+* write IMPLEMENTOR in bare gc.session_name form, not rig-prefixed (review fk-hbsmk) ([ca47f2d](https://github.com/kriscoleman/foundry/commit/ca47f2da4c6d758a74b18fdf7e82bf2971cc6490))
+
 ## [0.12.3](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.12.2...con-voyage-gascity-v0.12.3) (2026-09-30)
 
 
