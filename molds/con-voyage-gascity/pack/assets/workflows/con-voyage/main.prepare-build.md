@@ -97,6 +97,18 @@ elif [ -n "$EXISTING_WORK_DIR" ] && [ -d "$EXISTING_WORK_DIR" ] && "$CV_WT_PREP"
     STALE_SHA="$(git -C "$EXISTING_WORK_DIR" rev-parse --short HEAD 2>/dev/null)"
     STALE_ANCHOR="${STALE_BRANCH:-detached}@${STALE_SHA:-unknown}"
     echo "con-voyage prepare-build: source anchor ${CONVOY_ID}'s existing branch at ${EXISTING_WORK_DIR} (${STALE_ANCHOR}, ${STALE_INFO}) is too stale to short-circuit onto — building fresh from the current base instead"
+
+    # BLOCKING-1 (review con-voyage/fk-29ts8 iteration 2): EXISTING_WORK_DIR
+    # is DEFAULT_WORKTREE for this convoy's own anchor, so leaving it on disk
+    # here means the create/reuse block below finds a dir already present and
+    # reuses it in place instead of building fresh — the exact stale
+    # branch/HEAD this guard exists to reject survives, and the later
+    # cv_sync_worktree_to_base rebase then conflicts on it. Remove it so the
+    # worktree-creation block genuinely recreates it `--detach HEAD` from the
+    # current base, the same fresh outcome the prior-anchor path already gets
+    # for free because its PRIOR_ANCHOR_DIR never equals DEFAULT_WORKTREE.
+    git worktree remove --force "$EXISTING_WORK_DIR" \
+      || { echo "con-voyage prepare-build: failed to remove too-stale worktree ${EXISTING_WORK_DIR} — refusing to reuse it in place" >&2; exit 1; }
   else
     # Pre-built branch (backward-compat path): HEAD is already ahead of base
     # and not too stale to adopt. Reuse it as-is; the build step
