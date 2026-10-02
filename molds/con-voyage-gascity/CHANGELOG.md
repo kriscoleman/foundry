@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.1](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.13.0...con-voyage-gascity-v0.13.1) (2026-10-02)
+
+
+### Bug Fixes
+
+* **con-voyage:** tear down the graph.v2 workflow root on PR finalize ([2c6be44](https://github.com/kriscoleman/foundry/commit/2c6be44aa2b2326830eadeaa378b0d3d26370b34))
+
 ## [0.13.0](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.12.6...con-voyage-gascity-v0.13.0) (2026-10-02)
 
 
