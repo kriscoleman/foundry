@@ -1581,6 +1581,68 @@ close_if_open() {
   return 0
 }
 
+# cv_close_workflow_root ROOT_BEAD_ID REASON — full teardown of a graph.v2
+# workflow's root bead and every other still-OPEN bead tagged with its
+# `gc.root_bead_id` (fk-bkz94: con-voyage-finalize used to close only the
+# dashboard-facing work bead + synthetic input convoy on PR land — three
+# SEPARATE beads from the graph.v2 compiled root the con-voyage formula
+# actually runs under. The root stayed in_progress forever and its review
+# loop kept dispatching fresh synthesis/apply-review-findings rounds against
+# an already-merged PR, because nothing ever told that workflow the PR had
+# landed).
+#
+# Sweeps descendants FIRST (best-effort: a hiccup here must never block
+# retrying the root-bead close below, and a lane/step bead another lens may
+# still be mid-task on is left alone by close_if_open's own pin/gate check —
+# same safety net every other FORCE close in this pack relies on), then
+# closes the root bead itself.
+#
+# CV_CLOSE_RC reflects ONLY the root bead's own close outcome — the gate a
+# caller checks before treating this workflow as fully torn down and
+# discarding its retry record, mirroring close_if_open's own CV_CLOSE_RC
+# contract. The descendant sweep's own failures are logged, not gated: an
+# orphaned lane bead this sweep could not close must not block the root
+# bead (and therefore the caller's finalize record) from ever completing.
+cv_close_workflow_root() {
+  local root_id="$1" reason="$2"
+  CV_CLOSE_RC=0
+  [ -n "${root_id// /}" ] || return 0
+  local gc_bin="${GC:-gc}"
+
+  local list_json
+  list_json=$("$gc_bin" bd list --status open --metadata-field "gc.root_bead_id=${root_id}" --json --limit 0 2>/dev/null) || list_json=""
+  if [ -n "$list_json" ]; then
+    local ids
+    ids=$(printf '%s' "$list_json" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    data = []
+if not isinstance(data, list):
+    data = []
+for item in data:
+    if isinstance(item, dict) and item.get('id'):
+        print(item['id'])
+" 2>/dev/null) || ids=""
+    if [ -n "${ids// /}" ]; then
+      while IFS= read -r descendant_id; do
+        [ -n "${descendant_id// /}" ] || continue
+        close_if_open "$descendant_id" "$reason" "" "open" 1
+        if [ "$CV_CLOSE_RC" -ne 0 ]; then
+          echo "cv_close_workflow_root: WARNING: could not close descendant ${descendant_id} of root ${root_id} (continuing sweep)" >&2
+        fi
+      done <<< "$ids"
+    fi
+  else
+    echo "cv_close_workflow_root: WARNING: could not list open descendants of root ${root_id} (bd list failed); sweeping root bead only" >&2
+  fi
+
+  # Close the root bead itself LAST — CV_CLOSE_RC from here on is what the
+  # caller's completion gate reads, independent of the descendant sweep above.
+  close_if_open "$root_id" "$reason" "" "" 1
+}
+
 # ===========================================================================
 # GLOBAL BEAD-STATE-EVENT HELPERS (fk-7mw7 FIX-A)
 #
@@ -2297,6 +2359,7 @@ finalize_read() {
   FS_PR_AUTHOR=""
   FS_IMPLEMENTOR=""
   FS_LAST_PHASE=""
+  FS_ROOT_BEAD_ID=""
   [ -f "$f" ] || return 0
   local k v
   while IFS='=' read -r k v || [ -n "$k" ]; do
@@ -2308,15 +2371,25 @@ finalize_read() {
       pr_author) FS_PR_AUTHOR="$v" ;;
       implementor_session) FS_IMPLEMENTOR="$v" ;;
       last_phase) FS_LAST_PHASE="$v" ;;
+      root_bead_id) FS_ROOT_BEAD_ID="$v" ;;
     esac
   done < "$f"
 }
 
 # finalize_write DEDUP_KEY WORK_BEAD CONVOY_ID REPO_FULL PR_NUMBER PR_AUTHOR
-#                IMPLEMENTOR LAST_PHASE
+#                IMPLEMENTOR LAST_PHASE [ROOT_BEAD_ID]
+#
+# ROOT_BEAD_ID (fk-bkz94) is the graph.v2 compiled root bead the con-voyage
+# formula actually runs under — a THIRD bead distinct from WORK_BEAD and
+# CONVOY_ID (see cv_close_workflow_root's header comment above). Optional and
+# appended last so every pre-existing positional call site keeps working
+# unchanged; empty means "unresolved/older record", in which case the
+# finalize monitor skips the root-bead teardown entirely (unchanged prior
+# behavior) rather than guessing an id.
 finalize_write() {
   local dedup_key="$1" work_bead="$2" convoy_id="$3" repo_full="$4"
   local pr_number="$5" pr_author="$6" implementor="${7:-}" last_phase="${8:-}"
+  local root_bead_id="${9:-}"
   local f="${CV_STATE_DIR}/${dedup_key}.finalize"
   {
     printf 'work_bead=%s\n' "$work_bead"
@@ -2326,6 +2399,7 @@ finalize_write() {
     printf 'pr_author=%s\n' "$pr_author"
     printf 'implementor_session=%s\n' "$implementor"
     printf 'last_phase=%s\n' "$last_phase"
+    printf 'root_bead_id=%s\n' "$root_bead_id"
   } > "$f"
 }
 

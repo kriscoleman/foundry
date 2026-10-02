@@ -234,6 +234,29 @@ case "$sub" in
         fi
         exit 0
       fi
+      meta_field=""
+      j=0
+      while [ "$j" -lt "${#args[@]}" ]; do
+        if [ "${args[$j]}" = "--metadata-field" ]; then
+          meta_field="${args[$((j+1))]:-}"
+        fi
+        j=$((j+1))
+      done
+      if [ -n "$meta_field" ]; then
+        # STUB_ROOT_SWEEP_MAP: newline rows "<metadata_field>|<id1>,<id2>,..."
+        # (fk-bkz94: cv_close_workflow_root's `bd list --status open
+        # --metadata-field gc.root_bead_id=<root>` descendant sweep call).
+        match_ids=""
+        if [ -n "${STUB_ROOT_SWEEP_MAP:-}" ]; then
+          match_ids="$(printf '%s\n' "$STUB_ROOT_SWEEP_MAP" | awk -F'|' -v f="$meta_field" '$1==f{print $2; exit}')"
+        fi
+        if [ -n "$match_ids" ]; then
+          printf '%s' "$match_ids" | tr ',' '\n' | awk 'NF{printf "{\"id\":\"%s\"},", $0}' | sed 's/,$//' | awk '{printf "[%s]", $0}'
+        else
+          printf '[]'
+        fi
+        exit 0
+      fi
       if [ -n "${STUB_BDPINNED_IDS:-}" ]; then
         printf '%s\n' "$STUB_BDPINNED_IDS" | awk 'NF{printf "{\"id\":\"%s\"},", $0}' | sed 's/,$//' | awk '{printf "[%s]", $0}'
       else
@@ -302,7 +325,7 @@ fs_field() {
   awk -F= -v k="$field" '$1==k{ sub(/^[^=]*=/, ""); print; exit }' "$f"
 }
 
-# write_finalize DIR KEY work_bead convoy_id repo_full pr_number pr_author implementor last_phase
+# write_finalize DIR KEY work_bead convoy_id repo_full pr_number pr_author implementor last_phase [root_bead_id]
 write_finalize() {
   local dir="$1" key="$2"
   {
@@ -313,6 +336,7 @@ write_finalize() {
     printf 'pr_author=%s\n' "${7}"
     printf 'implementor_session=%s\n' "${8}"
     printf 'last_phase=%s\n' "${9:-}"
+    printf 'root_bead_id=%s\n' "${10:-}"
   } > "${dir}/${key}.finalize"
 }
 
@@ -1074,6 +1098,69 @@ run_script "${DEFAULT_ENV[@]}" \
   STUB_TITLE_MATCH_MAP="Repair GitHub PR kriscoleman/foundry#110 (|rw-orphan-4"
 assert_eq "0" "$RC" "script exits 0"
 assert_log_count "$GC_LOG" 'bd close rw-orphan-4 .*superseded: PR #110 merged' 1 "orphan repair bead closes from the .finalize loop's own title sweep"
+
+# ===========================================================================
+# CASE 38 — fk-bkz94: a record WITH root_bead_id tears down the graph.v2
+#   workflow root too, plus every other open bead tracked under that root
+#   (the review-loop lane/step orphans a stalled loop leaves behind) — not
+#   just the work bead and convoy.
+# ===========================================================================
+start_case "38: merged PR with root_bead_id tears down workflow root + its open descendants"
+setup_case_env "38"
+write_finalize "$STATE_DIR" "cv-finalize-kriscoleman-foundry-120" \
+  "fk-w120" "fk-c120" "kriscoleman/foundry" "120" "kriscoleman" "foundry/impl-30" "awaiting_merge" \
+  "fk-root120"
+run_script "${DEFAULT_ENV[@]}" \
+  STUB_PR_MAP="kriscoleman/foundry|120|MERGED|2026-10-02T10:00:00Z|2026-10-02T10:00:00Z|||" \
+  STUB_BDSHOW_MAP=$'fk-w120|in_progress\nfk-c120|open\nfk-root120|in_progress' \
+  STUB_ROOT_SWEEP_MAP="gc.root_bead_id=fk-root120|fk-lane1,fk-lane2"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd close fk-w120 .*landed: PR #120 merged' 1 "work bead closed"
+assert_log_count "$GC_LOG" 'bd close fk-c120' 1 "convoy closed"
+assert_log_count "$GC_LOG" 'bd close fk-lane1 .*con-voyage finalized: landed: PR #120 merged' 1 "orphaned lane 1 closed via root sweep"
+assert_log_count "$GC_LOG" 'bd close fk-lane2 .*con-voyage finalized: landed: PR #120 merged' 1 "orphaned lane 2 closed via root sweep"
+assert_log_count "$GC_LOG" 'bd close fk-root120 .*con-voyage finalized: landed: PR #120 merged' 1 "workflow root itself closed"
+assert_file_absent "${STATE_DIR}/cv-finalize-kriscoleman-foundry-120.finalize" "finalize record removed once root + descendants are all closed"
+
+# ===========================================================================
+# CASE 39 — fk-bkz94: the root bead itself still refuses to close even with
+#   --force (a real human pin/gate, not the routine assignee mismatch) —
+#   the finalize record must be KEPT for retry even though the work bead and
+#   convoy both closed fine, exactly like an unresolved work-bead/convoy close
+#   already does.
+# ===========================================================================
+start_case "39: root bead close still fails -> finalize record kept for retry"
+setup_case_env "39"
+write_finalize "$STATE_DIR" "cv-finalize-kriscoleman-foundry-121" \
+  "fk-w121" "fk-c121" "kriscoleman/foundry" "121" "kriscoleman" "foundry/impl-31" "awaiting_merge" \
+  "fk-root121"
+run_script "${DEFAULT_ENV[@]}" \
+  STUB_PR_MAP="kriscoleman/foundry|121|MERGED|2026-10-02T11:00:00Z|2026-10-02T11:00:00Z|||" \
+  STUB_BDSHOW_MAP=$'fk-w121|in_progress\nfk-c121|open\nfk-root121|in_progress' \
+  STUB_ROOT_SWEEP_MAP="gc.root_bead_id=fk-root121|" \
+  STUB_BDCLOSE_FAIL_IDS="fk-root121"
+assert_eq "0" "$RC" "script still exits 0 (a stuck close is reported, not fatal)"
+assert_log_count "$GC_LOG" 'bd close fk-w121' 1 "work bead still closed"
+assert_log_count "$GC_LOG" 'bd close fk-c121' 1 "convoy still closed"
+assert_file_present "${STATE_DIR}/cv-finalize-kriscoleman-foundry-121.finalize" "finalize record KEPT — root bead close failed"
+assert_log_count "$GC_LOG" 'mail send mayor' 1 "mayor escalated about the stuck root-bead close"
+assert_log_count "$GC_LOG" 'workflow root fk-root121' 1 "escalation mail names the stuck root bead"
+
+# ===========================================================================
+# CASE 40 — backward compatibility: an older record written before
+#   root_bead_id existed (empty field) behaves EXACTLY as before — no
+#   bd list --metadata-field sweep call at all, record removed normally.
+# ===========================================================================
+start_case "40: record with no root_bead_id -> unchanged prior behavior, no sweep call"
+setup_case_env "40"
+write_finalize "$STATE_DIR" "cv-finalize-kriscoleman-foundry-122" \
+  "fk-w122" "fk-c122" "kriscoleman/foundry" "122" "kriscoleman" "foundry/impl-32" "awaiting_merge"
+run_script "${DEFAULT_ENV[@]}" \
+  STUB_PR_MAP="kriscoleman/foundry|122|MERGED|2026-10-02T12:00:00Z|2026-10-02T12:00:00Z|||" \
+  STUB_BDSHOW_MAP=$'fk-w122|in_progress\nfk-c122|open'
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" '\-\-metadata-field' 0 "no root-bead sweep attempted without a root_bead_id"
+assert_file_absent "${STATE_DIR}/cv-finalize-kriscoleman-foundry-122.finalize" "finalize record removed as before"
 
 # ===========================================================================
 # Summary

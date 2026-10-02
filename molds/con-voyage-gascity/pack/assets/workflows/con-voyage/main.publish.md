@@ -304,6 +304,11 @@ gc bd set-state "$WORK_BEAD" cv=awaiting_merge --reason "con-voyage: PR opened, 
 #    the ONLY reliable work-bead<->PR map for a clean, review-approved PR (the
 #    repair .state records only exist for PRs with a CI failure).
 #
+#    root_bead_id=$ROOT_ID (fk-bkz94) lets con-voyage-finalize tear down the
+#    graph.v2 workflow root this PR's con-voyage ran under on PR land, not
+#    just this bookkeeping work bead/convoy — without it, the workflow root
+#    (and its review loop) stays in_progress forever after a merge/close.
+#
 #    Resolve the state dir's default by calling con-voyage-lib.sh's
 #    cv_default_state_dir() (fk-mr07) instead of hand-copying its
 #    GC_RIG_ROOT / .beads-walkup / GC_CITY-fallback algorithm inline: GC_CITY
@@ -331,6 +336,7 @@ finalize_key="cv-finalize-${owner}-${repo}-${PR_NUMBER}"
   printf 'pr_author=%s\n' "$PR_AUTHOR"
   printf 'implementor_session=%s\n' "$IMPLEMENTOR"
   printf 'last_phase=%s\n' "awaiting_merge"
+  printf 'root_bead_id=%s\n' "$ROOT_ID"
 } > "${CV_STATE_DIR}/${finalize_key}.finalize"
 echo "con-voyage publish: armed finalize monitor for ${REPO_FULL}#${PR_NUMBER} -> work bead ${WORK_BEAD}"
 ```
