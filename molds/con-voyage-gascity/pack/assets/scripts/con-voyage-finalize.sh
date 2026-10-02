@@ -41,14 +41,23 @@
 #          the sole owner of a work bead's lifecycle once its PR is terminal)
 #          ("landed: PR #N merged" | "abandoned: PR #N closed without merge")
 #        - close the con-voyage convoy (convoy_id) if still open, also forced
+#        - tear down the graph.v2 workflow ROOT this PR's con-voyage ran
+#          under (root_bead_id), if the record has one, PLUS every other
+#          still-open bead tagged with that same gc.root_bead_id (fk-bkz94:
+#          the root is a THIRD bead, distinct from the work bead and convoy
+#          above — without this, a still-in_progress root kept its review
+#          loop dispatching fresh synthesis/apply-review-findings rounds
+#          against an already-landed PR; see cv_close_workflow_root in
+#          con-voyage-lib.sh)
 #        - RELEASE the long-lived implementor (best-effort mail; this monitor
 #          never force-kills a session — see the release note below)
 #        - remove the ".finalize" record (its job is done)
 #      All idempotent: a re-poll after the record is gone is a clean no-op, and
-#      re-closing an already-closed bead/convoy is guarded by close_if_open. A
-#      close that STILL fails even with --force mails CV_ESCALATE_TARGET once
-#      (deduped via a sibling ".mayor-notified" marker) and keeps the record
-#      for retry — see the ".finalize" loop's tail below.
+#      re-closing an already-closed bead/convoy/root is guarded by
+#      close_if_open. A close that STILL fails even with --force mails
+#      CV_ESCALATE_TARGET once (deduped via a sibling ".mayor-notified"
+#      marker) and keeps the record for retry — see the ".finalize" loop's
+#      tail below.
 #   4. Still OPEN: reflect the PR's live phase on the work bead as a `cv=`
 #      dimension label so the dashboard shows where the PR is — `awaiting_merge`
 #      when clean, `repairing` when CI is red / a rebase is needed. Idempotent
@@ -302,7 +311,7 @@ for CV_STATE_DIR in "${CV_STATE_DIRS_ALL[@]}"; do
           echo "con-voyage-finalize: ${label} still OPEN — phase ${FS_LAST_PHASE:-<none>} -> ${live_phase} on work bead ${FS_WORK_BEAD}"
           set_work_bead_phase "$FS_WORK_BEAD" "$live_phase"
           finalize_write "$dedup_key" "$FS_WORK_BEAD" "$FS_CONVOY_ID" "$FS_REPO_FULL" \
-            "$FS_PR_NUMBER" "$FS_PR_AUTHOR" "$FS_IMPLEMENTOR" "$live_phase"
+            "$FS_PR_NUMBER" "$FS_PR_AUTHOR" "$FS_IMPLEMENTOR" "$live_phase" "$FS_ROOT_BEAD_ID"
         else
           echo "con-voyage-finalize: OK ${label} — still OPEN, phase unchanged (${FS_LAST_PHASE:-<none>})"
         fi
@@ -355,6 +364,20 @@ for CV_STATE_DIR in "${CV_STATE_DIRS_ALL[@]}"; do
       convoy_close_rc="$CV_CLOSE_RC"
     fi
 
+    # 2b. Tear down the graph.v2 workflow ROOT this PR's con-voyage ran under,
+    #     if the record carries one (fk-bkz94: an older record written before
+    #     this field existed has none — skip, unchanged prior behavior). The
+    #     root is a THIRD bead, distinct from the work bead and convoy above:
+    #     closing only those two left the actual review-loop workflow
+    #     in_progress forever, free to keep dispatching synthesis/apply-
+    #     review-findings rounds against a PR that already landed. See
+    #     cv_close_workflow_root's header comment in con-voyage-lib.sh.
+    root_close_rc=0
+    if [ -n "${FS_ROOT_BEAD_ID// /}" ]; then
+      cv_close_workflow_root "$FS_ROOT_BEAD_ID" "con-voyage finalized: ${reason}"
+      root_close_rc="$CV_CLOSE_RC"
+    fi
+
     # 3. Release the long-lived implementor (best-effort mail). This monitor
     #    NEVER force-kills a session: the implementor may be shared or mid-task on
     #    unrelated work, and we cannot prove exclusive ownership from a finalize
@@ -380,11 +403,11 @@ for CV_STATE_DIR in "${CV_STATE_DIRS_ALL[@]}"; do
     #    so the next cycle retries close_if_open against the still-open bead(s);
     #    re-running a close that already succeeded is a safe no-op. Do this LAST
     #    so a crash before here just re-runs the (idempotent) close next cycle.
-    if [ "$work_bead_close_rc" -eq 0 ] && [ "$convoy_close_rc" -eq 0 ]; then
+    if [ "$work_bead_close_rc" -eq 0 ] && [ "$convoy_close_rc" -eq 0 ] && [ "$root_close_rc" -eq 0 ]; then
       rm -f "$finalize_file" "${finalize_file}.mayor-notified"
       echo "con-voyage-finalize: done ${label} — finalize record removed"
     else
-      echo "con-voyage-finalize: WARNING: ${label} — bd close failed (work_bead_rc=${work_bead_close_rc}, convoy_rc=${convoy_close_rc}); keeping finalize record for retry next cycle" >&2
+      echo "con-voyage-finalize: WARNING: ${label} — bd close failed (work_bead_rc=${work_bead_close_rc}, convoy_rc=${convoy_close_rc}, root_rc=${root_close_rc}); keeping finalize record for retry next cycle" >&2
       # fk-c1xa: a close that still fails even with --force is a real error
       # (not the assignee guard --force above already handles) and needs a
       # human/mayor to look — but only once per record, so a 5-minute
@@ -395,7 +418,7 @@ for CV_STATE_DIR in "${CV_STATE_DIRS_ALL[@]}"; do
       if [ ! -f "$notified_marker" ]; then
         if "$GC" mail send "$CV_ESCALATE_TARGET" \
           -s "con-voyage finalize: stuck closing ${label}" \
-          -m "PR ${label} is ${pr_state} but finalize could not close it out: work_bead ${FS_WORK_BEAD} (rc=${work_bead_close_rc}), convoy ${FS_CONVOY_ID:-<none>} (rc=${convoy_close_rc}). The finalize record is being kept and retried every cycle, but this has already failed once even with --force — please take a look." \
+          -m "PR ${label} is ${pr_state} but finalize could not close it out: work_bead ${FS_WORK_BEAD} (rc=${work_bead_close_rc}), convoy ${FS_CONVOY_ID:-<none>} (rc=${convoy_close_rc}), workflow root ${FS_ROOT_BEAD_ID:-<none>} (rc=${root_close_rc}). The finalize record is being kept and retried every cycle, but this has already failed once even with --force — please take a look." \
           2>&1; then
           : > "$notified_marker"
           echo "con-voyage-finalize: notified ${CV_ESCALATE_TARGET} about ${label}'s stuck close"

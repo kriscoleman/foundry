@@ -633,11 +633,18 @@ assert_eq "29" "$FS_PR_NUMBER" "pr_number round-trips"
 assert_eq "kriscoleman" "$FS_PR_AUTHOR" "pr_author round-trips"
 assert_eq "foundry/impl" "$FS_IMPLEMENTOR" "implementor round-trips"
 assert_eq "awaiting_merge" "$FS_LAST_PHASE" "last_phase round-trips"
+assert_eq "" "$FS_ROOT_BEAD_ID" "root_bead_id omitted -> empty (backward compat, fk-bkz94)"
+
+start_case "finalize_write/read round-trip: root_bead_id (fk-bkz94)"
+finalize_write "k2" "wb-2" "cv-2" "kriscoleman/foundry" "30" "kriscoleman" "foundry/impl" "awaiting_merge" "fk-root2"
+finalize_read "k2"
+assert_eq "fk-root2" "$FS_ROOT_BEAD_ID" "root_bead_id round-trips"
 
 start_case "finalize_read: missing record leaves fields empty (no stale bleed)"
 finalize_read "does-not-exist"
 assert_eq "" "$FS_WORK_BEAD" "missing record => empty work_bead"
 assert_eq "" "$FS_LAST_PHASE" "missing record => empty last_phase"
+assert_eq "" "$FS_ROOT_BEAD_ID" "missing record => empty root_bead_id"
 
 # ---------------------------------------------------------------------------
 # cv_default_state_dir (fk-mr07): the default CV_STATE_DIR base every caller
