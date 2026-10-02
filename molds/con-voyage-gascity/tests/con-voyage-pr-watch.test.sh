@@ -1427,6 +1427,72 @@ else
 fi
 
 # ===========================================================================
+# CASE 11b — fk-6belo PENDING-ATTACH SELF-HEAL: the live incident (vandoor
+#   #10585's va-fft3) left a bare repair bead — `bd create` succeeded but the
+#   ci-repair `gc sling` attach never ran, because this script's own process
+#   was killed mid-cycle (the order's exec timeout, under dolt store
+#   contention) BETWEEN the two calls — so neither the success branch nor the
+#   fk-zvkmd rollback ever executed. We cannot kill the process mid-script in
+#   a hermetic test, but we CAN reproduce the state it leaves behind: a
+#   SIDE-CHANNEL pending-attach marker file (never the main per-PR .state
+#   record — that file is shared with con-voyage-repair-watchdog.sh, which
+#   would otherwise feed a last_handled_state="pending_attach" sentinel
+#   straight into a ci-repair formula as if it were a real failure_kind)
+#   pointing at a bare bead that is still open and unassigned, written
+#   BEFORE the sling attempt. On the NEXT cycle, the script must retry the
+#   attach on that SAME bead instead of minting a brand-new one (which would
+#   leave va-bare1 orphaned forever and could runaway-mint a fresh bare bead
+#   every cycle under sustained contention — the exact fk-zvkmd failure mode
+#   this pairs with).
+# ===========================================================================
+start_case "11b: fk-6belo — a pending-attach bare bead is re-attached, not re-minted"
+setup_case_env "11b"
+printf 'va-bare1\n' > "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.pending-attach"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_HEAD_SHA="aaa111" \
+  STUB_BDSHOW_MAP="va-bare1|open|"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd create .*--silent' 0 "no new bead is minted — the bare bead from last cycle is reused"
+assert_log_count "$GC_LOG" 'sling vandoor/gc.implementation-worker va-bare1 --on con-voyage-ci-repair .*failure_kind=checks_failed' 1 "the ci-repair attach is retried on the SAME previously-bare bead"
+if printf '%s' "$OUT" | grep -q 're-attempting ci-repair attach on previously-bare bead va-bare1 (self-heal'; then
+  pass "logs the self-heal re-attach for va-bare1"
+else
+  fail "expected a self-heal re-attach log for va-bare1"
+fi
+assert_eq "va-bare1" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "inflight_rework")" "the main state record now tracks va-bare1 after a successful self-heal"
+assert_eq "checks_failed" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-11" "last_handled_state")" "the main state record carries the REAL classified failure_kind, never the pending_attach sentinel"
+if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.pending-attach" ]; then
+  fail "pending-attach marker left behind after a successful self-heal"
+else
+  pass "pending-attach marker is cleared once the bead is genuinely attached"
+fi
+
+# ===========================================================================
+# CASE 11c — fk-6belo self-heal, retry-also-fails path: the re-attempted
+#   attach can itself fail again (STUB_SLING_FAIL=1). This must roll back
+#   va-bare2 exactly like a fresh mint failure (fk-zvkmd) AND clear the
+#   pending-attach marker, so a FUTURE cycle starts from a clean slate (a
+#   fresh mint) instead of retrying a permanently-dead bead id forever.
+# ===========================================================================
+start_case "11c: fk-6belo — a failed self-heal retry rolls back and clears the pending-attach marker"
+setup_case_env "11c"
+printf 'va-bare2\n' > "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.pending-attach"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_HEAD_SHA="aaa111" \
+  STUB_BDSHOW_MAP="va-bare2|open|" STUB_SLING_FAIL=1
+assert_eq "0" "$RC" "script exits 0 (a failed self-heal retry is non-fatal)"
+assert_log_count "$GC_LOG" 'bd create .*--silent' 0 "still no new bead minted on a failed retry"
+assert_log_count "$GC_LOG" 'bd close va-bare2' 1 "the still-bare bead is rolled back after a failed retry, same as a fresh-mint failure"
+if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.pending-attach" ]; then
+  fail "pending-attach marker left behind after rollback — would wedge every future cycle on a dead bead id"
+else
+  pass "pending-attach marker is cleared after rollback, so a future cycle mints fresh"
+fi
+if [ -f "${STATE_DIR}/cv-ci-repair-kriscoleman-foundry-11.state" ]; then
+  fail "main state record written despite every attempt failing (mirrors CASE 11/42's existing retry discipline)"
+else
+  pass "no main state record written across the failed self-heal retry"
+fi
+
+# ===========================================================================
 # CASE 12 — CROSS-RIG FIX end-to-end (GREEN): the repair bead is minted in the
 #   target agent's rig (--rig vandoor), so its "va" prefix matches the target
 #   "vandoor/gc.implementation-worker", the cross-rig-aware stub ACCEPTS the
@@ -1563,18 +1629,23 @@ for n in 11 12 13 14; do
 done
 
 # ===========================================================================
-# CASE 15b — PRIMARY-over-FALLBACK precedence: PR #15 carries gc's own
-#   failure_kind=blocked directly, even though state=blocked WITH a non-empty
-#   failed_checks[] would derive checks_failed under the fallback order. gc's
-#   own field must win — it already has richer signal than we can re-derive
-#   from these two fields alone.
+# CASE 15b — fk-6belo precedence FIX (was: PRIMARY-over-FALLBACK, pinning the
+#   OPPOSITE/buggy behavior): PR #15 carries gc's own failure_kind=blocked
+#   directly, but ALSO a non-empty failed_checks[] (state=blocked). A real
+#   failing required check must now win over gc's own "blocked" classification
+#   — trusting gc's field unconditionally here is exactly what misclassified
+#   the live vandoor#10585 incident (2 FAILING required checks reported as
+#   failure_kind=blocked) and left it unrepaired as a "review-escalation" PR
+#   instead of a CI-repair one. "blocked" only applies when checks are
+#   actually green (CASE 15's #14 — failed_checks=[] — still classifies
+#   blocked, proving this isn't a blanket override).
 # ===========================================================================
-start_case "15b: gc's own failure_kind takes precedence over local derivation"
+start_case "15b: fk-6belo — a non-empty failed_checks[] overrides gc's own failure_kind=blocked"
 setup_case_env "15b"
 run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_BACKFILL_MODE="states"
 assert_eq "0" "$RC" "script exits 0"
-assert_log_count "$GC_LOG" 'sling .*pr=15.*failure_kind=blocked' 1 "pr=15 trusts gc's own failure_kind=blocked"
-assert_log_count "$GC_LOG" 'sling .*pr=15.*failure_kind=checks_failed' 0 "pr=15 does NOT re-derive checks_failed from failed_checks (gc's field wins)"
+assert_log_count "$GC_LOG" 'sling .*pr=15.*failure_kind=checks_failed' 1 "pr=15 (failed_checks non-empty) classifies checks_failed despite gc's own failure_kind=blocked"
+assert_log_count "$GC_LOG" 'sling .*pr=15.*failure_kind=blocked' 0 "pr=15 does NOT trust gc's blocked classification when a required check is actually failing"
 
 # ===========================================================================
 # CASE 16 — R5.2 native-monitor parity: a non-operator PR in EACH state is
