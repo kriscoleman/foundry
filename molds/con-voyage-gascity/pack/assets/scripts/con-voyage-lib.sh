@@ -629,6 +629,90 @@ cv_sync_worktree_to_base() {
   printf 'rebased\n'
 }
 
+# cv_sync_patch_unchanged DIR OLD_BASE_SHA OLD_HEAD — fk-u8n34: tells the
+# caller whether a "recreated"/"rebased" result from cv_sync_worktree_to_base
+# actually changed any PATCH content, versus merely replaying the same change
+# onto a newer base commit. OLD_BASE_SHA/OLD_HEAD are the base SHA and HEAD
+# the caller observed immediately BEFORE calling cv_sync_worktree_to_base (the
+# function itself does not retain that state, so the caller must capture it).
+#
+# Compares sorted `git patch-id --stable` sets for "DIR's own commits" before
+# and after the sync (merge-base..HEAD against the base in effect at each
+# point), not a raw tree/file diff — a clean `rebase --onto` can replay a
+# commit onto a different base and still produce the exact same patch-id, and
+# that identical-patch-id case is exactly the one apply-review-findings.md
+# must NOT treat as "a new, unreviewed change" (fk-u8n34: a LOW-only review
+# round was forced to iterate, re-running every lane, purely because
+# cv_sync_worktree_to_base rebased onto a moved origin/main with no actual fix
+# commit and no patch content change).
+#
+# Returns 0 ("unchanged" — caller may treat the sync as a no-op for review
+# purposes), 1 ("changed" — a real new commit needing review, e.g. a rebase
+# whose conflict resolution altered the diff), or 2 on any resolution error
+# (caller should treat this conservatively as "changed"). Prints nothing;
+# diagnostics go to stderr.
+cv_sync_patch_unchanged() {
+  local dir="$1" old_base_sha="${2:-}" old_head="${3:-}"
+
+  if [ -z "$dir" ] || [ ! -d "$dir" ] \
+    || ! git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "cv-lib: ERROR cv_sync_patch_unchanged: '${dir}' is not inside a git working tree" >&2
+    return 2
+  fi
+  if [ -z "$old_base_sha" ] || [ -z "$old_head" ]; then
+    echo "cv-lib: ERROR cv_sync_patch_unchanged: old_base_sha and old_head are both required" >&2
+    return 2
+  fi
+  if ! git -C "$dir" rev-parse --quiet --verify "${old_head}^{commit}" >/dev/null 2>&1; then
+    echo "cv-lib: ERROR cv_sync_patch_unchanged: old_head '${old_head}' is not a commit in ${dir}" >&2
+    return 2
+  fi
+  if ! git -C "$dir" rev-parse --quiet --verify "${old_base_sha}^{commit}" >/dev/null 2>&1; then
+    echo "cv-lib: ERROR cv_sync_patch_unchanged: old_base_sha '${old_base_sha}' is not a commit in ${dir}" >&2
+    return 2
+  fi
+
+  local new_head
+  new_head="$(git -C "$dir" rev-parse HEAD 2>/dev/null)"
+  if [ -z "$new_head" ]; then
+    echo "cv-lib: ERROR cv_sync_patch_unchanged: could not resolve current HEAD in ${dir}" >&2
+    return 2
+  fi
+  if [ "$old_head" = "$new_head" ]; then
+    echo "cv-lib: cv_sync_patch_unchanged: HEAD did not move (${old_head}) — trivially unchanged" >&2
+    return 0
+  fi
+
+  local new_base_ref new_base_sha
+  new_base_ref="$(cv_worktree_prep_resolve_base "$dir")"
+  if [ -z "$new_base_ref" ]; then
+    echo "cv-lib: ERROR cv_sync_patch_unchanged: could not resolve the current base ref in ${dir}" >&2
+    return 2
+  fi
+  new_base_sha="$(git -C "$dir" rev-parse --verify --quiet "${new_base_ref}^{commit}" 2>/dev/null)"
+  if [ -z "$new_base_sha" ]; then
+    echo "cv-lib: ERROR cv_sync_patch_unchanged: could not resolve '${new_base_ref}' to a commit in ${dir}" >&2
+    return 2
+  fi
+
+  local old_mb new_mb
+  old_mb="$(git -C "$dir" merge-base "$old_base_sha" "$old_head" 2>/dev/null)"
+  [ -n "$old_mb" ] || old_mb="$old_base_sha"
+  new_mb="$(git -C "$dir" merge-base "$new_base_sha" "$new_head" 2>/dev/null)"
+  [ -n "$new_mb" ] || new_mb="$new_base_sha"
+
+  local old_ids new_ids
+  old_ids="$(git -C "$dir" log --no-color -p "${old_mb}..${old_head}" 2>/dev/null | git -C "$dir" patch-id --stable 2>/dev/null | awk '{print $1}' | sort)"
+  new_ids="$(git -C "$dir" log --no-color -p "${new_mb}..${new_head}" 2>/dev/null | git -C "$dir" patch-id --stable 2>/dev/null | awk '{print $1}' | sort)"
+
+  if [ "$old_ids" = "$new_ids" ]; then
+    echo "cv-lib: cv_sync_patch_unchanged: patch-id sets identical across sync (${old_head} -> ${new_head}) — unchanged" >&2
+    return 0
+  fi
+  echo "cv-lib: cv_sync_patch_unchanged: patch-id sets differ across sync (${old_head} -> ${new_head}) — changed" >&2
+  return 1
+}
+
 # ---------------------------------------------------------------------------
 # Per-PR repair state record (fk-4o74 Fix 1; extended by Fix 2's watchdog,
 # fk-lfan's B1 round). File: "<CV_STATE_DIR>/<dedup_key>.state", plain
