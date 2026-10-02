@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.12.6](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.12.5...con-voyage-gascity-v0.12.6) (2026-10-02)
+
+
+### Bug Fixes
+
+* **con-voyage:** bump pr-watch order timeout to 8m ([679d42f](https://github.com/kriscoleman/foundry/commit/679d42ffaaeb19a86acc14dfa9820964efd541ca))
+* **con-voyage:** self-heal bare repair beads, fix blocked/checks_failed precedence ([34fbb7e](https://github.com/kriscoleman/foundry/commit/34fbb7ec70df9d16d9a618018be547d2a972d425))
+
 ## [0.12.5](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.12.4...con-voyage-gascity-v0.12.5) (2026-10-02)
 
 
