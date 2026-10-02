@@ -1389,15 +1389,37 @@ print(','.join(sorted(x['id'] for x in items)))" 2>/dev/null || echo "unknown")
     # positional text or --stdin (first line = title, remaining lines = body).
     # We use --stdin so the multi-line body is passed cleanly (no ARG_MAX / quoting
     # issues), with the title as the first line and a blank line before the body.
-    if printf '%s\n\n%s\n' "$route_title" "$route_body" \
-      | "$GC" --city "$GC_CITY" sling "$route_target" --stdin 2>&1; then
+    #
+    # If route_target is the PR's own recorded implementor (not already the
+    # pool fallback) and the sling call itself fails — e.g. a recorded
+    # implementor_session that resolves ALIVE but whose handle `gc sling`
+    # still rejects live — fall through to pool_route_target once instead of
+    # retrying the same unroutable target forever (review fk-pbadx
+    # BLOCKING-1: the old code never fell back here, so a live-but-unroutable
+    # implementor silently black-holed every cycle's feedback for that PR).
+    sling_out=""
+    if sling_out="$(printf '%s\n\n%s\n' "$route_title" "$route_body" \
+      | "$GC" --city "$GC_CITY" sling "$route_target" --stdin 2>&1)"; then
       echo "con-voyage-pr-watch: [PART B] ${full_repo}#${pr_number}: routed to ${route_target}"
+      [ -z "$sling_out" ] || printf '%s\n' "$sling_out"
       # Persist updated seen-IDs only on successful route
       if [ -n "$updated_seen_ids" ]; then
         printf '%s\n' "$updated_seen_ids" | save_seen_ids "$state_file"
       fi
+    elif [ "$route_target" != "$pool_route_target" ]; then
+      echo "con-voyage-pr-watch: [PART B] WARNING: gc sling to recorded implementor ${route_target} failed for ${full_repo}#${pr_number} (${sling_out}) — falling back to pool route ${pool_route_target}" >&2
+      if sling_out="$(printf '%s\n\n%s\n' "$route_title" "$route_body" \
+        | "$GC" --city "$GC_CITY" sling "$pool_route_target" --stdin 2>&1)"; then
+        echo "con-voyage-pr-watch: [PART B] ${full_repo}#${pr_number}: routed to pool fallback ${pool_route_target}"
+        if [ -n "$updated_seen_ids" ]; then
+          printf '%s\n' "$updated_seen_ids" | save_seen_ids "$state_file"
+        fi
+      else
+        echo "con-voyage-pr-watch: [PART B] WARNING: gc sling also failed for pool route ${pool_route_target} for ${full_repo}#${pr_number} (${sling_out}); will retry next cycle" >&2
+        # Do NOT update state file — we'll retry on next cycle
+      fi
     else
-      echo "con-voyage-pr-watch: [PART B] WARNING: gc sling failed for ${full_repo}#${pr_number}; will retry next cycle" >&2
+      echo "con-voyage-pr-watch: [PART B] WARNING: gc sling failed for ${full_repo}#${pr_number} (${sling_out}); will retry next cycle" >&2
       # Do NOT update state file — we'll retry on next cycle
     fi
 
