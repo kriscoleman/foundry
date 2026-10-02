@@ -44,7 +44,7 @@ cd "$WORKTREE" || { echo "apply-review-findings: cd into ${WORKTREE} failed" >&2
 Do not edit files anywhere but inside `$WORKTREE`. Never edit the launcher
 checkout.
 
-## Record this step's own session as the implementor (review fk-hbsmk BLOCKING-1)
+## Record this step's own session as the implementor (review fk-hbsmk BLOCKING-1, fk-pbadx BLOCKING-1/3)
 
 Stamp `$ROOT_ID` with a dedicated `gc.build.implementor_session` key, read
 from THIS step's own claimed bead (`$GC_BEAD_ID`) — never from the workflow
@@ -53,18 +53,30 @@ root's `gc.session_name`, which every `session_affinity=require` step
 root, so it never reliably names the implementor by the time publish reads
 it. This step can re-run across multiple review-loop iterations, each
 possibly claimed by a different session (fresh iteration beads per
-graph.v2), so re-stamp every time this step runs, not just once:
+graph.v2), so re-stamp every time this step runs, not just once. Resolve it
+through `con-voyage-lib.sh`'s shared helpers (not an inline one-off) so the
+stamped value is the rig-scoped handle (`cv_session_route_handle`) that
+resolves for `implementor_alive`, `gc sling`, AND `gc mail send` alike — the
+bare `gc.session_name` value (`cv_bead_metadata`'s plain read) is only a
+fallback for when the session cannot be resolved live:
 
 ```bash
-IMPLEMENTOR_SESSION="$(gc bd show "$GC_BEAD_ID" --json 2>/dev/null | python3 -c "
-import json, sys
-try:
-    d = json.load(sys.stdin)
-    d = d[0] if isinstance(d, list) else d
-except Exception:
-    d = {}
-print((d.get('metadata') or {}).get('gc.session_name') or '')
-" 2>/dev/null)"
+CV_TOPLEVEL="${GC_RIG_ROOT:-}"
+if [ -z "$CV_TOPLEVEL" ] || [ ! -f "${CV_TOPLEVEL}/molds/con-voyage-gascity/pack/assets/scripts/con-voyage-lib.sh" ]; then
+  CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+fi
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
+IMPLEMENTOR_SESSION=""
+if [ -n "$CV_LIB" ]; then
+  IMPLEMENTOR_SESSION_BARE="$(source "$CV_LIB" && cv_bead_metadata "$GC_BEAD_ID" gc.session_name)"
+  if [ -n "$IMPLEMENTOR_SESSION_BARE" ]; then
+    IMPLEMENTOR_SESSION="$(source "$CV_LIB" && cv_session_route_handle "$IMPLEMENTOR_SESSION_BARE")"
+    [ -n "$IMPLEMENTOR_SESSION" ] || IMPLEMENTOR_SESSION="$IMPLEMENTOR_SESSION_BARE"
+  fi
+fi
 if [ -n "$IMPLEMENTOR_SESSION" ]; then
   gc bd update "$ROOT_ID" --set-metadata "gc.build.implementor_session=${IMPLEMENTOR_SESSION}" \
     || echo "apply-review-findings: WARNING: could not stamp gc.build.implementor_session on workflow root ${ROOT_ID}" >&2

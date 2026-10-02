@@ -737,7 +737,27 @@ JSON
       exit 0
     fi
 
-    # Non-formula path (PART B). Accept plain text/stdin routes.
+    # Non-formula path (PART B). Faithful stub of real `gc sling`'s target
+    # resolution (review fk-pbadx BLOCKING-2): a rig-scoped handle
+    # ("<rig>/<agent>" or "<rig>/<agent>.<role>-N") or a bare dotted
+    # agent/role name registered in city.toml ("gc.implementation-worker")
+    # both resolve live. A bare live-SESSION identifier — Gas City's
+    # `gc.session_name` convention, e.g. "gc__implementation-worker-rc-45"
+    # ("__" + no rig prefix) — is NOT a registered city.toml agent and is
+    # REJECTED live ("agent ... not found in city.toml"), even though
+    # `implementor_alive` may report that exact session as ALIVE. Before this
+    # fix the stub accepted ANY target unconditionally here, so a test
+    # seeding that bare, un-slingable form (CASE 45) passed vacuously while
+    # the real call fails every cycle.
+    sling_target="${positionals[0]:-}"
+    case "$sling_target" in
+      */*) ;;    # rig-scoped handle, e.g. "foundry-kc/gc.implementation-worker-2"
+      *__*)
+        echo "gc sling: agent \"${sling_target}\" not found in city.toml" >&2
+        exit 1
+        ;;
+      *) ;;      # bare dotted agent/role name, e.g. "gc.implementation-worker"
+    esac
     exit 0
     ;;
   session)
@@ -2574,15 +2594,22 @@ assert_log_count "$GC_LOG_REFAIL2" 'bd create .*--silent' 1 "a fresh repair bead
 #   "cv-finalize-<owner>-<repo>-<pr_number>") over the generic pool route, so
 #   human feedback on an awaiting-merge PR reaches the SAME session that built
 #   the PR instead of a fresh, context-less pool worker.
+#
+#   Fixture uses the rig-scoped handle form (review fk-pbadx BLOCKING-1/2):
+#   the real publish step now stamps gc.build.implementor_session with the
+#   session's rig-scoped `name` (via cv_session_route_handle), not the bare
+#   gc.session_name — that is the only form the real `gc sling` resolves for
+#   a live session (a bare "gc__..." form is rejected live even when
+#   implementor_alive reports it ALIVE; see CASE 49 below).
 # ===========================================================================
 start_case "45: fk-krsvc — PART B routes to the PR's own recorded implementor_session, not the pool"
 setup_case_env "45"
-printf 'work_bead=va-45\nconvoy_id=cv-45\nrepo_full=kriscoleman/foundry\npr_number=11\npr_author=kriscoleman\nimplementor_session=gc__implementation-worker-rc-45\nlast_phase=awaiting_merge\n' \
+printf 'work_bead=va-45\nconvoy_id=cv-45\nrepo_full=kriscoleman/foundry\npr_number=11\npr_author=kriscoleman\nimplementor_session=foundry-kc/gc.implementation-worker-45\nlast_phase=awaiting_merge\n' \
   > "${STATE_DIR}/cv-finalize-kriscoleman-foundry-11.finalize"
 run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
-  STUB_SESSION_LIST_JSON='{"sessions":[{"id":"gc__implementation-worker-rc-45","state":"active"}]}'
+  STUB_SESSION_LIST_JSON='{"sessions":[{"id":"gc__implementation-worker-rc-45","name":"foundry-kc/gc.implementation-worker-45","state":"active"}]}'
 assert_eq "0" "$RC" "script exits 0"
-assert_log_count "$GC_LOG" 'sling gc__implementation-worker-rc-45 --stdin STDIN: Human PR feedback on kriscoleman/foundry#11' 1 "routes to the PR's own recorded implementor_session, not the pool"
+assert_log_count "$GC_LOG" 'sling foundry-kc/gc.implementation-worker-45 --stdin STDIN: Human PR feedback on kriscoleman/foundry#11' 1 "routes to the PR's own recorded implementor_session, not the pool"
 assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 0 "does NOT fall back to the generic pool route when a finalize record has a real implementor_session"
 
 # ===========================================================================
@@ -2642,6 +2669,34 @@ if printf '%s' "$OUT" | grep -q "recorded implementor_session 'gc__implementatio
   pass "logs an explicit dead-session fallback reason, distinct from the missing/empty case"
 else
   fail "expected an explicit dead-session fallback-reason log line"
+fi
+
+# ===========================================================================
+# CASE 49 — review fk-pbadx BLOCKING-1: a recorded implementor_session that
+#   resolves ALIVE (implementor_alive matches it) but is in the bare
+#   gc.session_name form ("gc__..." — no rig prefix) is still rejected LIVE
+#   by `gc sling` ("agent ... not found in city.toml"). Before this fix the
+#   script retried that same doomed sling call forever with no fallback; it
+#   must now fall through to the pool route on that failure instead of
+#   black-holing feedback for the PR. This is a regression guard: if the
+#   build/apply-review-findings stamping ever reverts to storing the bare
+#   form again, this case still passes (sling still fails, falls back) — the
+#   real defect it exists to catch is a FUTURE removal of the fallback added
+#   for BLOCKING-1, not the stamping format itself (that is CASE 45's job).
+# ===========================================================================
+start_case "49: fk-pbadx BLOCKING-1 — a live-but-unroutable (bare-form) implementor_session falls back to the pool instead of black-holing feedback"
+setup_case_env "49"
+printf 'work_bead=va-49\nconvoy_id=cv-49\nrepo_full=kriscoleman/foundry\npr_number=11\npr_author=kriscoleman\nimplementor_session=gc__implementation-worker-rc-49\nlast_phase=awaiting_merge\n' \
+  > "${STATE_DIR}/cv-finalize-kriscoleman-foundry-11.finalize"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_SESSION_LIST_JSON='{"sessions":[{"id":"gc__implementation-worker-rc-49","state":"active"}]}'
+assert_eq "0" "$RC" "script exits 0 even though the recorded implementor's sling attempt fails"
+assert_log_count "$GC_LOG" 'sling gc__implementation-worker-rc-49 --stdin STDIN: Human PR feedback on kriscoleman/foundry#11' 1 "attempts the recorded (bare-form) implementor first"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin STDIN: Human PR feedback on kriscoleman/foundry#11' 1 "falls back to the pool route after the recorded implementor's sling call fails live"
+if printf '%s' "$OUT" | grep -q "gc sling to recorded implementor gc__implementation-worker-rc-49 failed for kriscoleman/foundry#11"; then
+  pass "logs the sling-failure fallback distinctly from the dead-session and missing-record fallbacks"
+else
+  fail "expected an explicit sling-failure fallback log line"
 fi
 
 # ===========================================================================

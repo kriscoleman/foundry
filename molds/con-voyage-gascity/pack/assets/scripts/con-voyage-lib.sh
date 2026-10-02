@@ -1235,6 +1235,49 @@ for s in sessions:
 " "$ident"
 }
 
+# cv_session_route_handle IDENT — print the rig-scoped `name` (falling back
+# to `alias`) of a live session (state != closed) whose id/alias/name/
+# session_name matches IDENT. Empty output if none found or not alive.
+#
+# WHY THIS EXISTS (review fk-pbadx BLOCKING-1): a bead's bare
+# `gc.session_name` metadata (e.g. "gc__implementation-worker-rc-hd33p3") is
+# the form `implementor_alive`/`gc mail send` match against, but `gc sling`
+# rejects it live ("agent ... not found in city.toml") — it only resolves a
+# rig-scoped handle in "<rig>/<agent>" or "<rig>/<agent>.<role>-N" form (a
+# live session's own `name`/`alias` field, e.g.
+# "foundry-kc/gc.implementation-worker-2"). That rig-scoped form is the only
+# one verified to resolve for `implementor_alive`, `gc sling`, AND `gc mail
+# send` simultaneously (it is still in the id/alias/name/session_name set
+# implementor_alive checks), so callers that need a handle usable for ALL
+# THREE — not just the liveness check — should resolve it through this
+# function instead of reading gc.session_name directly.
+cv_session_route_handle() {
+  local ident="$1"
+  [ -n "${ident// /}" ] || { printf ''; return 0; }
+  local gc_bin="${GC:-gc}"
+  local json
+  json=$("$gc_bin" --city "$GC_CITY" session list --json 2>/dev/null) || json=""
+  [ -n "$json" ] || { printf ''; return 0; }
+  printf '%s' "$json" | python3 -c "
+import sys, json
+ident = sys.argv[1]
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+sessions = data.get('sessions') if isinstance(data, dict) else data
+if not isinstance(sessions, list):
+    raise SystemExit(0)
+for s in sessions:
+    if not isinstance(s, dict):
+        continue
+    idents = {s.get('id'), s.get('alias'), s.get('name'), s.get('session_name')}
+    if ident in idents and (s.get('state') or '') != 'closed':
+        print(s.get('name') or s.get('alias') or '')
+        raise SystemExit(0)
+" "$ident"
+}
+
 # first_alive_session_id_for_route ROUTE — print the `id` of the first live
 # session (state != closed) whose `template` equals ROUTE (the "<rig>/<role>"
 # form recorded as a lane bead's gc.routed_to metadata). Empty output means
