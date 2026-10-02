@@ -107,7 +107,16 @@ elif [ -n "$EXISTING_WORK_DIR" ] && [ -d "$EXISTING_WORK_DIR" ] && "$CV_WT_PREP"
     # worktree-creation block genuinely recreates it `--detach HEAD` from the
     # current base, the same fresh outcome the prior-anchor path already gets
     # for free because its PRIOR_ANCHOR_DIR never equals DEFAULT_WORKTREE.
-    git worktree remove --force "$EXISTING_WORK_DIR" \
+    #
+    # BLOCKING-1/BLOCKING-3 (review con-voyage/fk-29ts8 iteration 3): removing
+    # only the worktree directory leaves its branch ref (con-voyage/${CONVOY_ID})
+    # surviving at the stale commit, which makes the downstream
+    # ensure-branch call refuse to move it and abort the entire build; and a
+    # bare `remove --force` silently discards any dirty/mid-rebase state with
+    # no log. cv_discard_stale_anchor_worktree handles both: drops the stale
+    # branch ref after removing the worktree, and logs (not just silently
+    # discards) uncommitted changes or an in-progress rebase/merge first.
+    source "$CV_LIB" && cv_discard_stale_anchor_worktree "$EXISTING_WORK_DIR" "con-voyage/${CONVOY_ID}" \
       || { echo "con-voyage prepare-build: failed to remove too-stale worktree ${EXISTING_WORK_DIR} — refusing to reuse it in place" >&2; exit 1; }
   else
     # Pre-built branch (backward-compat path): HEAD is already ahead of base

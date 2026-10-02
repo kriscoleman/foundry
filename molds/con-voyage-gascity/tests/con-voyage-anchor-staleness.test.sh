@@ -200,6 +200,72 @@ run_fn "$WT5"
 assert_eq "1" "$RC" "cv_anchor_too_stale fails safe (not stale) when no base ref resolves"
 
 # ===========================================================================
+# CASE 6 (review con-voyage/fk-29ts8 iteration 3, BLOCKING-1/BLOCKING-2) —
+# cv_discard_stale_anchor_worktree must leave the downstream
+# `git worktree add --detach HEAD` + `cv-worktree-prep.sh ensure-branch`
+# sequence able to genuinely recreate the worktree fresh: the branch ref it
+# drops must not survive at the stale commit (which is what made
+# ensure-branch refuse to move it and abort the whole build), and the
+# resulting worktree must land on the named branch at the CURRENT base HEAD,
+# not the discarded stale commit. This exercises the actual resolution
+# outcome end to end (not a grep against the .md source), the coverage gap
+# BLOCKING-2 identified.
+# ===========================================================================
+start_case "6: cv_discard_stale_anchor_worktree + worktree add --detach HEAD + ensure-branch yields a base-fresh worktree on the named branch"
+REPO6="$(mk_repo repo6)"
+BRANCH6="con-voyage/case6"
+WT6="${SANDBOX}/repo6-worktree"
+git_c "$REPO6" worktree add -q -b "$BRANCH6" "$WT6" HEAD
+printf 'stale anchor change\n' > "${WT6}/anchor.txt"
+git_c "$WT6" add anchor.txt
+git_c "$WT6" commit -q -m "feat: stale anchor change"
+STALE_SHA6="$(git_c "$WT6" rev-parse HEAD)"
+# base advances past the stale anchor
+printf 'upstream change\n' > "${REPO6}/upstream.txt"
+git_c "$REPO6" add upstream.txt
+git_c "$REPO6" commit -q -m "chore: upstream advances"
+BASE_SHA6="$(git_c "$REPO6" rev-parse HEAD)"
+
+(cd "$REPO6" && cv_discard_stale_anchor_worktree "$WT6" "$BRANCH6" >/dev/null 2>"${SANDBOX}/case6.stderr")
+DISCARD_RC6=$?
+assert_eq "0" "$DISCARD_RC6" "cv_discard_stale_anchor_worktree returns 0 on success"
+[ -d "$WT6" ] && fail "worktree dir ${WT6} still present after discard" || pass "worktree dir removed"
+git_c "$REPO6" show-ref --verify --quiet "refs/heads/${BRANCH6}" \
+  && fail "stale branch ref ${BRANCH6} still exists after discard" \
+  || pass "stale branch ref removed (ensure-branch can recreate it fresh)"
+
+# Downstream sequence main.prepare-build.md actually runs after the discard:
+git_c "$REPO6" worktree add -q --detach "$WT6" HEAD
+"$PREP_SCRIPT" ensure-branch "$WT6" "$BRANCH6" >/dev/null 2>&1
+ENSURE_RC6=$?
+assert_eq "0" "$ENSURE_RC6" "downstream ensure-branch succeeds (does not refuse to move a surviving stale ref)"
+NEW_BRANCH6="$(git_c "$WT6" branch --show-current)"
+assert_eq "$BRANCH6" "$NEW_BRANCH6" "recreated worktree is on the named branch"
+NEW_SHA6="$(git_c "$WT6" rev-parse HEAD)"
+assert_eq "$BASE_SHA6" "$NEW_SHA6" "recreated worktree HEAD matches the CURRENT base, not the discarded stale commit ${STALE_SHA6}"
+
+# ===========================================================================
+# CASE 7 (review con-voyage/fk-29ts8 iteration 3, BLOCKING-3) —
+# cv_discard_stale_anchor_worktree must warn (not silently discard) when the
+# too-stale worktree has uncommitted changes or an in-progress rebase.
+# ===========================================================================
+start_case "7: cv_discard_stale_anchor_worktree logs a warning instead of silently discarding dirty/mid-rebase state"
+REPO7="$(mk_repo repo7)"
+BRANCH7="con-voyage/case7"
+WT7="${SANDBOX}/repo7-worktree"
+git_c "$REPO7" worktree add -q -b "$BRANCH7" "$WT7" HEAD
+printf 'uncommitted edit\n' >> "${WT7}/README.md"
+
+(cd "$REPO7" && cv_discard_stale_anchor_worktree "$WT7" "$BRANCH7" >/dev/null 2>"${SANDBOX}/case7.stderr")
+DISCARD_RC7=$?
+assert_eq "0" "$DISCARD_RC7" "cv_discard_stale_anchor_worktree still succeeds (it warns, does not refuse)"
+if grep -qi "uncommitted change" "${SANDBOX}/case7.stderr"; then
+  pass "warns about uncommitted changes before discarding them"
+else
+  fail "no warning about uncommitted changes in stderr: $(cat "${SANDBOX}/case7.stderr")"
+fi
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 echo
