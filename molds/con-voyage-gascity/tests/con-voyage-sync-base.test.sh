@@ -225,6 +225,130 @@ assert_eq "$own_commit_msg4" "$(git_c "$WT4" log -1 --format=%s)" "own commit me
 assert_eq "con-voyage/repo4-worktree" "$(git_c "$WT4" symbolic-ref --short HEAD 2>/dev/null)" "stays on its own named branch"
 
 # ===========================================================================
+# CASE 4b — fk-u8n34: cv_sync_patch_unchanged detects a CLEAN rebase (the
+#   exact shape from CASE 4 above — own commit replayed onto an unrelated
+#   upstream advance) as patch-UNCHANGED (exit 0). This is the fix for a
+#   LOW-only review round being forced to iterate purely because
+#   cv_sync_worktree_to_base rebased onto a moved origin/main with no real fix
+#   commit (root fk-wofds / fk-lhjn3 iter 8, both observed live).
+# ===========================================================================
+start_case "4b: cv_sync_patch_unchanged reports unchanged for a clean rebase that replays the identical patch"
+UPSTREAM4B="${SANDBOX}/repo4b-upstream.git"
+git init -q -b main --bare "$UPSTREAM4B"
+REPO4B="$(mk_repo repo4b)"
+git_c "$REPO4B" remote add origin "$UPSTREAM4B"
+git_c "$REPO4B" push -q -u origin main
+git_c "$REPO4B" remote set-head origin main
+WT4B="${SANDBOX}/repo4b-worktree"
+git_c "$REPO4B" worktree add -q --detach "$WT4B" HEAD
+git_c "$WT4B" checkout -q -b con-voyage/repo4b-worktree
+printf 'impl\n' > "${WT4B}/impl.txt"
+git_c "$WT4B" add impl.txt
+git_c "$WT4B" commit -q -m "feat: implementation commit"
+old_head4b="$(git_c "$WT4B" rev-parse HEAD)"
+old_base4b="$(git_c "$WT4B" rev-parse main)"
+# origin/main advances underneath, unrelated to impl.txt (same as CASE 4).
+printf 'v2\n' >> "${REPO4B}/README.md"
+git_c "$REPO4B" add README.md
+git_c "$REPO4B" commit -q -m "feat: upstream advances"
+git_c "$REPO4B" push -q origin main
+result4b="$(cv_sync_worktree_to_base "$WT4B" 2>/dev/null)"
+assert_eq "rebased" "$result4b" "fixture: CASE 4b's sync reports rebased (same shape as CASE 4)"
+out4b="$(cv_sync_patch_unchanged "$WT4B" "$old_base4b" "$old_head4b" 2>&1)"
+rc4b=$?
+assert_eq "0" "$rc4b" "cv_sync_patch_unchanged returns 0 (unchanged) for a clean rebase with no real fix"
+case "$out4b" in
+  *"unchanged"*) pass "diagnostic mentions unchanged" ;;
+  *) fail "expected an 'unchanged' diagnostic, got: ${out4b}" ;;
+esac
+
+# ===========================================================================
+# CASE 4c — fk-u8n34: cv_sync_patch_unchanged detects a changed patch (e.g. a
+#   rebase whose conflict resolution altered the diff) as CHANGED (exit 1),
+#   so a real content change still forces verdict=iterate as before. Rather
+#   than engineer a real rebase whose auto-merge happens to land a different
+#   diff (inherently flaky to construct), this drives cv_sync_patch_unchanged
+#   directly against a worktree whose post-sync HEAD carries a genuinely
+#   different patch than its pre-sync HEAD — the exact distinction the
+#   function exists to make, independent of how the differing HEAD got there.
+# ===========================================================================
+start_case "4c: cv_sync_patch_unchanged reports changed when the resulting patch actually differs"
+UPSTREAM4C="${SANDBOX}/repo4c-upstream.git"
+git init -q -b main --bare "$UPSTREAM4C"
+REPO4C="$(mk_repo repo4c)"
+git_c "$REPO4C" remote add origin "$UPSTREAM4C"
+git_c "$REPO4C" push -q -u origin main
+git_c "$REPO4C" remote set-head origin main
+WT4C="${SANDBOX}/repo4c-worktree"
+git_c "$REPO4C" worktree add -q --detach "$WT4C" HEAD
+git_c "$WT4C" checkout -q -b con-voyage/repo4c-worktree
+printf 'impl v1\n' > "${WT4C}/impl.txt"
+git_c "$WT4C" add impl.txt
+git_c "$WT4C" commit -q -m "feat: implementation commit"
+old_head4c="$(git_c "$WT4C" rev-parse HEAD)"
+old_base4c="$(git_c "$WT4C" rev-parse main)"
+# Simulate a sync that landed a DIFFERENT patch (e.g. a resolved conflict
+# changed the actual content) rather than a byte-identical replay.
+printf 'v2\n' >> "${REPO4C}/README.md"
+git_c "$REPO4C" add README.md
+git_c "$REPO4C" commit -q -m "feat: upstream advances"
+git_c "$REPO4C" push -q origin main
+git_c "$WT4C" fetch -q origin
+git_c "$WT4C" reset -q --hard main
+printf 'impl v2 (resolved differently)\n' > "${WT4C}/impl.txt"
+git_c "$WT4C" add impl.txt
+git_c "$WT4C" commit -q -m "feat: implementation commit"
+out4c="$(cv_sync_patch_unchanged "$WT4C" "$old_base4c" "$old_head4c" 2>&1)"
+rc4c=$?
+assert_eq "1" "$rc4c" "cv_sync_patch_unchanged returns 1 (changed) when the new patch actually differs"
+case "$out4c" in
+  *"changed"*) pass "diagnostic mentions changed" ;;
+  *) fail "expected a 'changed' diagnostic, got: ${out4c}" ;;
+esac
+
+# ===========================================================================
+# CASE 4d — fk-u8n34: a "recreated" sync (zero commits of DIR's own, see CASE
+#   3) is trivially patch-unchanged on both sides (nothing to replay), so
+#   apply-review-findings.md must not force an iteration purely because a
+#   stale, commit-less worktree got reset onto the current origin/main tip.
+# ===========================================================================
+start_case "4d: cv_sync_patch_unchanged reports unchanged for a recreated (zero-own-commits) sync"
+UPSTREAM4D="${SANDBOX}/repo4d-upstream.git"
+git init -q -b main --bare "$UPSTREAM4D"
+REPO4D="$(mk_repo repo4d)"
+git_c "$REPO4D" remote add origin "$UPSTREAM4D"
+git_c "$REPO4D" push -q -u origin main
+git_c "$REPO4D" remote set-head origin main
+WT4D="${SANDBOX}/repo4d-worktree"
+git_c "$REPO4D" worktree add -q --detach "$WT4D" HEAD
+old_head4d="$(git_c "$WT4D" rev-parse HEAD)"
+old_base4d="$old_head4d"
+printf 'v2\n' >> "${REPO4D}/README.md"
+git_c "$REPO4D" add README.md
+git_c "$REPO4D" commit -q -m "feat: upstream advances"
+git_c "$REPO4D" push -q origin main
+result4d="$(cv_sync_worktree_to_base "$WT4D" "con-voyage/repo4d-worktree" 2>/dev/null)"
+assert_eq "recreated" "$result4d" "fixture: CASE 4d's sync reports recreated (same shape as CASE 3)"
+out4d="$(cv_sync_patch_unchanged "$WT4D" "$old_base4d" "$old_head4d" 2>&1)"
+rc4d=$?
+assert_eq "0" "$rc4d" "cv_sync_patch_unchanged returns 0 (unchanged) for a recreated sync with no own commits either side"
+
+# ===========================================================================
+# CASE 4e — cv_sync_patch_unchanged input validation: missing args, a
+#   non-existent commit, and a non-git directory all fail closed (exit 2 —
+#   treat as "changed" rather than silently approving an unresolvable case).
+# ===========================================================================
+start_case "4e: cv_sync_patch_unchanged fails closed (exit 2) on invalid inputs"
+out4e1="$(cv_sync_patch_unchanged "$WT4B" "" "$old_head4b" 2>&1)"
+assert_eq "2" "$?" "returns 2 when old_base_sha is missing"
+out4e2="$(cv_sync_patch_unchanged "$WT4B" "$old_base4b" "" 2>&1)"
+assert_eq "2" "$?" "returns 2 when old_head is missing"
+out4e3="$(cv_sync_patch_unchanged "$WT4B" "$old_base4b" "0000000000000000000000000000000000000000" 2>&1)"
+assert_eq "2" "$?" "returns 2 when old_head does not resolve to a real commit"
+out4e4="$(cv_sync_patch_unchanged "${SANDBOX}/does-not-exist" "$old_base4b" "$old_head4b" 2>&1)"
+assert_eq "2" "$?" "returns 2 when DIR is not a git working tree"
+
+# ===========================================================================
 # CASE 5 — rebase conflict -> fails closed: a DISTINCT exit code (2), HEAD
 #   restored to its pre-sync commit, no leftover rebase state, never falls
 #   back to merge. fk-hcxre: a deterministic content conflict must be
@@ -609,9 +733,36 @@ else
   fail "expected the sync call to precede the verdict-setting section"
 fi
 case "$(cat "$APPLY_MD")" in
-  *"sync"*"recreated"*|*"recreated"*"sync"*) pass "apply-review-findings.md's prose accounts for a recreated/rebased sync result forcing iterate" ;;
-  *) fail "expected apply-review-findings.md to call out that a sync-induced change (recreated/rebased) also forces verdict=iterate" ;;
+  *"sync"*"recreated"*|*"recreated"*"sync"*) pass "apply-review-findings.md's prose accounts for a recreated/rebased sync result" ;;
+  *) fail "expected apply-review-findings.md to call out a recreated/rebased sync result" ;;
 esac
+
+# ===========================================================================
+# fk-u8n34: apply-review-findings.md must distinguish a rebase/recreate that
+# actually changed patch content (still forces iterate) from a clean
+# rebase-onto-a-moved-base that replayed the IDENTICAL patch (eligible for
+# verdict=done, same as a genuine no-op pass) — see cv_sync_patch_unchanged
+# above. A blanket "any sync result = iterate" rule is exactly what forced a
+# LOW-only review round (0 BLOCKING, LOW-only mail already sent) to re-run
+# every lane purely because origin/main moved under it (root fk-wofds /
+# fk-lhjn3 iteration 8).
+# ===========================================================================
+start_case "apply-review-findings.md: distinguishes a patch-unchanged rebase/recreate from a real content change (fk-u8n34)"
+assert_md_contains "$APPLY_MD" 'cv_sync_patch_unchanged "$WORKTREE" "$PRE_SYNC_BASE_SHA" "$PRE_SYNC_HEAD"' \
+  "apply-review-findings.md calls cv_sync_patch_unchanged after syncing, with the pre-sync base/head it captured itself"
+assert_md_contains "$APPLY_MD" 'SYNC_PATCH_UNCHANGED' \
+  "apply-review-findings.md threads SYNC_PATCH_UNCHANGED through its own prose"
+assert_md_contains "$APPLY_MD" 'eligible for verdict=done when there are also no BLOCKING' \
+  "apply-review-findings.md documents the patch-unchanged branch as eligible for verdict=done"
+assert_md_contains "$APPLY_MD" 'including a rebase-only pass where `$SYNC_PATCH_UNCHANGED=true`' \
+  "apply-review-findings.md tells the closing step not to record a fix_commit for a patch-unchanged rebase"
+patch_check_line_apply="$(md_line_of "$APPLY_MD" 'cv_sync_patch_unchanged "$WORKTREE"')"
+verdict_true_line_apply="$(md_line_of "$APPLY_MD" 'but `$SYNC_PATCH_UNCHANGED` is')"
+if [ -n "$patch_check_line_apply" ] && [ -n "$verdict_true_line_apply" ] && [ "$patch_check_line_apply" -lt "$verdict_true_line_apply" ]; then
+  pass "the patch-unchanged check (line ${patch_check_line_apply}) precedes the prose branching on it (line ${verdict_true_line_apply})"
+else
+  fail "expected the patch-unchanged check to precede the prose that branches on it"
+fi
 
 start_case "prepare-build.md: syncs a freshly-created worktree to origin's current base before handing it off (fk-grepg)"
 # fk-grepg: `git worktree add "$WORKTREE" --detach HEAD` bases a brand new
