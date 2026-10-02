@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.5](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.12.4...con-voyage-gascity-v0.12.5) (2026-10-02)
+
+
+### Bug Fixes
+
+* **con-voyage:** lens agents inherit the gc-role-worker startup claim protocol (fk-famif) ([dff3ff6](https://github.com/kriscoleman/foundry/commit/dff3ff68d598f5852a3c24411ec5f5eea0411115))
+
 ## [0.12.4](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.12.3...con-voyage-gascity-v0.12.4) (2026-10-02)
 
 
