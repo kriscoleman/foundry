@@ -1296,6 +1296,8 @@ import sys, json, re
 pr_data    = json.load(sys.stdin)   # PR JSON from stdin
 seen_ids   = set(line.strip() for line in sys.argv[1].splitlines() if line.strip())
 agent_re   = re.compile(sys.argv[2])
+full_repo  = sys.argv[3] if len(sys.argv) > 3 else ""
+pr_number  = sys.argv[4] if len(sys.argv) > 4 else ""
 
 BOT_SUFFIXES = ["[bot]"]
 BOT_LOGINS   = {"github-actions", "dependabot", "renovate", "stale", "codecov", "netlify"}
@@ -1365,6 +1367,43 @@ def is_bot_approval_noise(body, state):
         return True
     return False
 
+# ONE shared classifier used by all three scan loops below (reviews, issue
+# comments, inline review-thread comments). fk-9xyo4/PR#160 recurred TWICE
+# because each loop carried its own hand-copied is_bot/is_ai_reviewer_bot/
+# is_slash_command/is_agent_comment sequence, and a second copy drifted out of
+# order (is_bot ran before is_ai_reviewer_bot), silently dropping a real
+# CRITICAL finding. A single predicate makes that class of drift impossible —
+# every loop now calls this and ONLY this to decide whether an item is
+# suppressed. Returns a short machine-readable reason string ("slash_command",
+# "bot_noise", "bot_approval_noise", "agent_comment") when the item must be
+# dropped, or None when it is a real candidate (the caller still applies its
+# own type-specific empty-body/PENDING rules on top of a None result).
+def classify_suppression(author, body, state):
+    if is_slash_command(body):
+        return "slash_command"
+    if is_ai_reviewer_bot(author):
+        if is_bot_approval_noise(body, state):
+            return "bot_approval_noise"
+        return None
+    if is_bot(author):
+        return "bot_noise"
+    if is_agent_comment(body):
+        return "agent_comment"
+    return None
+
+# SUPPRESSION LOG (fk-1ff6ge / PR#160 round 2, finding 5): a comment that gets
+# filtered out here leaves zero trace anywhere else, so a WRONGLY dropped
+# human comment is invisible until someone notices feedback never arrived --
+# that is exactly how the original Doomer drop (fk-9xyo4) went unnoticed for
+# as long as it did. Every suppression now prints one line to stderr naming
+# the PR, the dropped items dedup id, its author, and the reason, so a bad
+# drop is visible in the monitors own run log instead of silently vanishing.
+def log_suppression(item_type, nid, author, reason):
+    sys.stderr.write(
+        "con-voyage-pr-watch: [PART B] SUPPRESS %s#%s %s id=%s author=%s reason=%s\n"
+        % (full_repo, pr_number, item_type, nid, author, reason)
+    )
+
 found      = []
 new_ids    = set()
 
@@ -1376,14 +1415,9 @@ for review in pr_data.get("reviews", []):
     author = review.get("author", {}).get("login", "")
     body   = review.get("body", "") or ""
     state  = review.get("state", "") or ""
-    if is_slash_command(body):
-        continue
-    if is_ai_reviewer_bot(author):
-        if is_bot_approval_noise(body, state):
-            continue
-    elif is_bot(author):
-        continue
-    elif is_agent_comment(body):
+    reason = classify_suppression(author, body, state)
+    if reason:
+        log_suppression("review", nid, author, reason)
         continue
     if state == "PENDING":
         continue
@@ -1405,14 +1439,9 @@ for comment in pr_data.get("comments", []):
         continue
     author = comment.get("author", {}).get("login", "")
     body   = comment.get("body", "") or ""
-    if is_slash_command(body):
-        continue
-    if is_ai_reviewer_bot(author):
-        if is_bot_approval_noise(body, ""):
-            continue
-    elif is_bot(author):
-        continue
-    elif is_agent_comment(body):
+    reason = classify_suppression(author, body, "")
+    if reason:
+        log_suppression("comment", nid, author, reason)
         continue
     if not body.strip():
         continue
@@ -1433,14 +1462,9 @@ for thread in pr_data.get("reviewThreads", []):
             continue
         author = comment.get("author", {}).get("login", "")
         body   = comment.get("body", "") or ""
-        if is_slash_command(body):
-            continue
-        if is_ai_reviewer_bot(author):
-            if is_bot_approval_noise(body, ""):
-                continue
-        elif is_bot(author):
-            continue
-        elif is_agent_comment(body):
+        reason = classify_suppression(author, body, "")
+        if reason:
+            log_suppression("inline", nid, author, reason)
             continue
         if not body.strip():
             continue
@@ -1476,7 +1500,7 @@ else:
 all_ids = seen_ids | new_ids
 print("SEEN_IDS:" + "\n".join(sorted(all_ids)))
 '
-    new_comments=$(printf '%s' "$pr_comments_json" | python3 -c "$_PY_SCAN_COMMENTS" "$seen_ids_content" "$CV_AGENT_PREFIX_PATTERN") || {
+    new_comments=$(printf '%s' "$pr_comments_json" | python3 -c "$_PY_SCAN_COMMENTS" "$seen_ids_content" "$CV_AGENT_PREFIX_PATTERN" "$full_repo" "$pr_number") || {
       echo "con-voyage-pr-watch: [PART B] WARNING: comment parsing failed for ${full_repo}#${pr_number}" >&2
       continue
     }

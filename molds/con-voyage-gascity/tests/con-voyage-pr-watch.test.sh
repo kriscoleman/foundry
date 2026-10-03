@@ -101,6 +101,18 @@ case "$sub" in
       if [ "${STUB_GQL_THREADS_FAIL:-0}" = "1" ]; then
         exit 1
       fi
+      # STUB_GQL_THREADS_SHARED=1 (fk-1ff6ge, round 2 fix 4): mirrors the SAME
+      # three author/body combos the STUB_PR11_SHARED review+comment fixture
+      # below carries (bot noise, [bot]-suffixed AI-reviewer CRITICAL, bot
+      # slash-command) as INLINE review-thread comments, proving the shared
+      # classify_suppression() predicate treats all three item types
+      # identically instead of each scan loop risking its own drifted copy.
+      if [ "${STUB_GQL_THREADS_SHARED:-0}" = "1" ]; then
+        cat <<'JSON'
+{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"comments":{"nodes":[{"id":"PRRC_shared_noise","databaseId":556601,"path":"","line":null,"author":{"login":"doomer-ai"},"body":"Doomer ran successfully and found no issues"},{"id":"PRRC_shared_critical","databaseId":556602,"path":"src/shared.go","line":7,"author":{"login":"doomer-ai[bot]"},"body":"found no issues, but not automatically approving -- classified as critical: shared-filter inline check"},{"id":"PRRC_shared_slash","databaseId":556603,"path":"","line":null,"author":{"login":"kriscoleman"},"body":"/doomer run"}]}}]}}}}}
+JSON
+        exit 0
+      fi
       cat <<'JSON'
 {"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"comments":{"nodes":[{"id":"PRRC_test_11","databaseId":556677,"path":"src/retry.go","line":42,"author":{"login":"a-human-reviewer"},"body":"inline: rename this var"}]}}]}}}}}
 JSON
@@ -220,6 +232,22 @@ JSON
           if [ "${STUB_PR11_SEVERITY:-0}" = "1" ]; then
             cat <<'JSON'
 {"reviews":[{"id":"PRR_doomer_false_noise","author":{"login":"doomer-ai"},"body":"Doomer ran successfully and found no issues. No critical problems noted.","state":"COMMENTED"},{"id":"PRR_aibot_bracket_critical","author":{"login":"doomer-ai[bot]"},"body":"found no issues, but not automatically approving -- classified as critical: security-control change over sensitive license/entitlement data","state":"COMMENTED"}],"comments":[{"id":"IC_human_slash","author":{"login":"a-human-reviewer"},"body":"/etc/foo is broken, can someone take a look at this path handling?"}]}
+JSON
+            exit 0
+          fi
+          # STUB_PR11_SHARED=1 (fk-1ff6ge, round 2 fix 4 — shared classifier):
+          # the SAME three author/body combinations (bot noise, [bot]-suffixed
+          # AI-reviewer CRITICAL, bot slash-command) appear here as BOTH a
+          # review and an issue comment, and (via STUB_GQL_THREADS_SHARED
+          # above) again as an inline review-thread comment. One shared
+          # classify_suppression() predicate must classify all three
+          # occurrences of each combo identically -- the drift that caused
+          # fk-9xyo4 (is_bot checked ahead of is_ai_reviewer_bot in only ONE
+          # of the three copied loops) is only structurally impossible once
+          # there is a single predicate to drift out of sync.
+          if [ "${STUB_PR11_SHARED:-0}" = "1" ]; then
+            cat <<'JSON'
+{"reviews":[{"id":"PRR_shared_noise","author":{"login":"doomer-ai"},"body":"Doomer ran successfully and found no issues","state":"COMMENTED"},{"id":"PRR_shared_critical","author":{"login":"doomer-ai[bot]"},"body":"found no issues, but not automatically approving -- classified as critical: shared-filter review check","state":"COMMENTED"},{"id":"PRR_shared_slash","author":{"login":"kriscoleman"},"body":"/doomer run","state":"COMMENTED"}],"comments":[{"id":"IC_shared_noise","author":{"login":"doomer-ai"},"body":"Doomer ran successfully and found no issues"},{"id":"IC_shared_critical","author":{"login":"doomer-ai[bot]"},"body":"found no issues, but not automatically approving -- classified as critical: shared-filter comment check"},{"id":"IC_shared_slash","author":{"login":"kriscoleman"},"body":"/doomer run"}]}
 JSON
             exit 0
           fi
@@ -2861,6 +2889,53 @@ assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 1 "exactly o
 assert_log_count "$GC_LOG" '/etc/foo is broken' 1 "a human comment starting with a slash-path is not swallowed as a bot-trigger slash command"
 assert_log_count "$GC_LOG" 'No critical problems noted' 0 "doomer-ai noise mentioning \"critical\" in passing stays excluded"
 assert_log_count "$GC_LOG" 'classified as critical' 1 "a [bot]-suffixed AI-reviewer login's real CRITICAL finding still routes"
+
+# ===========================================================================
+# CASE 52 — fk-1ff6ge PR#160 round 2, fix 4: a SINGLE shared predicate
+#   (classify_suppression()) now backs all three scan loops (reviews, issue
+#   comments, inline review-thread comments), so the three copies can no
+#   longer drift out of order the way is_bot-before-is_ai_reviewer_bot did in
+#   fk-9xyo4. STUB_PR11_SHARED + STUB_GQL_THREADS_SHARED feed the SAME three
+#   author/body combinations into all three item types:
+#     - a doomer-ai no-issue banner (bot_noise) -- must be excluded in all 3.
+#     - a doomer-ai[bot] CRITICAL finding (routes despite the "[bot]" suffix)
+#       -- must route in all 3.
+#     - an operator "/doomer run" slash command -- must be excluded in all 3.
+#   Proves identical classification across loops, not just correct output.
+# ===========================================================================
+start_case "52: fk-1ff6ge — shared classify_suppression() predicate treats reviews/comments/inline identically"
+setup_case_env "52"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_PR11_SHARED="1" STUB_GQL_THREADS_SHARED="1"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 1 "exactly one comment-route sling for #11 (noise and slash-command items from all 3 loops add no extra routes)"
+assert_log_count "$GC_LOG" 'ran successfully and found no issues' 0 "the bot-noise body never reaches routed feedback from ANY of the 3 loops"
+assert_log_count "$GC_LOG" '/doomer run' 0 "the slash-command body never reaches routed feedback from ANY of the 3 loops"
+assert_log_count "$GC_LOG" 'shared-filter review check' 1 "the review-loop CRITICAL finding still routes"
+assert_log_count "$GC_LOG" 'shared-filter comment check' 1 "the comment-loop CRITICAL finding still routes"
+assert_log_count "$GC_LOG" 'shared-filter inline check' 1 "the inline-loop CRITICAL finding still routes"
+# Suppression log (fix 5): every dropped item leaves a named trace naming the
+# PR, item type, dedup id, author, and reason -- a wrongly-dropped human
+# comment is now visible in the run log instead of vanishing silently.
+if printf '%s' "$OUT" | grep -q 'SUPPRESS kriscoleman/foundry#11 review id=PRR_shared_noise author=doomer-ai reason=bot_approval_noise'; then
+  pass "review-loop suppression is logged with PR, id, author, and reason"
+else
+  fail "review-loop suppression is logged with PR, id, author, and reason"
+fi
+if printf '%s' "$OUT" | grep -q 'SUPPRESS kriscoleman/foundry#11 comment id=IC_shared_noise author=doomer-ai reason=bot_approval_noise'; then
+  pass "comment-loop suppression is logged with PR, id, author, and reason"
+else
+  fail "comment-loop suppression is logged with PR, id, author, and reason"
+fi
+if printf '%s' "$OUT" | grep -q 'SUPPRESS kriscoleman/foundry#11 inline id=PRRC_shared_noise author=doomer-ai reason=bot_approval_noise'; then
+  pass "inline-loop suppression is logged with PR, id, author, and reason"
+else
+  fail "inline-loop suppression is logged with PR, id, author, and reason"
+fi
+if printf '%s' "$OUT" | grep -q 'SUPPRESS kriscoleman/foundry#11 comment id=IC_shared_slash author=kriscoleman reason=slash_command'; then
+  pass "slash-command suppression is logged with its own distinct reason"
+else
+  fail "slash-command suppression is logged with its own distinct reason"
+fi
 
 # ===========================================================================
 # Summary
