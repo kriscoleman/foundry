@@ -1815,6 +1815,73 @@ SITE_TOML
   assert_eq "foundry-kc/gc.gap-analyst-1" "$zsh_route_result" "under zsh: a caller that forgets to set \$GC still resolves the rig-scoped route handle, not empty"
 fi
 
+# ===========================================================================
+# cv_parse_pr_monitor_blocks (fk-dnjlg2: base-agnostic CI repair)
+# ===========================================================================
+PARSE_TOML_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cv-parse-monitors.XXXXXX")"
+
+start_case "cv_parse_pr_monitor_blocks: multiple blocks, one with a multi-entry base_branches array"
+cat > "${PARSE_TOML_DIR}/city.toml" <<'TOML'
+[city]
+name = "test"
+
+[[github.pr_monitor]]
+name = "vandoor-prs"
+owner = "replicatedhq"
+repo = "vandoor"
+base_branches = ["main", "con-voyage/va-05ky"]
+rig = "vandoor"
+repair_route = "vandoor/gc.implementation-worker"
+repair_workflow = "con-voyage-ci-repair"
+
+[[github.pr_monitor]]
+name = "ec-prs"
+owner = "replicatedhq"
+repo = "ec"
+base_branches = ["main"]
+rig = "ec"
+repair_route = "ec/gc.implementation-worker"
+TOML
+parsed="$(cv_parse_pr_monitor_blocks "${PARSE_TOML_DIR}/city.toml")"
+row1="$(printf '%s\n' "$parsed" | sed -n '1p')"
+row2="$(printf '%s\n' "$parsed" | sed -n '2p')"
+assert_eq "replicatedhq$(printf '\x1f')vandoor$(printf '\x1f')vandoor$(printf '\x1f')vandoor/gc.implementation-worker$(printf '\x1f')main,con-voyage/va-05ky" "$row1" "first block: owner/repo/rig/route/base_branches all extracted"
+assert_eq "replicatedhq$(printf '\x1f')ec$(printf '\x1f')ec$(printf '\x1f')ec/gc.implementation-worker$(printf '\x1f')main" "$row2" "second block parsed independently of the first (no state bleed across blocks)"
+
+start_case "cv_parse_pr_monitor_blocks: missing file -> no output, no error"
+assert_eq "" "$(cv_parse_pr_monitor_blocks "${PARSE_TOML_DIR}/does-not-exist.toml" 2>/dev/null)" "unreadable path yields empty output, fails safe"
+
+start_case "cv_parse_pr_monitor_blocks: empty path -> no output"
+assert_eq "" "$(cv_parse_pr_monitor_blocks "" 2>/dev/null)" "empty input yields empty output"
+
+rm -rf "$PARSE_TOML_DIR"
+
+# ===========================================================================
+# cv_classify_pr_signals (fk-dnjlg2: base-agnostic CI repair)
+# ===========================================================================
+classify() { printf '%s' "$1" | cv_classify_pr_signals; }
+
+start_case "cv_classify_pr_signals: a failing required check wins regardless of merge state"
+assert_eq "checks_failed$(printf '\x1f')1" "$(classify '{"statusCheckRollup":[{"conclusion":"FAILURE"}],"mergeStateStatus":"BEHIND","mergeable":"MERGEABLE","reviewDecision":""}')" "checks_failed takes precedence over BEHIND"
+
+start_case "cv_classify_pr_signals: DIRTY merge state with all-green checks -> merge_conflict"
+assert_eq "merge_conflict$(printf '\x1f')1" "$(classify '{"statusCheckRollup":[{"conclusion":"SUCCESS"}],"mergeStateStatus":"DIRTY","mergeable":"CONFLICTING","reviewDecision":""}')" "DIRTY/CONFLICTING classifies as merge_conflict"
+
+start_case "cv_classify_pr_signals: BEHIND merge state with all-green checks -> behind_base"
+assert_eq "behind_base$(printf '\x1f')1" "$(classify '{"statusCheckRollup":[{"conclusion":"SUCCESS"}],"mergeStateStatus":"BEHIND","mergeable":"MERGEABLE","reviewDecision":""}')" "BEHIND classifies as behind_base"
+
+start_case "cv_classify_pr_signals: BLOCKED merge state, no failing checks -> blocked"
+assert_eq "blocked$(printf '\x1f')1" "$(classify '{"statusCheckRollup":[{"conclusion":"SUCCESS"}],"mergeStateStatus":"BLOCKED","mergeable":"MERGEABLE","reviewDecision":"REVIEW_REQUIRED"}')" "BLOCKED + REVIEW_REQUIRED classifies as blocked"
+
+start_case "cv_classify_pr_signals: all green, CLEAN, no review gate -> empty failure_kind, not actionable"
+assert_eq "$(printf '\x1f')0" "$(classify '{"statusCheckRollup":[{"conclusion":"SUCCESS"}],"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","reviewDecision":""}')" "a genuinely clean PR classifies as not actionable"
+
+start_case "cv_classify_pr_signals: malformed JSON input -> empty failure_kind, not actionable (fail safe)"
+assert_eq "$(printf '\x1f')0" "$(classify 'not json at all')" "malformed input never invents a repair"
+
+start_case "cv_classify_pr_signals: StatusContext shape (state, not conclusion) failing -> checks_failed"
+assert_eq "checks_failed$(printf '\x1f')1" "$(classify '{"statusCheckRollup":[{"state":"FAILURE"}],"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","reviewDecision":""}')" "a legacy StatusContext failing state is also recognized"
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "ALL CASES PASSED"

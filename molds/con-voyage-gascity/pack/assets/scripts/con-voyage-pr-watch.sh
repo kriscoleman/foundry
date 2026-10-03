@@ -940,6 +940,131 @@ print("\x1f".join(str(f).replace("\x1f", " ").replace("\n", " ") for f in fields
 fi
 
 # ---------------------------------------------------------------------------
+# PART A (native): base-agnostic discovery for unlisted-base con-voyage PRs
+# ---------------------------------------------------------------------------
+#
+# fk-dnjlg2 — the engine's own `gc github pr backfill` (PART A above) only
+# ever evaluates a PR whose base branch is an EXACT, case-insensitive literal
+# in that monitor's configured `base_branches` (gascity's own
+# `normalizedBranchSet`/`EvaluatePullRequests` has no glob support). A
+# stacked con-voyage PR (base `con-voyage/<bead-id>`, not `main`) is
+# therefore invisible to the engine path unless an operator hand-edits
+# `base_branches` per stacked slice — exactly the friction fk-qppb4 named and
+# shipped without fixing.
+#
+# This section mirrors PART B's already-proven, fully dynamic model (list
+# this author's own open PRs directly via `gh pr list`, no base-branch
+# filter) instead of widening the engine's own config schema. For each
+# monitor's repo, list every OPEN PR authored by CV_PR_AUTHOR, skip any whose
+# base IS already one of that monitor's configured `base_branches` (the
+# engine path above already owns those — this is what makes spec 2/3's
+# "no double mint" hold), classify the survivors' failure_kind from raw
+# GitHub signals via cv_classify_pr_signals, and feed each one through the
+# SAME process_pr_record()/dedup/mint machinery PART A already uses. The
+# dedup key is identical in shape to PART A's own
+# ("cv-ci-repair-<owner>-<repo>-<num>"), so a PR that somehow becomes
+# reachable by BOTH paths in the same cycle is still only ever minted once —
+# dedup is keyed on repo+PR number, never on which path discovered it.
+echo "con-voyage-pr-watch: [PART A-native] unlisted-base discovery for '${CV_PR_AUTHOR}'-authored PRs"
+
+# shellcheck disable=SC2034  # n_rig is part of cv_parse_pr_monitor_blocks's
+# fixed row shape; this loop only needs owner/repo/route/bases, same as PART
+# B leaves its own unused rig-adjacent fields alone elsewhere in this file.
+while IFS=$'\x1f' read -r n_owner n_repo n_rig n_route n_bases; do
+  [ -n "$n_owner" ] && [ -n "$n_repo" ] || continue
+  n_full="${n_owner}/${n_repo}"
+
+  # Build the listed-base lookup for THIS monitor only — a base listed on one
+  # monitor's repo says nothing about another repo's own base_branches.
+  IFS=',' read -r -a n_base_arr <<< "$n_bases"
+
+  n_prs_json=$("$GH" pr list --repo "$n_full" --author "$CV_PR_AUTHOR" --state open \
+    --json number,title,headRefName,headRefOid,baseRefName 2>/dev/null) || {
+    echo "con-voyage-pr-watch: [PART A-native] WARNING: gh pr list failed for ${n_full}; skipping" >&2
+    continue
+  }
+  [ -n "$n_prs_json" ] || continue
+
+  n_pr_rows=$(printf '%s' "$n_prs_json" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    data = []
+if not isinstance(data, list):
+    data = []
+for pr in data:
+    fields = [pr.get('number', ''), pr.get('title', '') or '', pr.get('headRefName', '') or '', pr.get('headRefOid', '') or '', pr.get('baseRefName', '') or '']
+    print('\x1f'.join(str(f).replace('\x1f', ' ').replace('\n', ' ') for f in fields))
+" 2>/dev/null || true)
+  [ -n "$n_pr_rows" ] || continue
+
+  while IFS=$'\x1f' read -r n_num n_title n_branch n_sha n_base; do
+    [ -n "$n_num" ] || continue
+
+    # UNRESOLVED BASE: fail closed, never guess. An empty/unresolved
+    # baseRefName is NOT confirmation the base is unlisted — it could just as
+    # easily be a listed base (e.g. "main") whose field failed to populate
+    # this cycle. Treating it as "unlisted -> process" risks the exact
+    # double-mint spec 2/3 exists to prevent; the engine-backed path above
+    # already owns this PR on any cycle where ITS OWN base resolution
+    # succeeds, so skipping here on an unresolved base costs nothing but a
+    # retry next cycle.
+    if [ -z "$n_base" ]; then
+      # NOTE: deliberately does not say "SKIP <full>#<num>" — that exact shape
+      # is PART A's own vocabulary for "a tracked repair is genuinely
+      # in-flight" and existing tests grep combined output for it generically
+      # (not scoped to [PART A] vs [PART A-native]); reusing it here for an
+      # unrelated reason (an unresolved field) would read as a false positive
+      # for that check.
+      echo "con-voyage-pr-watch: [PART A-native] DEFER ${n_full}#${n_num} — baseRefName unresolved; cannot confirm it is unlisted" >&2
+      continue
+    fi
+
+    # ALREADY COVERED: this base is one of the monitor's own listed
+    # base_branches, so the engine-backed path above already evaluated this
+    # PR this cycle (or will, on any config that lists it) — never double-mint.
+    n_base_listed=0
+    for n_listed in "${n_base_arr[@]}"; do
+      if [ "$n_listed" = "$n_base" ]; then
+        n_base_listed=1
+        break
+      fi
+    done
+    [ "$n_base_listed" -eq 1 ] && continue
+
+    n_view_json=$("$GH" pr view "$n_num" --repo "$n_full" \
+      --json statusCheckRollup,mergeStateStatus,mergeable,reviewDecision 2>/dev/null) || {
+      echo "con-voyage-pr-watch: [PART A-native] WARNING: gh pr view failed for ${n_full}#${n_num}; skipping" >&2
+      continue
+    }
+    n_classify=$(printf '%s' "$n_view_json" | cv_classify_pr_signals)
+    IFS=$'\x1f' read -r n_failure_kind n_actionable <<< "$n_classify"
+
+    # process_pr_record reads its inputs from the a_* globals — this is the
+    # SAME convention the engine-backed loop above uses, so the shared
+    # function needs no native-vs-engine branch of its own.
+    a_owner="$n_owner"; a_repo="$n_repo"; a_num="$n_num"; a_title="$n_title"
+    a_branch="$n_branch"; a_sha="$n_sha"; a_route="$n_route"
+    a_failure_kind="$n_failure_kind"; a_actionable="$n_actionable"
+    a_full="$n_full"
+    a_dedup_key="cv-ci-repair-${n_owner}-${n_repo}-${n_num}"
+
+    if ! acquire_lock "$a_dedup_key"; then
+      # Same naming note as the DEFER case above — "LOCKED", not "SKIP", so
+      # this never collides with PART A's own in-flight-SKIP vocabulary in a
+      # combined-output grep.
+      echo "con-voyage-pr-watch: [PART A-native] LOCKED ${a_full}#${a_num} — locked by a concurrent pr-watch run (dedup: ${a_dedup_key})"
+      continue
+    fi
+
+    process_pr_record
+
+    release_lock "$a_dedup_key"
+  done <<< "$n_pr_rows"
+done <<< "$(cv_parse_pr_monitor_blocks "${GC_CITY}/city.toml")"
+
+# ---------------------------------------------------------------------------
 # PART B: Human PR-comment routing
 # ---------------------------------------------------------------------------
 #
