@@ -23,8 +23,17 @@ fi
 
 REPO_FULL="{repo}"
 PR_NUMBER="{pr}"
+BRANCH="{branch}"
 FINALIZE_KEY="{finalize_key}"
 REVIEW_ROUND="{review_round}"
+if [ -z "${REPO_FULL}" ] || [ -z "${PR_NUMBER}" ] || [ -z "${BRANCH}" ] || [ -z "${FINALIZE_KEY}" ]; then
+  echo "con-voyage rereview-finalize: missing required var(s) — repo='${REPO_FULL}' pr='${PR_NUMBER}' branch='${BRANCH}' finalize_key='${FINALIZE_KEY}'" >&2
+  bd update "$CLAIMED_BEAD_ID" \
+    --set-metadata 'gc.outcome=fail' \
+    --set-metadata 'gc.failure_class=missing_vars'
+  bd close "$CLAIMED_BEAD_ID" --reason 'Missing required repo/pr/branch/finalize_key var(s) — see stderr.'
+  exit 0
+fi
 
 CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
 CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
