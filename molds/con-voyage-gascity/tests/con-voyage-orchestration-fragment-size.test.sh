@@ -53,7 +53,7 @@ fi
 # ---------------------------------------------------------------------------
 start_case "the fragment still carries the always-resident facilitator contract"
 # ---------------------------------------------------------------------------
-for needle in "chief-of-staff facilitator" "Dispatch posture" "Do not serialize by habit" "same-file overlap" "stacked PR" "last resort" "I'll queue them to be safe" "Reporting & identity"; do
+for needle in "chief-of-staff facilitator" "Dispatch posture" "Do not serialize by habit" "same-file overlap" "stacked PR" "last resort" "I'll queue them to be safe" '{{ template "cv-severity-rubric" . }}'; do
   if grep -qF -- "$needle" "$FRAGMENT" 2>/dev/null; then
     pass "fragment retains: $needle"
   else

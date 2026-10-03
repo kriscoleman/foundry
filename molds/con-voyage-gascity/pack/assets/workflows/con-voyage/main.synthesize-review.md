@@ -41,6 +41,11 @@ Read all active review lane reports. Deduplicate findings, preserve the source
 review lane for each finding, and classify each item as required fix (BLOCKING),
 low-priority concern (LOW), or approved.
 
+Never downgrade a lane's own BLOCKING classification to LOW — not on
+"intentional per plan" grounds, not because the finding looks small, not
+because you'd have called it LOW yourself. A lane's BLOCKING is authoritative;
+synthesis consolidates and deduplicates, it does not re-grade.
+
 Write one consolidated review synthesis under the build artifact root. The
 synthesis must be concrete enough for the fix lane to act without another
 planning pass. Structure it as:
