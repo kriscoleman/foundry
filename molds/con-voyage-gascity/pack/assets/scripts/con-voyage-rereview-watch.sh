@@ -189,11 +189,17 @@ classify_head_change() {
 # from the workflow root's gc.graphv2_vars.v1 JSON metadata, restricted to the
 # enable_*/code_lens/implementation_target keys a re-review round needs to
 # reproduce the SAME roster. Empty on any resolution failure (caller decides
-# how to fail safe).
+# how to fail safe). The bd-show call here keeps its own "$GC" --city
+# "$GC_CITY" form (this script runs outside the rig's own cwd, unlike
+# con-voyage-lib.sh's bare-call convention); only the JSON-parse-and-filter
+# logic is shared, via cv_flatten_roster_vars_from_json (review fk-n74o9
+# BLOCKING-2 — this used to duplicate that logic inline and had already
+# drifted cosmetically from con-voyage-lib.sh's copy).
 flatten_roster_vars() {
   local root_bead_id="$1"
   [ -n "${root_bead_id// /}" ] || return 0
-  "$GC" --city "$GC_CITY" bd show "$root_bead_id" --json 2>/dev/null | python3 -c "
+  local raw
+  raw="$("$GC" --city "$GC_CITY" bd show "$root_bead_id" --json 2>/dev/null | python3 -c "
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -201,20 +207,9 @@ try:
 except Exception:
     d = {}
 meta = (d or {}).get('metadata') or {}
-raw = meta.get('gc.graphv2_vars.v1') or '{}'
-try:
-    vars_ = json.loads(raw)
-except Exception:
-    vars_ = {}
-keep_prefixes = ('enable_',)
-keep_exact = ('code_lens', 'implementation_target', 'cv_lens_claim_seconds',
-              'cv_lens_max_redispatch', 'cv_lens_escalate_target')
-parts = []
-for k in sorted(vars_):
-    if k in keep_exact or any(k.startswith(p) for p in keep_prefixes):
-        parts.append('{}={}'.format(k, vars_[k]))
-print(','.join(parts))
-" 2>/dev/null
+print(meta.get('gc.graphv2_vars.v1') or '{}')
+" 2>/dev/null)"
+  cv_flatten_roster_vars_from_json "$raw"
 }
 
 # dispatch_rereview DEDUP_KEY REPO_FULL PR_NUMBER BRANCH ROSTER_VARS \
