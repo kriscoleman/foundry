@@ -1294,7 +1294,7 @@ Override the native-language code lens when the repo's dominant language is not 
 | Other | `con-voyage.cv-code-reviewer` |
 
 ```bash
-gc sling <target> <bead> --formula \
+gc sling <target> <bead> --on con-voyage \
   --var push=true \
   --var open_pr=true \
   [--var code_lens=con-voyage.cv-frontend-principal-engineer] \

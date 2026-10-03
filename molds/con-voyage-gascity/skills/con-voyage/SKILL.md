@@ -34,7 +34,7 @@ Run this once per city before invoking `/con-voyage`. If the pack is already imp
 After intake and roster selection (Phase 0–1 of the orchestration fragment), sling the formula:
 
 ```bash
-gc sling <target> <work-bead> --formula \
+gc sling <target> <work-bead> --on con-voyage \
   --var push=true \
   --var open_pr=true \
   [--var code_lens=con-voyage.cv-frontend-principal-engineer] \
@@ -77,7 +77,7 @@ The always-resident `con-voyage-orchestration` template fragment (appended into 
 
 ```
 Intake → work bead + convoy
-  → SLING formula  (gc sling <target> <work-bead> --formula --var push=true --var open_pr=true --var enable_<lens>=true)
+  → SLING formula  (gc sling <target> <work-bead> --on con-voyage --var push=true --var open_pr=true --var enable_<lens>=true)
   → BUILD (if needed)  (fresh bead: first TDD round runs automatically; a bead
                          that already has a pre-built branch short-circuits
                          straight to REVIEW LOOP — nothing to do on your end
