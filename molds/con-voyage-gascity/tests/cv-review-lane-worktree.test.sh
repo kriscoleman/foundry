@@ -37,6 +37,8 @@ if [ ! -f "$SCRIPT" ]; then
   exit 2
 fi
 
+REAL_GIT="$(command -v git)" || { echo "FATAL: git not found on PATH" >&2; exit 2; }
+
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/cv-review-lane-wt-test.XXXXXX")"
 # Canonicalize: on macOS, $TMPDIR resolves under a symlink (/var ->
 # /private/var). The script under test always returns realpath'd worktree
@@ -212,6 +214,69 @@ assert_eq "0" "$RC" "sweep exits 0 even with nothing left to sweep"
 start_case "9: unknown subcommand is rejected"
 run_script frobnicate "$SRC1"
 if [ "$RC" -ne 0 ]; then pass "unknown subcommand exits non-zero"; else fail "expected non-zero exit for an unknown subcommand"; fi
+
+# ===========================================================================
+# CASE 10 — fk-iw972: the reuse-guard check in cmd_acquire must not falsely
+#   refuse a valid, already-acquired lane worktree when 'git worktree list
+#   --porcelain | grep -qxF ...' races a downstream SIGPIPE under `pipefail`.
+#
+#   ROOT CAUSE (corrected diagnosis, 3rd occurrence, 2026-10-03): this is NOT
+#   a locking race. cmd_acquire's reuse-guard pipes a live 'git worktree list
+#   --porcelain' directly into 'grep -qxF'. grep -q exits the instant it finds
+#   its match; if git is still mid-write on later output when grep's reader
+#   end closes, git's next write() gets SIGPIPE, and under 'set -o pipefail'
+#   that nonzero exit status wins over grep's own successful (0) exit code —
+#   turning a CORRECT match into cmd_acquire reporting "exists but is not a
+#   worktree of ..." and dying. It correlates with concurrent lane count only
+#   because more worktrees means more trailing porcelain output after the
+#   match, making the race more likely — not because of any actual mutual
+#   exclusion problem.
+#
+#   REPRODUCTION: a fake 'git' shimmed onto PATH intercepts only the exact
+#   'git -C <src> worktree list --porcelain' invocation cmd_acquire's
+#   reuse-guard makes. It runs the REAL git first (so the genuine matching
+#   "worktree <lane_dir>" line is really there, at its natural early
+#   position), then appends several MB of synthetic trailing porcelain-shaped
+#   padding — far more than grep will ever read once it finds the real match
+#   and exits. This deterministically forces the same SIGPIPE-after-match race
+#   production hit under real concurrent lane load, without needing an actual
+#   multi-process race or hundreds of real 'git worktree add' calls.
+# ===========================================================================
+start_case "10: acquire's reuse-guard must not falsely refuse on a SIGPIPE/pipefail race in 'git worktree list --porcelain | grep -q'"
+
+run_script acquire "$SRC1" "lane-pipefail"
+assert_eq "0" "$RC" "baseline acquire (no shim) exits 0"
+LANE_PF="$OUT"
+
+FAKE_BIN="${SANDBOX}/fake-bin"
+mkdir -p "$FAKE_BIN"
+PADFILE="${SANDBOX}/porcelain-padding.txt"
+yes "worktree /fake/padding-for-fk-iw972
+HEAD 0000000000000000000000000000000000000000
+detached
+" | head -c 3000000 > "$PADFILE"
+
+cat > "${FAKE_BIN}/git" <<SHIM
+#!/usr/bin/env bash
+# Test-only shim (fk-iw972): intercept ONLY the reuse-guard's exact
+# 'worktree list --porcelain' call; every other git invocation (rev-parse,
+# checkout, clean, worktree add, ...) passes straight through unmodified.
+if [ "\$1" = "-C" ] && [ "\$3" = "worktree" ] && [ "\$4" = "list" ] && [ "\$5" = "--porcelain" ]; then
+  "${REAL_GIT}" "\$@"
+  cat "${PADFILE}"
+else
+  exec "${REAL_GIT}" "\$@"
+fi
+SHIM
+chmod +x "${FAKE_BIN}/git"
+
+ORIG_PATH="$PATH"
+PATH="${FAKE_BIN}:${PATH}"
+run_script acquire "$SRC1" "lane-pipefail"
+PATH="$ORIG_PATH"
+
+assert_eq "0" "$RC" "acquire's reuse-guard survives a SIGPIPE/pipefail race on a true match (fk-iw972)"
+assert_eq "$LANE_PF" "$OUT" "acquire still returns the correct, already-existing lane worktree path despite the race"
 
 # ===========================================================================
 # Summary

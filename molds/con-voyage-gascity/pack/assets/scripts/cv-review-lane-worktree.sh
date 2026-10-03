@@ -112,7 +112,17 @@ cmd_acquire() {
     || die "acquire: could not resolve HEAD in '${src}'"
 
   if [ -d "$lane_dir" ]; then
-    git -C "$src" worktree list --porcelain 2>/dev/null | grep -qxF "worktree ${lane_dir}" \
+    # Capture first, then match — never pipe a live 'git worktree list' into
+    # 'grep -q'. grep -q exits the instant it finds a match, and if git is
+    # still mid-write on trailing output when that happens, its next write()
+    # gets SIGPIPE; under `set -o pipefail` that nonzero exit status wins over
+    # grep's own successful one, turning a CORRECT match into a false refusal
+    # here (fk-iw972). Capturing via command substitution fully drains git's
+    # output before grep (now matching against an in-memory string via a here
+    # string, not a pipe) ever runs, so no live producer can race its reader.
+    local wt_list
+    wt_list="$(git -C "$src" worktree list --porcelain 2>/dev/null)"
+    grep -qxF "worktree ${lane_dir}" <<<"$wt_list" \
       || die "acquire: '${lane_dir}' exists but is not a worktree of '${src}' — refusing to reuse or overwrite"
     # Re-run mechanics: refresh a reused lane worktree to the source's CURRENT
     # commit and discard any leftover mutation from a prior review cycle.
