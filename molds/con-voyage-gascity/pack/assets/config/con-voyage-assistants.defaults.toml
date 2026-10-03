@@ -1,0 +1,16 @@
+# con-voyage-assistants.defaults.toml — pack-shipped defaults for the
+# [con_voyage.assistants] feature flags (fk-apujks, shared prerequisite for
+# Marshal/Scribe/Custodian — see .claude/plans/con-voyage-assistants.md
+# "Shared scaffolding" §1).
+#
+# All three default to SUSPENDED: they cost money to run (an always-on
+# judgment-tier `gc session`), so a city must opt in explicitly. A rig opts
+# one or more in by placing its own override file at
+# "<rig_root>/.gc/con-voyage-assistants.toml" with the same [con_voyage.assistants]
+# table shape — only the keys it wants to override; any key it omits falls
+# back to this file's default. cv_assistant_enabled (con-voyage-lib.sh) is
+# the single reader of both files; nothing else parses this table directly.
+[con_voyage.assistants]
+marshal = false
+scribe = false
+custodian = false
