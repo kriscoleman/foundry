@@ -353,7 +353,7 @@ print('{}\x1f{}\x1f{}'.format(d.get('state') or '', d.get('headRefOid') or '', d
       "$GC" --city "$GC_CITY" mail send mayor \
         -s "RE-REVIEW PENDING: ${label}" \
         -m "con-voyage-rereview-watch: ${label} received a code-changing push to ${new_head} after publish. Starting a fresh review round (round ${next_round}) with the original roster before the PR may land." \
-        --json 2>&1)
+        --json 2>/dev/null)
     mail_rc=$?
     if [ "$mail_rc" -ne 0 ]; then
       echo "con-voyage-rereview-watch: WARNING: mayor mail (RE-REVIEW PENDING) failed for ${label}: ${mail_out}; continuing anyway (the re-review dispatch itself is the primary signal)" >&2
