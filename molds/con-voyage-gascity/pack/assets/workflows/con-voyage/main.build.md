@@ -77,6 +77,44 @@ cd "$WORKTREE" || { echo "con-voyage build: cd into ${WORKTREE} failed" >&2; exi
 Do not edit files anywhere but inside `$WORKTREE`. Never edit the launcher
 checkout.
 
+## Fail fast if the workflow root is already closed (fk-jg6rm)
+
+`needs`/retry semantics in graph.v2 can mint a FRESH build attempt bead even
+after this workflow's root has already been closed (confirmed live, root
+fk-viqoe 2026-10-03: the mayor abandoned the root at 00:46Z and a fresh
+review iteration was still minted and claimed afterward — closing a root
+does not, by itself, stop the engine from dispatching more steps under it).
+A later attempt bead must not spend a fresh TDD round on a workflow nobody
+is waiting on anymore. Check the root's own status before doing anything
+else:
+
+```bash
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
+ROOT_BEAD_STATUS=""
+if [ -n "$CV_LIB" ]; then
+  IFS=$'\x1f' read -r ROOT_BEAD_STATUS _ <<< "$(source "$CV_LIB" && bead_status "$ROOT_ID" id)"
+fi
+if [ "$ROOT_BEAD_STATUS" = "closed" ]; then
+  echo "con-voyage build: workflow root ${ROOT_ID} is already closed — abandoning this attempt and sweeping any pending descendants, minting nothing" >&2
+  if [ -n "$CV_LIB" ]; then
+    source "$CV_LIB" && cv_close_workflow_root "$ROOT_ID" "workflow root already closed before this build attempt ran; aborting, minting nothing"
+  fi
+  bd update "$CLAIMED_BEAD_ID" \
+    --set-metadata 'gc.outcome=skipped' \
+    --set-metadata 'gc.skip_reason=workflow root already closed'
+  bd close "$CLAIMED_BEAD_ID" --reason 'Skipped: workflow root already closed, nothing to build.'
+  exit 0
+fi
+```
+
+An empty `$ROOT_BEAD_STATUS` (lib not found, or `bd show` failed) is
+"unknown", not "confirmed open" — fall through to the rest of this file
+rather than guessing. If the block above closes this bead, STOP.
+
 ## Record this step's own session as the implementor (review fk-hbsmk BLOCKING-1, fk-pbadx BLOCKING-1/3)
 
 Stamp `$ROOT_ID` with a dedicated `gc.build.implementor_session` key, read
@@ -440,6 +478,64 @@ attempts (`gc.attempt` greater than 1), read the validator errors from
 in place instead of rewriting it. Two bounded repair attempts follow the
 first failure; exhausting them closes this stage with `gc.outcome=fail` and
 machine-readable validation errors that block downstream stages.
+
+## Abandon the workflow on a terminal build failure (fk-jg6rm)
+
+If this attempt is unrecoverable — an unresolvable requirement, a wrong-repo
+source anchor, exhausted repair attempts, or any other reason you are about
+to close this step with `gc.outcome=fail` rather than `pass` — the review
+phase must never run against a build that never happened. Before closing,
+abandon the whole workflow so setup-con-voyage-review, the review loop, and
+every lane under it mint nothing (confirmed live, root fk-viqoe
+2026-10-03: 4 failed build attempts still let code-review and
+security-review lanes go in_progress with no review context on disk).
+Mail the mayor exactly once per workflow — dedup via a build-specific
+metadata flag (the sync-conflict path above already owns
+`gc.build.sync_conflict_mail_sent`; this is a distinct failure class, so it
+gets its own flag):
+
+```bash
+ALREADY_MAILED="$(gc bd show "$ROOT_ID" --json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    d = d[0] if isinstance(d, list) else d
+except Exception:
+    d = {}
+print((d.get('metadata') or {}).get('gc.build.failure_mail_sent') or '')
+" 2>/dev/null)"
+if [ "$ALREADY_MAILED" != "true" ]; then
+  MAIL_ERR_FILE="$(mktemp)"
+  MAIL_OUT="$(source "$CV_LIB" && cv_with_timeout 30 gc mail send mayor -s "con-voyage build failed: ${ROOT_ID}" -m "con-voyage build (${CLAIMED_BEAD_ID}) closed gc.outcome=fail on root ${ROOT_ID}. The workflow has been abandoned — no review lanes will be dispatched." --json 2>"$MAIL_ERR_FILE")"
+  MAIL_RC=$?
+  MAIL_ERR_TEXT="$(cat "$MAIL_ERR_FILE" 2>/dev/null)"
+  rm -f "$MAIL_ERR_FILE"
+  if [ "$MAIL_RC" -eq 0 ]; then
+    MAIL_ID="$(printf '%s' "$MAIL_OUT" | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = {}
+print((d.get('message') or {}).get('id') or '')
+" 2>/dev/null)"
+    if [ -n "$MAIL_ID" ]; then
+      gc bd update "$ROOT_ID" --set-metadata 'gc.build.failure_mail_sent=true' --set-metadata "gc.build.failure_mail_id=${MAIL_ID}" >/dev/null 2>&1
+    else
+      echo "con-voyage build: mail to mayor on build failure returned no message id — not marking as sent" >&2
+    fi
+  else
+    echo "con-voyage build: mail to mayor on build failure failed/timed out: ${MAIL_OUT}${MAIL_ERR_TEXT:+ ${MAIL_ERR_TEXT}} — mayor NOT confirmed notified" >&2
+  fi
+fi
+
+source "$CV_LIB" && cv_close_workflow_root "$ROOT_ID" "con-voyage build failed (${CLAIMED_BEAD_ID}); no review lanes dispatched"
+```
+
+This runs in addition to, not instead of, the normal close below. Set
+`gc.outcome=fail` on this step as usual — `cv_close_workflow_root` above
+already swept the root and any other still-open descendants, so this bead's
+own close just records its own terminal state.
 
 ## Close
 

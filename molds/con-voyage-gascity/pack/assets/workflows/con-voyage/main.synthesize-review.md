@@ -1,5 +1,42 @@
 Synthesize the con-voyage review.
 
+## Fail fast if the workflow root is already closed (fk-jg6rm)
+
+graph.v2 can mint a fresh synthesize-review bead even after this workflow's
+root has already been closed (confirmed live, root fk-viqoe 2026-10-03 —
+closing a root does not, by itself, stop the engine from dispatching more
+steps under it). Synthesizing a review of a workflow nobody is waiting on
+anymore just manufactures more work for apply-review-findings to iterate on.
+Check the root's own status before reading any lane reports:
+
+```bash
+GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
+ROOT_ID="${GC_ROOT_BEAD_ID:-$GC_BEAD_ID}"
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
+ROOT_BEAD_STATUS=""
+if [ -n "$CV_LIB" ]; then
+  IFS=$'\x1f' read -r ROOT_BEAD_STATUS _ <<< "$(source "$CV_LIB" && bead_status "$ROOT_ID" id)"
+fi
+if [ "$ROOT_BEAD_STATUS" = "closed" ]; then
+  echo "synthesize-review: workflow root ${ROOT_ID} is already closed — abandoning this step and any pending descendants, minting nothing" >&2
+  if [ -n "$CV_LIB" ]; then
+    source "$CV_LIB" && cv_close_workflow_root "$ROOT_ID" "workflow root already closed before synthesize-review ran; aborting, minting nothing"
+  fi
+  bd update "$CLAIMED_BEAD_ID" \
+    --set-metadata 'gc.outcome=skipped' \
+    --set-metadata 'gc.skip_reason=workflow root already closed'
+  bd close "$CLAIMED_BEAD_ID" --reason 'Skipped: workflow root already closed, nothing to synthesize.'
+  exit 0
+fi
+```
+
+An empty `$ROOT_BEAD_STATUS` is "unknown", not "confirmed open" — fall
+through rather than guessing. If this block closes this bead, STOP.
+
 Read all active review lane reports. Deduplicate findings, preserve the source
 review lane for each finding, and classify each item as required fix (BLOCKING),
 low-priority concern (LOW), or approved.

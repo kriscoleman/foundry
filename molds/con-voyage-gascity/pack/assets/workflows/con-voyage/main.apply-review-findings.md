@@ -1,5 +1,57 @@
 Apply con-voyage review findings.
 
+## Fail fast if the workflow root is already closed (fk-jg6rm)
+
+graph.v2 can mint a fresh apply-review-findings bead even after this
+workflow's root has already been closed (confirmed live, root fk-viqoe
+2026-10-03 — closing a root does not, by itself, stop the engine from
+dispatching more steps under it). Applying findings to an abandoned run just
+re-arms the review loop for a cycle nobody is waiting on. Check the root's
+own status before resolving the target worktree or touching any files:
+
+```bash
+GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
+ROOT_ID="${GC_ROOT_BEAD_ID:-}"
+if [ -z "$ROOT_ID" ]; then
+  ROOT_ID="$(gc bd show "$GC_BEAD_ID" --json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    d = d[0] if isinstance(d, list) else d
+except Exception:
+    d = {}
+print((d.get('metadata') or {}).get('gc.root_bead_id') or '')
+" 2>/dev/null)"
+fi
+[ -n "$ROOT_ID" ] || ROOT_ID="$GC_BEAD_ID"
+
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
+ROOT_BEAD_STATUS=""
+if [ -n "$CV_LIB" ]; then
+  IFS=$'\x1f' read -r ROOT_BEAD_STATUS _ <<< "$(source "$CV_LIB" && bead_status "$ROOT_ID" id)"
+fi
+if [ "$ROOT_BEAD_STATUS" = "closed" ]; then
+  echo "apply-review-findings: workflow root ${ROOT_ID} is already closed — abandoning this step and any pending descendants, minting nothing" >&2
+  if [ -n "$CV_LIB" ]; then
+    source "$CV_LIB" && cv_close_workflow_root "$ROOT_ID" "workflow root already closed before apply-review-findings ran; aborting, minting nothing"
+  fi
+  bd update "$CLAIMED_BEAD_ID" \
+    --set-metadata 'gc.outcome=skipped' \
+    --set-metadata 'gc.skip_reason=workflow root already closed'
+  bd close "$CLAIMED_BEAD_ID" --reason 'Skipped: workflow root already closed, nothing to apply.'
+  exit 0
+fi
+```
+
+An empty `$ROOT_BEAD_STATUS` is "unknown", not "confirmed open" — fall
+through rather than guessing. If this block closes this bead, STOP.
+`$ROOT_ID` resolved here is reused by the next section instead of
+re-deriving it.
+
 ## Resolve the target worktree (review fk-hbsmk B1)
 
 Every con-voyage step launches with cwd = the shared rig-root launcher

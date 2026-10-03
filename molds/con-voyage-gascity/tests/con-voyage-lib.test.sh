@@ -1365,6 +1365,67 @@ assert_eq "0" "$rc" "no arithmetic error aborts the function before the command 
 assert_eq "" "$out" "no stderr from a bad octal-literal arithmetic expansion ('08: value too great for base')"
 
 # ---------------------------------------------------------------------------
+# cv_close_workflow_root (fk-jg6rm): direct unit coverage. This is the
+# teardown primitive every "root closed -> abandon, mint nothing" guard this
+# fix adds to the build/setup-review/review-loop/synthesize/apply-findings
+# workflow steps calls, and is now also exposed to the mayor as a standalone
+# CLI (cv-abandon-workflow.sh). close_if_open already has its own direct
+# coverage above (force-close refusal shapes); these cases cover the
+# descendant-sweep-then-root orchestration cv_close_workflow_root adds on top.
+# The stub's "bd list" handler returns STUB_BDPINNED_JSON regardless of
+# subcommand args, so it stands in for the
+# "bd list --status open --metadata-field gc.root_bead_id=<root>" sweep call.
+# ---------------------------------------------------------------------------
+start_case "cv_close_workflow_root: sweeps open descendants, then closes the root last"
+export STUB_BDSHOW_JSON_fk_root1='{"id":"fk-root1","status":"open","metadata":{},"dependencies":[]}'
+export STUB_BDPINNED_JSON='[{"id":"fk-lane1"},{"id":"fk-lane2"}]'
+: > "$GC_LOG"
+cv_close_workflow_root "fk-root1" "test teardown"
+assert_eq "0" "$CV_CLOSE_RC" "root bead closes cleanly -> CV_CLOSE_RC=0"
+assert_log_count 'bd close fk-lane1 ' 1 "descendant fk-lane1 was closed"
+assert_log_count 'bd close fk-lane2 ' 1 "descendant fk-lane2 was closed"
+assert_log_count 'bd close fk-root1 ' 1 "root fk-root1 was closed"
+descendant_line="$(grep -nE 'bd close fk-lane[12] ' "$GC_LOG" | tail -1 | cut -d: -f1)"
+root_line="$(grep -nE 'bd close fk-root1 ' "$GC_LOG" | head -1 | cut -d: -f1)"
+if [ -n "$descendant_line" ] && [ -n "$root_line" ] && [ "$descendant_line" -lt "$root_line" ]; then
+  echo "  PASS: descendants close before the root bead itself"
+else
+  echo "  FAIL: expected every descendant close to precede the root's own close (descendant=${descendant_line:-<missing>}, root=${root_line:-<missing>})" >&2
+  FAILURES=$((FAILURES+1))
+fi
+unset STUB_BDPINNED_JSON
+
+start_case "cv_close_workflow_root: root already closed -> idempotent no-op on the root, descendants still swept"
+export STUB_BDSHOW_JSON_fk_root2='{"id":"fk-root2","status":"closed","metadata":{},"dependencies":[]}'
+export STUB_BDPINNED_JSON='[{"id":"fk-lane3"}]'
+: > "$GC_LOG"
+cv_close_workflow_root "fk-root2" "test teardown"
+assert_eq "0" "$CV_CLOSE_RC" "an already-closed root is a no-op, not a failure"
+assert_log_count 'bd close fk-lane3 ' 1 "a still-open descendant is still swept even when the root is already closed"
+assert_log_count 'bd close fk-root2 ' 0 "an already-closed root is never re-closed"
+unset STUB_BDPINNED_JSON
+
+start_case "cv_close_workflow_root: a descendant close failure is logged but never blocks the root's own close (best-effort sweep)"
+export STUB_BDSHOW_JSON_fk_root3='{"id":"fk-root3","status":"open","metadata":{},"dependencies":[]}'
+export STUB_BDPINNED_JSON='[{"id":"fk-stuck"}]'
+export STUB_BDCLOSE_FAIL_fk_stuck=1
+: > "$GC_LOG"
+root_close_warn="$(cv_close_workflow_root "fk-root3" "test teardown" 2>&1 >/dev/null)"
+assert_eq "0" "$CV_CLOSE_RC" "CV_CLOSE_RC reflects only the root bead's own close outcome, not the descendant sweep"
+case "$root_close_warn" in
+  *"could not close descendant fk-stuck"*) echo "  PASS: a stuck descendant's close failure is logged" ;;
+  *) echo "  FAIL: expected a WARNING naming the stuck descendant, got: ${root_close_warn}" >&2; FAILURES=$((FAILURES+1)) ;;
+esac
+assert_log_count 'bd close fk-root3 ' 1 "the root is still closed despite a descendant sweep failure"
+unset STUB_BDPINNED_JSON STUB_BDCLOSE_FAIL_fk_stuck
+
+start_case "cv_close_workflow_root: empty root id -> no-op, no bd calls"
+: > "$GC_LOG"
+cv_close_workflow_root "" "test teardown"
+assert_eq "0" "$CV_CLOSE_RC" "empty root id is a clean no-op"
+assert_log_count 'bd (close|list)' 0 "empty root id never calls bd list or bd close"
+
+# ---------------------------------------------------------------------------
 # zsh portability (fk-k14n REWORK — operator PR comment + new bug report):
 # `status` is a special/read-only parameter in zsh (it mirrors `$?`), so
 # `local status` followed by an assignment (`status="$x"` or

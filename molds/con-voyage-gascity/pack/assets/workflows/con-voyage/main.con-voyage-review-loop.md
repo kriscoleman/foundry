@@ -17,6 +17,66 @@ Loop rules (authoritative at the finding level, not the verdict level):
 - No BLOCKING, LOWs only: stop and surface the findings to the human. They decide
   proceed or send back. Do not decide this yourself.
 
+## Fail fast if the workflow root is already closed, or setup did not pass (fk-jg6rm)
+
+A `needs` edge in graph.v2 is satisfied once setup-con-voyage-review is
+CLOSED, regardless of its outcome (same reasoning as the build/setup guards
+above it in this workflow) — a setup step that skipped because build never
+passed does not, by itself, stop this controller from being routed and
+claimed, and fanning out review lanes anyway. Separately, graph.v2 can mint
+a fresh review-loop bead even after this workflow's root has already been
+closed (confirmed live, root fk-viqoe 2026-10-03: the mayor's abandon at
+00:46Z still let a fresh iteration get minted and claimed afterward). Check
+both before doing anything else — no fan-out, no synthesis, no lane
+dispatch:
+
+```bash
+GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
+ROOT_ID="${GC_ROOT_BEAD_ID:-$GC_BEAD_ID}"
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
+
+ROOT_BEAD_STATUS=""
+if [ -n "$CV_LIB" ]; then
+  IFS=$'\x1f' read -r ROOT_BEAD_STATUS _ <<< "$(source "$CV_LIB" && bead_status "$ROOT_ID" id)"
+fi
+if [ "$ROOT_BEAD_STATUS" = "closed" ]; then
+  echo "con-voyage review loop: workflow root ${ROOT_ID} is already closed — abandoning this step and any pending descendants, minting nothing" >&2
+  if [ -n "$CV_LIB" ]; then
+    source "$CV_LIB" && cv_close_workflow_root "$ROOT_ID" "workflow root already closed before the review loop ran; aborting, minting nothing"
+  fi
+  bd update "$CLAIMED_BEAD_ID" \
+    --set-metadata 'gc.outcome=skipped' \
+    --set-metadata 'gc.skip_reason=workflow root already closed'
+  bd close "$CLAIMED_BEAD_ID" --reason 'Skipped: workflow root already closed, nothing to review.'
+  exit 0
+fi
+
+SETUP_OUTCOME=""
+if [ -n "$CV_LIB" ]; then
+  SETUP_OUTCOME="$(source "$CV_LIB" && cv_dependency_outcome "$GC_BEAD_ID" "Prepare con-voyage review context")"
+fi
+if [ -n "$SETUP_OUTCOME" ] && [ "$SETUP_OUTCOME" != "pass" ]; then
+  echo "con-voyage review loop: setup-con-voyage-review outcome=${SETUP_OUTCOME} — nothing to review, abandoning the workflow instead of fanning out review lanes" >&2
+  if [ -n "$CV_LIB" ]; then
+    source "$CV_LIB" && cv_close_workflow_root "$ROOT_ID" "setup-con-voyage-review outcome=${SETUP_OUTCOME}; no review lanes dispatched"
+  fi
+  bd update "$CLAIMED_BEAD_ID" \
+    --set-metadata 'gc.outcome=skipped' \
+    --set-metadata "gc.skip_reason=setup outcome=${SETUP_OUTCOME}, nothing to review"
+  bd close "$CLAIMED_BEAD_ID" --reason 'Skipped: setup did not pass, no review lanes dispatched.'
+  exit 0
+fi
+```
+
+Empty values above (lib not found, or the dependency not resolvable by
+title) are "unknown" — fall through to the normal loop rather than guessing.
+If either block above closes this bead, STOP — do not continue to any later
+section in this file, including the first fan-out.
+
 ## Gate lane reopen on apply-review-findings landing a fix (fk-itiq6)
 
 CONFIRMED LIVE (fk-lhjn3 iteration 5, 2026-09-29): the next cycle's lane
@@ -137,10 +197,36 @@ else:
 done
 ```
 
-Only after the gate above reports it is safe should you reopen the lane
-beads for the next cycle: reopen the completed review bead with
-`gc bd reopen <review-bead>`, then re-run. Do not create new review beads
-per cycle.
+## Abort the cycle if the workflow root was abandoned mid-review (fk-jg6rm)
+
+The gate above can run for hours (fk-lhjn3 iteration 5: ~4h wait). A root
+closed out from under this loop partway through that wait — a human or the
+mayor abandoning a stalled con-voyage — must stop the NEXT cycle from
+minting a fresh round of lane reopens, not just the controller's own first
+fan-out. Re-check the root's own status right before reopening any lane:
+
+```bash
+ROOT_BEAD_STATUS=""
+if [ -n "$CV_LIB" ]; then
+  IFS=$'\x1f' read -r ROOT_BEAD_STATUS _ <<< "$(source "$CV_LIB" && bead_status "$ROOT_ID" id)"
+fi
+if [ "$ROOT_BEAD_STATUS" = "closed" ]; then
+  echo "con-voyage review loop: workflow root ${ROOT_ID} was abandoned mid-review — closing this step and any pending descendants instead of reopening lanes for another cycle" >&2
+  if [ -n "$CV_LIB" ]; then
+    source "$CV_LIB" && cv_close_workflow_root "$ROOT_ID" "workflow root abandoned mid-review; no further review cycles dispatched"
+  fi
+  bd update "$CLAIMED_BEAD_ID" \
+    --set-metadata 'gc.outcome=skipped' \
+    --set-metadata 'gc.skip_reason=workflow root abandoned mid-review'
+  bd close "$CLAIMED_BEAD_ID" --reason 'Skipped: workflow root was abandoned mid-review, no further cycles dispatched.'
+  exit 0
+fi
+```
+
+Only after BOTH this check and the gate above report it safe should you
+reopen the lane beads for the next cycle: reopen the completed review bead
+with `gc bd reopen <review-bead>`, then re-run. Do not create new review
+beads per cycle.
 
 ## Verify review-lane claims and re-dispatch stalled lenses (fk-loo1 FIX-F)
 
