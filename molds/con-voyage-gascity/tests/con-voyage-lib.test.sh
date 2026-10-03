@@ -122,6 +122,14 @@ if [ "${args[$i]:-}" = "session" ] && [ "${args[$((i+1))]:-}" = "list" ]; then
   printf '%s' "${STUB_SESSION_LIST_JSON:-{\"sessions\":[]\}}"
   exit 0
 fi
+if [ "${args[$i]:-}" = "bd" ] && [ "${args[$((i+1))]:-}" = "update" ]; then
+  id="${args[$((i+2))]:-}"
+  var="STUB_BDUPDATE_FAIL_${id//-/_}"
+  if [ "${!var:-0}" = "1" ]; then
+    exit 1
+  fi
+  exit 0
+fi
 exit 0
 GC_STUB
 chmod +x "${STUBDIR}/gc"
@@ -1550,6 +1558,23 @@ result="$(cv_ensure_work_branch_name "fk-root2" "fk-ob4j8y" "a completely differ
 assert_eq "con-voyage/fk-ob4j8y-old-slug" "$result" "the cached value is returned unchanged"
 assert_log_count 'bd update fk-root2' 0 "never re-persists once a value is already stored"
 unset STUB_BDSHOW_JSON_fk_root1 STUB_BDSHOW_JSON_fk_root2
+
+# review fk-ymqwd9 BLOCKING-1: a persist that fails on every retry must not
+# be silently swallowed — the caller still gets the computed name back (it is
+# self-healing for THIS call), but a durable flag must be stamped so a later
+# attempt (which would otherwise recompute from a possibly title-drifted
+# TITLE and desync from whatever branch actually got built) has a checkable
+# signal that no value was ever cached, not just a buried stderr line.
+start_case "cv_ensure_work_branch_name: persist fails on every retry -> still returns the computed name, retries 3x, and stamps the unpersisted flag"
+: > "$GC_LOG"
+export STUB_BDSHOW_JSON_fk_root3='{"id":"fk-root3","metadata":{}}'
+export STUB_BDUPDATE_FAIL_fk_root3=1
+result="$(cv_ensure_work_branch_name "fk-root3" "fk-ob4j8y" "fix(helm): pin chart image tag" 2>"${SANDBOX}/ensure_fail.stderr")"
+assert_eq "con-voyage/fk-ob4j8y-pin-chart-image-tag" "$result" "still returns the computed name despite the persist failing"
+assert_log_count 'bd update fk-root3 --set-metadata gc\.build\.work_branch_name=con-voyage/fk-ob4j8y-pin-chart-image-tag' 3 "retries the failed persist 3 times total"
+assert_log_count 'bd update fk-root3 --set-metadata gc\.build\.work_branch_name_unpersisted=true' 1 "stamps a durable unpersisted flag once retries are exhausted"
+assert_eq "1" "$(grep -c 'failed to persist gc.build.work_branch_name' "${SANDBOX}/ensure_fail.stderr")" "warns on stderr about the exhausted persist retries"
+unset STUB_BDSHOW_JSON_fk_root3 STUB_BDUPDATE_FAIL_fk_root3
 
 # ---------------------------------------------------------------------------
 # zsh portability (fk-k14n REWORK — operator PR comment + new bug report):
