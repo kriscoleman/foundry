@@ -20,6 +20,10 @@ if [ -n "$CV_LIB" ]; then
   BUILD_OUTCOME="$(source "$CV_LIB" && cv_dependency_outcome "$GC_BEAD_ID" "Con-voyage: initial implementation (TDD)")"
 fi
 if [ -n "$BUILD_OUTCOME" ] && [ "$BUILD_OUTCOME" != "pass" ]; then
+  ROOT_ID="${GC_ROOT_BEAD_ID:-$GC_BEAD_ID}"
+  if [ -n "$CV_LIB" ]; then
+    source "$CV_LIB" && cv_close_workflow_root "$ROOT_ID" "build outcome=${BUILD_OUTCOME}, no review lanes dispatched"
+  fi
   bd update "$CLAIMED_BEAD_ID" \
     --set-metadata 'gc.outcome=skipped' \
     --set-metadata "gc.skip_reason=build outcome=${BUILD_OUTCOME}, nothing to review"
@@ -31,9 +35,43 @@ fi
 An empty `$BUILD_OUTCOME` (lib not found, or the build step not resolvable as
 a direct dependency by that exact title) is "unknown", not "confirmed pass" —
 fall through to the existing source-anchor guard below rather than guessing.
+`cv_close_workflow_root` above sweeps the whole workflow tree (not just this
+bead) — build.md's own terminal-failure path (fk-jg6rm) already does this at
+the point of failure, but this is a self-defense in case this bead was
+minted before that sweep ran, or the sweep's own `bd close` hiccuped.
 
 If the block above closes this bead, STOP — do not continue to "Read the
 source anchor the build phase resolved" or any later section in this file.
+
+## Fail fast if the workflow root is already closed (fk-jg6rm)
+
+Independent of the build-outcome check above: graph.v2 can mint a fresh
+setup-con-voyage-review bead even after this workflow's root has already
+been closed (confirmed live, root fk-viqoe 2026-10-03 — closing a root does
+not, by itself, stop the engine from dispatching more steps under it). Check
+the root's own status before gathering any review context:
+
+```bash
+ROOT_ID="${GC_ROOT_BEAD_ID:-$GC_BEAD_ID}"
+ROOT_BEAD_STATUS=""
+if [ -n "$CV_LIB" ]; then
+  IFS=$'\x1f' read -r ROOT_BEAD_STATUS _ <<< "$(source "$CV_LIB" && bead_status "$ROOT_ID" id)"
+fi
+if [ "$ROOT_BEAD_STATUS" = "closed" ]; then
+  echo "setup-con-voyage-review: workflow root ${ROOT_ID} is already closed — abandoning this step and any pending descendants, minting nothing" >&2
+  if [ -n "$CV_LIB" ]; then
+    source "$CV_LIB" && cv_close_workflow_root "$ROOT_ID" "workflow root already closed before setup-con-voyage-review ran; aborting, minting nothing"
+  fi
+  bd update "$CLAIMED_BEAD_ID" \
+    --set-metadata 'gc.outcome=skipped' \
+    --set-metadata 'gc.skip_reason=workflow root already closed'
+  bd close "$CLAIMED_BEAD_ID" --reason 'Skipped: workflow root already closed, nothing to do.'
+  exit 0
+fi
+```
+
+An empty `$ROOT_BEAD_STATUS` is "unknown", not "confirmed open" — fall
+through rather than guessing. If this block closes this bead, STOP.
 
 ## Read the source anchor the build phase resolved
 
