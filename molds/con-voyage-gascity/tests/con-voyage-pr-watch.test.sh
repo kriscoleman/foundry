@@ -142,6 +142,23 @@ JSON
         # the script's defensive per-PR author re-check must drop it before
         # routing. The `author` object mirrors gh's `--json author` shape.
         author="$(flagval --author "$@")"
+        if [ "${STUB_NATIVE_PRLIST_MODE:-}" = "unlisted" ]; then
+          # fk-dnjlg2 PART A-native fixtures: #950 is a stacked con-voyage PR
+          # whose base is NOT in the monitor's base_branches ("main") -- the
+          # native path must discover and classify it. #951 targets "main"
+          # directly (a listed base) -- the native path must skip it (the
+          # engine-backed path above already owns it; this fixture's own
+          # STUB_BACKFILL_MODE=empty proves no OTHER path mints it either, so a
+          # sling for #951 can only mean the native path double-minted).
+          if [ "$author" = "kriscoleman" ]; then
+            cat <<'JSON'
+[{"number":950,"headRefName":"con-voyage/fk-stacked1","baseRefName":"con-voyage/fk-parent","headRefOid":"stacked1sha","url":"https://github.com/kriscoleman/foundry/pull/950","isDraft":false,"author":{"login":"kriscoleman"}},{"number":951,"headRefName":"fix/on-main","baseRefName":"main","headRefOid":"onmainsha","url":"https://github.com/kriscoleman/foundry/pull/951","isDraft":false,"author":{"login":"kriscoleman"}}]
+JSON
+          else
+            printf '[]\n'
+          fi
+          exit 0
+        fi
         if [ "${STUB_PRLIST_LEAK:-0}" = "1" ]; then
           # Upstream filter "leaked": PR #999 authored by someone else slips in
           # even though we asked for the operator's PRs. The defensive re-check
@@ -278,6 +295,14 @@ JSON
           18)  pr_author_val="kriscoleman" ;;   # operator (fallback classifier: state=failed) — KEEP
           90001|90002|90003|90004|90005)
                pr_author_val="kriscoleman" ;;   # operator (LOW-2 real-sample gate fixture) — KEEP
+          950)
+               # fk-dnjlg2: unlisted-base native-path PR — a genuinely failing
+               # required check, so cv_classify_pr_signals classifies
+               # checks_failed and the native path mints a repair bead.
+               pr_author_val="kriscoleman"
+               checks_rollup_json='[{"conclusion":"FAILURE"}]'
+               ;;
+          951) pr_author_val="kriscoleman" ;;   # fk-dnjlg2: listed-base — must never reach this call
           500) pr_author_val="evansmungai" ;;   # other human — DROP
           501) pr_author_val="evansmungai" ;;   # other human (states: dirty) — DROP
           502) pr_author_val="evansmungai" ;;   # other human (states: behind) — DROP
@@ -1094,8 +1119,13 @@ start_case "5: PART B scopes pr list + comment routing to operator"
 setup_case_env "5"
 run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman"
 assert_eq "0" "$RC" "script exits 0"
-# gh pr list must be called with --author kriscoleman.
-assert_log_count "$GH_LOG" 'pr list .*--author kriscoleman' 1 "gh pr list uses --author kriscoleman"
+# gh pr list must be called with --author kriscoleman. Count is 2, not 1:
+# PART B issues its own call here, AND fk-dnjlg2's PART A-native unlisted-base
+# discovery issues a second one for the same monitor repo (this fixture's
+# city.toml has no base_branches/repair_route fields at all, so that second
+# call's own PR rows all skip on an unresolved baseRefName — see CASE 40/41
+# below for that path's own dedicated coverage).
+assert_log_count "$GH_LOG" 'pr list .*--author kriscoleman' 2 "gh pr list uses --author kriscoleman"
 # The stub returns only #11 for that author, so a comment-routing sling should
 # fire to the implementor for #11's human comment. PART B routes via
 # `gc sling <target> --stdin` (gc 1.4.1 has NO --body flag); the stub captures
@@ -1164,7 +1194,9 @@ assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*pr=11' 1 "ci-repa
 # CASE 2 above) is what gets forwarded.
 assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*pr=11.*cv_pr_author=kriscoleman' 1 "ci-repair sling forwards the resolved cv_pr_author"
 assert_log_count "$GC_LOG" 'sling .*pr=500' 0 "no sling for #500 under default resolution"
-assert_log_count "$GH_LOG" 'pr list .*--author kriscoleman' 1 "PART B pr list scoped to resolved login"
+# Count is 2, not 1 — see CASE 5's identical note: PART B's own call plus
+# fk-dnjlg2's PART A-native discovery call for the same monitor repo.
+assert_log_count "$GH_LOG" 'pr list .*--author kriscoleman' 2 "PART B pr list scoped to resolved login"
 
 # ===========================================================================
 # CASE 7 — PART B awk portability: SPACED assignments (owner = "replicatedhq")
@@ -1180,7 +1212,11 @@ run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman"
 assert_eq "0" "$RC" "script exits 0"
 # The spaced fixture declares repo replicatedhq/x. If awk parsed it, PART B
 # lists PRs for exactly that repo. Before the fix this count would be 0.
-assert_log_count "$GH_LOG" 'pr list --repo replicatedhq/x' 1 "PART B parsed spaced repo and listed replicatedhq/x"
+# Count is 2, not 1 — see CASE 5's identical note: PART B's own call plus
+# fk-dnjlg2's PART A-native discovery call for the same monitor repo (its awk
+# parser is a separate implementation from PART B's own, but reads the same
+# spaced-assignment city.toml here, so it must parse the repo too).
+assert_log_count "$GH_LOG" 'pr list --repo replicatedhq/x' 2 "PART B parsed spaced repo and listed replicatedhq/x"
 if printf '%s' "$OUT" | grep -q 'no \[\[github.pr_monitor\]\] blocks found'; then
   fail "PART B reported no blocks — awk failed to parse spaced assignments (the bug)"
 else
@@ -2935,6 +2971,62 @@ if printf '%s' "$OUT" | grep -q 'SUPPRESS kriscoleman/foundry#11 comment id=IC_s
   pass "slash-command suppression is logged with its own distinct reason"
 else
   fail "slash-command suppression is logged with its own distinct reason"
+fi
+
+# ===========================================================================
+# CASE 53 — fk-dnjlg2 PART A-native: unlisted-base discovery specs 1/2/3.
+#   Monitor's own base_branches=["main"] lists only "main"; the stub's
+#   `gh pr list` (STUB_NATIVE_PRLIST_MODE=unlisted) returns #950 (base
+#   con-voyage/fk-parent — NOT listed) and #951 (base main — listed).
+#   STUB_BACKFILL_MODE=empty proves the engine-backed path mints NOTHING this
+#   cycle, so any ci-repair sling observed can only have come from the native
+#   path.
+# ===========================================================================
+start_case "53: fk-dnjlg2 PART A-native — unlisted-base PR mints, listed-base PR is never double-processed"
+setup_case_env "53"
+cat > "${CITY_DIR}/city.toml" <<'TOML'
+[[github.pr_monitor]]
+name = "foundry-prs"
+owner = "kriscoleman"
+repo = "foundry"
+base_branches = ["main"]
+rig = "vandoor"
+repair_route = "vandoor/gc.implementation-worker"
+TOML
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_BACKFILL_MODE="empty" STUB_NATIVE_PRLIST_MODE="unlisted"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*pr=950.*failure_kind=checks_failed' 1 "spec 1: the unlisted-base PR (#950) is discovered and mints a repair bead"
+assert_log_count "$GC_LOG" 'sling .*pr=951' 0 "spec 2/3: the listed-base PR (#951) is never minted by the native path (already the engine path's job)"
+assert_eq "checks_failed" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-950" "last_handled_state")" "state is recorded under the SAME dedup-key shape PART A's own engine path uses (repo+PR number only)"
+
+# ===========================================================================
+# CASE 54 — fk-dnjlg2 PART A-native: an unresolved baseRefName is never
+#   treated as "confirmed unlisted" (fail closed). Reuses CASE 53's monitor
+#   config but points the stub back at its DEFAULT gh pr list behavior (no
+#   baseRefName field at all in the returned JSON, matching every
+#   pre-fk-dnjlg2 fixture in this file) — the native path must defer, not
+#   mint, so this also doubles as the regression guard for every other case
+#   in this file that predates baseRefName-aware stubbing.
+# ===========================================================================
+start_case "54: fk-dnjlg2 PART A-native — unresolved baseRefName defers rather than guessing unlisted"
+setup_case_env "54"
+cat > "${CITY_DIR}/city.toml" <<'TOML'
+[[github.pr_monitor]]
+name = "foundry-prs"
+owner = "kriscoleman"
+repo = "foundry"
+base_branches = ["main"]
+rig = "vandoor"
+repair_route = "vandoor/gc.implementation-worker"
+TOML
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_BACKFILL_MODE="empty"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair' 0 "no repair bead is minted when baseRefName cannot be resolved"
+if printf '%s' "$OUT" | grep -q 'PART A-native\] DEFER kriscoleman/foundry#11'; then
+  pass "logs the DEFER (not a guessed mint) for the unresolved-base PR"
+else
+  fail "expected a DEFER log line for the unresolved-baseRefName PR"
 fi
 
 # ===========================================================================

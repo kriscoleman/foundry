@@ -2782,6 +2782,140 @@ print(state + SEP + merged_at + SEP + closed_at, end='')
 " 2>/dev/null || printf '%s%s' "$SEP" "$SEP"
 }
 
+# cv_parse_pr_monitor_blocks CITY_TOML — enumerate every [[github.pr_monitor]]
+# block in CITY_TOML, one line per block:
+#   owner<0x1f>repo<0x1f>rig<0x1f>repair_route<0x1f>base_branches_csv
+# base_branches_csv is the block's `base_branches` array, comma-joined with
+# quotes/whitespace stripped (e.g. "main,con-voyage/va-05ky"), or empty if the
+# block has none. Any field can be empty — callers must check owner/repo
+# before using a row. A missing/unreadable file yields no output (fail safe,
+# matches PART B's own city.toml-not-found posture elsewhere in this pack).
+#
+# fk-dnjlg2 (base-agnostic CI repair): the pack-native discovery path needs
+# base_branches (to skip PRs already covered by the engine's own
+# `gc github pr backfill`, avoiding the double-mint PART B's design calls
+# out) and repair_route (to route a freshly-discovered PR exactly like the
+# engine path does) in the SAME pass — PART B's existing inline awk parser
+# (further down this file's sibling script) only ever needed owner/repo/rig,
+# so it is left untouched; this is a separate, purpose-built parser rather
+# than widening that one's contract for every other caller.
+cv_parse_pr_monitor_blocks() {
+  local city_toml="$1"
+  [ -n "${city_toml:-}" ] && [ -f "$city_toml" ] || return 0
+  awk '
+    function emit() {
+      if (owner != "" && repo != "") {
+        print owner "\x1f" repo "\x1f" rig "\x1f" route "\x1f" bases
+      }
+    }
+    /^\[\[github\.pr_monitor\]\]/ {
+      if (in_block) emit()
+      in_block = 1; owner=""; repo=""; rig=""; route=""; bases=""
+      next
+    }
+    in_block && /^\[/ {
+      emit()
+      in_block = 0; owner=""; repo=""; rig=""; route=""; bases=""
+      if (/^\[\[github\.pr_monitor\]\]/) { in_block = 1 }
+      next
+    }
+    in_block && /^[[:space:]]*owner[[:space:]]*=/ {
+      val = $0; sub(/.*=[[:space:]]*"/, "", val); sub(/".*/, "", val); owner = val; next
+    }
+    in_block && /^[[:space:]]*repo[[:space:]]*=/ {
+      val = $0; sub(/.*=[[:space:]]*"/, "", val); sub(/".*/, "", val); repo = val; next
+    }
+    in_block && /^[[:space:]]*rig[[:space:]]*=/ {
+      val = $0; sub(/.*=[[:space:]]*"/, "", val); sub(/".*/, "", val); rig = val; next
+    }
+    in_block && /^[[:space:]]*repair_route[[:space:]]*=/ {
+      val = $0; sub(/.*=[[:space:]]*"/, "", val); sub(/".*/, "", val); route = val; next
+    }
+    in_block && /^[[:space:]]*base_branches[[:space:]]*=/ {
+      val = $0
+      sub(/.*\[/, "", val); sub(/\].*/, "", val)
+      n = split(val, parts, ",")
+      bases = ""
+      for (i = 1; i <= n; i++) {
+        p = parts[i]
+        gsub(/^[[:space:]"]+|[[:space:]"]+$/, "", p)
+        if (p != "") {
+          bases = (bases == "" ? p : bases "," p)
+        }
+      }
+      next
+    }
+    END { if (in_block) emit() }
+  ' "$city_toml"
+}
+
+# cv_classify_pr_signals — classify a PR's failure_kind + actionable flag from
+# raw `gh pr view --json statusCheckRollup,mergeStateStatus,mergeable,reviewDecision`
+# output on stdin. This is the ONE place both the engine-covered discovery
+# path (PART A, which trusts gc's own reported failure_kind) and the
+# pack-native unlisted-base discovery path (fk-dnjlg2) derive the SAME
+# failure_kind vocabulary (checks_failed|merge_conflict|behind_base|blocked)
+# from GitHub's raw signals, so the two paths cannot quietly drift apart on
+# what each kind means.
+#
+# Precedence mirrors PART A's own classifier note (a non-empty failing check
+# always wins over a looser mergeStateStatus signal — a real check failure is
+# CI-repair work regardless of what the merge-state summary says):
+#   1. any CheckRun/StatusContext actually failing -> checks_failed
+#   2. mergeStateStatus=DIRTY or mergeable=CONFLICTING -> merge_conflict
+#   3. mergeStateStatus=BEHIND -> behind_base
+#   4. mergeStateStatus in (BLOCKED,UNSTABLE), or reviewDecision in
+#      (CHANGES_REQUESTED,REVIEW_REQUIRED) -> blocked (the caller's own C6
+#      actionable filter is what tells a real block apart from a PR merely
+#      awaiting human review — this classifier does not make that call)
+#   5. otherwise -> "" (clean, not actionable)
+#
+# Prints "<failure_kind><0x1f><actionable>" (actionable is "1"/"0"). A
+# malformed/empty/unparseable input prints an empty failure_kind and
+# actionable=0 — fail safe, never invents a repair from a broken payload.
+cv_classify_pr_signals() {
+  python3 -c "
+import sys, json
+SEP = '\x1f'
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = {}
+if not isinstance(d, dict):
+    d = {}
+
+checks = d.get('statusCheckRollup') or []
+merge_state_status = (d.get('mergeStateStatus') or '').upper()
+mergeable = (d.get('mergeable') or '').upper()
+review_decision = d.get('reviewDecision') or ''
+
+def is_failing(c):
+    conclusion = c.get('conclusion')
+    if conclusion is not None:
+        return str(conclusion).upper() in ('FAILURE', 'TIMED_OUT', 'CANCELLED', 'ACTION_REQUIRED')
+    state = c.get('state')
+    if state is not None:
+        return str(state).upper() in ('FAILURE', 'ERROR')
+    return False
+
+any_failing = any(is_failing(c) for c in checks)
+
+if any_failing:
+    failure_kind = 'checks_failed'
+elif merge_state_status == 'DIRTY' or mergeable == 'CONFLICTING':
+    failure_kind = 'merge_conflict'
+elif merge_state_status == 'BEHIND':
+    failure_kind = 'behind_base'
+elif merge_state_status in ('BLOCKED', 'UNSTABLE') or review_decision in ('CHANGES_REQUESTED', 'REVIEW_REQUIRED'):
+    failure_kind = 'blocked'
+else:
+    failure_kind = ''
+
+actionable = '1' if failure_kind else '0'
+print(failure_kind + SEP + actionable, end='')
+" 2>/dev/null || printf '%s0' $'\x1f'
+}
+
 # ---------------------------------------------------------------------------
 # Per-PR FINALIZE record (fk-p7j9 / fk-hsca). File:
 # "<CV_STATE_DIR>/<dedup_key>.finalize", plain key=value lines:
