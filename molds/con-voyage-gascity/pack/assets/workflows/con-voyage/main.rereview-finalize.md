@@ -73,6 +73,74 @@ fi
 A failure here must never fail this step or block the round's own
 finalization below — log it, escalate to the mayor, and continue.
 
+## Push any converged fix commit(s) back to the PR branch (review fk-n74o9 BLOCKING-1)
+
+`apply-review-findings` only commits locally — the only push/PR-open in the
+whole con-voyage step set lives in `main.publish.md`. If a BLOCKING finding
+this round caused `apply-review-findings` to commit a fix, that commit is
+sitting in `$WORKTREE` only; the PR branch on GitHub still has the original
+(pre-fix) commit. Reporting approval or advancing `last_reviewed_head_sha`
+without pushing first would falsely mark an unreviewed commit land-ready and
+silently discard the fix the next time `rereview-seed` does
+`rm -rf "$WORKTREE"`. Resolve the worktree this round actually reviewed
+(stamped by `rereview-seed`, the same key `build.md` uses for an ordinary
+con-voyage run) and compare its HEAD to the PR branch's remote head before
+doing anything else below:
+
+```bash
+WORKTREE=""
+if [ -n "$CV_LIB" ]; then
+  WORKTREE="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.build.source_anchor_work_dir)"
+fi
+if [ -z "$WORKTREE" ] || [ ! -d "$WORKTREE" ]; then
+  echo "con-voyage rereview-finalize: could not resolve the reviewed worktree from ${ROOT_ID}'s gc.build.source_anchor_work_dir — refusing to finalize without knowing what was actually reviewed" >&2
+  gc mail send mayor \
+    -s "con-voyage re-review: cannot finalize ${REPO_FULL}#${PR_NUMBER} — no reviewed worktree" \
+    -m "rereview-finalize could not resolve gc.build.source_anchor_work_dir from workflow root ${ROOT_ID}; refusing to report approval or advance last_reviewed_head_sha without knowing what was reviewed." \
+    2>&1 || echo "note: escalation mail failed too (continuing)" >&2
+  bd update "$CLAIMED_BEAD_ID" \
+    --set-metadata 'gc.outcome=fail' \
+    --set-metadata 'gc.failure_class=worktree_unresolved'
+  bd close "$CLAIMED_BEAD_ID" --reason "Could not resolve the reviewed worktree — see stderr."
+  exit 0
+fi
+
+LOCAL_HEAD_SHA="$(git -C "$WORKTREE" rev-parse HEAD 2>/dev/null || echo "")"
+REMOTE_HEAD_SHA="$(git -C "$WORKTREE" ls-remote origin "refs/heads/${BRANCH}" 2>/dev/null | cut -f1)"
+LAST_REVIEWED_HEAD_SHA="${REMOTE_HEAD_SHA:-$LOCAL_HEAD_SHA}"
+
+if [ -n "$LOCAL_HEAD_SHA" ] && [ "$LOCAL_HEAD_SHA" != "$REMOTE_HEAD_SHA" ]; then
+  echo "con-voyage rereview-finalize: reviewed worktree HEAD (${LOCAL_HEAD_SHA}) differs from ${BRANCH}'s remote head (${REMOTE_HEAD_SHA:-<none>}) — pushing the converged fix commit(s) back before reporting approval"
+  CV_GUARD="${CV_PACK_ROOT}/assets/scripts/cv-worktree-prep.sh"
+  [ -f "$CV_GUARD" ] && [ -x "$CV_GUARD" ] || CV_GUARD=""
+  PUSH_OK="true"
+  if [ -n "$CV_GUARD" ]; then
+    "$CV_GUARD" dirty "$WORKTREE" || PUSH_OK="false"
+    "$CV_GUARD" guard "$WORKTREE" "origin/${BRANCH}" || PUSH_OK="false"
+  fi
+  if [ "$PUSH_OK" = "true" ] && ! git -C "$WORKTREE" push origin "HEAD:${BRANCH}"; then
+    PUSH_OK="false"
+  fi
+  if [ "$PUSH_OK" != "true" ]; then
+    echo "con-voyage rereview-finalize: failed to push the converged fix commit(s) back to ${BRANCH} — refusing to report approval or advance last_reviewed_head_sha against unpushed content" >&2
+    gc mail send mayor \
+      -s "con-voyage re-review: push failed for ${REPO_FULL}#${PR_NUMBER}" \
+      -m "rereview-finalize's reviewed worktree (${WORKTREE}) has a converged fix at ${LOCAL_HEAD_SHA} that could not be pushed to ${BRANCH} (hygiene guard or push failure — see this step's stderr). The PR branch still has the original, unreviewed commit. This needs a human to land the fix manually." \
+      2>&1 || echo "note: escalation mail failed too (continuing)" >&2
+    bd update "$CLAIMED_BEAD_ID" \
+      --set-metadata 'gc.outcome=fail' \
+      --set-metadata 'gc.failure_class=push_failed'
+    bd close "$CLAIMED_BEAD_ID" --reason "Converged fix commit could not be pushed back to the PR branch — see stderr/mayor mail."
+    exit 0
+  fi
+  LAST_REVIEWED_HEAD_SHA="$LOCAL_HEAD_SHA"
+fi
+```
+
+CI watching for this PR is already handled by the standing `con-voyage-pr-watch`
+order once the push above lands a new commit on the branch — this step does
+not itself wait on CI.
+
 ## Report the verdict to the mayor and clear the in-flight guard
 
 Derive `overall_line`/verdict from `review-synthesis.md` the same way
@@ -88,14 +156,17 @@ gc mail send mayor \
   || echo "note: mayor mail failed (continuing)" >&2
 
 if [ -n "$CV_LIB" ]; then
-  NEW_HEAD_SHA="$(git -C "<the worktree this round reviewed>" rev-parse HEAD 2>/dev/null || echo "")"
+  # $LAST_REVIEWED_HEAD_SHA is resolved above (the PR branch's actual remote
+  # head after any converged fix was pushed back) — never re-derive it from
+  # the worktree alone here, or an unpushed local commit could advance this
+  # record past what the PR branch actually has.
   (
     export CV_STATE_DIR
     source "$CV_LIB"
     finalize_read "$FINALIZE_KEY"
     finalize_write "$FINALIZE_KEY" "$FS_WORK_BEAD" "$FS_CONVOY_ID" "$FS_REPO_FULL" \
       "$FS_PR_NUMBER" "$FS_PR_AUTHOR" "$FS_IMPLEMENTOR" "awaiting_merge" "$FS_ROOT_BEAD_ID" \
-      "$FS_ROSTER_VARS" "${NEW_HEAD_SHA:-$FS_LAST_REVIEWED_HEAD_SHA}" "{review_round}" ""
+      "$FS_ROSTER_VARS" "${LAST_REVIEWED_HEAD_SHA:-$FS_LAST_REVIEWED_HEAD_SHA}" "{review_round}" ""
   )
   gc bd set-state "$FS_WORK_BEAD" cv=awaiting_merge \
     --reason "con-voyage re-review round {review_round} complete" >/dev/null 2>&1 \

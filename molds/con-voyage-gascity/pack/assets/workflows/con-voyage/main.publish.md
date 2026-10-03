@@ -341,29 +341,9 @@ finalize_key="cv-finalize-${owner}-${repo}-${PR_NUMBER}"
 #    re-threading every enable_*/code_lens {{var}} through this file
 #    individually — it is the one place that metadata already lives intact.
 ROSTER_VARS=""
-{
-  ROSTER_VARS="$(gc bd show "$ROOT_ID" --json 2>/dev/null | python3 -c "
-import json, sys
-try:
-    d = json.load(sys.stdin)
-    d = d[0] if isinstance(d, list) else d
-except Exception:
-    d = {}
-meta = (d or {}).get('metadata') or {}
-raw = meta.get('gc.graphv2_vars.v1') or '{}'
-try:
-    vars_ = json.loads(raw)
-except Exception:
-    vars_ = {}
-keep_exact = ('code_lens', 'implementation_target', 'cv_lens_claim_seconds',
-              'cv_lens_max_redispatch', 'cv_lens_escalate_target')
-parts = []
-for k in sorted(vars_):
-    if k in keep_exact or k.startswith('enable_'):
-        parts.append('{}={}'.format(k, vars_[k]))
-print(','.join(parts))
-" 2>/dev/null)"
-}
+if [ -n "${CV_LIB:-}" ]; then
+  ROSTER_VARS="$(source "$CV_LIB" && cv_flatten_roster_vars "$ROOT_ID")"
+fi
 if [ -z "${ROSTER_VARS// /}" ]; then
   echo "con-voyage publish: WARNING: could not flatten roster vars from ${ROOT_ID}'s gc.graphv2_vars.v1 — a later re-review round (fk-pubvq) will fall back to re-deriving them from the same metadata directly" >&2
 fi

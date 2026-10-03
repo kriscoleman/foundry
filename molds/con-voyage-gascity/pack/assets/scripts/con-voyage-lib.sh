@@ -2234,6 +2234,51 @@ print(val if isinstance(val, str) else json.dumps(val))
 " "$key" 2>/dev/null
 }
 
+# cv_flatten_roster_vars_from_json RAW_VARS_JSON -> prints
+# "key=value,key=value,..." built from RAW_VARS_JSON (a gc.graphv2_vars.v1
+# metadata value, itself a JSON object of formula vars), restricted to the
+# enable_*/code_lens/implementation_target/cv_lens_* keys a later re-review
+# round needs to reproduce the SAME multi-lens roster against a new commit
+# (fk-pubvq). Empty input or unparseable JSON -> empty output (fail-safe).
+#
+# This is the pure transform shared by cv_flatten_roster_vars below (used by
+# main.publish.md, which reads metadata with no --city flag like every other
+# bare "gc bd show" call in that file) and con-voyage-rereview-watch.sh's own
+# flatten_roster_vars (which must keep its "$GC" --city "$GC_CITY" bd show
+# call — it runs outside the rig's own cwd). The two callers' bd-show
+# invocations legitimately differ; only the JSON-parse-and-filter logic was
+# duplicated, and had already drifted cosmetically between them (review
+# fk-n74o9 BLOCKING-2).
+cv_flatten_roster_vars_from_json() {
+  local raw="${1:-}"
+  [ -n "$raw" ] || raw='{}'
+  printf '%s' "$raw" | python3 -c "
+import json, sys
+try:
+    vars_ = json.loads(sys.stdin.read() or '{}')
+except Exception:
+    vars_ = {}
+if not isinstance(vars_, dict):
+    vars_ = {}
+keep_exact = ('code_lens', 'implementation_target', 'cv_lens_claim_seconds',
+              'cv_lens_max_redispatch', 'cv_lens_escalate_target')
+parts = []
+for k in sorted(vars_):
+    if k in keep_exact or k.startswith('enable_'):
+        parts.append('{}={}'.format(k, vars_[k]))
+print(','.join(parts))
+" 2>/dev/null
+}
+
+# cv_flatten_roster_vars ROOT_BEAD_ID -> cv_flatten_roster_vars_from_json
+# applied to ROOT_BEAD_ID's own gc.graphv2_vars.v1 metadata (read via
+# cv_bead_metadata, no --city flag). Empty on any resolution failure.
+cv_flatten_roster_vars() {
+  local root_bead_id="$1"
+  [ -n "${root_bead_id// /}" ] || { printf ''; return 0; }
+  cv_flatten_roster_vars_from_json "$(cv_bead_metadata "$root_bead_id" gc.graphv2_vars.v1)"
+}
+
 # cv_root_bead_id BEAD_ID — print BEAD_ID's workflow root: its
 # gc.root_bead_id metadata value, or BEAD_ID itself when that key is absent
 # (BEAD_ID already IS the root, or the lookup failed outright). Fail-safe:

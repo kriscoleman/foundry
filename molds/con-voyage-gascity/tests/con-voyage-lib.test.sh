@@ -321,6 +321,41 @@ export STUB_BDSHOW_JSON_fk_metagc='{"id":"fk-metagc","metadata":{"gc.var.convoy_
 gc_unset_result="$(PATH="${STUBDIR}:${PATH}" bash -c "unset GC; source '$LIB'; cv_bead_metadata 'fk-metagc' 'gc.var.convoy_id'")"
 assert_eq "fk-hd0xv" "$gc_unset_result" "a caller that forgets to set \$GC still resolves via the default, not empty"
 
+# ---------------------------------------------------------------------------
+# cv_flatten_roster_vars_from_json / cv_flatten_roster_vars (fk-pubvq roster
+# replay; review fk-n74o9 BLOCKING-2 — this logic used to be duplicated
+# near-identically in main.publish.md's inline python and
+# con-voyage-rereview-watch.sh's own flatten_roster_vars, and had already
+# drifted cosmetically between the two copies).
+# ---------------------------------------------------------------------------
+start_case "cv_flatten_roster_vars_from_json: keeps enable_*/exact keys, drops everything else, sorted"
+assert_eq "code_lens=con-voyage.cv-go-principal-engineer,enable_qa_test=true,enable_sre=false,implementation_target=gc.implementation-worker" \
+  "$(cv_flatten_roster_vars_from_json '{"code_lens":"con-voyage.cv-go-principal-engineer","implementation_target":"gc.implementation-worker","enable_sre":"false","enable_qa_test":"true","some_other_var":"x"}')" \
+  "only the roster-relevant keys survive, alphabetically sorted"
+
+start_case "cv_flatten_roster_vars_from_json: empty input -> empty"
+assert_eq "" "$(cv_flatten_roster_vars_from_json "")" "empty raw JSON resolves empty, not an error"
+
+start_case "cv_flatten_roster_vars_from_json: unparseable JSON -> empty (fail-safe)"
+assert_eq "" "$(cv_flatten_roster_vars_from_json "not json")" "unparseable input resolves empty"
+
+start_case "cv_flatten_roster_vars_from_json: JSON that isn't an object -> empty"
+assert_eq "" "$(cv_flatten_roster_vars_from_json '["enable_sre"]')" "a JSON array (not an object) resolves empty"
+
+start_case "cv_flatten_roster_vars: reads gc.graphv2_vars.v1 off the root bead and flattens it"
+export STUB_BDSHOW_JSON_fk_roster1='{"id":"fk-roster1","metadata":{"gc.graphv2_vars.v1":"{\"enable_sre\":\"true\",\"code_lens\":\"con-voyage.cv-go-principal-engineer\",\"noise\":\"1\"}"}}'
+assert_eq "code_lens=con-voyage.cv-go-principal-engineer,enable_sre=true" \
+  "$(cv_flatten_roster_vars "fk-roster1")" "flattens the real metadata field end to end"
+
+start_case "cv_flatten_roster_vars: bead has no gc.graphv2_vars.v1 -> empty"
+export STUB_BDSHOW_JSON_fk_roster2='{"id":"fk-roster2","metadata":{}}'
+assert_eq "" "$(cv_flatten_roster_vars "fk-roster2")" "a root bead with no roster metadata resolves empty"
+
+start_case "cv_flatten_roster_vars: empty bead id -> empty, no bd call"
+: > "$GC_LOG"
+assert_eq "" "$(cv_flatten_roster_vars "")" "empty bead id resolves empty"
+assert_log_count 'bd show' 0 "empty bead id never calls bd show"
+
 start_case "cv_root_bead_id: bead carries gc.root_bead_id -> that root id"
 export STUB_BDSHOW_JSON_fk_step1='{"id":"fk-step1","metadata":{"gc.root_bead_id":"fk-root1"}}'
 assert_eq "fk-root1" "$(cv_root_bead_id "fk-step1")" "reads the workflow root off a step bead"
