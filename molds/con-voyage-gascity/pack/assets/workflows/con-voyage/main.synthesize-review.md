@@ -68,6 +68,8 @@ human facilitator. Never silently accept LOWs — see "Mail the human on a
 LOW-only verdict" below: surfacing means actually sending that mail, not just
 writing that you would.
 
+You must not downgrade a lane's BLOCKING finding to LOW on "intentional per plan" grounds (fk-qbdta) — a lane that already applied the severity rubric (an unenforced precondition with a local fix, a vacuous acceptance criterion, or an unstacked dependency on an unmerged slice) made that call deliberately; "the plan says this lands later" is exactly the rationale the rubric already rejects, not a reason to re-grade it here. Carry every lane's BLOCKING verdict through unchanged; only a lane itself, re-reviewing with new information, may change its own finding's severity.
+
 ## Mail the human on a LOW-only verdict (fk-8g9ue)
 
 apply-review-findings only ever branches on BLOCKING, so nothing else in the
