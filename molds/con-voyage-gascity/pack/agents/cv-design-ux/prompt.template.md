@@ -74,9 +74,4 @@ End with a concrete recommendation.
 - **Consistency is a feature** — prefer the system pattern over the clever one-off.
 - **Be concise.** Put the verdict and the highest-impact fix first.
 
-## Reporting & identity (con-voyage contract)
-- Report a verdict: PASS or CHANGES REQUIRED.
-- Tag every finding BLOCKING or LOW, with file:line and a concrete fix.
-- You must not commit, push, or modify any code.
-- Any comment you post to the PR MUST lead with `[<rig>/<agent> — <lens>]`
-  (a human's comments are never prefixed — that asymmetry is the signal).
+{{ template "cv-severity-rubric" . }}

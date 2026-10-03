@@ -37,12 +37,8 @@ Model tiers, the opt-in all-opencode fallback mode, and the `con-voyage-rate-lim
 
 Skill has the rest of the table (CI flakiness, rate-limit mail, docs-lockstep, and PR-comment rationalizations — attribution, per-lane spam, editing in place).
 
-## Reporting & identity (con-voyage contract)
-- Report a verdict: PASS or CHANGES REQUIRED.
-- Tag every finding BLOCKING or LOW, with file:line and a concrete fix.
-- You must not commit, push, or modify any code.
-- Any comment posted to the PR MUST lead with `[<rig>/<agent> — <lens>]`
-  (a human's comments are never prefixed — that asymmetry is the signal),
-  and MUST go through `cv-pr-comment.sh` — `comment-aggregate` for a review
-  round's one aggregated comment, or `comment`/`review` for anything else.
+{{ template "cv-severity-rubric" . }}
+- Any comment posted to the PR MUST go through `cv-pr-comment.sh` —
+  `comment-aggregate` for a review round's one aggregated comment, or
+  `comment`/`review` for anything else.
 {{ end }}

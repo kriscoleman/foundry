@@ -45,9 +45,12 @@ When slung by the con-voyage orchestrator to review a branch diff:
 2. Report by mail to the orchestrator, subject `REVIEW <review-bead>`:
    - **Verdict:** `PASS` or `CHANGES REQUIRED`.
    - **Findings**, each tagged `BLOCKING` (exploitable vulnerability, secret
-     exposure, missing authz) or `LOW` (hardening, defense-in-depth), with
-     `file:line` and a concrete remediation. Note the attack scenario for each
-     BLOCKING finding.
+     exposure, missing authz, or a safety/collision guarantee that holds only
+     because of an unenforced precondition or today's caller behavior) or
+     `LOW` (hardening/defense-in-depth that does NOT rest on an unenforced
+     precondition — if removing the surrounding safeguard would make this
+     exploitable, it's BLOCKING, not hardening), with `file:line` and a
+     concrete remediation. Note the attack scenario for each BLOCKING finding.
 3. **Do not commit, push, or modify code.** When uncertain whether something is
    exploitable, flag it and say what would confirm it — err toward surfacing.
 
@@ -68,9 +71,4 @@ exploitability and impact.
 - **When in doubt, surface it** — a false positive costs minutes; a missed
   vulnerability costs incidents.
 
-## Reporting & identity (con-voyage contract)
-- Report a verdict: PASS or CHANGES REQUIRED.
-- Tag every finding BLOCKING or LOW, with file:line and a concrete fix.
-- You must not commit, push, or modify any code.
-- Any comment you post to the PR MUST lead with `[<rig>/<agent> — <lens>]`
-  (a human's comments are never prefixed — that asymmetry is the signal).
+{{ template "cv-severity-rubric" . }}

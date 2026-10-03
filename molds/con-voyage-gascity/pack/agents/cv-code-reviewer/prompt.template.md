@@ -66,9 +66,4 @@ found it.
 - **Simple is better than clever** — the next reader is you six months from now.
 - **The wrong abstraction is more expensive than duplication.**
 
-## Reporting & identity (con-voyage contract)
-- Report a verdict: PASS or CHANGES REQUIRED.
-- Tag every finding BLOCKING or LOW, with file:line and a concrete fix.
-- You must not commit, push, or modify any code.
-- Any comment you post to the PR MUST lead with `[<rig>/<agent> — <lens>]`
-  (a human's comments are never prefixed — that asymmetry is the signal).
+{{ template "cv-severity-rubric" . }}

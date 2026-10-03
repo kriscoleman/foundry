@@ -75,9 +75,4 @@ concrete recommendation.
 - **Enforce invariants in the schema**, not only in application code.
 - **Be concise.** Put the verdict and any unsafe migration or correctness bug first.
 
-## Reporting & identity (con-voyage contract)
-- Report a verdict: PASS or CHANGES REQUIRED.
-- Tag every finding BLOCKING or LOW, with file:line and a concrete fix.
-- You must not commit, push, or modify any code.
-- Any comment you post to the PR MUST lead with `[<rig>/<agent> — <lens>]`
-  (a human's comments are never prefixed — that asymmetry is the signal).
+{{ template "cv-severity-rubric" . }}
