@@ -2827,3 +2827,183 @@ cv_with_timeout() {
   wait "$cmd_pid" 2>/dev/null
   return "$?"
 }
+
+# ---------------------------------------------------------------------------
+# Assistant scaffolding (fk-apujks): shared prerequisite for the three city
+# assistants — Marshal, Scribe, Custodian (see
+# .claude/plans/con-voyage-assistants.md "Shared scaffolding"). Neither
+# assistant exists yet; this is the layer all three will share so none of
+# them reinvents its own feature flag or suspend/resume handoff.
+# ---------------------------------------------------------------------------
+
+# cv_assistant_config_bool FILE NAME — internal: print "true"/"false" for
+# [con_voyage.assistants].NAME in TOML file FILE, or empty when FILE is
+# missing, unparseable, python3 has no tomllib (needs 3.11+), or the key is
+# absent. Never aborts; callers treat empty as "not found here, check the
+# next source" rather than a hard failure.
+cv_assistant_config_bool() {
+  local file="$1" name="$2"
+  [ -n "$file" ] && [ -f "$file" ] || { printf ''; return 0; }
+  python3 -c "
+import sys
+try:
+    import tomllib
+except ImportError:
+    sys.exit(0)
+name = sys.argv[2]
+try:
+    with open(sys.argv[1], 'rb') as fh:
+        data = tomllib.load(fh)
+except Exception:
+    sys.exit(0)
+section = (data.get('con_voyage') or {}).get('assistants') or {}
+val = section.get(name) if isinstance(section, dict) else None
+if isinstance(val, bool):
+    print('true' if val else 'false')
+" "$file" "$name" 2>/dev/null
+}
+
+# cv_assistant_enabled NAME — print "true" or "false" for whether assistant
+# NAME (marshal|scribe|custodian) is enabled, checked in this order:
+#   1. "<rig_root>/.gc/con-voyage-assistants.toml" — a rig's own override
+#      file. This is the one place a rig turns an assistant on (a rig that
+#      wants all three running sets all three true here); nothing reads a
+#      per-sling flag for this.
+#   2. This pack's own shipped default
+#      (assets/config/con-voyage-assistants.defaults.toml) — marshal/scribe/
+#      custodian all default to false (suspended by default: they cost money
+#      to run).
+# Always prints exactly "true" or "false" and always returns 0. Fail-soft to
+# "false": a missing/stale/unparseable config can never turn an assistant on
+# by accident, only ever leave it off, matching this file's posture
+# elsewhere (fail soft, never fail open on a cost-bearing action).
+cv_assistant_enabled() {
+  local name="$1"
+  local rig_root rig_override pack_default val
+  rig_root="$(cv_default_rig_root)"
+  rig_override="${rig_root}/.gc/con-voyage-assistants.toml"
+  val="$(cv_assistant_config_bool "$rig_override" "$name")"
+  if [ -z "$val" ]; then
+    pack_default="$(cv_pack_root)/assets/config/con-voyage-assistants.defaults.toml"
+    val="$(cv_assistant_config_bool "$pack_default" "$name")"
+  fi
+  printf '%s' "${val:-false}"
+}
+
+# cv_write_handoff_note NAME FEED_POSITION OWNED_BEAD_STATUS NEXT_ACTION —
+# mail a structured handoff note to THIS session's own inbox (gc mail send's
+# default-recipient identity: $GC_SESSION_ID/$GC_ALIAS/$GC_AGENT), to be read
+# back by cv_read_handoff_note on the session's next `gc session wake` —
+# before `gc session suspend`, mirroring the mayor's own existing
+# HIGH-context handoff idiom (mail-to-self + bd show on resume) so
+# Marshal/Scribe/Custodian share one copy instead of each growing their own.
+# NAME distinguishes which assistant's note this is so a session that ever
+# hosts more than one assistant's mail doesn't confuse them.
+#
+# Fail-soft but NOT silent: a send failure/timeout is logged to stderr and
+# the function returns non-zero, but it never aborts the caller — a suspend
+# must still be allowed to proceed even when the handoff mail could not be
+# sent (the alternative — blocking suspend on a mail failure — risks wedging
+# the session open indefinitely over a transient store hiccup).
+cv_write_handoff_note() {
+  local name="$1" feed_position="$2" owned_bead_status="$3" next_action="$4"
+  local gc_bin="${GC:-gc}"
+  local self="${GC_SESSION_ID:-${GC_ALIAS:-${GC_AGENT:-}}}"
+  if [ -z "$self" ]; then
+    echo "cv_write_handoff_note: WARNING: no GC_SESSION_ID/GC_ALIAS/GC_AGENT set — cannot address a handoff note to self for ${name}" >&2
+    return 1
+  fi
+  local body
+  body="$(printf 'Feed position: %s\nOwned-bead status: %s\nNext action: %s\n' "$feed_position" "$owned_bead_status" "$next_action")"
+  local timeout_secs="${CV_HANDOFF_STORE_TIMEOUT_SECONDS:-30}"
+  case "$timeout_secs" in
+    *[!0-9]*|'') timeout_secs="30" ;;
+  esac
+  local out rc
+  out="$(cv_with_timeout "$timeout_secs" "$gc_bin" mail send "$self" -s "con-voyage ${name} handoff" -m "$body" --json 2>&1)"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "cv_write_handoff_note: WARNING: gc mail send to self (${self}) failed or timed out for ${name} handoff: ${out}" >&2
+    return 1
+  fi
+  return 0
+}
+
+# cv_read_handoff_note NAME — read back the most recent cv_write_handoff_note
+# note for NAME from THIS session's own inbox (gc mail inbox's own
+# default-recipient resolution), mark it read, and print its three fields as
+# three lines in this fixed order: feed_position, owned_bead_status,
+# next_action. Prints nothing at all if the inbox has no note whose subject
+# matches NAME, the lookup fails/times out, or the body doesn't parse — the
+# fail-soft contract this whole file shares: a caller missing a handoff note
+# falls back to its own normal cold-start discovery instead of trusting
+# half-parsed data. Always returns 0.
+#
+# Picks the LAST subject match gc mail inbox returns for NAME as "most
+# recent" (no reliable timestamp field to sort by across every gc version);
+# this is an approximation, not a hard guarantee — a caller that reads a
+# stale duplicate instead of a newer one degrades no worse than finding none
+# at all, which this function already tolerates everywhere else.
+cv_read_handoff_note() {
+  local name="$1"
+  local gc_bin="${GC:-gc}"
+  local timeout_secs="${CV_HANDOFF_STORE_TIMEOUT_SECONDS:-30}"
+  case "$timeout_secs" in
+    *[!0-9]*|'') timeout_secs="30" ;;
+  esac
+  local subject="con-voyage ${name} handoff"
+  local inbox_json
+  inbox_json="$(cv_with_timeout "$timeout_secs" "$gc_bin" mail inbox --json 2>/dev/null)"
+  [ -n "$inbox_json" ] || return 0
+  local msg_id
+  msg_id="$(printf '%s' "$inbox_json" | python3 -c "
+import sys, json
+subject = sys.argv[1]
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+if isinstance(data, dict):
+    messages = data.get('messages')
+    if messages is None:
+        messages = data.get('mail')
+    if messages is None:
+        messages = []
+elif isinstance(data, list):
+    messages = data
+else:
+    messages = []
+best = None
+for m in messages:
+    if not isinstance(m, dict):
+        continue
+    if (m.get('subject') or '') != subject:
+        continue
+    best = m
+if best is not None:
+    print(best.get('id') or '')
+" "$subject" 2>/dev/null)"
+  [ -n "$msg_id" ] || return 0
+  local read_json
+  read_json="$(cv_with_timeout "$timeout_secs" "$gc_bin" mail read "$msg_id" --json 2>/dev/null)"
+  [ -n "$read_json" ] || return 0
+  printf '%s' "$read_json" | python3 -c "
+import sys, json, re
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+if isinstance(data, dict) and isinstance(data.get('message'), dict):
+    data = data['message']
+if not isinstance(data, dict):
+    raise SystemExit(0)
+body = data.get('body') or ''
+def field(label):
+    m = re.search(r'^' + re.escape(label) + r':[ \t]*(.*)$', body, re.MULTILINE)
+    return m.group(1) if m else ''
+print(field('Feed position'))
+print(field('Owned-bead status'))
+print(field('Next action'))
+" 2>/dev/null
+  return 0
+}
