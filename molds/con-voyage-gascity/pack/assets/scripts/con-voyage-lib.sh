@@ -860,6 +860,20 @@ CV_NO_INTERACTIVE_PROMPT_REMINDER='This session runs headless — nobody is watc
 # reminder is distributed there, not via a formula description_file.
 CV_PR_REPLY_INTEGRITY_REMINDER='Post ONLY through `cv-pr-comment.sh` — `reply-thread` for an inline review-thread reply (use the `[reply-thread comment-id:<id> @ path:line]` target from the feedback above), `comment` for a root-level reply. A raw `gh pr comment`, `gh pr review`, or `gh api ... comments` call posts under the operator'"'"'s own GitHub identity with no machine-identity banner, impersonating a human. Before closing this bead with `gc.outcome=pass`, record the URL `cv-pr-comment.sh` printed as `gc.pr_comment_url` metadata on this bead (`bd update <bead-id> --set-metadata "gc.pr_comment_url=<url>"`) — a pass-close without it is invalid and must not be reported as done.'
 
+# ---------------------------------------------------------------------------
+# Shared severity rubric (fk-qbdta, operator request on replicatedhq/vandoor
+# #10589 sc-139247 slice 4): the security lane graded a collision-safety
+# finding LOW because "the sole current caller passes zero-value options" —
+# safety resting on an unenforced precondition, with a local, cheap fix — and
+# the acceptance lane graded a "no warnings when unused" criterion LOW even
+# though it was vacuously true, since the wiring that would exercise it lands
+# in another, unmerged slice. Both should have been BLOCKING. Like
+# CV_REVIEW_LANE_WORKTREE_REMINDER above, every lane that grades findings
+# this way carries a literal copy of this text (static assets, not shell, so
+# they cannot source the constant directly) — tests/cv-severity-rubric.test.sh
+# diffs them against it.
+CV_SEVERITY_RUBRIC_REMINDER='Severity rubric: a finding is BLOCKING, not LOW, when any of the following holds: (a) correctness or safety holds only because of an unenforced precondition, current caller behavior, or a promise about a future slice, and the fix is local to this change — safety that rests on what todays caller happens to pass, or on an invariant nothing enforces, is a latent vuln, not a hardening nice-to-have; (b) an acceptance criterion is satisfied only vacuously, with no live caller to actually exercise it; or (c) the change depends on an unmerged PR or slice and is not stacked on it. LOW stays for genuinely advisory items. GIVEN a finding whose only safety argument is "the current caller passes a zero value" or "validated upstream" and whose fix is local, WHEN this lane grades it, THEN it is BLOCKING. GIVEN an acceptance criterion that holds only vacuously because the wiring lands in another unmerged slice, WHEN acceptance grades it, THEN it is BLOCKING with the fix "stack on the dependency or wire it here".'
+
 # cv_text_has_interactive_prompt_stall TEXT — exit 0 if TEXT contains the
 # footer Claude Code's AskUserQuestion (and similar single/multi-select
 # terminal prompts) prints while blocked waiting on a selection, exit 1
