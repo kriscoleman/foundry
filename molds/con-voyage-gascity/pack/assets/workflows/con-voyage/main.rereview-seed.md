@@ -8,9 +8,16 @@ runs completely unmodified.
 
 ## Resolve this run's inputs
 
-`{repo}`, `{pr}`, `{branch}`, `{finalize_key}`, and `{review_round}` are the
-formula vars con-voyage-rereview-watch.sh passed at sling time. Resolve the
-workflow root id the same way every other con-voyage step does:
+`repo`, `pr`, `branch`, `finalize_key`, and `review_round` are the formula
+vars con-voyage-rereview-watch.sh passed at sling time. Resolve the
+workflow root id the same way every other con-voyage step does, then read
+every var back from the root's `gc.var.*` metadata (review fk-z6rts
+BLOCKING-1): this `description_file` is too large for gc to inline-
+substitute `{var}` tokens into its body, so a literal `{repo}`/`{pr}`/
+`{branch}`/`{finalize_key}`/`{review_round}` token here is a permanent
+no-op — resolve dynamically instead, exactly like every other over-
+threshold step in this pack (e.g. `main.publish.md` resolves
+`gc.build.source_anchor_id` the same way, never a literal `{convoy_id}`):
 
 ```bash
 GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
@@ -28,13 +35,27 @@ print((d.get('metadata') or {}).get('gc.root_bead_id') or '')
 fi
 [ -n "$ROOT_ID" ] || ROOT_ID="$GC_BEAD_ID"
 
-REPO_FULL="{repo}"
-PR_NUMBER="{pr}"
-BRANCH="{branch}"
-FINALIZE_KEY="{finalize_key}"
-REVIEW_ROUND="{review_round}"
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
+if [ -z "$CV_LIB" ]; then
+  echo "con-voyage rereview-seed: con-voyage-lib.sh not found — cannot resolve formula vars from workflow root ${ROOT_ID}" >&2
+  bd update "$CLAIMED_BEAD_ID" \
+    --set-metadata 'gc.outcome=fail' \
+    --set-metadata 'gc.failure_class=missing_vars'
+  bd close "$CLAIMED_BEAD_ID" --reason 'con-voyage-lib.sh not found — cannot resolve formula vars.'
+  exit 0
+fi
+
+REPO_FULL="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.var.repo)"
+PR_NUMBER="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.var.pr)"
+BRANCH="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.var.branch)"
+FINALIZE_KEY="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.var.finalize_key)"
+REVIEW_ROUND="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.var.review_round)"
 if [ -z "${REPO_FULL}" ] || [ -z "${PR_NUMBER}" ] || [ -z "${BRANCH}" ] || [ -z "${FINALIZE_KEY}" ]; then
-  echo "con-voyage rereview-seed: missing required var(s) — repo='${REPO_FULL}' pr='${PR_NUMBER}' branch='${BRANCH}' finalize_key='${FINALIZE_KEY}'" >&2
+  echo "con-voyage rereview-seed: missing required var(s) on workflow root ${ROOT_ID} — repo='${REPO_FULL}' pr='${PR_NUMBER}' branch='${BRANCH}' finalize_key='${FINALIZE_KEY}'" >&2
   bd update "$CLAIMED_BEAD_ID" \
     --set-metadata 'gc.outcome=fail' \
     --set-metadata 'gc.failure_class=missing_vars'
