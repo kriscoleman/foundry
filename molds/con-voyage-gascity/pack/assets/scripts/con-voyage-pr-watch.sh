@@ -1312,9 +1312,20 @@ def is_bot(login):
             return True
     return ll in BOT_LOGINS
 
+# Strip a trailing "[bot]" App suffix before the AI-reviewer-suffix check, so
+# an AI reviewer whose GitHub App login is rendered "doomer-ai[bot]" is still
+# recognized as an AI reviewer (and gets its content checked) instead of
+# matching only the literal "-ai" ending.
+def _strip_bot_suffix(login):
+    ll = login or ""
+    for s in BOT_SUFFIXES:
+        if ll.lower().endswith(s):
+            return ll[: -len(s)]
+    return ll
+
 def is_ai_reviewer_bot(login):
-    ll = (login or "").lower()
-    return any(ll.endswith(s) for s in AI_REVIEWER_SUFFIXES)
+    base = _strip_bot_suffix(login).lower()
+    return any(base.endswith(s) for s in AI_REVIEWER_SUFFIXES)
 
 def is_agent_comment(body):
     return bool(agent_re.match(body or ""))
@@ -1322,7 +1333,10 @@ def is_agent_comment(body):
 # A bot-trigger slash command ("/doomer run", "/retry", ...) is an operator
 # instruction to a bot, not change-request feedback — never route it,
 # regardless of who posted it (fk-9xyo4 recurrence, mail rc-wisp-3hoqm3y).
-SLASH_COMMAND_RE = re.compile(r"^/\w+")
+# The command token must end at whitespace or end-of-string so ordinary
+# prose that merely starts with a slash-prefixed path (e.g. "/etc/foo is
+# broken") is not mistaken for a bot command (PR#160 human feedback).
+SLASH_COMMAND_RE = re.compile(r"^/\w+(?:\s|$)")
 
 def is_slash_command(body):
     return bool(SLASH_COMMAND_RE.match((body or "").strip()))
@@ -1333,10 +1347,15 @@ def is_slash_command(body):
 # signal and must still be routed -- only the no-op banner is noise (fk-9xyo4:
 # a doomer-ai comment reading not automatically approving / classified as
 # critical was dropped outright on 2026-10-02 because it carried a bot login;
-# operator ruling says it should have been picked up).
+# operator ruling says it should have been picked up). The escape hatch
+# requires the explicit "classified as critical" phrase, not a bare
+# "critical" substring, so a genuine no-op banner that merely mentions
+# "critical" in passing (e.g. "No critical problems noted") still gets
+# classified as noise instead of leaking into routed feedback (PR#160 human
+# feedback).
 def is_bot_approval_noise(body, state):
     b = (body or "").lower()
-    if "critical" in b or "not automatically approving" in b or "refus" in b or state == "CHANGES_REQUESTED":
+    if "classified as critical" in b or "not automatically approving" in b or "refus" in b or state == "CHANGES_REQUESTED":
         return False
     if state == "APPROVED":
         return True
@@ -1359,11 +1378,11 @@ for review in pr_data.get("reviews", []):
     state  = review.get("state", "") or ""
     if is_slash_command(body):
         continue
-    if is_bot(author):
-        continue
     if is_ai_reviewer_bot(author):
         if is_bot_approval_noise(body, state):
             continue
+    elif is_bot(author):
+        continue
     elif is_agent_comment(body):
         continue
     if state == "PENDING":
@@ -1388,11 +1407,11 @@ for comment in pr_data.get("comments", []):
     body   = comment.get("body", "") or ""
     if is_slash_command(body):
         continue
-    if is_bot(author):
-        continue
     if is_ai_reviewer_bot(author):
         if is_bot_approval_noise(body, ""):
             continue
+    elif is_bot(author):
+        continue
     elif is_agent_comment(body):
         continue
     if not body.strip():
@@ -1416,11 +1435,11 @@ for thread in pr_data.get("reviewThreads", []):
         body   = comment.get("body", "") or ""
         if is_slash_command(body):
             continue
-        if is_bot(author):
-            continue
         if is_ai_reviewer_bot(author):
             if is_bot_approval_noise(body, ""):
                 continue
+        elif is_bot(author):
+            continue
         elif is_agent_comment(body):
             continue
         if not body.strip():
