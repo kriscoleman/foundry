@@ -186,6 +186,43 @@ JSON
           # nor Netlify's automated deploy-preview comments, as new human
           # feedback (fk-5zc65). reviewThreads is supplied separately by the
           # `gh api graphql` stub below.
+          #
+          # STUB_PR11_DOOMER=1 (fk-9xyo4) additionally injects: a doomer-ai
+          # COMMENTED review with the "ran successfully and found no issues"
+          # banner, a doomer-ai APPROVED review carrying the stampy-stamp
+          # marker, a doomer-ai COMMENTED review reporting a CRITICAL finding
+          # (must still route), and an operator slash-command comment
+          # ("/doomer run", must never route as change-request feedback).
+          if [ "${STUB_PR11_DOOMER:-0}" = "1" ]; then
+            cat <<'JSON'
+{"reviews":[{"id":"PRR_doomer_noissue","author":{"login":"doomer-ai"},"body":"Doomer ran successfully and found no issues","state":"COMMENTED"},{"id":"PRR_doomer_approve","author":{"login":"doomer-ai"},"body":"stampy-stamp","state":"APPROVED"},{"id":"PRR_doomer_critical","author":{"login":"doomer-ai"},"body":"found no issues, but not automatically approving -- classified as critical: security-control change over sensitive license/entitlement data","state":"COMMENTED"}],"comments":[{"id":"IC_test_11","author":{"login":"a-human-reviewer"},"body":"please fix the null check"},{"id":"IC_test_bot","author":{"login":"kriscoleman"},"body":"🤖 **Automated con-voyage agent** (con-voyage-ci-repair / foundry-kc/worker)\n\nFixed a thing."},{"id":"IC_test_netlify","author":{"login":"netlify"},"body":"Deploy Preview for replicated-docs ready!"},{"id":"IC_slash_cmd","author":{"login":"kriscoleman"},"body":"/doomer run"}]}
+JSON
+            exit 0
+          fi
+          # STUB_PR11_SEVERITY=1 (PR#160 human-feedback follow-up): three
+          # fixtures proving the three LOW findings the human reviewer
+          # escalated are real correctness bugs, not cosmetic nits:
+          #   - IC_human_slash: a genuine human comment that happens to START
+          #     with a slash-prefixed path ("/etc/foo is broken...") -- the
+          #     over-eager ^/\w+ slash-command regex must NOT swallow this as
+          #     a bot-trigger command; it must still route.
+          #   - PRR_doomer_false_noise: a doomer-ai COMMENTED review that is
+          #     genuine no-op noise ("ran successfully and found no issues")
+          #     but also happens to mention "critical" in passing ("No
+          #     critical problems noted") -- the bare "critical" substring
+          #     check must not let this escape the noise classifier; it must
+          #     stay excluded.
+          #   - PRR_aibot_bracket_critical: an AI-reviewer bot whose login is
+          #     suffixed "[bot]" (as real GitHub Apps are), reporting a real
+          #     CRITICAL finding -- is_bot's blanket "[bot]" skip must not
+          #     run before the AI-reviewer content check; it must still
+          #     route.
+          if [ "${STUB_PR11_SEVERITY:-0}" = "1" ]; then
+            cat <<'JSON'
+{"reviews":[{"id":"PRR_doomer_false_noise","author":{"login":"doomer-ai"},"body":"Doomer ran successfully and found no issues. No critical problems noted.","state":"COMMENTED"},{"id":"PRR_aibot_bracket_critical","author":{"login":"doomer-ai[bot]"},"body":"found no issues, but not automatically approving -- classified as critical: security-control change over sensitive license/entitlement data","state":"COMMENTED"}],"comments":[{"id":"IC_human_slash","author":{"login":"a-human-reviewer"},"body":"/etc/foo is broken, can someone take a look at this path handling?"}]}
+JSON
+            exit 0
+          fi
           cat <<'JSON'
 {"reviews":[],"comments":[{"id":"IC_test_11","author":{"login":"a-human-reviewer"},"body":"please fix the null check"},{"id":"IC_test_bot","author":{"login":"kriscoleman"},"body":"🤖 **Automated con-voyage agent** (con-voyage-ci-repair / foundry-kc/worker)\n\nFixed a thing."},{"id":"IC_test_netlify","author":{"login":"netlify"},"body":"Deploy Preview for replicated-docs ready!"}]}
 JSON
@@ -2769,6 +2806,61 @@ if printf '%s' "$OUT" | grep -q "gc sling to recorded implementor gc__implementa
 else
   fail "expected an explicit sling-failure fallback log line"
 fi
+
+# ===========================================================================
+# CASE 50 — fk-9xyo4: doomer-ai no-issue/approval reviews and a bot-trigger
+#   slash-command comment must NOT mint human-feedback work; a doomer-ai
+#   review reporting a CRITICAL finding must still route.
+#
+#   STUB_PR11_DOOMER=1 swaps in a PR #11 fixture carrying:
+#     - PRR_doomer_noissue: doomer-ai COMMENTED "ran successfully and found
+#       no issues" -- must be excluded (this bead's original bug: doomer-ai
+#       does not match "[bot]" or any BOT_LOGINS entry, so it used to be
+#       treated as human and routed).
+#     - PRR_doomer_approve: doomer-ai APPROVED with a "stampy-stamp" marker
+#       body -- must be excluded.
+#     - PRR_doomer_critical: doomer-ai COMMENTED reporting a CRITICAL
+#       security-control finding (contains "no issues" as a substring too,
+#       so a naive "no issues" skip would wrongly drop it) -- must route.
+#     - IC_slash_cmd: the operator's own "/doomer run" comment -- a bot
+#       trigger command, not change-request feedback -- must be excluded
+#       (2026-10-02 21:29Z recurrence, mail rc-wisp-3hoqm3y).
+#     - IC_test_11: the ordinary human comment -- must still route, same as
+#       every other case.
+# ===========================================================================
+start_case "50: fk-9xyo4 — doomer-ai no-issue/approval + slash-command excluded, doomer-ai CRITICAL finding still routes"
+setup_case_env "50"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_PR11_DOOMER="1"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 1 "exactly one comment-route sling for #11 (doomer-ai noise and the slash command add no extra routes)"
+assert_log_count "$GC_LOG" 'ran successfully and found no issues' 0 "doomer-ai's clean no-issue banner is excluded from routed feedback"
+assert_log_count "$GC_LOG" 'stampy-stamp' 0 "doomer-ai's APPROVED stampy-stamp review is excluded from routed feedback"
+assert_log_count "$GC_LOG" '/doomer run' 0 "the operator's own bot-trigger slash command is excluded from routed feedback"
+assert_log_count "$GC_LOG" 'classified as critical' 1 "doomer-ai's CRITICAL finding review is still routed as feedback"
+assert_log_count "$GC_LOG" 'please fix the null check' 1 "the ordinary human comment still routes alongside the critical doomer-ai finding"
+
+# ===========================================================================
+# CASE 51 — PR#160 human-feedback follow-up: three LOW findings re-escalated
+#   as real correctness bugs (over-matching/under-matching that drops or
+#   leaks feedback is severe, not cosmetic):
+#     1. A human comment starting with a slash-prefixed path ("/etc/foo is
+#        broken...") must still route -- the slash-command regex must not
+#        swallow ordinary prose that merely starts with a path.
+#     2. A doomer-ai no-op noise review that happens to say "No critical
+#        problems noted" must stay excluded -- the bare "critical" substring
+#        check must not let noise escape the classifier.
+#     3. An AI-reviewer bot login suffixed "[bot]" reporting a real CRITICAL
+#        finding must still route -- is_bot's blanket "[bot]" skip must not
+#        run ahead of the AI-reviewer content check.
+# ===========================================================================
+start_case "51: PR#160 feedback — slash-path human comment routes, critical-mentioning noise stays excluded, [bot]-suffixed AI reviewer still routes"
+setup_case_env "51"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_PR11_SEVERITY="1"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 1 "exactly one comment-route sling for #11"
+assert_log_count "$GC_LOG" '/etc/foo is broken' 1 "a human comment starting with a slash-path is not swallowed as a bot-trigger slash command"
+assert_log_count "$GC_LOG" 'No critical problems noted' 0 "doomer-ai noise mentioning \"critical\" in passing stays excluded"
+assert_log_count "$GC_LOG" 'classified as critical' 1 "a [bot]-suffixed AI-reviewer login's real CRITICAL finding still routes"
 
 # ===========================================================================
 # Summary
