@@ -2234,6 +2234,51 @@ print(val if isinstance(val, str) else json.dumps(val))
 " "$key" 2>/dev/null
 }
 
+# cv_flatten_roster_vars_from_json RAW_VARS_JSON -> prints
+# "key=value,key=value,..." built from RAW_VARS_JSON (a gc.graphv2_vars.v1
+# metadata value, itself a JSON object of formula vars), restricted to the
+# enable_*/code_lens/implementation_target/cv_lens_* keys a later re-review
+# round needs to reproduce the SAME multi-lens roster against a new commit
+# (fk-pubvq). Empty input or unparseable JSON -> empty output (fail-safe).
+#
+# This is the pure transform shared by cv_flatten_roster_vars below (used by
+# main.publish.md, which reads metadata with no --city flag like every other
+# bare "gc bd show" call in that file) and con-voyage-rereview-watch.sh's own
+# flatten_roster_vars (which must keep its "$GC" --city "$GC_CITY" bd show
+# call — it runs outside the rig's own cwd). The two callers' bd-show
+# invocations legitimately differ; only the JSON-parse-and-filter logic was
+# duplicated, and had already drifted cosmetically between them (review
+# fk-n74o9 BLOCKING-2).
+cv_flatten_roster_vars_from_json() {
+  local raw="${1:-}"
+  [ -n "$raw" ] || raw='{}'
+  printf '%s' "$raw" | python3 -c "
+import json, sys
+try:
+    vars_ = json.loads(sys.stdin.read() or '{}')
+except Exception:
+    vars_ = {}
+if not isinstance(vars_, dict):
+    vars_ = {}
+keep_exact = ('code_lens', 'implementation_target', 'cv_lens_claim_seconds',
+              'cv_lens_max_redispatch', 'cv_lens_escalate_target')
+parts = []
+for k in sorted(vars_):
+    if k in keep_exact or k.startswith('enable_'):
+        parts.append('{}={}'.format(k, vars_[k]))
+print(','.join(parts))
+" 2>/dev/null
+}
+
+# cv_flatten_roster_vars ROOT_BEAD_ID -> cv_flatten_roster_vars_from_json
+# applied to ROOT_BEAD_ID's own gc.graphv2_vars.v1 metadata (read via
+# cv_bead_metadata, no --city flag). Empty on any resolution failure.
+cv_flatten_roster_vars() {
+  local root_bead_id="$1"
+  [ -n "${root_bead_id// /}" ] || { printf ''; return 0; }
+  cv_flatten_roster_vars_from_json "$(cv_bead_metadata "$root_bead_id" gc.graphv2_vars.v1)"
+}
+
 # cv_root_bead_id BEAD_ID — print BEAD_ID's workflow root: its
 # gc.root_bead_id metadata value, or BEAD_ID itself when that key is absent
 # (BEAD_ID already IS the root, or the lookup failed outright). Fail-safe:
@@ -2376,6 +2421,10 @@ finalize_read() {
   FS_IMPLEMENTOR=""
   FS_LAST_PHASE=""
   FS_ROOT_BEAD_ID=""
+  FS_ROSTER_VARS=""
+  FS_LAST_REVIEWED_HEAD_SHA=""
+  FS_REVIEW_ROUND=""
+  FS_REREVIEW_ROOT_BEAD_ID=""
   [ -f "$f" ] || return 0
   local k v
   while IFS='=' read -r k v || [ -n "$k" ]; do
@@ -2388,12 +2437,17 @@ finalize_read() {
       implementor_session) FS_IMPLEMENTOR="$v" ;;
       last_phase) FS_LAST_PHASE="$v" ;;
       root_bead_id) FS_ROOT_BEAD_ID="$v" ;;
+      roster_vars) FS_ROSTER_VARS="$v" ;;
+      last_reviewed_head_sha) FS_LAST_REVIEWED_HEAD_SHA="$v" ;;
+      review_round) FS_REVIEW_ROUND="$v" ;;
+      rereview_root_bead_id) FS_REREVIEW_ROOT_BEAD_ID="$v" ;;
     esac
   done < "$f"
 }
 
 # finalize_write DEDUP_KEY WORK_BEAD CONVOY_ID REPO_FULL PR_NUMBER PR_AUTHOR
-#                IMPLEMENTOR LAST_PHASE [ROOT_BEAD_ID]
+#                IMPLEMENTOR LAST_PHASE [ROOT_BEAD_ID] [ROSTER_VARS]
+#                [LAST_REVIEWED_HEAD_SHA] [REVIEW_ROUND] [REREVIEW_ROOT_BEAD_ID]
 #
 # ROOT_BEAD_ID (fk-bkz94) is the graph.v2 compiled root bead the con-voyage
 # formula actually runs under — a THIRD bead distinct from WORK_BEAD and
@@ -2402,10 +2456,41 @@ finalize_read() {
 # unchanged; empty means "unresolved/older record", in which case the
 # finalize monitor skips the root-bead teardown entirely (unchanged prior
 # behavior) rather than guessing an id.
+#
+# ROSTER_VARS/LAST_REVIEWED_HEAD_SHA/REVIEW_ROUND/REREVIEW_ROOT_BEAD_ID
+# (fk-pubvq) exist so con-voyage-rereview-watch.sh can detect a post-publish
+# code-changing push to the PR head and re-run the SAME review roster against
+# it after the original workflow root has already closed:
+#   roster_vars             - the original root's enable_*/code_lens formula
+#                             vars, flattened to a single comma-separated
+#                             "key=value,key=value,..." string (opaque to this
+#                             lib; con-voyage-rereview-watch.sh is the only
+#                             reader/writer of the flattened shape) so a later
+#                             re-review round can re-sling the identical
+#                             roster. Empty for records written before this
+#                             field existed.
+#   last_reviewed_head_sha  - the PR head commit SHA this roster last actually
+#                             reviewed (publish time initially, then advanced
+#                             by each completed re-review round). Comparing
+#                             this against the PR's CURRENT head is how the
+#                             watch script tells "nothing new" from "a new
+#                             commit landed".
+#   review_round            - the next aggregated-comment round number
+#                             (publish posts round 1; each triggered
+#                             re-review round increments it) so
+#                             cv-pr-comment.sh comment-aggregate's round
+#                             marker stays unique per PR.
+#   rereview_root_bead_id   - the graph.v2 root bead id of an IN-FLIGHT
+#                             re-review round, or empty when none is running.
+#                             Sling-time dedup guard: a non-empty value means
+#                             a round is already underway for this PR and the
+#                             watch script must not sling a second one.
 finalize_write() {
   local dedup_key="$1" work_bead="$2" convoy_id="$3" repo_full="$4"
   local pr_number="$5" pr_author="$6" implementor="${7:-}" last_phase="${8:-}"
-  local root_bead_id="${9:-}"
+  local root_bead_id="${9:-}" roster_vars="${10:-}"
+  local last_reviewed_head_sha="${11:-}" review_round="${12:-}"
+  local rereview_root_bead_id="${13:-}"
   local f="${CV_STATE_DIR}/${dedup_key}.finalize"
   {
     printf 'work_bead=%s\n' "$work_bead"
@@ -2416,6 +2501,10 @@ finalize_write() {
     printf 'implementor_session=%s\n' "$implementor"
     printf 'last_phase=%s\n' "$last_phase"
     printf 'root_bead_id=%s\n' "$root_bead_id"
+    printf 'roster_vars=%s\n' "$roster_vars"
+    printf 'last_reviewed_head_sha=%s\n' "$last_reviewed_head_sha"
+    printf 'review_round=%s\n' "$review_round"
+    printf 'rereview_root_bead_id=%s\n' "$rereview_root_bead_id"
   } > "$f"
 }
 
