@@ -441,6 +441,46 @@ else
 fi
 
 # ===========================================================================
+# CASE 13 — Idle-rig repro (fk-63olte): a city-wide run with NO mayor session
+#   anywhere in `gc session list` and a GC_CITY pointed at the CITY root (not
+#   a rig subdirectory) still detects a stall and writes its dedup state
+#   under GC_CITY/.gc — proving the watchdog's cooldown cycle does not
+#   depend on an active mayor/run-operator session to make progress.
+#
+#   fk-63olte's hypothesis was that a quiet rig with "no mayor session
+#   watching and no run-operator looping" might never tick this order's
+#   cooldown trigger at all. Live repro against a real city (gc order
+#   history + gc supervisor run's process) refuted that: the order's
+#   trigger is ticked by the always-on `gc supervisor run` daemon, entirely
+#   independent of any mayor/dispatcher session, and it had been firing
+#   every ~5-15 minutes for hours with zero mayor involvement. The original
+#   "this rig's .gc/cv-askuserquestion-watchdog/ state dir does not exist"
+#   observation was a false alarm from checking the RIG-scoped .gc dir
+#   instead of the CITY-scoped one this watchdog deliberately uses (see this
+#   script's own STATE comment above) — the state dir was never empty, it
+#   was just one level up. This case locks that scoping in so the same false
+#   alarm can't recur.
+# ===========================================================================
+start_case "13: idle rig (no mayor session in the city) still detects and stores state under GC_CITY, not a rig path"
+setup_case_env "13"
+SESSIONS_13="$(write_sessions "$(session_json rc-13 'foundry-kc/gc.implementation-worker-13' 'foundry-kc/gc.implementation-worker' 'gc__implementation-worker-rc-13' 'foundry-kc')")"
+if printf '%s' "$SESSIONS_13" | grep -q '"template": *"mayor"'; then
+  fail "test setup bug: SESSIONS_13 must not contain a mayor session"
+else
+  pass "SESSIONS_13 contains no mayor session (the idle-rig precondition)"
+fi
+STATE_13="$(askq_state_path rc-13)"
+run_script "${DEFAULT_ENV[@]}" STUB_SESSION_LIST_JSON="$SESSIONS_13" STUB_PEEK_OUTPUT="$STUCK_TEXT_A"
+run_script "${DEFAULT_ENV[@]}" STUB_SESSION_LIST_JSON="$SESSIONS_13" STUB_PEEK_OUTPUT="$STUCK_TEXT_A"
+assert_eq "0" "$RC" "script completes a full two-cycle detection with no mayor session present"
+assert_log_count "$GC_LOG" 'mail send mayor' 1 "the mayor still gets mailed about the stall even though no mayor session was active"
+case "$STATE_13" in
+  "${CITY_DIR}"/.gc/*) pass "dedup state is written under GC_CITY (${CITY_DIR}), not a rig-scoped path" ;;
+  *) fail "expected dedup state under GC_CITY, got ${STATE_13}" ;;
+esac
+[ -f "$STATE_13" ] && pass "the city-scoped state file actually exists on disk" || fail "expected ${STATE_13} to exist"
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 echo

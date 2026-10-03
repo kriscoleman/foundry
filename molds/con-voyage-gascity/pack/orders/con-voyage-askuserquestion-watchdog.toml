@@ -15,6 +15,17 @@
 # design rationale and algorithm — in particular why a stall must be seen on
 # two CONSECUTIVE cycles before mail goes out: a peeked pane is the LAST
 # RENDERED FRAME and can be stale.
+#
+# fk-63olte (verified, not just hypothesized): this order's `cooldown`
+# trigger is ticked by the always-on `gc supervisor run` daemon, not by any
+# mayor/run-operator session looping — it keeps firing on schedule on a city
+# with zero active mayor sessions. Its dedup state lives under the CITY
+# root's .gc dir (CV_ASKQ_STATE_DIR default), never a per-rig .gc dir, by
+# design — this order scans every session across the whole city. If this
+# order's state directory ever looks empty for a given rig, you are almost
+# certainly looking at `<rig>/.gc/cv-askuserquestion-watchdog/` instead of
+# `<city-root>/.gc/cv-askuserquestion-watchdog/`; check the latter before
+# concluding the watchdog never ran.
 
 [order]
 description = "Detect a live session stuck on an interactive prompt (e.g. AskUserQuestion) for two consecutive cycles and mail the mayor with the unblock command"
