@@ -1,0 +1,327 @@
+description = """
+Con-voyage post-publish re-review formula (fk-pubvq).
+
+Triggered by con-voyage-rereview-watch.sh when a human-feedback or ci-repair
+bead pushes a NEW, code-changing commit to an already-published con-voyage
+PR — after the original con-voyage workflow root has already closed, so no
+review lane would otherwise ever see that commit. Runs the SAME multi-lens
+review roster the original con-voyage run used (enable_*/code_lens vars,
+flattened from the original root's gc.graphv2_vars.v1 and threaded through
+by the watch script) against the PR's CURRENT head, then posts exactly ONE
+new aggregated review comment and reports the verdict to the mayor.
+
+Does not build anything and does not open a new PR: the branch already
+exists and is already published. The `{target}.rereview-seed` step simply
+attaches a worktree to the EXISTING PR branch and satisfies the review
+loop's own build-step dependency gate (it checks for a CLOSED, gc.outcome=pass
+bead titled EXACTLY "Con-voyage: initial implementation (TDD)" as a direct
+dependency — see main.setup-con-voyage-review.md) so the review-loop/
+synthesize/apply-review-findings machinery can be reused UNCHANGED rather
+than reimplemented.
+
+Never auto-merges; never pushes a second PR.
+"""
+formula = "con-voyage-rereview"
+type = "expansion"
+version = 1
+contract = "graph.v2"
+
+[vars]
+[vars.repo]
+description = "GitHub repository in owner/repo form (the PR con-voyage-rereview-watch.sh detected a new commit on)."
+default = ""
+
+[vars.pr]
+description = "PR number (integer string)."
+default = ""
+
+[vars.branch]
+description = "PR head ref — the existing branch to check out and review (never created, never pushed to)."
+default = ""
+
+[vars.finalize_key]
+description = "The per-PR .finalize record dedup key (con-voyage-lib.sh finalize_read/_write) this round must update on completion."
+default = ""
+
+[vars.review_round]
+description = "The aggregated-comment round number for this cycle's cv-pr-comment.sh comment-aggregate call (con-voyage-rereview-watch.sh increments this from the finalize record's prior review_round)."
+default = "2"
+
+[vars.code_lens]
+description = "Run-target for the native-language code review floor lane, inherited from the original con-voyage run's roster."
+default = "con-voyage.cv-go-principal-engineer"
+
+[vars.implementation_target]
+description = "Role target used to apply re-review findings, inherited from the original con-voyage run's roster."
+default = "gc.implementation-worker"
+
+[vars.cv_lens_claim_seconds]
+description = "Seconds a review-lane bead may sit open+unassigned before the review loop re-arms delivery (see con-voyage.formula.toml for the full rationale)."
+default = "300"
+
+[vars.cv_lens_max_redispatch]
+description = "Bounded re-dispatch attempts per stalled review lane before escalating to cv_lens_escalate_target."
+default = "3"
+
+[vars.cv_lens_escalate_target]
+description = "Mail recipient when a review lane exhausts cv_lens_max_redispatch."
+default = "human"
+
+# ---------------------------------------------------------------------------
+# Seed step — attaches a worktree to the EXISTING PR branch and stands in for
+# con-voyage's prepare-build/build phases (fk-9aunv) so the SAME review-loop
+# dependency gate (main.setup-con-voyage-review.md's cv_dependency_outcome
+# check against a direct dependency titled EXACTLY "Con-voyage: initial
+# implementation (TDD)") is satisfied without re-running a TDD round against
+# an already-published, already-reviewed branch.
+# ---------------------------------------------------------------------------
+
+[[template]]
+id = "{target}.rereview-seed"
+title = "Con-voyage: initial implementation (TDD)"
+metadata = { "gc.run_target" = "gc.run-operator" }
+description_file = "../assets/workflows/con-voyage/main.rereview-seed.md"
+
+# ---------------------------------------------------------------------------
+# Setup + review loop — REUSES the con-voyage formula's own description_files
+# verbatim (same relative paths), so a re-review round gets identical BDD
+# acceptance guarantees (BLOCKING routes to an implementor and loops until
+# clean) with no duplicated logic to drift out of sync.
+# ---------------------------------------------------------------------------
+
+[[template]]
+id = "{target}.setup-con-voyage-review"
+title = "Prepare con-voyage review context"
+needs = ["{target}.rereview-seed"]
+metadata = { "gc.run_target" = "gc.run-operator" }
+description_file = "../assets/workflows/con-voyage/main.setup-con-voyage-review.md"
+
+[[template]]
+id = "{target}.con-voyage-review-loop"
+title = "Run con-voyage review until approved"
+needs = ["{target}.setup-con-voyage-review"]
+metadata = { "gc.run_target" = "gc.run-operator" }
+description_file = "../assets/workflows/con-voyage/main.con-voyage-review-loop.md"
+
+[template.check]
+max_attempts = 8
+
+[template.check.check]
+mode = "exec"
+path = ".gc/scripts/checks/implementation-review-approved.sh"
+timeout = "10m"
+
+[vars.enable_product_owner]
+description = "Enable product-owner roster lens (inherited from the original run's roster)."
+default = "false"
+
+[[template.children]]
+id = "{target}.acceptance-review"
+title = "Con-voyage: acceptance and correctness"
+metadata = { "gc.run_target" = "gc.implementation-reviewer" }
+description_file = "../assets/workflows/con-voyage/main.acceptance-review.md"
+
+[[template.children]]
+id = "{target}.test-evidence-review"
+title = "Con-voyage: test evidence"
+metadata = { "gc.run_target" = "gc.gap-analyst" }
+description_file = "../assets/workflows/con-voyage/main.test-evidence-review.md"
+
+[[template.children]]
+id = "{target}.simplicity-review"
+title = "Con-voyage: simplicity and maintainability"
+metadata = { "gc.run_target" = "gc.design-implementation-reviewer" }
+description_file = "../assets/workflows/con-voyage/main.simplicity-review.md"
+
+[[template.children]]
+id = "{target}.security-review"
+title = "Con-voyage: security review"
+metadata = { "gc.run_target" = "con-voyage.cv-security-reviewer" }
+description_file = "../assets/workflows/con-voyage/main.security-review.md"
+
+[[template.children]]
+id = "{target}.code-review"
+title = "Con-voyage: code review (native-language)"
+metadata = { "gc.run_target" = "{code_lens}" }
+description_file = "../assets/workflows/con-voyage/main.code-review.md"
+
+[[template.children]]
+id = "{target}.product-owner-review"
+title = "Con-voyage: product-owner review"
+condition = """{{enable_product_owner}}"""
+metadata = { "gc.run_target" = "con-voyage.cv-product-owner" }
+description_file = "../assets/workflows/con-voyage/main.product-owner-review.md"
+
+[vars.enable_founder_cto]
+description = "Enable founder-CTO roster lens (inherited from the original run's roster)."
+default = "false"
+
+[[template.children]]
+id = "{target}.founder-cto-review"
+title = "Con-voyage: founder-CTO review"
+condition = """{{enable_founder_cto}}"""
+metadata = { "gc.run_target" = "con-voyage.cv-founder-cto" }
+description_file = "../assets/workflows/con-voyage/main.founder-cto-review.md"
+
+[vars.enable_dev_ex]
+description = "Enable dev-ex reviewer roster lens (inherited from the original run's roster)."
+default = "false"
+
+[[template.children]]
+id = "{target}.dev-ex-review"
+title = "Con-voyage: developer experience review"
+condition = """{{enable_dev_ex}}"""
+metadata = { "gc.run_target" = "con-voyage.cv-dev-ex-reviewer" }
+description_file = "../assets/workflows/con-voyage/main.dev-ex-review.md"
+
+[vars.enable_standards_janitor]
+description = "Enable standards-janitor roster lens (inherited from the original run's roster)."
+default = "false"
+
+[[template.children]]
+id = "{target}.standards-janitor-review"
+title = "Con-voyage: standards and conventions review"
+condition = """{{enable_standards_janitor}}"""
+metadata = { "gc.run_target" = "con-voyage.cv-standards-janitor" }
+description_file = "../assets/workflows/con-voyage/main.standards-janitor-review.md"
+
+[vars.enable_qa_test]
+description = "Enable QA / test-engineer roster lens (inherited from the original run's roster)."
+default = "false"
+
+[[template.children]]
+id = "{target}.qa-test-review"
+title = "Con-voyage: QA and test-engineering review"
+condition = """{{enable_qa_test}}"""
+metadata = { "gc.run_target" = "con-voyage.cv-qa-test-engineer" }
+description_file = "../assets/workflows/con-voyage/main.qa-test-review.md"
+
+[vars.enable_sre]
+description = "Enable SRE reliability roster lens (inherited from the original run's roster)."
+default = "false"
+
+[[template.children]]
+id = "{target}.sre-review"
+title = "Con-voyage: SRE reliability review"
+condition = """{{enable_sre}}"""
+metadata = { "gc.run_target" = "con-voyage.cv-sre-reliability" }
+description_file = "../assets/workflows/con-voyage/main.sre-review.md"
+
+[vars.enable_design_ux]
+description = "Enable design/UX roster lens (inherited from the original run's roster)."
+default = "false"
+
+[[template.children]]
+id = "{target}.design-ux-review"
+title = "Con-voyage: design and UX review"
+condition = """{{enable_design_ux}}"""
+metadata = { "gc.run_target" = "con-voyage.cv-design-ux" }
+description_file = "../assets/workflows/con-voyage/main.design-ux-review.md"
+
+[vars.enable_documentation]
+description = "Enable documentation roster lens (inherited from the original run's roster)."
+default = "false"
+
+[[template.children]]
+id = "{target}.documentation-review"
+title = "Con-voyage: documentation review"
+condition = """{{enable_documentation}}"""
+metadata = { "gc.run_target" = "con-voyage.cv-documentation" }
+description_file = "../assets/workflows/con-voyage/main.documentation-review.md"
+
+[vars.enable_marketing]
+description = "Enable marketing roster lens (inherited from the original run's roster)."
+default = "false"
+
+[[template.children]]
+id = "{target}.marketing-review"
+title = "Con-voyage: marketing review"
+condition = """{{enable_marketing}}"""
+metadata = { "gc.run_target" = "con-voyage.cv-marketing" }
+description_file = "../assets/workflows/con-voyage/main.marketing-review.md"
+
+[vars.enable_api_platform]
+description = "Enable API/platform contract roster lens (inherited from the original run's roster)."
+default = "false"
+
+[[template.children]]
+id = "{target}.api-platform-review"
+title = "Con-voyage: API and platform contract review"
+condition = """{{enable_api_platform}}"""
+metadata = { "gc.run_target" = "con-voyage.cv-api-platform-contract" }
+description_file = "../assets/workflows/con-voyage/main.api-platform-review.md"
+
+[vars.enable_compliance]
+description = "Enable compliance/privacy roster lens (inherited from the original run's roster)."
+default = "false"
+
+[[template.children]]
+id = "{target}.compliance-review"
+title = "Con-voyage: compliance and privacy review"
+condition = """{{enable_compliance}}"""
+metadata = { "gc.run_target" = "con-voyage.cv-compliance-privacy" }
+description_file = "../assets/workflows/con-voyage/main.compliance-review.md"
+
+[vars.enable_data_db]
+description = "Enable data/database engineer roster lens (inherited from the original run's roster)."
+default = "false"
+
+[[template.children]]
+id = "{target}.data-db-review"
+title = "Con-voyage: data and database review"
+condition = """{{enable_data_db}}"""
+metadata = { "gc.run_target" = "con-voyage.cv-data-db-engineer" }
+description_file = "../assets/workflows/con-voyage/main.data-db-review.md"
+
+[[template.children]]
+id = "{target}.synthesize-review"
+title = "Synthesize con-voyage review"
+needs = [
+  "{target}.acceptance-review",
+  "{target}.test-evidence-review",
+  "{target}.simplicity-review",
+  "{target}.security-review",
+  "{target}.code-review",
+  "{target}.product-owner-review",
+  "{target}.founder-cto-review",
+  "{target}.dev-ex-review",
+  "{target}.standards-janitor-review",
+  "{target}.qa-test-review",
+  "{target}.sre-review",
+  "{target}.design-ux-review",
+  "{target}.documentation-review",
+  "{target}.marketing-review",
+  "{target}.api-platform-review",
+  "{target}.compliance-review",
+  "{target}.data-db-review",
+]
+metadata = { "gc.run_target" = "gc.review-synthesizer" }
+description_file = "../assets/workflows/con-voyage/main.synthesize-review.md"
+
+[[template.children]]
+id = "{target}.apply-review-findings"
+title = "Apply con-voyage review findings"
+needs = ["{target}.synthesize-review"]
+metadata = { "gc.run_target" = "{implementation_target}", "gc.continuation_group" = "con-voyage-review-fixes" }
+description_file = "../assets/workflows/con-voyage/main.apply-review-findings.md"
+
+# ---------------------------------------------------------------------------
+# Finalize step — posts the round's ONE aggregated comment, reports the
+# verdict to the mayor, and clears the in-flight dedup guard on the
+# .finalize record so con-voyage-rereview-watch.sh can detect the NEXT push.
+# ---------------------------------------------------------------------------
+
+[[template]]
+id = "{target}"
+title = "Finalize con-voyage re-review"
+needs = ["{target}.con-voyage-review-loop"]
+metadata = { "gc.run_target" = "gc.run-operator", "gc.build.artifact_schema" = "gc.build.review.v1", "gc.build.artifact_path_keys" = "gc.build.review_report_path" }
+description_file = "../assets/workflows/con-voyage/main.rereview-finalize.md"
+
+[template.check]
+max_attempts = 3
+
+[template.check.check]
+mode = "exec"
+path = ".gc/scripts/checks/build-artifact-valid.sh"
+timeout = "5m"

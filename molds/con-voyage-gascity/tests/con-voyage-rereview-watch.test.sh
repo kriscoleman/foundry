@@ -1,0 +1,339 @@
+#!/usr/bin/env bash
+# con-voyage-rereview-watch.test.sh — hermetic, offline tests for fk-pubvq:
+# con-voyage-rereview-watch.sh, the post-publish re-review trigger that
+# closes the gap where a human-feedback or ci-repair bead pushes a new,
+# code-changing commit to an already-published con-voyage PR with no review
+# lane ever re-running against it (live evidence: replicatedhq/vandoor#10589).
+#
+# HOW IT WORKS: real local git repos for the patch-id comparison (mirrors
+# con-voyage-sync-base.test.sh's mk_repo/git_c pattern — git's own
+# fetch/checkout/patch-id behavior is exactly what's under test there), and
+# recording STUB `gh`/`gc` executables for everything else (PR state, mail,
+# bd create/sling/set-state), the same idiom con-voyage-ci-repair-guard.test.sh
+# and con-voyage-pr-watch.test.sh use.
+#
+# Run:  bash tests/con-voyage-rereview-watch.test.sh   (exit 0 => all passed)
+
+set -uo pipefail
+
+export GIT_TERMINAL_PROMPT=0
+export GIT_CONFIG_NOSYSTEM=1
+
+TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MOLD_DIR="$(cd "${TEST_DIR}/.." && pwd)"
+SCRIPT="${MOLD_DIR}/pack/assets/scripts/con-voyage-rereview-watch.sh"
+LIB="${MOLD_DIR}/pack/assets/scripts/con-voyage-lib.sh"
+
+for f in "$SCRIPT" "$LIB"; do
+  if [ ! -f "$f" ]; then
+    echo "FATAL: required file not found at ${f}" >&2
+    exit 2
+  fi
+done
+
+SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/cv-rereview-watch-test.XXXXXX")"
+STUBDIR="${SANDBOX}/stubbin"
+mkdir -p "$STUBDIR"
+cleanup() { rm -rf "$SANDBOX"; }
+trap cleanup EXIT
+
+FAILURES=0
+start_case() { echo; echo "=== CASE: $1 ==="; }
+pass() { echo "  PASS: $1"; }
+fail() { echo "  FAIL: $1" >&2; FAILURES=$((FAILURES+1)); }
+assert_eq() {
+  local expected="$1" actual="$2" desc="$3"
+  if [ "$expected" = "$actual" ]; then pass "${desc} (=${actual})"; else fail "${desc}: expected '${expected}', got '${actual}'"; fi
+}
+assert_contains() {
+  local haystack="$1" needle="$2" desc="$3"
+  case "$haystack" in
+    *"$needle"*) pass "$desc" ;;
+    *) fail "${desc}: expected to find '${needle}'" ;;
+  esac
+}
+assert_not_contains() {
+  local haystack="$1" needle="$2" desc="$3"
+  case "$haystack" in
+    *"$needle"*) fail "${desc}: did NOT expect to find '${needle}'" ;;
+    *) pass "$desc" ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# mk_repo NAME / git_c DIR ARGS... — local git fixture helpers (mirrors
+# con-voyage-sync-base.test.sh).
+# ---------------------------------------------------------------------------
+mk_repo() {
+  local name="$1"
+  local dir="${SANDBOX}/${name}"
+  git init -q -b main "$dir" >/dev/null
+  git -C "$dir" config user.email "test@example.com"
+  git -C "$dir" config user.name "Test"
+  printf 'hello\n' > "${dir}/README.md"
+  git -C "$dir" add README.md
+  git -C "$dir" commit -q -m "chore: initial commit"
+  printf '%s' "$dir"
+}
+git_c() { local dir="$1"; shift; git -C "$dir" "$@"; }
+
+# ---------------------------------------------------------------------------
+# gh stub — serves `pr view <n> --repo R --json state,headRefOid,headRefName`.
+# Keyed by STUB_GH_STATE_<n>/STUB_GH_HEAD_<n>/STUB_GH_BRANCH_<n>.
+# ---------------------------------------------------------------------------
+cat > "${STUBDIR}/gh" <<'GH_STUB'
+#!/usr/bin/env bash
+{ line=""; for a in "$@"; do a="${a//$'\n'/ }"; line="${line}${a} "; done; printf '%s\n' "$line"; } >> "${STUB_GH_LOG}"
+sub="${1:-}"
+case "$sub" in
+  pr)
+    prsub="${2:-}"
+    num="${3:-}"
+    if [ "$prsub" = "view" ]; then
+      eval "state=\"\${STUB_GH_STATE_${num}:-}\""
+      eval "head=\"\${STUB_GH_HEAD_${num}:-}\""
+      eval "branch=\"\${STUB_GH_BRANCH_${num}:-}\""
+      if [ -z "$state" ]; then exit 1; fi
+      printf '{"state":"%s","headRefOid":"%s","headRefName":"%s"}\n' "$state" "$head" "$branch"
+      exit 0
+    fi
+    ;;
+esac
+exit 0
+GH_STUB
+chmod +x "${STUBDIR}/gh"
+
+# ---------------------------------------------------------------------------
+# gc stub — records every call. `bd create` returns a fixed id (STUB_GC_NEW_BEAD_ID,
+# default "rc-seed1"). `sling`/`mail send`/`bd set-state` always succeed and
+# are recorded; `mail send ... --json` prints a fake message id.
+# ---------------------------------------------------------------------------
+cat > "${STUBDIR}/gc" <<'GC_STUB'
+#!/usr/bin/env bash
+{ line=""; for a in "$@"; do a="${a//$'\n'/ }"; line="${line}${a} "; done; printf '%s\n' "$line"; } >> "${STUB_GC_LOG}"
+
+args=("$@")
+i=0
+if [ "${args[0]:-}" = "--city" ]; then i=2; fi
+if [ "${args[$i]:-}" = "--rig" ]; then i=$((i+2)); fi
+sub="${args[$i]:-}"
+sub2="${args[$((i+1))]:-}"
+
+if [ "$sub" = "bd" ] && [ "$sub2" = "create" ]; then
+  printf '%s\n' "${STUB_GC_NEW_BEAD_ID:-rc-seed1}"
+  exit 0
+fi
+if [ "$sub" = "bd" ] && [ "$sub2" = "set-state" ]; then
+  exit 0
+fi
+if [ "$sub" = "sling" ]; then
+  if [ "${STUB_GC_SLING_FAIL:-0}" = "1" ]; then
+    echo "sling failed (stub)" >&2
+    exit 1
+  fi
+  exit 0
+fi
+if [ "$sub" = "mail" ]; then
+  printf '{"message":{"id":"msg-1"}}\n'
+  exit 0
+fi
+exit 0
+GC_STUB
+chmod +x "${STUBDIR}/gc"
+
+export PATH="${STUBDIR}:${PATH}"
+export STUB_GH_LOG="${SANDBOX}/gh.log"
+export STUB_GC_LOG="${SANDBOX}/gc.log"
+export GH="${STUBDIR}/gh"
+export GC="${STUBDIR}/gc"
+export CV_PR_AUTHOR="kriscoleman"
+export CV_REREVIEW_RIG="testrig"
+export GC_CITY="${SANDBOX}/city"
+mkdir -p "$GC_CITY"
+
+run_watch() {
+  : > "$STUB_GH_LOG"
+  : > "$STUB_GC_LOG"
+  CV_STATE_DIR="$STATE_DIR" CV_REPO_CACHE_DIR="$REPO_CACHE_DIR" bash "$SCRIPT"
+}
+
+STATE_DIR="${SANDBOX}/state"
+REPO_CACHE_DIR="${SANDBOX}/repo-cache"
+mkdir -p "$STATE_DIR" "$REPO_CACHE_DIR"
+
+# ===========================================================================
+# Shared fixture: a local "GitHub" upstream + a pre-seeded non-bare clone
+# standing in for the script's own repo-cache (same path shape
+# repo_cache_dir() computes: "<owner>-<repo>" under CV_REPO_CACHE_DIR).
+# ===========================================================================
+REPO_FULL="acme-owner/acme-repo"
+UPSTREAM="${SANDBOX}/upstream.git"
+git init -q -b main --bare "$UPSTREAM"
+SRC="$(mk_repo src)"
+git_c "$SRC" remote add origin "$UPSTREAM"
+git_c "$SRC" push -q -u origin main
+BASE_SHA="$(git_c "$SRC" rev-parse main)"
+
+# The PR's own branch — main itself never advances again in this fixture
+# (classify_head_change resolves the CURRENT default base, origin/main, as
+# the shared anchor for isolating "whose own commits" on both old and new
+# head; main must stay put here the same way a repo's real trunk does while
+# a feature branch is still open).
+git_c "$SRC" checkout -q -b feature-branch
+
+# Round-1 published head: one real feature commit.
+printf 'v1\n' > "${SRC}/feature.txt"
+git_c "$SRC" add feature.txt
+git_c "$SRC" commit -q -m "feat: original change"
+PUBLISHED_HEAD="$(git_c "$SRC" rev-parse HEAD)"
+git_c "$SRC" push -q -u origin feature-branch
+
+CACHE_DIR="${REPO_CACHE_DIR}/$(printf '%s' "$REPO_FULL" | tr '/' '-')"
+git clone -q "$UPSTREAM" "$CACHE_DIR"
+
+write_finalize() {
+  local key="$1" work_bead="$2" last_phase="$3" last_head="$4" round="$5" rereview_root="$6"
+  {
+    printf 'work_bead=%s\n' "$work_bead"
+    printf 'convoy_id=%s\n' "fk-convoy1"
+    printf 'repo_full=%s\n' "$REPO_FULL"
+    printf 'pr_number=%s\n' "42"
+    printf 'pr_author=%s\n' "kriscoleman"
+    printf 'implementor_session=%s\n' "testrig/gc.implementation-worker"
+    printf 'last_phase=%s\n' "$last_phase"
+    printf 'root_bead_id=%s\n' "fk-root1"
+    printf 'roster_vars=%s\n' "enable_sre=true,code_lens=con-voyage.cv-go-principal-engineer"
+    printf 'last_reviewed_head_sha=%s\n' "$last_head"
+    printf 'review_round=%s\n' "$round"
+    printf 'rereview_root_bead_id=%s\n' "$rereview_root"
+  } > "${STATE_DIR}/${key}.finalize"
+}
+
+# ===========================================================================
+# CASE 1: head unchanged (CI-only re-run / nothing new) -> no-op
+# ===========================================================================
+start_case "1: PR head unchanged -> no re-review, no sling"
+write_finalize "cv-finalize-case1" "fk-work1" "awaiting_merge" "$PUBLISHED_HEAD" "1" ""
+export STUB_GH_STATE_42="OPEN" STUB_GH_HEAD_42="$PUBLISHED_HEAD" STUB_GH_BRANCH_42="feature-branch"
+out1="$(run_watch)"
+assert_contains "$out1" "head unchanged" "diagnostic reports head unchanged"
+gc_log1="$(cat "$STUB_GC_LOG")"
+assert_not_contains "$gc_log1" "sling" "no gc sling call for an unchanged head"
+assert_not_contains "$gc_log1" "mail" "no mayor mail for an unchanged head"
+
+# ===========================================================================
+# CASE 2: head changed but patch content is IDENTICAL (e.g. a force-push
+# re-landing the same diff) -> treated as rebase-only, bookkeeping advances,
+# no re-review triggered.
+# ===========================================================================
+start_case "2: new head is a content-identical replay -> advance bookkeeping, no re-review"
+git_c "$SRC" reset -q --hard "$BASE_SHA"
+printf 'v1\n' > "${SRC}/feature.txt"
+git_c "$SRC" add feature.txt
+git_c "$SRC" commit -q -m "feat: original change (recommitted)"
+REPLAY_HEAD="$(git_c "$SRC" rev-parse HEAD)"
+git_c "$SRC" push -q -f origin feature-branch
+
+write_finalize "cv-finalize-case2" "fk-work2" "awaiting_merge" "$PUBLISHED_HEAD" "1" ""
+export STUB_GH_STATE_42="OPEN" STUB_GH_HEAD_42="$REPLAY_HEAD" STUB_GH_BRANCH_42="feature-branch"
+out2="$(run_watch)"
+assert_contains "$out2" "content-identical replay" "diagnostic reports a content-identical replay"
+gc_log2="$(cat "$STUB_GC_LOG")"
+assert_not_contains "$gc_log2" "sling" "no gc sling call for a content-identical replay"
+assert_not_contains "$gc_log2" "mail" "no mayor mail for a content-identical replay"
+rec2="$(cat "${STATE_DIR}/cv-finalize-case2.finalize")"
+assert_contains "$rec2" "last_reviewed_head_sha=${REPLAY_HEAD}" "bookkeeping advanced to the new (replay) head"
+assert_contains "$rec2" "review_round=1" "review_round NOT incremented for a non-triggering replay"
+if grep -qx "rereview_root_bead_id=" "${STATE_DIR}/cv-finalize-case2.finalize"; then
+  pass "rereview_root_bead_id stays empty for a non-triggering replay"
+else
+  fail "rereview_root_bead_id stays empty for a non-triggering replay: got $(grep rereview_root_bead_id "${STATE_DIR}/cv-finalize-case2.finalize")"
+fi
+
+# ===========================================================================
+# CASE 3: head changed with a REAL new patch -> triggers a re-review round
+# ===========================================================================
+start_case "3: a genuinely new code change -> mail mayor, sling con-voyage-rereview, update finalize record"
+printf 'v2 - a real fix\n' >> "${SRC}/feature.txt"
+git_c "$SRC" add feature.txt
+git_c "$SRC" commit -q -m "fix: address human PR feedback"
+CHANGED_HEAD="$(git_c "$SRC" rev-parse HEAD)"
+git_c "$SRC" push -q origin feature-branch
+
+write_finalize "cv-finalize-case3" "fk-work3" "awaiting_merge" "$REPLAY_HEAD" "1" ""
+export STUB_GH_STATE_42="OPEN" STUB_GH_HEAD_42="$CHANGED_HEAD" STUB_GH_BRANCH_42="feature-branch"
+export STUB_GC_NEW_BEAD_ID="rc-seed42"
+out3="$(run_watch)"
+assert_contains "$out3" "TRIGGER" "diagnostic reports a trigger"
+assert_contains "$out3" "dispatched re-review round 2" "diagnostic reports round 2 dispatched"
+gc_log3="$(cat "$STUB_GC_LOG")"
+assert_contains "$gc_log3" "mail send mayor -s RE-REVIEW PENDING:" "mayor mailed RE-REVIEW PENDING"
+assert_contains "$gc_log3" "sling testrig/gc.run-operator rc-seed42 --on con-voyage-rereview" "sling invoked with the pre-created seed bead"
+assert_contains "$gc_log3" "--var repo=${REPO_FULL}" "sling carries repo var"
+assert_contains "$gc_log3" "--var pr=42" "sling carries pr var"
+assert_contains "$gc_log3" "--var review_round=2" "sling carries incremented review_round"
+assert_contains "$gc_log3" "--var enable_sre=true" "sling carries the ORIGINAL roster var (enable_sre)"
+assert_contains "$gc_log3" "bd set-state fk-work3 cv=re_reviewing" "work bead parked at cv=re_reviewing"
+rec3="$(cat "${STATE_DIR}/cv-finalize-case3.finalize")"
+assert_contains "$rec3" "last_reviewed_head_sha=${CHANGED_HEAD}" "finalize record advances to the new head"
+assert_contains "$rec3" "review_round=2" "finalize record's review_round incremented"
+assert_contains "$rec3" "rereview_root_bead_id=rc-seed42" "finalize record carries the new round's seed bead id"
+assert_contains "$rec3" "last_phase=re_reviewing" "finalize record's last_phase set to re_reviewing"
+
+# ===========================================================================
+# CASE 4: a re-review round is already in flight -> never a second dispatch,
+# regardless of the current head.
+# ===========================================================================
+start_case "4: re-review already in flight -> no duplicate dispatch"
+write_finalize "cv-finalize-case4" "fk-work4" "re_reviewing" "$REPLAY_HEAD" "2" "rc-already-running"
+export STUB_GH_STATE_42="OPEN" STUB_GH_HEAD_42="$CHANGED_HEAD" STUB_GH_BRANCH_42="feature-branch"
+out4="$(run_watch)"
+assert_contains "$out4" "already in flight" "diagnostic reports an in-flight round"
+gh_log4="$(cat "$STUB_GH_LOG")"
+# cv-finalize-case3 from the prior case is STILL in the state dir (each case's
+# fixture persists), so case3's own pr view call is expected in this log;
+# assert instead that NO additional sling happened for case4 specifically by
+# checking gc log has exactly as many sling lines as case3 alone produced.
+gc_log4="$(cat "$STUB_GC_LOG")"
+sling_count4="$(printf '%s\n' "$gc_log4" | grep -c 'sling testrig' || true)"
+assert_eq "0" "$sling_count4" "no NEW sling call this cycle (case4's own record never reaches the sling path)"
+
+# ===========================================================================
+# CASE 5: author mismatch -> skip entirely, fail closed
+# ===========================================================================
+start_case "5: author mismatch -> skip (fail closed)"
+{
+  printf 'work_bead=fk-work5\n'
+  printf 'convoy_id=fk-convoy5\n'
+  printf 'repo_full=%s\n' "$REPO_FULL"
+  printf 'pr_number=43\n'
+  printf 'pr_author=someone-else\n'
+  printf 'implementor_session=\n'
+  printf 'last_phase=awaiting_merge\n'
+  printf 'root_bead_id=fk-root5\n'
+  printf 'roster_vars=\n'
+  printf 'last_reviewed_head_sha=%s\n' "$PUBLISHED_HEAD"
+  printf 'review_round=1\n'
+  printf 'rereview_root_bead_id=\n'
+} > "${STATE_DIR}/cv-finalize-case5.finalize"
+out5="$(run_watch)"
+assert_contains "$out5" "SKIP" "case5 record is skipped"
+assert_contains "$out5" "author scoping" "skip reason names author scoping"
+
+# ===========================================================================
+# CASE 6: PR already MERGED/CLOSED -> con-voyage-finalize.sh's job, not ours
+# ===========================================================================
+start_case "6: PR state is not OPEN -> skip, no dispatch"
+write_finalize "cv-finalize-case6" "fk-work6" "awaiting_merge" "$PUBLISHED_HEAD" "1" ""
+export STUB_GH_STATE_42="MERGED" STUB_GH_HEAD_42="$CHANGED_HEAD" STUB_GH_BRANCH_42="feature-branch"
+out6="$(run_watch)"
+assert_contains "$out6" "PR not OPEN" "diagnostic reports PR is not OPEN"
+
+echo
+if [ "$FAILURES" -eq 0 ]; then
+  echo "ALL CASES PASSED"
+  exit 0
+else
+  echo "${FAILURES} CASE(S) FAILED"
+  exit 1
+fi
