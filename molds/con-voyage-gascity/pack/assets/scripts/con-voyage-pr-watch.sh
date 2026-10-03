@@ -1299,6 +1299,11 @@ agent_re   = re.compile(sys.argv[2])
 
 BOT_SUFFIXES = ["[bot]"]
 BOT_LOGINS   = {"github-actions", "dependabot", "renovate", "stale", "codecov", "netlify"}
+# AI-reviewer bots (doomer-ai, other "-ai" logins) are a DISTINCT category from
+# plain infra bots above: a plain infra bot comment is always noise and is
+# always skipped, but an AI reviewer can carry a real finding, so it gets the
+# content-aware is_bot_approval_noise check below instead of a blanket skip.
+AI_REVIEWER_SUFFIXES = ["-ai"]
 
 def is_bot(login):
     ll = (login or "").lower()
@@ -1307,8 +1312,39 @@ def is_bot(login):
             return True
     return ll in BOT_LOGINS
 
+def is_ai_reviewer_bot(login):
+    ll = (login or "").lower()
+    return any(ll.endswith(s) for s in AI_REVIEWER_SUFFIXES)
+
 def is_agent_comment(body):
     return bool(agent_re.match(body or ""))
+
+# A bot-trigger slash command ("/doomer run", "/retry", ...) is an operator
+# instruction to a bot, not change-request feedback — never route it,
+# regardless of who posted it (fk-9xyo4 recurrence, mail rc-wisp-3hoqm3y).
+SLASH_COMMAND_RE = re.compile(r"^/\w+")
+
+def is_slash_command(body):
+    return bool(SLASH_COMMAND_RE.match((body or "").strip()))
+
+# A bot review/comment that is pure no-issues/approval noise (doomer-ai own
+# stampy-stamp banner, a clean APPROVED state) must not mint human feedback.
+# A bot flagging a CRITICAL finding or refusing to auto-approve is a real
+# signal and must still be routed -- only the no-op banner is noise (fk-9xyo4:
+# a doomer-ai comment reading not automatically approving / classified as
+# critical was dropped outright on 2026-10-02 because it carried a bot login;
+# operator ruling says it should have been picked up).
+def is_bot_approval_noise(body, state):
+    b = (body or "").lower()
+    if "critical" in b or "not automatically approving" in b or "refus" in b or state == "CHANGES_REQUESTED":
+        return False
+    if state == "APPROVED":
+        return True
+    if "ran successfully" in b and "no issues" in b:
+        return True
+    if "stampy-stamp" in b:
+        return True
+    return False
 
 found      = []
 new_ids    = set()
@@ -1321,9 +1357,14 @@ for review in pr_data.get("reviews", []):
     author = review.get("author", {}).get("login", "")
     body   = review.get("body", "") or ""
     state  = review.get("state", "") or ""
+    if is_slash_command(body):
+        continue
     if is_bot(author):
         continue
-    if is_agent_comment(body):
+    if is_ai_reviewer_bot(author):
+        if is_bot_approval_noise(body, state):
+            continue
+    elif is_agent_comment(body):
         continue
     if state == "PENDING":
         continue
@@ -1345,9 +1386,14 @@ for comment in pr_data.get("comments", []):
         continue
     author = comment.get("author", {}).get("login", "")
     body   = comment.get("body", "") or ""
+    if is_slash_command(body):
+        continue
     if is_bot(author):
         continue
-    if is_agent_comment(body):
+    if is_ai_reviewer_bot(author):
+        if is_bot_approval_noise(body, ""):
+            continue
+    elif is_agent_comment(body):
         continue
     if not body.strip():
         continue
@@ -1368,9 +1414,14 @@ for thread in pr_data.get("reviewThreads", []):
             continue
         author = comment.get("author", {}).get("login", "")
         body   = comment.get("body", "") or ""
+        if is_slash_command(body):
+            continue
         if is_bot(author):
             continue
-        if is_agent_comment(body):
+        if is_ai_reviewer_bot(author):
+            if is_bot_approval_noise(body, ""):
+                continue
+        elif is_agent_comment(body):
             continue
         if not body.strip():
             continue
