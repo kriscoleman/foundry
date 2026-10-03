@@ -2167,6 +2167,16 @@ cv_anchor_too_stale() {
 # Returns 0 and removes both the worktree and BRANCH_NAME's ref on success.
 # Returns 1 (and leaves DIR in place) if `git worktree remove --force` fails —
 # the caller must treat that as fatal, same as before this helper existed.
+#
+# review fk-ymqwd9 BLOCKING-1: BRANCH_NAME can desync from the worktree's
+# ACTUAL current branch (e.g. a failed-but-unretried
+# `cv_ensure_work_branch_name` persist followed by a title-drifted
+# recomputation on a later attempt) — deleting only the handed name then
+# leaves the real branch behind, permanently leaked, while a later attempt
+# that happens to recompute the leaked name again hits `ensure-branch`'s
+# collision guard and hard-fails the whole build. Re-derive DIR's actual
+# current branch live and delete both refs so a name mismatch can never leak
+# a branch.
 cv_discard_stale_anchor_worktree() {
   local dir="$1" branch_name="$2"
 
@@ -2184,8 +2194,17 @@ cv_discard_stale_anchor_worktree() {
     echo "cv-lib: cv_discard_stale_anchor_worktree: removing too-stale worktree ${dir} with ${dirty_state} — discarding them" >&2
   fi
 
+  local actual_branch
+  actual_branch="$(git -C "$dir" symbolic-ref -q --short HEAD 2>/dev/null || true)"
+  if [ -n "$actual_branch" ] && [ "$actual_branch" != "$branch_name" ]; then
+    echo "cv-lib: cv_discard_stale_anchor_worktree: ${dir} is actually on branch '${actual_branch}', not the handed '${branch_name}' — deleting both" >&2
+  fi
+
   git worktree remove --force "$dir" || return 1
   git branch -D "$branch_name" >/dev/null 2>&1 || true
+  if [ -n "$actual_branch" ] && [ "$actual_branch" != "$branch_name" ]; then
+    git branch -D "$actual_branch" >/dev/null 2>&1 || true
+  fi
   return 0
 }
 
@@ -2611,11 +2630,19 @@ print(m.group(1) if m else '')
 # time (`gc.build.work_branch_name` metadata) and simply echoing that stored
 # value on every later call. BEAD_ID/TITLE are only consulted when no value
 # is stored yet — the branch name must never be recomputed from a title that
-# may have since changed, so it stays stable for the life of the journey. A
-# `bd update` failure while persisting is warned, not fatal: the caller still
-# gets the computed name back and can proceed, it just was not cached for the
-# next step to find (that next step recomputes it identically from the same
-# BEAD_ID/TITLE, so this is self-healing, not silently wrong).
+# may have since changed, so it stays stable for the life of the journey.
+#
+# review fk-ymqwd9 BLOCKING-1: a single un-retried `bd update` under transient
+# `bd`/`gc` slowness (already observed in this rig under pool contention) used
+# to warn-and-proceed with the computed name UNCACHED; a later call recomputes
+# it from the same BEAD_ID but a possibly-since-changed TITLE and can derive a
+# DIFFERENT slug, silently breaking the "stable for the life of the journey"
+# guarantee this function exists to provide. The persist is now retried a few
+# times with a short backoff before giving up, and a failure that survives all
+# retries is recorded as a durable `gc.build.work_branch_name_unpersisted=true`
+# flag on ROOT_ID (also closing the sre lane's adjacent LOW: nothing previously
+# distinguished "no value yet" from "value failed to persist") instead of only
+# a stderr line a later step/human has no reason to go looking for.
 cv_ensure_work_branch_name() {
   local root_id="${1:-}" bead_id="${2:-}" title="${3:-}"
   local existing
@@ -2628,8 +2655,19 @@ cv_ensure_work_branch_name() {
   name="$(cv_work_branch_name "$bead_id" "$title")"
   if [ -n "${name// /}" ] && [ -n "${root_id// /}" ]; then
     local gc_bin="${GC:-gc}"
-    "$gc_bin" bd update "$root_id" --set-metadata "gc.build.work_branch_name=${name}" >/dev/null 2>&1 \
-      || echo "con-voyage-lib: WARNING: failed to persist gc.build.work_branch_name=${name} on ${root_id} (continuing with the computed value)" >&2
+    local attempt persisted=""
+    for attempt in 1 2 3; do
+      if "$gc_bin" bd update "$root_id" --set-metadata "gc.build.work_branch_name=${name}" >/dev/null 2>&1; then
+        persisted="1"
+        break
+      fi
+      [ "$attempt" -eq 3 ] || sleep "$attempt"
+    done
+    if [ -z "$persisted" ]; then
+      echo "con-voyage-lib: WARNING: failed to persist gc.build.work_branch_name=${name} on ${root_id} after 3 attempts (continuing with the computed value)" >&2
+      "$gc_bin" bd update "$root_id" --set-metadata "gc.build.work_branch_name_unpersisted=true" >/dev/null 2>&1 \
+        || echo "con-voyage-lib: WARNING: also failed to stamp gc.build.work_branch_name_unpersisted=true on ${root_id}" >&2
+    fi
   fi
   printf '%s' "$name"
 }

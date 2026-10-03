@@ -266,6 +266,37 @@ else
 fi
 
 # ===========================================================================
+# CASE 8 (review fk-ymqwd9 BLOCKING-1) —
+# cv_discard_stale_anchor_worktree must delete the worktree's ACTUAL current
+# branch, not just the handed BRANCH_NAME, when the two have desynced (e.g. a
+# failed-but-unretried cv_ensure_work_branch_name persist followed by a
+# title-drifted recomputation on a later attempt). Handing the OLD name must
+# not leave the NEW (actual) branch ref leaked behind at the stale commit.
+# ===========================================================================
+start_case "8: cv_discard_stale_anchor_worktree deletes BOTH the handed name and the worktree's actual branch when they differ"
+REPO8="$(mk_repo repo8)"
+HANDED_BRANCH8="con-voyage/case8-old-slug"
+ACTUAL_BRANCH8="con-voyage/case8-new-slug"
+WT8="${SANDBOX}/repo8-worktree"
+git_c "$REPO8" worktree add -q -b "$ACTUAL_BRANCH8" "$WT8" HEAD
+
+(cd "$REPO8" && cv_discard_stale_anchor_worktree "$WT8" "$HANDED_BRANCH8" >/dev/null 2>"${SANDBOX}/case8.stderr")
+DISCARD_RC8=$?
+assert_eq "0" "$DISCARD_RC8" "cv_discard_stale_anchor_worktree returns 0 on success even with a name mismatch"
+[ -d "$WT8" ] && fail "worktree dir ${WT8} still present after discard" || pass "worktree dir removed"
+git_c "$REPO8" show-ref --verify --quiet "refs/heads/${ACTUAL_BRANCH8}" \
+  && fail "actual branch ref ${ACTUAL_BRANCH8} leaked after discard" \
+  || pass "actual (desynced) branch ref removed, not just the handed name"
+git_c "$REPO8" show-ref --verify --quiet "refs/heads/${HANDED_BRANCH8}" \
+  && fail "handed branch ref ${HANDED_BRANCH8} unexpectedly exists (should never have been created)" \
+  || pass "handed name was a no-op delete (never existed), as expected"
+if grep -q "is actually on branch" "${SANDBOX}/case8.stderr"; then
+  pass "warns about the handed-name/actual-branch mismatch"
+else
+  fail "no mismatch warning in stderr: $(cat "${SANDBOX}/case8.stderr")"
+fi
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 echo
