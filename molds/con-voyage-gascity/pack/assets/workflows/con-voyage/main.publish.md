@@ -203,7 +203,31 @@ never an edit of an earlier round's comment. Do this right after the PR
 above opens (skip entirely when open_pr is false — there is no PR to comment
 on):
 
-1. Build a JSON manifest from what this cycle already produced:
+1. Resolve the rig root as an ABSOLUTE path first, and build every
+   `body_file` below from it — NOT from a bare `.gc/build/${ROOT_ID}/...`
+   relative path. By this point in the journey this step's own cwd is the
+   SOURCE-ANCHOR WORKTREE (prepare-build/build `cd`s into it and nothing
+   downstream `cd`s back), which has no `.gc/` directory of its own — only
+   the rig root does. A relative `body_file` silently resolves against the
+   wrong directory, `cv-pr-comment.sh` can't open any of them, and every
+   lane renders as `(report file unavailable)` in the posted comment even
+   though the real reports are sitting right there at the rig root
+   (observed in production, fk-jg0ieq — a human had to ask why every report
+   was "unavailable"). Reuse the same rig-root resolution
+   `cv_default_state_dir` already relies on — do not hand-copy it:
+
+   ```bash
+   CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+   CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+   [ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+   CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+   [ -f "$CV_LIB" ] || CV_LIB=""
+   CV_RIG_ROOT="${GC_RIG_ROOT:-}"
+   [ -n "$CV_RIG_ROOT" ] || [ -z "$CV_LIB" ] || CV_RIG_ROOT="$(source "$CV_LIB" && cv_default_rig_root)"
+   [ -n "$CV_RIG_ROOT" ] || CV_RIG_ROOT="${GC_CITY:-.}"
+   CV_BUILD_DIR="${CV_RIG_ROOT}/.gc/build/${ROOT_ID}"
+   ```
+2. Build a JSON manifest from what this cycle already produced:
    - `rig` / `root_bead_id` — this journey's rig and `$ROOT_ID`.
    - `round` — `1` (publish posts the first aggregated comment for this PR;
      a later re-review cycle — con-voyage-rereview-watch.sh's triggered
@@ -217,11 +241,13 @@ on):
    - `lanes[]` — one entry per lane in the active roster (`review-context.md`
      Section 6: floor lanes + any active roster lenses), each
      `{agent, lens, verdict, findings, body_file}`, where `body_file` is that
-     lane's own `.gc/build/${ROOT_ID}/<lane>-review.md`.
+     lane's own `${CV_BUILD_DIR}/<lane>-review.md` — an ABSOLUTE path built
+     from `$CV_BUILD_DIR` above, never the bare relative form.
    - `synthesis` — `{agent, lens: "synthesis", verdict, findings, body_file:
-     ".gc/build/${ROOT_ID}/review-synthesis.md"}`, `findings` being the total
-     LOW count (BLOCKING is always 0 by the time publish runs).
-2. Post it once:
+     "${CV_BUILD_DIR}/review-synthesis.md"}` (same absolute-path rule),
+     `findings` being the total LOW count (BLOCKING is always 0 by the time
+     publish runs).
+3. Post it once:
 
    ```bash
    CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"

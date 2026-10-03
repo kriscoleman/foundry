@@ -291,6 +291,24 @@ else
   FAILURES=$((FAILURES+1))
 fi
 
+# ===========================================================================
+# CASE 14 — fk-jg0ieq: the comment-aggregate manifest's body_file entries
+#   must be ABSOLUTE paths anchored at the resolved rig root, not the bare
+#   `.gc/build/${ROOT_ID}/...` relative form. By the time this step runs, its
+#   cwd is the source-anchor worktree (build.md `cd`s into it and nothing
+#   downstream `cd`s back), which has no `.gc/` of its own — only the rig
+#   root does. A relative body_file silently fails to open in
+#   cv-pr-comment.sh's read_entry(), rendering every lane as
+#   "(report file unavailable)" in the posted PR comment (observed live on
+#   PR #164 — a human had to ask why every report was unavailable).
+# ===========================================================================
+start_case "14: fk-jg0ieq — manifest body_file paths are absolute (CV_BUILD_DIR), not bare relative .gc/build/\${ROOT_ID}/..."
+assert_contains 'CV_RIG_ROOT="$(source "$CV_LIB" && cv_default_rig_root)"' "resolves the rig root via the shared cv_default_rig_root() helper, not a hand-copied walk-up"
+assert_contains 'CV_BUILD_DIR="${CV_RIG_ROOT}/.gc/build/${ROOT_ID}"' "builds an absolute CV_BUILD_DIR from the resolved rig root"
+assert_contains 'lane'"'"'s own `${CV_BUILD_DIR}/<lane>-review.md` — an ABSOLUTE path built' "lane body_file entries are documented as built from the absolute CV_BUILD_DIR"
+assert_contains '"${CV_BUILD_DIR}/review-synthesis.md"' "synthesis body_file is documented as built from the absolute CV_BUILD_DIR"
+assert_not_contains 'body_file: ".gc/build/${ROOT_ID}/review-synthesis.md"' "no longer documents the bare relative synthesis body_file path that silently breaks when cwd is the worktree"
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "ALL CASES PASSED"
