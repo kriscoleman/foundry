@@ -2329,8 +2329,17 @@ cv_unknown_roster_vars() {
   local root_id="$1"
   [ -n "${root_id// /}" ] || { printf ''; return 0; }
   local gc_bin="${GC:-gc}"
+  # fk-9q90j BLOCKING-1: bound this store call the same way every other
+  # possibly-stalling external call in this pack already is (e.g. the
+  # git-fetch call site above) — this runs on every con-voyage journey's
+  # setup-review step, so an unbounded stall here degrades every concurrent
+  # journey at once under store/pool contention, not just this one.
+  local cv_lens_store_timeout="${CV_LENS_STORE_TIMEOUT_SECONDS:-30}"
+  case "$cv_lens_store_timeout" in
+    *[!0-9]*|'') cv_lens_store_timeout="30" ;;
+  esac
   local json
-  json=$("$gc_bin" bd show "$root_id" --json 2>/dev/null) || json=""
+  json=$(cv_with_timeout "$cv_lens_store_timeout" "$gc_bin" bd show "$root_id" --json 2>/dev/null) || json=""
   [ -n "$json" ] || { printf ''; return 0; }
   local known
   known="$(cv_known_roster_vars | tr '\n' ' ')"
@@ -2362,8 +2371,14 @@ print(' '.join(sorted(unknown)))
 # positive).
 cv_unknown_code_lens() {
   local root_id="$1"
+  # fk-9q90j BLOCKING-1: bound this store call the same way the sibling
+  # roster-validation checks below are — see cv_unknown_roster_vars's note.
+  local cv_lens_store_timeout="${CV_LENS_STORE_TIMEOUT_SECONDS:-30}"
+  case "$cv_lens_store_timeout" in
+    *[!0-9]*|'') cv_lens_store_timeout="30" ;;
+  esac
   local lens
-  lens="$(cv_bead_metadata "$root_id" gc.var.code_lens)"
+  lens="$(cv_with_timeout "$cv_lens_store_timeout" cv_bead_metadata "$root_id" gc.var.code_lens)"
   [ -n "$lens" ] || { printf ''; return 0; }
   local known
   known="$(cv_known_lenses)"
@@ -2388,8 +2403,14 @@ cv_active_roster_vars() {
   formula="$(cv_pack_root)/formulas/con-voyage.formula.toml"
   [ -f "$formula" ] || { printf ''; return 0; }
   local gc_bin="${GC:-gc}"
+  # fk-9q90j BLOCKING-1: bound this store call the same way the sibling
+  # roster-validation checks above are — see cv_unknown_roster_vars's note.
+  local cv_lens_store_timeout="${CV_LENS_STORE_TIMEOUT_SECONDS:-30}"
+  case "$cv_lens_store_timeout" in
+    *[!0-9]*|'') cv_lens_store_timeout="30" ;;
+  esac
   local json
-  json=$("$gc_bin" bd show "$root_id" --json 2>/dev/null) || json=""
+  json=$(cv_with_timeout "$cv_lens_store_timeout" "$gc_bin" bd show "$root_id" --json 2>/dev/null) || json=""
   [ -n "$json" ] || { printf ''; return 0; }
   python3 -c "
 import sys, json, re
