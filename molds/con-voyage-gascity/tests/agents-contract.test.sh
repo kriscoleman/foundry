@@ -60,6 +60,11 @@ if [ -z "${CV_NO_INTERACTIVE_PROMPT_REMINDER:-}" ]; then
   exit 2
 fi
 
+if [ -z "${CV_PR_REPLY_INTEGRITY_REMINDER:-}" ]; then
+  echo "FATAL: CV_PR_REPLY_INTEGRITY_REMINDER is not defined by ${LIB}" >&2
+  exit 2
+fi
+
 FAILURES=0
 start_case() { echo; echo "=== CASE: $1 ==="; }
 
@@ -127,6 +132,13 @@ if declare -f cv_build_pr_feedback_body >/dev/null 2>&1; then
       echo "  PASS: cv_build_pr_feedback_body output includes the no-interactive-prompts reminder" ;;
     *)
       echo "  FAIL: cv_build_pr_feedback_body output is missing the no-interactive-prompts reminder" >&2
+      FAILURES=$((FAILURES+1)) ;;
+  esac
+  case "$sample_body" in
+    *"${CV_PR_REPLY_INTEGRITY_REMINDER}"*)
+      echo "  PASS: cv_build_pr_feedback_body output includes the PR-reply-integrity reminder" ;;
+    *)
+      echo "  FAIL: cv_build_pr_feedback_body output is missing the PR-reply-integrity reminder" >&2
       FAILURES=$((FAILURES+1)) ;;
   esac
 else
