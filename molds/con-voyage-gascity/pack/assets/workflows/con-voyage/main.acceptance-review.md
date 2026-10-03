@@ -13,6 +13,8 @@ Write findings under the build artifact root. Required findings must include the
 relevant requirement or task reference plus the file, command, or artifact that
 proves the issue. Tag each finding BLOCKING or LOW with file:line and a concrete fix.
 
+Severity rubric: a finding is BLOCKING, not LOW, when any of the following holds: (a) correctness or safety holds only because of an unenforced precondition, current caller behavior, or a promise about a future slice, and the fix is local to this change — safety that rests on what todays caller happens to pass, or on an invariant nothing enforces, is a latent vuln, not a hardening nice-to-have; (b) an acceptance criterion is satisfied only vacuously, with no live caller to actually exercise it; or (c) the change depends on an unmerged PR or slice and is not stacked on it. LOW stays for genuinely advisory items. GIVEN a finding whose only safety argument is "the current caller passes a zero value" or "validated upstream" and whose fix is local, WHEN this lane grades it, THEN it is BLOCKING. GIVEN an acceptance criterion that holds only vacuously because the wiring lands in another unmerged slice, WHEN acceptance grades it, THEN it is BLOCKING with the fix "stack on the dependency or wire it here".
+
 Close with gc.outcome=pass, code_review.acceptance_verdict=approve|iterate, and
 code_review.output_path=<acceptance review report path>.
 

@@ -22,6 +22,8 @@ For every finding state:
 A BLOCKING finding requires the implementor to fix before the branch can land.
 A LOW finding is surfaced to the human; they decide whether to fix or accept.
 
+Severity rubric: a finding is BLOCKING, not LOW, when any of the following holds: (a) correctness or safety holds only because of an unenforced precondition, current caller behavior, or a promise about a future slice, and the fix is local to this change — safety that rests on what todays caller happens to pass, or on an invariant nothing enforces, is a latent vuln, not a hardening nice-to-have; (b) an acceptance criterion is satisfied only vacuously, with no live caller to actually exercise it; or (c) the change depends on an unmerged PR or slice and is not stacked on it. LOW stays for genuinely advisory items. GIVEN a finding whose only safety argument is "the current caller passes a zero value" or "validated upstream" and whose fix is local, WHEN this lane grades it, THEN it is BLOCKING. GIVEN an acceptance criterion that holds only vacuously because the wiring lands in another unmerged slice, WHEN acceptance grades it, THEN it is BLOCKING with the fix "stack on the dependency or wire it here".
+
 Write your findings to the review artifact root. Close with:
 - gc.outcome=pass
 - code_review.security_verdict=approve|iterate
