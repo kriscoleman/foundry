@@ -338,7 +338,7 @@ finalize_key="cv-finalize-${owner}-${repo}-${PR_NUMBER}"
 #    re-run the SAME roster against it after this workflow root has closed.
 #    ROSTER_VARS is flattened from $ROOT_ID's own gc.graphv2_vars.v1
 #    metadata (already stamped there at sling/cook time) rather than
-#    re-threading every enable_*/code_lens {{var}} through this file
+#    re-threading every enable_*/code_lens var through this file
 #    individually — it is the one place that metadata already lives intact.
 ROSTER_VARS=""
 if [ -n "${CV_LIB:-}" ]; then
