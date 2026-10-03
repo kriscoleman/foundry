@@ -211,10 +211,10 @@ done < "${SANDBOX}/rig_override.out"
   source "$LIB" >/dev/null 2>&1
   cv_write_handoff_note "marshal" "digest.log:offset=482" "fk-xyz12:closed-abandoned" "resume the bead-sweep from the saved offset"
   echo "WRITE_RC:$?"
-  readarray -t fields < <(cv_read_handoff_note "marshal")
-  printf 'FEED:%s\n' "${fields[0]:-}"
-  printf 'BEAD:%s\n' "${fields[1]:-}"
-  printf 'NEXT:%s\n' "${fields[2]:-}"
+  { IFS= read -r feed; IFS= read -r bead; IFS= read -r next; } < <(cv_read_handoff_note "marshal")
+  printf 'FEED:%s\n' "${feed:-}"
+  printf 'BEAD:%s\n' "${bead:-}"
+  printf 'NEXT:%s\n' "${next:-}"
 ) > "${SANDBOX}/roundtrip.out" 2>"${SANDBOX}/roundtrip.err"
 cat "${SANDBOX}/roundtrip.out"
 WRITE_RC="$(grep '^WRITE_RC:' "${SANDBOX}/roundtrip.out" | cut -d: -f2)"
@@ -236,8 +236,8 @@ assert_eq "round trip preserves next action" "resume the bead-sweep from the sav
   export GC_RIG_ROOT="$RIG_ROOT"
   cd "$RIG_ROOT" || exit 1
   source "$LIB" >/dev/null 2>&1
-  readarray -t fields < <(cv_read_handoff_note "scribe")
-  echo "COUNT:${#fields[@]}"
+  out="$(cv_read_handoff_note "scribe")"
+  [ -z "$out" ] && echo "COUNT:0" || echo "COUNT:nonzero"
 ) > "${SANDBOX}/no_cross_match.out"
 COUNT="$(grep '^COUNT:' "${SANDBOX}/no_cross_match.out" | cut -d: -f2)"
 assert_eq "a different assistant's name finds no note in the same inbox" "0" "$COUNT"
