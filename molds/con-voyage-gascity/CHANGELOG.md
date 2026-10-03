@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.13.2](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.13.1...con-voyage-gascity-v0.13.2) (2026-10-03)
+
+
+### Bug Fixes
+
+* **con-voyage:** avoid SIGPIPE/pipefail false refusal in cv-review-lane-worktree.sh acquire ([f425049](https://github.com/kriscoleman/foundry/commit/f425049a05dc0214e7956323e963c2086561779b))
+* **con-voyage:** gate review dispatch on a passed build and an alive workflow root ([862879f](https://github.com/kriscoleman/foundry/commit/862879f4e20a4cc392fda19be2f4cb2a2887f659))
+* **con-voyage:** require cv-pr-comment.sh + gc.pr_comment_url on routed PR-feedback replies ([176a78c](https://github.com/kriscoleman/foundry/commit/176a78c4ad615ee333a7923cfc481815f7b9ccd8))
+
 ## [0.13.1](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.13.0...con-voyage-gascity-v0.13.1) (2026-10-02)
 
 
