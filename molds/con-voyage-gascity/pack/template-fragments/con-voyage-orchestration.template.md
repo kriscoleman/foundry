@@ -17,7 +17,7 @@ When more than one **independent** bead is ready to travel, dispatch their con-v
 
 0. **Intake** — resolve input (issue / bead / free text) to a work bead, create the convoy, detect language, pick the roster.
 1. **Roster** — floor is always native-language principal engineer + `cv-security-reviewer`; add lenses that fit, or honour `--lenses`.
-2. **Sling** — `gc sling <target> <work-bead> --formula --var push=true --var open_pr=true --var enable_<lens>=true ...`; one sling is the whole journey.
+2. **Sling** — `gc sling <target> <work-bead> --on con-voyage --var push=true --var open_pr=true --var enable_<lens>=true ...`; one sling is the whole journey.
 3. **Route feedback** — any BLOCKING finding, from any reviewer, goes to the SAME implementor, all consolidated in one mail; wait for "FIXES PUSHED"; re-run ALL active lanes, every cycle. LOWs-only → ask the human, never decide yourself.
 4. **Post verdicts** — one aggregated comment per round via `cv-pr-comment.sh comment-aggregate`; never per-lane, never an edit.
 5. **Lockstep docs** — with `cv-product-owner` active, a missing docs PR is BLOCKING; it's its own con-voyage, merging only alongside the feature PR.
