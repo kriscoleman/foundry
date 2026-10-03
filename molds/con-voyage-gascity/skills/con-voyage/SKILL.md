@@ -108,6 +108,15 @@ Then:
 2. Detect the target language (dominant language of the repo or the touched files) — this picks the native-language principal-engineer lens.
 3. Choose the review roster (see below). Record it on the convoy so every review cycle re-runs the same set.
 4. Note your own address (`gc whoami`) — every charter substitutes your real address for `<orchestrator>`.
+5. **Check whether this slice depends on another unmerged PR/branch** (e.g. an epic sliced into sequential parts). If it does, declare it now, before the sling below — do not let a dependent slice open its PR against main:
+
+   ```bash
+   gc convoy target <convoy-id> <base-branch>
+   ```
+
+   This is the real primitive, not a bespoke per-slice workaround: it reuses the convoy's own target field, and `con-voyage-lib.sh`'s `cv_resolve_base_branch` threads it through the build's worktree base, the review diff, the hygiene guard, and the PR `--base` automatically — a **GitHub stacked PR** rather than a serial land-chain. No formula var or `--var` flag is needed; set it once per convoy and sling as usual. If the dependency's own PR later merges, GitHub retargets the stacked PR at main and `con-voyage-pr-watch` rebases it the same way it repairs any other `behind_base` PR.
+
+   **Before that slice's PR opens**, add `<base-branch>` to `city.toml`'s `[[github.pr_monitor]].base_branches` (or a second monitor block) — CI-repair discovery only evaluates PRs whose base is already listed there, so a stacked PR opened against an unlisted base silently never gets a repair bead for its own CI failures.
 
 ### Phase 3 — Route review / CI / human feedback to the SAME implementor
 
