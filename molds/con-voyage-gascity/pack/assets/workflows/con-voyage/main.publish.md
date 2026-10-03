@@ -85,6 +85,16 @@ if [ -n "$CV_LIB" ]; then
   fi
   BASE_BRANCH="$(source "$CV_LIB" && cv_resolve_base_branch "$CONVOY_ID" "$(pwd)")"
 fi
+
+# fk-6os73y: use the branch name prepare-build computed once and stored on
+# the workflow root — never recompute it from CONVOY_ID alone, it may carry a
+# topic slug. Fall back to the pre-fk-6os73y bare name for a root that
+# predates this key.
+WORK_BRANCH_NAME=""
+if [ -n "$CV_LIB" ]; then
+  WORK_BRANCH_NAME="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.build.work_branch_name)"
+fi
+[ -n "$WORK_BRANCH_NAME" ] || WORK_BRANCH_NAME="con-voyage/${CONVOY_ID}"
 echo "con-voyage publish: resolved base branch = ${BASE_BRANCH}"
 ```
 
@@ -121,13 +131,14 @@ If push is true:
 - A source-anchor worktree can still reach this step on a detached HEAD
   (fk-tazxl: build's own `ensure-branch` call may predate this fix on an
   older worktree, or a non-con-voyage path fed this one) — there is no ref to
-  push otherwise. Attach a branch now, using the same `con-voyage/<convoy-id>`
-  convention `{target}.build.md` uses, or fail loud rather than silently push
-  nothing:
+  push otherwise. Attach a branch now, using `$WORK_BRANCH_NAME` — the SAME
+  `con-voyage/<bead-id>-<topic-slug>` (or bare `con-voyage/<bead-id>`) name
+  prepare-build computed once and `{target}.build.md` reuses, never a freshly
+  recomputed name — or fail loud rather than silently push nothing:
 
   ```bash
   if [ -n "$CV_GUARD" ] && [ -x "$CV_GUARD" ]; then
-    "$CV_GUARD" ensure-branch "$(pwd)" "con-voyage/${CONVOY_ID}" \
+    "$CV_GUARD" ensure-branch "$(pwd)" "$WORK_BRANCH_NAME" \
       || { echo "worktree is on a detached HEAD and no branch could be attached — refusing to push nothing" >&2; exit 1; }
   fi
   ```

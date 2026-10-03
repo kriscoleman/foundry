@@ -1461,6 +1461,97 @@ assert_eq "0" "$CV_CLOSE_RC" "empty root id is a clean no-op"
 assert_log_count 'bd (close|list)' 0 "empty root id never calls bd list or bd close"
 
 # ---------------------------------------------------------------------------
+# cv_branch_slug / cv_work_branch_name / cv_branch_bead_id (fk-6os73y: name
+# work branches con-voyage/<bead-id>-<topic-slug>, operator-chosen option (b)
+# in Slack C0C4D8TAVL5 thread 1791011333.310589 — "branch names should say
+# what the work is"). Table-driven: every row is independent, no bd/gc stub
+# needed since these three are pure string transforms.
+# ---------------------------------------------------------------------------
+start_case "cv_branch_slug: derives a slug from a work-bead title"
+
+slug_cases=(
+  "fix(helm): pin chart image tag|pin-chart-image-tag"
+  "feat: add foo bar|add-foo-bar"
+  "chore(main): release con-voyage-gascity 0.13.1|release-con-voyage-gascity-0-13-1"
+  "No prefix here just words|no-prefix-here-just-words"
+  "!!!only punctuation!!!|only-punctuation"
+  "!!!!!|"
+  "|"
+  "one two three four five six seven eight nine ten eleven twelve|one-two-three-four-five-six-seven-eight"
+  "alpha beta gamma delta epsilon zeta theta iota|alpha-beta-gamma-delta-epsilon-zeta"
+)
+for row in "${slug_cases[@]}"; do
+  title="${row%%|*}"
+  expected="${row#*|}"
+  assert_eq "$expected" "$(cv_branch_slug "$title")" "slug('${title}')"
+done
+
+start_case "cv_work_branch_name: con-voyage/<bead-id>-<slug>, or bare con-voyage/<bead-id> when the slug is empty"
+
+branch_name_cases=(
+  "fk-ob4j8y|fix(helm): pin chart image tag|con-voyage/fk-ob4j8y-pin-chart-image-tag"
+  "va-05ky|chore: bump|con-voyage/va-05ky-bump"
+  "fk-a3k6x.1|!!!|con-voyage/fk-a3k6x.1"
+  "fk-a3k6x.1||con-voyage/fk-a3k6x.1"
+  "|some title|"
+)
+for row in "${branch_name_cases[@]}"; do
+  IFS='|' read -r bead_id title expected <<< "$row"
+  assert_eq "$expected" "$(cv_work_branch_name "$bead_id" "$title")" "work_branch_name('${bead_id}', '${title}')"
+done
+
+start_case "cv_branch_bead_id: extracts the bead id back out of EITHER branch form, never swallowing id into slug or slug into id"
+
+bead_id_cases=(
+  "con-voyage/fk-ob4j8y|fk-ob4j8y"
+  "con-voyage/fk-ob4j8y-pin-chart-image-tag|fk-ob4j8y"
+  "con-voyage/va-05ky|va-05ky"
+  "con-voyage/va-05ky-bump|va-05ky"
+  "con-voyage/fk-a3k6x.1|fk-a3k6x.1"
+  "con-voyage/fk-a3k6x.1-pin-tag|fk-a3k6x.1"
+  "con-voyage/fk-a3k6x.1-pin-tag-with-many-hyphens|fk-a3k6x.1"
+  "main|"
+  "con-voyage/|"
+  "|"
+)
+for row in "${bead_id_cases[@]}"; do
+  branch="${row%%|*}"
+  expected="${row#*|}"
+  assert_eq "$expected" "$(cv_branch_bead_id "$branch")" "branch_bead_id('${branch}')"
+done
+
+start_case "cv_branch_slug/cv_work_branch_name/cv_branch_bead_id round-trip: slug(title)+id -> branch -> id back out"
+
+roundtrip_ids=("fk-ob4j8y" "va-05ky" "fk-a3k6x.1")
+roundtrip_title="fix(helm): pin chart image tag"
+for id in "${roundtrip_ids[@]}"; do
+  branch="$(cv_work_branch_name "$id" "$roundtrip_title")"
+  assert_eq "$id" "$(cv_branch_bead_id "$branch")" "round-trip for ${id}: ${branch} -> id"
+done
+
+# ---------------------------------------------------------------------------
+# cv_ensure_work_branch_name (fk-6os73y): compute once, persist on ROOT_ID,
+# and NEVER recompute from a (possibly since-changed) title once a value is
+# already stored — the branch name must stay stable for the life of the
+# journey.
+# ---------------------------------------------------------------------------
+start_case "cv_ensure_work_branch_name: no stored value yet -> computes it and persists it on ROOT_ID"
+: > "$GC_LOG"
+unset STUB_BDSHOW_JSON_fk_root1
+export STUB_BDSHOW_JSON_fk_root1='{"id":"fk-root1","metadata":{}}'
+result="$(cv_ensure_work_branch_name "fk-root1" "fk-ob4j8y" "fix(helm): pin chart image tag")"
+assert_eq "con-voyage/fk-ob4j8y-pin-chart-image-tag" "$result" "computes the branch name on first call"
+assert_log_count 'bd update fk-root1 --set-metadata gc\.build\.work_branch_name=con-voyage/fk-ob4j8y-pin-chart-image-tag' 1 "persists the computed name onto ROOT_ID"
+
+start_case "cv_ensure_work_branch_name: a stored value wins even if the title would now slugify differently"
+: > "$GC_LOG"
+export STUB_BDSHOW_JSON_fk_root2='{"id":"fk-root2","metadata":{"gc.build.work_branch_name":"con-voyage/fk-ob4j8y-old-slug"}}'
+result="$(cv_ensure_work_branch_name "fk-root2" "fk-ob4j8y" "a completely different title now")"
+assert_eq "con-voyage/fk-ob4j8y-old-slug" "$result" "the cached value is returned unchanged"
+assert_log_count 'bd update fk-root2' 0 "never re-persists once a value is already stored"
+unset STUB_BDSHOW_JSON_fk_root1 STUB_BDSHOW_JSON_fk_root2
+
+# ---------------------------------------------------------------------------
 # zsh portability (fk-k14n REWORK — operator PR comment + new bug report):
 # `status` is a special/read-only parameter in zsh (it mirrors `$?`), so
 # `local status` followed by an assignment (`status="$x"` or

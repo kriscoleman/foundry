@@ -74,7 +74,7 @@ print((d.get('metadata') or {}).get('gc.root_bead_id') or '')
 fi
 [ -n "$ROOT_ID" ] || ROOT_ID="$GC_BEAD_ID"
 
-read -r CONVOY_ID WORKTREE <<< "$(gc bd show "$ROOT_ID" --json 2>/dev/null | python3 -c "
+read -r CONVOY_ID WORKTREE WORK_BRANCH_NAME <<< "$(gc bd show "$ROOT_ID" --json 2>/dev/null | python3 -c "
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -82,7 +82,7 @@ try:
 except Exception:
     d = {}
 meta = d.get('metadata') or {}
-print(meta.get('gc.build.source_anchor_id') or '', meta.get('gc.build.source_anchor_work_dir') or '')
+print(meta.get('gc.build.source_anchor_id') or '', meta.get('gc.build.source_anchor_work_dir') or '', meta.get('gc.build.work_branch_name') or '')
 " 2>/dev/null)"
 
 if [ -z "$WORKTREE" ] || [ ! -d "$WORKTREE" ]; then
@@ -91,6 +91,12 @@ if [ -z "$WORKTREE" ] || [ ! -d "$WORKTREE" ]; then
 fi
 cd "$WORKTREE" || { echo "apply-review-findings: cd into ${WORKTREE} failed" >&2; exit 1; }
 [ "$(pwd -P)" = "$(cd "$WORKTREE" && pwd -P)" ] || { echo "apply-review-findings: pwd verification failed" >&2; exit 1; }
+
+# fk-6os73y: use the branch name prepare-build computed once and stored on
+# the workflow root — never recompute it from CONVOY_ID alone, it may carry a
+# topic slug. Fall back to the pre-fk-6os73y bare name for a root that
+# predates this key.
+[ -n "$WORK_BRANCH_NAME" ] || WORK_BRANCH_NAME="con-voyage/${CONVOY_ID}"
 ```
 
 Do not edit files anywhere but inside `$WORKTREE`. Never edit the launcher
@@ -165,7 +171,7 @@ PRE_SYNC_HEAD="$(git -C "$WORKTREE" rev-parse HEAD 2>/dev/null)"
 PRE_SYNC_BASE_REF="$(source "$CV_LIB" && cv_worktree_prep_resolve_base "$WORKTREE")"
 PRE_SYNC_BASE_SHA="$(git -C "$WORKTREE" rev-parse --verify --quiet "${PRE_SYNC_BASE_REF}^{commit}" 2>/dev/null || true)"
 
-SYNC_RESULT="$(export CV_PACK_ROOT; source "$CV_LIB" && cv_sync_worktree_to_base "$WORKTREE" "con-voyage/${CONVOY_ID}")" \
+SYNC_RESULT="$(export CV_PACK_ROOT; source "$CV_LIB" && cv_sync_worktree_to_base "$WORKTREE" "$WORK_BRANCH_NAME")" \
   || { echo "apply-review-findings: failed to sync to the current base — refusing to review/fix on a possibly-stale base" >&2; exit 1; }
 echo "apply-review-findings: worktree sync: ${SYNC_RESULT}"
 

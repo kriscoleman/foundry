@@ -48,6 +48,26 @@ if [ -z "$CONVOY_ID" ]; then
 fi
 ```
 
+## Resolve the stable work-branch name (fk-6os73y)
+
+Compute the journey's branch name ONCE here — `con-voyage/<CONVOY_ID>-<topic-
+slug-of-the-work-bead-title>`, falling back to the bare `con-voyage/<CONVOY_ID>`
+when the title yields no usable slug — and persist it on `$ROOT_ID` via
+`cv_ensure_work_branch_name`. Every later step (this one included, further
+down, and build/apply-review-findings/publish/synthesize-review downstream)
+reads that same stored value instead of recomputing it, so the name never
+drifts even if the work bead's title changes mid-journey:
+
+```bash
+WORK_BEAD_ID="$(source "$CV_LIB" && cv_resolve_work_bead "$CONVOY_ID")"
+WORK_BEAD_TITLE="$(source "$CV_LIB" && cv_bead_title "$WORK_BEAD_ID")"
+WORK_BRANCH_NAME="$(source "$CV_LIB" && cv_ensure_work_branch_name "$ROOT_ID" "$CONVOY_ID" "$WORK_BEAD_TITLE")"
+if [ -z "$WORK_BRANCH_NAME" ]; then
+  echo "con-voyage prepare-build: could not resolve a work-branch name for ${ROOT_ID} (convoy ${CONVOY_ID})" >&2
+  exit 1
+fi
+```
+
 ## Resolve, or create, the build worktree
 
 ```bash
@@ -109,14 +129,14 @@ elif [ -n "$EXISTING_WORK_DIR" ] && [ -d "$EXISTING_WORK_DIR" ] && "$CV_WT_PREP"
     # for free because its PRIOR_ANCHOR_DIR never equals DEFAULT_WORKTREE.
     #
     # BLOCKING-1/BLOCKING-3 (review con-voyage/fk-29ts8 iteration 3): removing
-    # only the worktree directory leaves its branch ref (con-voyage/${CONVOY_ID})
+    # only the worktree directory leaves its branch ref ($WORK_BRANCH_NAME)
     # surviving at the stale commit, which makes the downstream
     # ensure-branch call refuse to move it and abort the entire build; and a
     # bare `remove --force` silently discards any dirty/mid-rebase state with
     # no log. cv_discard_stale_anchor_worktree handles both: drops the stale
     # branch ref after removing the worktree, and logs (not just silently
     # discards) uncommitted changes or an in-progress rebase/merge first.
-    source "$CV_LIB" && cv_discard_stale_anchor_worktree "$EXISTING_WORK_DIR" "con-voyage/${CONVOY_ID}" \
+    source "$CV_LIB" && cv_discard_stale_anchor_worktree "$EXISTING_WORK_DIR" "$WORK_BRANCH_NAME" \
       || { echo "con-voyage prepare-build: failed to remove too-stale worktree ${EXISTING_WORK_DIR} — refusing to reuse it in place" >&2; exit 1; }
   else
     # Pre-built branch (backward-compat path): HEAD is already ahead of base
@@ -167,7 +187,7 @@ if [ "$SHORT_CIRCUIT" = "false" ] && [ "$FRESH_BUILD" != "true" ]; then
     # detached HEAD here would silently push nothing. Give it a stable name
     # now, while we already know exactly which worktree is being adopted.
     if [ -z "$(git -C "$WORKTREE" branch --show-current 2>/dev/null)" ]; then
-      STABLE_BRANCH="con-voyage/${PRIOR_ANCHOR_ID}"
+      STABLE_BRANCH="$WORK_BRANCH_NAME"
       git -C "$WORKTREE" checkout -q -b "$STABLE_BRANCH" \
         || { echo "con-voyage prepare-build: failed to create ${STABLE_BRANCH} on detached-HEAD anchor ${WORKTREE}" >&2; exit 1; }
       echo "con-voyage prepare-build: ${WORKTREE} was on a detached HEAD — created ${STABLE_BRANCH} at the existing commit so publish has something to push"
@@ -209,7 +229,7 @@ if [ "$SHORT_CIRCUIT" = "false" ]; then
   # own start (fk-hbsmk) — so a contaminated worktree is never handed off
   # as "resolved" even briefly, rather than relying solely on a downstream
   # step to catch it later.
-  SYNC_RESULT="$(source "$CV_LIB" && cv_sync_worktree_to_base "$WORKTREE" "con-voyage/${CONVOY_ID}")" \
+  SYNC_RESULT="$(source "$CV_LIB" && cv_sync_worktree_to_base "$WORKTREE" "$WORK_BRANCH_NAME")" \
     || { echo "con-voyage prepare-build: failed to sync fresh worktree ${WORKTREE} to its current base — refusing to hand off a possibly-contaminated worktree" >&2; exit 1; }
   echo "con-voyage prepare-build: worktree sync: ${SYNC_RESULT}"
 
