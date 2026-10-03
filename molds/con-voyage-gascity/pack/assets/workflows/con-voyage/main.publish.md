@@ -178,8 +178,10 @@ on):
 1. Build a JSON manifest from what this cycle already produced:
    - `rig` / `root_bead_id` — this journey's rig and `$ROOT_ID`.
    - `round` — `1` (publish posts the first aggregated comment for this PR;
-     a later re-review cycle after the PR is already open, if one runs, is
-     responsible for incrementing this on its own equivalent call).
+     a later re-review cycle — con-voyage-rereview-watch.sh's triggered
+     `con-voyage-rereview` formula, fk-pubvq — increments `review_round` on
+     the finalize record below and uses that value for its own equivalent
+     call).
    - `overall_line` — one line, e.g. `"Approved: 6 lanes, 0 blocking, 4
      low."`, derived from `review-synthesis.md`'s own verdict/counts.
    - `extra_line` — omit, or `"LOWs for the human reviewer below."` when any
@@ -328,6 +330,45 @@ fi
 mkdir -p "$CV_STATE_DIR"
 owner="${REPO_FULL%%/*}"; repo="${REPO_FULL##*/}"
 finalize_key="cv-finalize-${owner}-${repo}-${PR_NUMBER}"
+
+# 3. fk-pubvq: record the roster this run approved, the head SHA it actually
+#    reviewed, and round 1 (this publish step's own aggregated comment, just
+#    posted above) — so con-voyage-rereview-watch.sh can detect a LATER
+#    code-changing push to this PR (a human-feedback or ci-repair bead) and
+#    re-run the SAME roster against it after this workflow root has closed.
+#    ROSTER_VARS is flattened from $ROOT_ID's own gc.graphv2_vars.v1
+#    metadata (already stamped there at sling/cook time) rather than
+#    re-threading every enable_*/code_lens {{var}} through this file
+#    individually — it is the one place that metadata already lives intact.
+ROSTER_VARS=""
+{
+  ROSTER_VARS="$(gc bd show "$ROOT_ID" --json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    d = d[0] if isinstance(d, list) else d
+except Exception:
+    d = {}
+meta = (d or {}).get('metadata') or {}
+raw = meta.get('gc.graphv2_vars.v1') or '{}'
+try:
+    vars_ = json.loads(raw)
+except Exception:
+    vars_ = {}
+keep_exact = ('code_lens', 'implementation_target', 'cv_lens_claim_seconds',
+              'cv_lens_max_redispatch', 'cv_lens_escalate_target')
+parts = []
+for k in sorted(vars_):
+    if k in keep_exact or k.startswith('enable_'):
+        parts.append('{}={}'.format(k, vars_[k]))
+print(','.join(parts))
+" 2>/dev/null)"
+}
+if [ -z "${ROSTER_VARS// /}" ]; then
+  echo "con-voyage publish: WARNING: could not flatten roster vars from ${ROOT_ID}'s gc.graphv2_vars.v1 — a later re-review round (fk-pubvq) will fall back to re-deriving them from the same metadata directly" >&2
+fi
+PUBLISHED_HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || echo "")"
+
 {
   printf 'work_bead=%s\n' "$WORK_BEAD"
   printf 'convoy_id=%s\n' "$CONVOY_ID"
@@ -337,6 +378,10 @@ finalize_key="cv-finalize-${owner}-${repo}-${PR_NUMBER}"
   printf 'implementor_session=%s\n' "$IMPLEMENTOR"
   printf 'last_phase=%s\n' "awaiting_merge"
   printf 'root_bead_id=%s\n' "$ROOT_ID"
+  printf 'roster_vars=%s\n' "$ROSTER_VARS"
+  printf 'last_reviewed_head_sha=%s\n' "$PUBLISHED_HEAD_SHA"
+  printf 'review_round=%s\n' "1"
+  printf 'rereview_root_bead_id=%s\n' ""
 } > "${CV_STATE_DIR}/${finalize_key}.finalize"
 echo "con-voyage publish: armed finalize monitor for ${REPO_FULL}#${PR_NUMBER} -> work bead ${WORK_BEAD}"
 ```

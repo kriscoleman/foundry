@@ -306,12 +306,25 @@ for CV_STATE_DIR in "${CV_STATE_DIRS_ALL[@]}"; do
     case "$pr_state" in
       OPEN)
         # Still open — reflect the live phase on the work bead (idempotent).
+        # fk-pubvq: while a re-review round is in flight (rereview_root_bead_id
+        # set), this is NOT the authority on phase — con-voyage-rereview-
+        # watch.sh already parked the work bead at cv=re_reviewing precisely so
+        # the PR does not look land-ready, and that same round's own finalize
+        # step owns flipping it back when the round ends. Overwriting it here
+        # with a live/CI-derived phase every cycle would silently undo that
+        # the moment CI next reports clean, re-exposing an unreviewed push as
+        # "awaiting human land".
+        if [ -n "${FS_REREVIEW_ROOT_BEAD_ID// /}" ]; then
+          echo "con-voyage-finalize: OK ${label} — still OPEN, re-review in flight (root ${FS_REREVIEW_ROOT_BEAD_ID}); leaving phase to that round"
+          continue
+        fi
         live_phase="$(pr_live_phase "$FS_REPO_FULL" "$FS_PR_NUMBER")"
         if [ -n "${live_phase// /}" ] && [ "$live_phase" != "$FS_LAST_PHASE" ]; then
           echo "con-voyage-finalize: ${label} still OPEN — phase ${FS_LAST_PHASE:-<none>} -> ${live_phase} on work bead ${FS_WORK_BEAD}"
           set_work_bead_phase "$FS_WORK_BEAD" "$live_phase"
           finalize_write "$dedup_key" "$FS_WORK_BEAD" "$FS_CONVOY_ID" "$FS_REPO_FULL" \
-            "$FS_PR_NUMBER" "$FS_PR_AUTHOR" "$FS_IMPLEMENTOR" "$live_phase" "$FS_ROOT_BEAD_ID"
+            "$FS_PR_NUMBER" "$FS_PR_AUTHOR" "$FS_IMPLEMENTOR" "$live_phase" "$FS_ROOT_BEAD_ID" \
+            "$FS_ROSTER_VARS" "$FS_LAST_REVIEWED_HEAD_SHA" "$FS_REVIEW_ROUND" "$FS_REREVIEW_ROOT_BEAD_ID"
         else
           echo "con-voyage-finalize: OK ${label} — still OPEN, phase unchanged (${FS_LAST_PHASE:-<none>})"
         fi

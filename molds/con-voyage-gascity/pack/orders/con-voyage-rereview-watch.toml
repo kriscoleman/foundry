@@ -1,0 +1,51 @@
+# con-voyage-rereview-watch — post-publish re-review trigger (fk-pubvq).
+#
+# con-voyage's multi-lens review only ever ran once, inside the original
+# graph.v2 workflow. Once publish opens the PR, that workflow root is free
+# to close on merge/close (con-voyage-finalize.sh) — but the PR can keep
+# moving BEFORE that: a human-feedback bead (con-voyage-pr-watch.sh PART B)
+# or a ci-repair bead (con-voyage-ci-repair.formula.toml) can push a
+# brand-new, code-changing commit to the SAME branch with no review lane
+# ever re-running against it. Live evidence: replicatedhq/vandoor#10589 — a
+# human-feedback fix flipped an entitlement filter from a blocklist to an
+# allowlist (a security-sensitive change) and shipped with zero review.
+#
+# This order runs con-voyage-rereview-watch.sh on a cooldown. It reads the
+# SAME per-PR ".finalize" records con-voyage-finalize.sh consumes (publish
+# now also stamps roster_vars/last_reviewed_head_sha/review_round on them),
+# detects a genuinely code-changing push to the PR's current head (via a
+# local patch-id comparison — a content-identical replay, e.g. a rebase, is
+# NOT treated as a new change), and when one is found:
+#   - mails the mayor "RE-REVIEW PENDING: <repo>#<pr>",
+#   - parks the work bead at cv=re_reviewing (so the PR does not look
+#     land-ready while this is in flight),
+#   - slings the con-voyage-rereview formula with the ORIGINAL roster vars
+#     against the PR's existing branch (no new build, no new PR),
+#   - records the new round's root bead id on the .finalize record as a
+#     dedup guard until that round's own finalize step clears it.
+#
+# No auto-merge, force-push, or PR comment edit ever occurs from this order
+# — it only slings a read/review-only round and sends mail.
+#
+# AUTHOR SCOPING: this monitor only ever acts on finalize records whose
+# recorded pr_author is CV_PR_AUTHOR (see the HARD INVARIANT in the script
+# header) — those records already came from con-voyage's own author-scoped
+# publish step; this is defense in depth, same convention as every other
+# monitor in this pack.
+
+[order]
+description = "Detect a code-changing push to an already-published con-voyage PR and trigger a fresh multi-lens re-review round with the original roster (author-scoped)"
+trigger = "cooldown"
+interval = "10m"
+exec = "$PACK_DIR/assets/scripts/con-voyage-rereview-watch.sh"
+timeout = "8m"
+
+# Author-scope the monitor explicitly (same convention as every other
+# monitor in this pack — see con-voyage-pr-watch.toml/con-voyage-finalize.toml).
+# CV_PR_AUTHOR is the single GitHub login whose PRs this monitor may act on.
+# CV_REREVIEW_RIG is REQUIRED: the Gas City rig to mint the round's seed bead
+# in and sling it within (this is the rig's own name, unrelated to the PR's
+# GitHub repo — e.g. "foundry-kc"). Change both to match this cast.
+[order.env]
+CV_PR_AUTHOR = "kriscoleman"
+CV_REREVIEW_RIG = "foundry-kc"
