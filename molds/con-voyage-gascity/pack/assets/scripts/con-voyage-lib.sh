@@ -846,6 +846,20 @@ CV_SHELL_SAFETY_REMINDER='This Bash tool runs whichever shell the operator has c
 # same reminder tells every other worker to mail instead.
 CV_NO_INTERACTIVE_PROMPT_REMINDER='This session runs headless — nobody is watching a terminal, so an interactive prompt tool (for example AskUserQuestion) blocks the session forever with no one able to answer it. Never call an interactive prompt tool. When a real decision is needed, mail the mayor (`gc mail`) with the question, then either wait for a reply or close the bead as blocked with the open question recorded in the close reason.'
 
+# ---------------------------------------------------------------------------
+# PR-reply-integrity reminder (fk-ntq0): con-voyage posts to GitHub under the
+# operator's own PAT, so every agent-authored PR comment shows up as the
+# operator unless it carries cv-pr-comment.sh's machine-identity banner. A
+# worker replying to routed human PR feedback found this out the hard way —
+# it called a raw `gh` command instead of cv-pr-comment.sh, posted an
+# unbannered comment that impersonated the operator, and self-reported
+# gc.outcome=pass with no way to verify the post happened at all (PR #45
+# round fk-8ymb; recurred in production on replicatedhq/vandoor#10589).
+# cv_build_pr_feedback_body is the ONLY place this pack free-texts a bead
+# body outside the formula graph (see tests/agents-contract.test.sh), so this
+# reminder is distributed there, not via a formula description_file.
+CV_PR_REPLY_INTEGRITY_REMINDER='Post ONLY through `cv-pr-comment.sh` — `reply-thread` for an inline review-thread reply (use the `[reply-thread comment-id:<id> @ path:line]` target from the feedback above), `comment` for a root-level reply. A raw `gh pr comment`, `gh pr review`, or `gh api ... comments` call posts under the operator'"'"'s own GitHub identity with no machine-identity banner, impersonating a human. Before closing this bead with `gc.outcome=pass`, record the URL `cv-pr-comment.sh` printed as `gc.pr_comment_url` metadata on this bead (`bd update <bead-id> --set-metadata "gc.pr_comment_url=<url>"`) — a pass-close without it is invalid and must not be reported as done.'
+
 # cv_text_has_interactive_prompt_stall TEXT — exit 0 if TEXT contains the
 # footer Claude Code's AskUserQuestion (and similar single/multi-select
 # terminal prompts) prints while blocked waiting on a selection, exit 1
@@ -1031,6 +1045,8 @@ changes on the branch '${head_ref}' using TDD. Push the fix — do NOT merge.
 
 New feedback:
 ${feedback_summary}
+
+${CV_PR_REPLY_INTEGRITY_REMINDER}
 
 ${CV_COMMUNAL_DUTY_REMINDER}
 
