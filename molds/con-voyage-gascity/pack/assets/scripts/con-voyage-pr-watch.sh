@@ -148,6 +148,11 @@ CV_IMPLEMENTOR="${CV_IMPLEMENTOR:-gc.implementation-worker}"
 # here with the other tunables rather than left as an inline ${..:-default}
 # at each use site, so every configuration knob resolves in one place.
 CV_AUTHOR_GATE="${CV_AUTHOR_GATE:-enabled}"
+# fk-dxswwi BLOCKING-2: PART A-native discovery (below) is a new, unexercised
+# code path that fans out gh pr list/gh pr view against every configured
+# monitor and can auto-mint con-voyage-ci-repair work. Keep it opt-in with a
+# code-free rollback until it has production mileage.
+CV_NATIVE_DISCOVERY="${CV_NATIVE_DISCOVERY:-disabled}"
 CV_CONFLICT_STRATEGY="${CV_CONFLICT_STRATEGY:-rebase}"
 CV_LOCK_STALE_SECONDS="${CV_LOCK_STALE_SECONDS:-300}"
 CV_MINT_MAX_ATTEMPTS="${CV_MINT_MAX_ATTEMPTS:-3}"
@@ -965,6 +970,9 @@ fi
 # ("cv-ci-repair-<owner>-<repo>-<num>"), so a PR that somehow becomes
 # reachable by BOTH paths in the same cycle is still only ever minted once —
 # dedup is keyed on repo+PR number, never on which path discovered it.
+if [ "$CV_NATIVE_DISCOVERY" != "enabled" ]; then
+  echo "con-voyage-pr-watch: [PART A-native] skipped — CV_NATIVE_DISCOVERY is '${CV_NATIVE_DISCOVERY}' (set to 'enabled' to opt in)"
+else
 echo "con-voyage-pr-watch: [PART A-native] unlisted-base discovery for '${CV_PR_AUTHOR}'-authored PRs"
 
 # shellcheck disable=SC2034  # n_rig is part of cv_parse_pr_monitor_blocks's
@@ -1025,12 +1033,14 @@ for pr in data:
     # base_branches, so the engine-backed path above already evaluated this
     # PR this cycle (or will, on any config that lists it) — never double-mint.
     n_base_listed=0
-    for n_listed in "${n_base_arr[@]}"; do
-      if [ "$n_listed" = "$n_base" ]; then
-        n_base_listed=1
-        break
-      fi
-    done
+    if [ "${#n_base_arr[@]}" -gt 0 ]; then
+      for n_listed in "${n_base_arr[@]}"; do
+        if [ "$n_listed" = "$n_base" ]; then
+          n_base_listed=1
+          break
+        fi
+      done
+    fi
     [ "$n_base_listed" -eq 1 ] && continue
 
     n_view_json=$("$GH" pr view "$n_num" --repo "$n_full" \
@@ -1063,6 +1073,7 @@ for pr in data:
     release_lock "$a_dedup_key"
   done <<< "$n_pr_rows"
 done <<< "$(cv_parse_pr_monitor_blocks "${GC_CITY}/city.toml")"
+fi
 
 # ---------------------------------------------------------------------------
 # PART B: Human PR-comment routing

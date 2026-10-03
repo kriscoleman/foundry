@@ -996,6 +996,7 @@ run_script() {
       CV_STATE_DIR="$STATE_DIR" \
       STUB_GH_LOG="$GH_LOG" \
       STUB_GC_LOG="$GC_LOG" \
+      CV_NATIVE_DISCOVERY="enabled" \
       "$@" \
       bash "$SCRIPT" 2>&1
   )"
@@ -3027,6 +3028,91 @@ if printf '%s' "$OUT" | grep -q 'PART A-native\] DEFER kriscoleman/foundry#11'; 
   pass "logs the DEFER (not a guessed mint) for the unresolved-base PR"
 else
   fail "expected a DEFER log line for the unresolved-baseRefName PR"
+fi
+
+# ===========================================================================
+# CASE 52 — fk-dxswwi BLOCKING-1 regression: a monitor block with NO
+#   `base_branches` key makes cv_parse_pr_monitor_blocks emit an empty 5th
+#   field, so `IFS=',' read -r -a n_base_arr <<< ""` yields a zero-length
+#   array. Expanding "${n_base_arr[@]}" unguarded is a hard `unbound
+#   variable` abort under `set -u` on bash 3.2 (macOS system /bin/bash) even
+#   though it is silently fine on bash 5.x — the exact blind spot the test
+#   suite's own bash-5.3 runtime would otherwise miss. Run this case under
+#   /bin/bash explicitly, not whatever `bash` resolves to in PATH.
+#
+#   NOTE: this script's PART B (pre-existing, untouched by this change) uses
+#   `mapfile`, a bash-4+ builtin absent from bash 3.2 — a separate,
+#   pre-existing bash-3.2 incompatibility out of scope for this bead's two
+#   BLOCKING findings. So this case does NOT assert the whole script exits 0
+#   under /bin/bash; it asserts PART A-native itself (the code this bead
+#   touches) completes cleanly — no unbound-variable abort, and the
+#   unlisted-base PR is still discovered and minted — before the script goes
+#   on to hit that unrelated PART B issue.
+# ===========================================================================
+start_case "52: fk-dxswwi BLOCKING-1 — empty base_branches never crashes PART A-native under bash 3.2 set -u"
+setup_case_env "52"
+cat > "${CITY_DIR}/city.toml" <<'TOML'
+[[github.pr_monitor]]
+name = "foundry-prs"
+owner = "kriscoleman"
+repo = "foundry"
+rig = "vandoor"
+repair_route = "vandoor/gc.implementation-worker"
+TOML
+OUT="$(
+  env \
+    GH="${STUBDIR}/gh" \
+    GC="${STUBDIR}/gc" \
+    GC_CITY="$CITY_DIR" \
+    CV_STATE_DIR="$STATE_DIR" \
+    STUB_GH_LOG="$GH_LOG" \
+    STUB_GC_LOG="$GC_LOG" \
+    CV_NATIVE_DISCOVERY="enabled" \
+    CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+    STUB_BACKFILL_MODE="empty" STUB_NATIVE_PRLIST_MODE="unlisted" \
+    /bin/bash "$SCRIPT" 2>&1
+)"
+RC=$?
+if printf '%s' "$OUT" | grep -qi "unbound variable"; then
+  fail "script aborted with an unbound-variable error on an empty base_branches array"
+else
+  pass "no unbound-variable abort with an empty base_branches array"
+fi
+if printf '%s' "$OUT" | grep -q 'kriscoleman/foundry#950: repair bead .* created/attached'; then
+  pass "with no base_branches configured, PART A-native still discovers and mints a repair bead for the resolved-base PR"
+else
+  fail "expected PART A-native to discover and mint a repair bead for #950 even with no base_branches configured"
+fi
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair.*pr=950.*failure_kind=checks_failed' 1 "with no base_branches configured, the PR with a resolved base is still discovered and mints a repair bead"
+
+# ===========================================================================
+# CASE 53 — fk-dxswwi BLOCKING-2 regression: PART A-native discovery is
+#   opt-in via CV_NATIVE_DISCOVERY, default disabled. With the knob left at
+#   its production default (unset), the whole block must not run at all —
+#   zero gh pr list/view calls from the native path, zero repair mints from
+#   it — even though the monitor's own config would otherwise match CASE 50's
+#   unlisted-base fixture.
+# ===========================================================================
+start_case "53: fk-dxswwi BLOCKING-2 — PART A-native discovery defaults to disabled (opt-in required)"
+setup_case_env "53"
+cat > "${CITY_DIR}/city.toml" <<'TOML'
+[[github.pr_monitor]]
+name = "foundry-prs"
+owner = "kriscoleman"
+repo = "foundry"
+base_branches = ["main"]
+rig = "vandoor"
+repair_route = "vandoor/gc.implementation-worker"
+TOML
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_BACKFILL_MODE="empty" STUB_NATIVE_PRLIST_MODE="unlisted" \
+  CV_NATIVE_DISCOVERY="disabled"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair' 0 "no repair bead is minted by the native path when CV_NATIVE_DISCOVERY is disabled"
+if printf '%s' "$OUT" | grep -q 'PART A-native\] skipped'; then
+  pass "logs that native discovery was skipped"
+else
+  fail "expected a skip log line when CV_NATIVE_DISCOVERY is disabled"
 fi
 
 # ===========================================================================
