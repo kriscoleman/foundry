@@ -41,10 +41,20 @@ Read all active review lane reports. Deduplicate findings, preserve the source
 review lane for each finding, and classify each item as required fix (BLOCKING),
 low-priority concern (LOW), or approved.
 
-Never downgrade a lane's own BLOCKING classification to LOW — not on
-"intentional per plan" grounds, not because the finding looks small, not
-because you'd have called it LOW yourself. A lane's BLOCKING is authoritative;
-synthesis consolidates and deduplicates, it does not re-grade.
+Never downgrade a lane's own BLOCKING classification to LOW, for any reason —
+not on "intentional per plan" grounds (fk-qbdta: a lane that already applied
+the severity rubric — an unenforced precondition with a local fix, a vacuous
+acceptance criterion, or an unstacked dependency on an unmerged slice — made
+that call deliberately; "the plan says this lands later" is exactly the
+rationale the rubric already rejects), not because the finding "is no longer
+load-bearing for correctness" (fk-6os73y synthesis fk-ymqwd9 downgraded an SRE
+BLOCKING — an unpersisted `gc.build.work_branch_name` with no reader — to LOW
+on exactly that rationale), not because the finding looks small, not because
+you'd have called it LOW yourself. A lane's BLOCKING is authoritative;
+synthesis consolidates and deduplicates, it does not re-grade. You may note
+*why* a finding might seem less severe in the synthesis text, but the severity
+you carry forward must stay BLOCKING. Only a lane itself, re-reviewing with
+new information, may change its own finding's severity.
 
 Write one consolidated review synthesis under the build artifact root. The
 synthesis must be concrete enough for the fix lane to act without another
@@ -72,8 +82,6 @@ When no BLOCKING findings exist but LOWs remain, stop and surface them to the
 human facilitator. Never silently accept LOWs — see "Mail the human on a
 LOW-only verdict" below: surfacing means actually sending that mail, not just
 writing that you would.
-
-You must not downgrade a lane's BLOCKING finding to LOW on "intentional per plan" grounds (fk-qbdta) — a lane that already applied the severity rubric (an unenforced precondition with a local fix, a vacuous acceptance criterion, or an unstacked dependency on an unmerged slice) made that call deliberately; "the plan says this lands later" is exactly the rationale the rubric already rejects, not a reason to re-grade it here. Carry every lane's BLOCKING verdict through unchanged; only a lane itself, re-reviewing with new information, may change its own finding's severity.
 
 ## Mail the human on a LOW-only verdict (fk-8g9ue)
 
