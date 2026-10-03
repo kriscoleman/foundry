@@ -2493,6 +2493,147 @@ for name, title in mapping.items():
 " "$formula" "$json" 2>/dev/null
 }
 
+# cv_bead_title BEAD_ID — print BEAD_ID's bare `title` field (not metadata),
+# via the same `bd show --json` shape cv_bead_metadata reads. Empty output
+# (never a non-zero exit) on any failure — a caller deriving a branch slug
+# from this falls back to the bare con-voyage/<bead-id> name when it comes
+# back empty, the same fail-safe posture as every other reader in this file.
+cv_bead_title() {
+  local bead_id="$1"
+  [ -n "${bead_id// /}" ] || { printf ''; return 0; }
+  local gc_bin="${GC:-gc}"
+  local json
+  json=$("$gc_bin" bd show "$bead_id" --json 2>/dev/null) || json=""
+  [ -n "$json" ] || { printf ''; return 0; }
+  printf '%s' "$json" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+if isinstance(data, list):
+    data = data[0] if data else {}
+if not isinstance(data, dict):
+    raise SystemExit(0)
+title = data.get('title')
+print(title if isinstance(title, str) else '')
+" 2>/dev/null
+}
+
+# ---------------------------------------------------------------------------
+# Branch naming (fk-6os73y): the operator picked `con-voyage/<bead-id>-
+# <topic-slug>` over the bare `con-voyage/<bead-id>` (Slack C0C4D8TAVL5 thread
+# 1791011333.310589, 2026-10-03) — branch names should say what the work is.
+# The three functions below are the ONE shared implementation every con-
+# voyage step and the sibling base-agnostic pr-watch journey (Option 2) both
+# go through, so the slug/parse rules can never drift between callers.
+# ---------------------------------------------------------------------------
+
+# cv_branch_slug TITLE — print a URL-safe slug derived from a work bead's
+# title. Drops a leading Conventional-Commit `type(scope): ` or `type: `
+# prefix (the type/scope is metadata, not "what the work is"), lowercases,
+# collapses every run of non-[a-z0-9] characters into a single hyphen, trims
+# leading/trailing hyphens, and caps the result to ~40 chars AT A WORD
+# BOUNDARY — it backs off to the last complete hyphen-delimited word rather
+# than cutting mid-word; a single word already longer than the cap is left
+# hard-cut since no boundary exists to back off to. Prints an empty string
+# when the title has no usable characters at all (every caller falls back to
+# the bare con-voyage/<bead-id> branch name in that case).
+cv_branch_slug() {
+  local title="${1:-}"
+  python3 -c "
+import re
+import sys
+
+t = (sys.argv[1] if len(sys.argv) > 1 else '').strip()
+m = re.match(r'^[A-Za-z][A-Za-z0-9_]*(?:\([^)]*\))?\s*:\s*', t)
+if m:
+    t = t[m.end():]
+t = t.lower()
+t = re.sub(r'[^a-z0-9]+', '-', t)
+t = t.strip('-')
+cap = 40
+if len(t) > cap:
+    cut = t[:cap]
+    if '-' in cut:
+        cut = cut.rsplit('-', 1)[0]
+    t = cut.strip('-')
+print(t)
+" "$title" 2>/dev/null
+}
+
+# cv_work_branch_name BEAD_ID TITLE — print the con-voyage work-branch name
+# for BEAD_ID: `con-voyage/<bead-id>-<slug-of-title>`, or the bare
+# `con-voyage/<bead-id>` when TITLE yields an empty slug (cv_branch_slug).
+# Fail-safe: an empty BEAD_ID prints an empty string rather than a malformed
+# `con-voyage/-<slug>`.
+cv_work_branch_name() {
+  local bead_id="${1:-}" title="${2:-}"
+  [ -n "${bead_id// /}" ] || { printf ''; return 0; }
+  local slug
+  slug="$(cv_branch_slug "$title")"
+  if [ -n "${slug// /}" ]; then
+    printf 'con-voyage/%s-%s' "$bead_id" "$slug"
+  else
+    printf 'con-voyage/%s' "$bead_id"
+  fi
+}
+
+# cv_branch_bead_id BRANCH — the inverse of cv_work_branch_name: extract the
+# bead id back out of a con-voyage work branch, accepting BOTH the bare
+# `con-voyage/<bead-id>` form (every PR opened before fk-6os73y) and the new
+# `con-voyage/<bead-id>-<topic-slug>` form. A bead id's own suffix never
+# contains a hyphen (fk-ob4j8y, va-05ky, fk-a3k6x.1 — prefix, ONE hyphen,
+# alnum suffix, optional `.N`), so the first run of `[a-zA-Z0-9]` (plus an
+# optional `.N`) after that hyphen is always the whole id — anything past a
+# FURTHER hyphen is slug, never swallowed into the id, and the id is never
+# swallowed into the slug either. Prints an empty string for a non-con-voyage
+# branch or an unparseable id shape, never a partial/garbage id.
+cv_branch_bead_id() {
+  local branch="${1:-}"
+  python3 -c "
+import re
+import sys
+
+branch = sys.argv[1] if len(sys.argv) > 1 else ''
+prefix = 'con-voyage/'
+if not branch.startswith(prefix):
+    print('')
+    raise SystemExit(0)
+rest = branch[len(prefix):]
+m = re.match(r'^([a-z]+-[a-zA-Z0-9]+(?:\.[0-9]+)?)(?:-.*)?\$', rest)
+print(m.group(1) if m else '')
+" "$branch" 2>/dev/null
+}
+
+# cv_ensure_work_branch_name ROOT_ID BEAD_ID TITLE — print the stable branch
+# name for this journey, computing and persisting it on ROOT_ID the FIRST
+# time (`gc.build.work_branch_name` metadata) and simply echoing that stored
+# value on every later call. BEAD_ID/TITLE are only consulted when no value
+# is stored yet — the branch name must never be recomputed from a title that
+# may have since changed, so it stays stable for the life of the journey. A
+# `bd update` failure while persisting is warned, not fatal: the caller still
+# gets the computed name back and can proceed, it just was not cached for the
+# next step to find (that next step recomputes it identically from the same
+# BEAD_ID/TITLE, so this is self-healing, not silently wrong).
+cv_ensure_work_branch_name() {
+  local root_id="${1:-}" bead_id="${2:-}" title="${3:-}"
+  local existing
+  existing="$(cv_bead_metadata "$root_id" gc.build.work_branch_name)"
+  if [ -n "${existing// /}" ]; then
+    printf '%s' "$existing"
+    return 0
+  fi
+  local name
+  name="$(cv_work_branch_name "$bead_id" "$title")"
+  if [ -n "${name// /}" ] && [ -n "${root_id// /}" ]; then
+    local gc_bin="${GC:-gc}"
+    "$gc_bin" bd update "$root_id" --set-metadata "gc.build.work_branch_name=${name}" >/dev/null 2>&1 \
+      || echo "con-voyage-lib: WARNING: failed to persist gc.build.work_branch_name=${name} on ${root_id} (continuing with the computed value)" >&2
+  fi
+  printf '%s' "$name"
+}
+
 # cv_close_reason_for_pr PR_STATE PR_NUMBER — canonical work-bead close reason
 # for a finalized PR. PR_STATE is the GitHub PR state ("MERGED" or "CLOSED",
 # case-insensitive). Any merged state -> "landed: PR #N merged"; a closed-

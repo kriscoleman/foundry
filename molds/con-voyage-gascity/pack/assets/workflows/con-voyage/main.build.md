@@ -55,7 +55,7 @@ print((d.get('metadata') or {}).get('gc.root_bead_id') or '')
 fi
 [ -n "$ROOT_ID" ] || ROOT_ID="$GC_BEAD_ID"
 
-read -r CONVOY_ID WORKTREE SHORT_CIRCUIT <<< "$(gc bd show "$ROOT_ID" --json 2>/dev/null | python3 -c "
+read -r CONVOY_ID WORKTREE SHORT_CIRCUIT WORK_BRANCH_NAME <<< "$(gc bd show "$ROOT_ID" --json 2>/dev/null | python3 -c "
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -63,7 +63,7 @@ try:
 except Exception:
     d = {}
 meta = d.get('metadata') or {}
-print(meta.get('gc.build.source_anchor_id') or '', meta.get('gc.build.source_anchor_work_dir') or '', meta.get('gc.build.short_circuited') or 'false')
+print(meta.get('gc.build.source_anchor_id') or '', meta.get('gc.build.source_anchor_work_dir') or '', meta.get('gc.build.short_circuited') or 'false', meta.get('gc.build.work_branch_name') or '')
 " 2>/dev/null)"
 
 if [ -z "$WORKTREE" ] || [ ! -d "$WORKTREE" ]; then
@@ -72,6 +72,13 @@ if [ -z "$WORKTREE" ] || [ ! -d "$WORKTREE" ]; then
 fi
 cd "$WORKTREE" || { echo "con-voyage build: cd into ${WORKTREE} failed" >&2; exit 1; }
 [ "$(pwd -P)" = "$(cd "$WORKTREE" && pwd -P)" ] || { echo "con-voyage build: pwd verification failed" >&2; exit 1; }
+
+# fk-6os73y: the branch name is computed once on prepare-build and stored on
+# the workflow root (gc.build.work_branch_name) — never recomputed here from
+# CONVOY_ID alone, since it carries a topic slug prepare-build already chose.
+# A root from before this feature shipped has no such key; fall back to the
+# bare pre-fk-6os73y name rather than failing a bead that predates this change.
+[ -n "$WORK_BRANCH_NAME" ] || WORK_BRANCH_NAME="con-voyage/${CONVOY_ID}"
 ```
 
 Do not edit files anywhere but inside `$WORKTREE`. Never edit the launcher
@@ -180,7 +187,7 @@ if [ -z "$CV_LIB" ]; then
   exit 1
 fi
 SYNC_ERR_FILE="$(mktemp)"
-SYNC_RESULT="$(export CV_PACK_ROOT; source "$CV_LIB" && cv_sync_worktree_to_base "$WORKTREE" "con-voyage/${CONVOY_ID}" 2>"$SYNC_ERR_FILE")"
+SYNC_RESULT="$(export CV_PACK_ROOT; source "$CV_LIB" && cv_sync_worktree_to_base "$WORKTREE" "$WORK_BRANCH_NAME" 2>"$SYNC_ERR_FILE")"
 SYNC_RC=$?
 SYNC_ERR_TEXT="$(cat "$SYNC_ERR_FILE")"
 rm -f "$SYNC_ERR_FILE"
@@ -243,7 +250,7 @@ if [ "$SYNC_RC" -eq 2 ]; then
     BASE_REF="$(bash "$CV_PREP" resolve-base "$WORKTREE" 2>/dev/null || echo unknown)"
     BEHIND_COUNT="$(git -C "$WORKTREE" rev-list --count "HEAD..${BASE_REF}" 2>/dev/null || echo unknown)"
   fi
-  STALE_BRANCH="$(git -C "$WORKTREE" symbolic-ref -q --short HEAD 2>/dev/null || echo "con-voyage/${CONVOY_ID}")"
+  STALE_BRANCH="$(git -C "$WORKTREE" symbolic-ref -q --short HEAD 2>/dev/null || echo "$WORK_BRANCH_NAME")"
 
   CV_LENS_STORE_TIMEOUT_SECONDS="${CV_LENS_STORE_TIMEOUT_SECONDS:-30}"
   case "$CV_LENS_STORE_TIMEOUT_SECONDS" in
@@ -371,7 +378,7 @@ CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
 CV_GUARD="${CV_PACK_ROOT}/assets/scripts/cv-worktree-prep.sh"
 [ -f "$CV_GUARD" ] || CV_GUARD=""
 if [ -n "$CV_GUARD" ] && [ -x "$CV_GUARD" ]; then
-  "$CV_GUARD" ensure-branch "$WORKTREE" "con-voyage/${CONVOY_ID}" \
+  "$CV_GUARD" ensure-branch "$WORKTREE" "$WORK_BRANCH_NAME" \
     || { echo "failed to attach a named branch to the pre-built commit — publish would find a detached HEAD and silently push nothing (fk-tazxl)" >&2; exit 1; }
 fi
 ```
@@ -412,7 +419,7 @@ git commit -m "<conventional-commit message for the requested change>"
 
 ```bash
 if [ -n "$CV_GUARD" ] && [ -x "$CV_GUARD" ]; then
-  "$CV_GUARD" ensure-branch "$WORKTREE" "con-voyage/${CONVOY_ID}" \
+  "$CV_GUARD" ensure-branch "$WORKTREE" "$WORK_BRANCH_NAME" \
     || { echo "failed to attach a named branch to the build commit — publish would find a detached HEAD and silently push nothing (fk-tazxl)" >&2; exit 1; }
 fi
 ```

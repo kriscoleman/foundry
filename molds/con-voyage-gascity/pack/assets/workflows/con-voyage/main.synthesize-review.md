@@ -94,16 +94,20 @@ closing this step:
 ```bash
 GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
 ROOT_ID="${GC_ROOT_BEAD_ID:-$GC_BEAD_ID}"
-CONVOY_ID="$(gc bd show "$ROOT_ID" --json 2>/dev/null | python3 -c "
+read -r CONVOY_ID WORK_BRANCH_NAME <<< "$(gc bd show "$ROOT_ID" --json 2>/dev/null | python3 -c "
 import json, sys
 try:
     d = json.load(sys.stdin)
     d = d[0] if isinstance(d, list) else d
 except Exception:
     d = {}
-print((d.get('metadata') or {}).get('gc.build.source_anchor_id') or '')
+meta = d.get('metadata') or {}
+print(meta.get('gc.build.source_anchor_id') or '', meta.get('gc.build.work_branch_name') or '')
 " 2>/dev/null)"
 [ -n "$CONVOY_ID" ] || { echo "con-voyage synthesis: no gc.build.source_anchor_id on root ${ROOT_ID} — cannot resolve the work bead for the LOW-only mail" >&2; exit 1; }
+# fk-6os73y: use the stored branch name (may carry a topic slug); fall back
+# to the pre-fk-6os73y bare name for a root that predates this key.
+[ -n "$WORK_BRANCH_NAME" ] || WORK_BRANCH_NAME="con-voyage/${CONVOY_ID}"
 
 CV_LENS_STORE_TIMEOUT_SECONDS="${CV_LENS_STORE_TIMEOUT_SECONDS:-30}"
 case "$CV_LENS_STORE_TIMEOUT_SECONDS" in
@@ -117,7 +121,7 @@ WORK_BEAD="$(source "$CV_LIB" && cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS
 
 CV_MAIL_BIN="${CV_PACK_ROOT}/assets/scripts/cv-synthesis-low-mail.sh"
 CV_LENS_ESCALATE_TARGET="{cv_lens_escalate_target}" "$CV_MAIL_BIN" \
-  "<synthesis path just written above>" "$ROOT_ID" "$WORK_BEAD" "con-voyage/${CONVOY_ID}"
+  "<synthesis path just written above>" "$ROOT_ID" "$WORK_BEAD" "$WORK_BRANCH_NAME"
 ```
 
 This is a no-op (exits 0, sends nothing) when any BLOCKING finding is present

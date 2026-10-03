@@ -144,7 +144,7 @@ start_case "build.md: never pushes or opens a PR (that is publish's job only)"
 assert_contains "$BUILD_MD" "Do not push or open a PR from this step" "explicitly defers push/PR to the publish step"
 
 start_case "build.md: fresh-build path attaches a named branch after committing (fk-tazxl: detached HEAD -> publish silently pushes nothing)"
-assert_contains "$BUILD_MD" '"$CV_GUARD" ensure-branch "$WORKTREE" "con-voyage/${CONVOY_ID}"' "calls cv-worktree-prep.sh ensure-branch with the deterministic con-voyage/<convoy-id> name"
+assert_contains "$BUILD_MD" '"$CV_GUARD" ensure-branch "$WORKTREE" "$WORK_BRANCH_NAME"' "calls cv-worktree-prep.sh ensure-branch with the stored \$WORK_BRANCH_NAME (fk-6os73y: con-voyage/<bead-id>-<topic-slug>)"
 assert_contains "$BUILD_MD" "publish would find a detached HEAD and silently push nothing" "fails loud (does not silently continue) when ensure-branch itself fails"
 
 start_case "build.md: the ensure-branch call runs AFTER the TDD commit, not before"

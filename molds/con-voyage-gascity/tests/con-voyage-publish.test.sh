@@ -159,16 +159,18 @@ fi
 # CASE 8 — fk-tazxl: a source-anchor worktree can still reach publish on a
 #   detached HEAD (build's own ensure-branch call may predate this fix, or a
 #   non-con-voyage path fed this worktree). publish must never silently push
-#   nothing — attach a branch, using the same con-voyage/<convoy-id>
-#   convention build.md uses, or fail loud.
+#   nothing — attach a branch, using the SAME $WORK_BRANCH_NAME build.md
+#   reuses (fk-6os73y: con-voyage/<bead-id>-<topic-slug>, computed once by
+#   prepare-build and stored on the workflow root, not a freshly recomputed
+#   con-voyage/<convoy-id>), or fail loud.
 # ===========================================================================
 start_case "8: publish attaches (or fails loud on) a branch before pushing, so a detached worktree never silently pushes nothing"
-assert_contains '"$CV_GUARD" ensure-branch "$(pwd)" "con-voyage/${CONVOY_ID}"' "calls cv-worktree-prep.sh ensure-branch with the same con-voyage/<convoy-id> convention build.md uses"
+assert_contains '"$CV_GUARD" ensure-branch "$(pwd)" "$WORK_BRANCH_NAME"' "calls cv-worktree-prep.sh ensure-branch with the same stored \$WORK_BRANCH_NAME build.md uses"
 assert_contains 'refusing to push nothing' "fails loud instead of proceeding when ensure-branch itself fails"
 
 start_case "9: the ensure-branch backstop runs after the hygiene guard and before the actual push"
 guard_line="$(line_of '"$CV_GUARD" guard "$(pwd)" "origin/${BASE_BRANCH}"')"
-ensure_branch_line="$(line_of '"$CV_GUARD" ensure-branch "$(pwd)" "con-voyage/${CONVOY_ID}"')"
+ensure_branch_line="$(line_of '"$CV_GUARD" ensure-branch "$(pwd)" "$WORK_BRANCH_NAME"')"
 push_prose_line="$(line_of 'Push the work branch to origin using create-if-absent')"
 if [ -n "$guard_line" ] && [ -n "$ensure_branch_line" ] && [ "$guard_line" -lt "$ensure_branch_line" ]; then
   echo "  PASS: hygiene guard (line ${guard_line}) precedes the ensure-branch backstop (line ${ensure_branch_line})"
