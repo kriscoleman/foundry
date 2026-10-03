@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.13.2](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.13.1...con-voyage-gascity-v0.13.2) (2026-10-03)
+
+
+### Bug Fixes
+
+* **con-voyage:** add shared severity rubric for unenforced preconditions, vacuous acceptance, unstacked deps ([0900eda](https://github.com/kriscoleman/foundry/commit/0900edab26485561d7994f1a0e3be830c95ba7bb))
+* **con-voyage:** avoid SIGPIPE/pipefail false refusal in cv-review-lane-worktree.sh acquire ([f425049](https://github.com/kriscoleman/foundry/commit/f425049a05dc0214e7956323e963c2086561779b))
+* **con-voyage:** bound unbounded bd show calls in roster-validation helpers ([7da8a29](https://github.com/kriscoleman/foundry/commit/7da8a290efb65df8eea1d2626f90d86952b7eb19))
+* **con-voyage:** fail fast on unknown enable_* roster vars; build active roster from formula conditions ([c35775d](https://github.com/kriscoleman/foundry/commit/c35775d292536a511a8056cc81b489d0c16b465c))
+* **con-voyage:** fence untrusted PR text in pr-watch feedback beads (fk-7xu9m) ([5533577](https://github.com/kriscoleman/foundry/commit/55335772d2f800e6c1f2f4cab96c71d52b16a4eb))
+* **con-voyage:** gate review dispatch on a passed build and an alive workflow root ([862879f](https://github.com/kriscoleman/foundry/commit/862879f4e20a4cc392fda19be2f4cb2a2887f659))
+* **con-voyage:** re-review post-publish code pushes with the original roster ([b7e38cf](https://github.com/kriscoleman/foundry/commit/b7e38cf1320f6ac0ed84a69628b017a92f9be093))
+* **con-voyage:** require cv-pr-comment.sh + gc.pr_comment_url on routed PR-feedback replies ([176a78c](https://github.com/kriscoleman/foundry/commit/176a78c4ad615ee333a7923cfc481815f7b9ccd8))
+* **con-voyage:** resolve re-review formula vars dynamically instead of dead {var} tokens (review fk-sz3vu) ([bb27f58](https://github.com/kriscoleman/foundry/commit/bb27f58ebd5daf82ad769d538aa65b95f4d04862))
+* **con-voyage:** stop pr-watch routing bot approvals/slash-commands as human feedback ([e6a6053](https://github.com/kriscoleman/foundry/commit/e6a6053dbf567ff8671839d8b601b4f9a2da7fd5))
+* **con-voyage:** tighten pr-watch bot-feedback classifier per human review ([ec17654](https://github.com/kriscoleman/foundry/commit/ec1765498f1c2e4b46dce917518cbb7225af0d6e))
+* **con-voyage:** unify pr-watch bot-filter loops + log suppressions ([69bf7e0](https://github.com/kriscoleman/foundry/commit/69bf7e0c8adcce98daf869bba2628d667b8e6f8d))
+* push converged re-review fixes to the PR branch and dedupe roster-flattening logic (review fk-n74o9) ([d2ee12d](https://github.com/kriscoleman/foundry/commit/d2ee12de3080d89c78cd2e7131e83a6c4726c9e7))
+* resolve $BRANCH in con-voyage rereview-finalize push block (review fk-sz3vu) ([ac2da4d](https://github.com/kriscoleman/foundry/commit/ac2da4df0fe70b4477d8834e9ca871f061118d3b))
+* resolve mold-validate failures — dead {{var}} token and --json/2&gt;&1 stderr merge (repair fk-4u5vo) ([ade29ad](https://github.com/kriscoleman/foundry/commit/ade29ad28fe4a31f6e7f5d12fd699cce8887200c))
+
 ## [0.13.1](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.13.0...con-voyage-gascity-v0.13.1) (2026-10-02)
 
 
