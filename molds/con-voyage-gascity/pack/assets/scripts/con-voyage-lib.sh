@@ -2291,6 +2291,131 @@ cv_root_bead_id() {
   printf '%s' "${root:-$bead_id}"
 }
 
+# cv_known_roster_vars — print, one per line, every `enable_*` roster var
+# name declared as a `[vars.enable_X]` table in con-voyage.formula.toml
+# (fk-ed0c5). Read from the formula directly (via cv_pack_root) rather than
+# hardcoded, so this stays in sync as roster lenses are added/removed.
+# Fail-safe: formula not found -> empty output, not an error.
+cv_known_roster_vars() {
+  local formula
+  formula="$(cv_pack_root)/formulas/con-voyage.formula.toml"
+  [ -f "$formula" ] || return 0
+  grep -o '^\[vars\.enable_[a-zA-Z0-9_]*\]' "$formula" 2>/dev/null \
+    | sed -E 's/^\[vars\.(enable_[a-zA-Z0-9_]*)\]$/\1/'
+}
+
+# cv_known_lenses — print, one per line, every `con-voyage.cv-*` run-target
+# name available as a dispatchable lens agent under this pack (derived from
+# the agents/ directory, not a hardcoded list, so a new lens agent is picked
+# up automatically). Fail-safe: agents dir not found -> empty output.
+cv_known_lenses() {
+  local agents_dir
+  agents_dir="$(cv_pack_root)/agents"
+  [ -d "$agents_dir" ] || return 0
+  ( cd "$agents_dir" 2>/dev/null && for d in cv-*/; do
+      [ -d "$d" ] || continue
+      printf 'con-voyage.%s\n' "${d%/}"
+    done )
+}
+
+# cv_unknown_roster_vars ROOT_ID — print, space-separated, every bare
+# `enable_*` name set as `gc.var.enable_*` metadata on ROOT_ID that is NOT
+# one of cv_known_roster_vars's declared names (fk-ed0c5: a misspelled
+# `--var enable_sre_reliability=true` silently no-ops instead of enabling the
+# `enable_sre`-gated SRE lane). Empty output = every roster var set is
+# declared (or none are set). Fail-safe: bd show failure / unparseable JSON
+# -> empty (an unconfirmable lookup is never reported as a false positive).
+cv_unknown_roster_vars() {
+  local root_id="$1"
+  [ -n "${root_id// /}" ] || { printf ''; return 0; }
+  local gc_bin="${GC:-gc}"
+  local json
+  json=$("$gc_bin" bd show "$root_id" --json 2>/dev/null) || json=""
+  [ -n "$json" ] || { printf ''; return 0; }
+  local known
+  known="$(cv_known_roster_vars | tr '\n' ' ')"
+  printf '%s' "$json" | python3 -c "
+import sys, json
+known = set(sys.argv[1].split())
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+if isinstance(data, list):
+    data = data[0] if data else {}
+if not isinstance(data, dict):
+    raise SystemExit(0)
+meta = data.get('metadata') or {}
+unknown = []
+for key in meta:
+    if key.startswith('gc.var.enable_'):
+        name = key[len('gc.var.'):]
+        if name not in known:
+            unknown.append(name)
+print(' '.join(sorted(unknown)))
+" "$known" 2>/dev/null
+}
+
+# cv_unknown_code_lens ROOT_ID — print ROOT_ID's `gc.var.code_lens` value IFF
+# it is set and is NOT one of cv_known_lenses's declared names; empty
+# otherwise (unset, known, or lookup failure — fail-safe, never a false
+# positive).
+cv_unknown_code_lens() {
+  local root_id="$1"
+  local lens
+  lens="$(cv_bead_metadata "$root_id" gc.var.code_lens)"
+  [ -n "$lens" ] || { printf ''; return 0; }
+  local known
+  known="$(cv_known_lenses)"
+  if printf '%s\n' "$known" | grep -qxF -- "$lens"; then
+    printf ''
+  else
+    printf '%s' "$lens"
+  fi
+}
+
+# cv_active_roster_vars ROOT_ID — print, one per line, the title of every
+# roster lane whose formula condition var (`{{enable_X}}` in
+# con-voyage.formula.toml) is truthy on ROOT_ID's `gc.var.enable_X` metadata
+# (fk-ed0c5). This reads the formula's OWN condition/title pairing, so it
+# reports what graph.v2 actually compiled into the workflow — not a second,
+# possibly-drifted guess at lens names from var-name prefixes. Fail-safe:
+# formula/bd show failure -> empty output.
+cv_active_roster_vars() {
+  local root_id="$1"
+  [ -n "${root_id// /}" ] || { printf ''; return 0; }
+  local formula
+  formula="$(cv_pack_root)/formulas/con-voyage.formula.toml"
+  [ -f "$formula" ] || { printf ''; return 0; }
+  local gc_bin="${GC:-gc}"
+  local json
+  json=$("$gc_bin" bd show "$root_id" --json 2>/dev/null) || json=""
+  [ -n "$json" ] || { printf ''; return 0; }
+  python3 -c "
+import sys, json, re
+formula_path, meta_json = sys.argv[1], sys.argv[2]
+with open(formula_path) as f:
+    text = f.read()
+mapping = {}
+for block in text.split('[[template.children]]')[1:]:
+    title_m = re.search(r'^title\s*=\s*\"([^\"]*)\"', block, re.M)
+    cond_m = re.search(r'^condition\s*=\s*\"\"\"\{\{(\w+)\}\}\"\"\"', block, re.M)
+    if title_m and cond_m:
+        mapping[cond_m.group(1)] = title_m.group(1)
+try:
+    data = json.loads(meta_json)
+except Exception:
+    data = {}
+if isinstance(data, list):
+    data = data[0] if data else {}
+meta = (data.get('metadata') or {}) if isinstance(data, dict) else {}
+for name, title in mapping.items():
+    val = str(meta.get('gc.var.' + name, '') or '').strip().lower()
+    if val in ('true', '1', 'yes'):
+        print(title)
+" "$formula" "$json" 2>/dev/null
+}
+
 # cv_close_reason_for_pr PR_STATE PR_NUMBER — canonical work-bead close reason
 # for a finalized PR. PR_STATE is the GitHub PR state ("MERGED" or "CLOSED",
 # case-insensitive). Any merged state -> "landed: PR #N merged"; a closed-

@@ -111,6 +111,67 @@ if [ -z "$SOURCE_ANCHOR_WORK_DIR" ] || [ ! -d "$SOURCE_ANCHOR_WORK_DIR" ]; then
 fi
 ```
 
+## Fail fast on unknown roster vars (fk-ed0c5)
+
+A misspelled `--var enable_X=true` at sling time is silently accepted by `gc
+sling` and silently drops the intended lane instead of erroring: the
+formula's condition checks the exact var name `enable_sre`, not whatever the misspelled var
+happened to be named, so graph.v2 just never creates that lane. Evidence
+(2026-10-03): three roots were slung with `--var
+enable_sre_reliability=true` — the real var is `enable_sre` — and all three
+produced zero SRE review beads with no error anywhere. Catch this here,
+before the review loop ever dispatches a lane, by checking every
+`gc.var.enable_*` name actually set on the workflow root against the
+formula's own declared roster vars, plus `gc.var.code_lens` against the
+known lens agents:
+
+```bash
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
+UNKNOWN_ROSTER_VARS=""
+UNKNOWN_CODE_LENS=""
+if [ -n "$CV_LIB" ]; then
+  UNKNOWN_ROSTER_VARS="$(source "$CV_LIB" && cv_unknown_roster_vars "$ROOT_ID")"
+  UNKNOWN_CODE_LENS="$(source "$CV_LIB" && cv_unknown_code_lens "$ROOT_ID")"
+fi
+if [ -n "$UNKNOWN_ROSTER_VARS" ] || [ -n "$UNKNOWN_CODE_LENS" ]; then
+  ROSTER_ERR="con-voyage setup-review: unknown roster var(s) on root ${ROOT_ID}: ${UNKNOWN_ROSTER_VARS:-none}${UNKNOWN_CODE_LENS:+; unknown code_lens: ${UNKNOWN_CODE_LENS}} — these were silently dropped at sling time instead of enabling a review lane; did you mean one of the formula's declared enable_* vars?"
+  echo "$ROSTER_ERR" >&2
+
+  ALREADY_MAILED="$(gc bd show "$ROOT_ID" --json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    d = d[0] if isinstance(d, list) else d
+except Exception:
+    d = {}
+print((d.get('metadata') or {}).get('gc.setup_review.roster_validation_mail_sent') or '')
+" 2>/dev/null)"
+  if [ "$ALREADY_MAILED" != "true" ] && [ -n "$CV_LIB" ]; then
+    MAIL_OUT="$(source "$CV_LIB" && cv_with_timeout 30 gc mail send mayor -s "con-voyage unknown roster var(s): root ${ROOT_ID}" -m "$ROSTER_ERR" --json 2>&1)"
+    if [ $? -eq 0 ]; then
+      gc bd update "$ROOT_ID" --set-metadata 'gc.setup_review.roster_validation_mail_sent=true' >/dev/null 2>&1
+    else
+      echo "con-voyage setup-review: gc mail send to mayor failed: ${MAIL_OUT}" >&2
+    fi
+  fi
+
+  bd update "$CLAIMED_BEAD_ID" \
+    --set-metadata 'gc.outcome=fail' \
+    --set-metadata 'gc.failure_class=unknown_roster_var' \
+    --set-metadata "gc.unknown_roster_vars=${UNKNOWN_ROSTER_VARS}" \
+    --set-metadata "gc.unknown_code_lens=${UNKNOWN_CODE_LENS}"
+  bd close "$CLAIMED_BEAD_ID" --reason "unknown_roster_var: ${ROSTER_ERR}"
+  exit 0
+fi
+```
+
+If this block closes the bead, STOP — do not continue to any later section in
+this file.
+
 ## Resolve the journey's base branch and correct the worktree if needed (fk-qppb4 — GitHub stacked PRs)
 
 A con-voyage journey normally reviews against the repo's default branch. A
@@ -181,6 +242,22 @@ Include:
 The floor review lanes (acceptance, test-evidence, simplicity, security, code) run
 on every con-voyage. Optional roster lanes are listed in the review context so
 synthesis can distinguish floor findings from persona findings.
+
+List the active roster lanes from the formula's own dispatch conditions, not
+from which `enable_*` var NAMES happen to be set (fk-ed0c5: that guesswork is
+exactly how a misspelled var — already caught above, but worth not
+re-introducing here — could still make its way into the context as a false
+"active" lane):
+
+```bash
+ACTIVE_ROSTER=""
+if [ -n "$CV_LIB" ]; then
+  ACTIVE_ROSTER="$(source "$CV_LIB" && cv_active_roster_vars "$ROOT_ID")"
+fi
+```
+
+Use `$ACTIVE_ROSTER` (one lane title per line, empty when no roster lane is
+active) as the "roster lanes active for this sling" list above.
 
 ## Claim the WORK BEAD and seed its description (work-bead lifecycle)
 

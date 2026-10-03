@@ -152,6 +152,33 @@ else
   FAILURES=$((FAILURES+1))
 fi
 
+
+# ===========================================================================
+# CASE 5 — Unknown roster vars (fk-ed0c5) are checked, and checked BEFORE the
+# base-branch/review-context work, not after.
+# ===========================================================================
+start_case "5: unknown roster vars are checked before base-branch resolution and review-context gathering"
+assert_contains 'UNKNOWN_ROSTER_VARS="$(source "$CV_LIB" && cv_unknown_roster_vars "$ROOT_ID")"' "calls cv_unknown_roster_vars on the workflow root"
+assert_contains 'UNKNOWN_CODE_LENS="$(source "$CV_LIB" && cv_unknown_code_lens "$ROOT_ID")"' "calls cv_unknown_code_lens on the workflow root"
+assert_contains 'bd close "$CLAIMED_BEAD_ID" --reason "unknown_roster_var: ${ROSTER_ERR}"' "closes with a gc.outcome=fail unknown_roster_var reason on a finding"
+
+roster_check_line="$(line_of 'cv_unknown_roster_vars "$ROOT_ID"')"
+base_branch_line="$(line_of 'BASE_BRANCH="$(source "$CV_LIB" && cv_resolve_base_branch')"
+if [ -n "$roster_check_line" ] && [ -n "$base_branch_line" ] && [ "$roster_check_line" -lt "$base_branch_line" ]; then
+  echo "  PASS: roster var validation (line ${roster_check_line}) runs before base-branch resolution (line ${base_branch_line})"
+else
+  echo "  FAIL: expected roster var validation to precede base-branch resolution" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
+# ===========================================================================
+# CASE 6 — The review-context roster listing uses cv_active_roster_vars (the
+# formula's actual dispatch conditions) instead of guessing from var-name
+# prefixes.
+# ===========================================================================
+start_case "6: review-context active roster comes from cv_active_roster_vars, not var-name guesswork"
+assert_contains 'ACTIVE_ROSTER="$(source "$CV_LIB" && cv_active_roster_vars "$ROOT_ID")"' "review-context section calls cv_active_roster_vars on the workflow root"
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "ALL CASES PASSED"
