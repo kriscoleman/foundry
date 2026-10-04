@@ -226,8 +226,11 @@ findings to fix. Publish re-verifies real CI on the new HEAD regardless, so a
 rebase that happens to break something upstream is still caught — just not by
 re-running every review lane.
 
-Read the con-voyage review synthesis. If all active review lanes approve, write a
-no-op review summary and set code_review.verdict=done.
+Read the con-voyage review synthesis. If all active review lanes approve AND the
+synthesis's LOW count is 0, write a no-op review summary and set
+code_review.verdict=done. If all active review lanes approve but the synthesis's LOW
+count is greater than 0 (a LOW-only verdict), run "### Pause for a mayor reopen on a
+LOW-only verdict" below BEFORE deciding the verdict — do not set done directly.
 
 If BLOCKING findings remain, make the smallest focused changes that address each
 finding, run the relevant proof commands, and write a review-fix summary under the
@@ -280,6 +283,102 @@ findings to fix:
   patch content for any lane to review, so this is handled as a genuine no-op
   pass below, not a fix pass — see "Setting code_review.verdict".
 
+### Pause for a mayor reopen on a LOW-only verdict (fk-9iqxnx)
+
+DESIGN DECIDED BY THE MAYOR (2026-10-04): four prior journeys (fk-z1hpp4 ->
+#161, fk-7xu9m -> #163, fk-6os73y -> #162, fk-dnjlg2 -> #164) published
+anyway after the mayor replied "send back" to the synthesizer's LOW-only
+mail — that reply had no mechanical effect, since this step sets verdict=done
+on its own once every lane approves. `cv-reopen-findings.sh` (part (b) of the
+fix) is the real command that re-opens a review; this pause (part (a)) gives
+the mayor a bounded window to actually run it before this LOW-only pass
+commits to verdict=done. Keep this cheap: a plain bash poll loop, no LLM
+calls while waiting.
+
+Applies ONLY when this pass is otherwise eligible for verdict=done (every
+active lane approved, nothing changed) AND the synthesis's LOW count is
+greater than 0. Skip this section entirely — proceed straight to
+"### Setting code_review.verdict" — on a genuine zero-finding approval (LOW
+count is 0) or whenever BLOCKING findings are present (that path already
+reopens every lane on its own next cycle; no separate pause is needed).
+
+The window is configured per-rig/city via an environment variable, not a
+sling flag or formula var (the mayor's own design choice — this is
+operational tuning, not per-journey intent):
+
+```bash
+CV_LOW_REOPEN_WINDOW_SECONDS="${CV_LOW_REOPEN_WINDOW_SECONDS:-1200}"
+case "$CV_LOW_REOPEN_WINDOW_SECONDS" in
+  *[!0-9]*|'') CV_LOW_REOPEN_WINDOW_SECONDS="1200" ;;
+esac
+
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
+WORK_BEAD=""
+[ -n "$CV_LIB" ] && WORK_BEAD="$(source "$CV_LIB" && cv_resolve_work_bead "$CONVOY_ID")"
+REOPEN_CMD_HINT="assets/scripts/cv-reopen-findings.sh \"${WORK_BEAD:-<work-bead-id>}\" --finding \"<text>\""
+DEADLINE_AT="$(date -u -v+"${CV_LOW_REOPEN_WINDOW_SECONDS}"S +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+  || date -u -d "+${CV_LOW_REOPEN_WINDOW_SECONDS} seconds" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+  || echo "unknown")"
+echo "apply-review-findings: LOW-only verdict — pausing up to ${CV_LOW_REOPEN_WINDOW_SECONDS}s for a mayor reopen (${REOPEN_CMD_HINT}) before publishing; deadline ${DEADLINE_AT}"
+
+MAYOR_REOPEN_REQUESTED="false"
+MAYOR_REOPEN_FINDINGS=""
+pause_start=$(date +%s)
+while :; do
+  REOPEN_JSON="$(gc bd show "$ROOT_ID" --json 2>/dev/null)"
+  MAYOR_REOPEN_REQUESTED="$(printf '%s' "$REOPEN_JSON" | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    d = d[0] if isinstance(d, list) else d
+except Exception:
+    d = {}
+print(str((d.get('metadata') or {}).get('gc.build.mayor_reopen_requested') or 'false').lower())
+" 2>/dev/null)"
+  if [ "$MAYOR_REOPEN_REQUESTED" = "true" ]; then
+    MAYOR_REOPEN_FINDINGS="$(printf '%s' "$REOPEN_JSON" | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    d = d[0] if isinstance(d, list) else d
+except Exception:
+    d = {}
+print((d.get('metadata') or {}).get('gc.build.mayor_reopen_findings') or '')
+" 2>/dev/null)"
+    echo "apply-review-findings: mayor reopen detected on ${ROOT_ID} — treating the recorded findings as BLOCKING for this pass"
+    break
+  fi
+  elapsed=$(( $(date +%s) - pause_start ))
+  if [ "$elapsed" -ge "$CV_LOW_REOPEN_WINDOW_SECONDS" ]; then
+    echo "apply-review-findings: no mayor reopen within ${CV_LOW_REOPEN_WINDOW_SECONDS}s — proceeding to publish with the LOW findings on the PR, as designed"
+    break
+  fi
+  sleep 30
+done
+```
+
+If `$MAYOR_REOPEN_REQUESTED` is `true`: clear the flag on `$ROOT_ID`
+immediately so a later pass never re-consumes the same reopen request
+(`gc bd update "$ROOT_ID" --set-metadata 'gc.build.mayor_reopen_requested=false'`),
+then treat `$MAYOR_REOPEN_FINDINGS` exactly like a BLOCKING finding from a
+lane: make the smallest focused changes that address it (TDD, proof
+commands), commit, and fall through to "### Setting code_review.verdict"
+below — which, having just committed a change this pass, naturally sets
+verdict=iterate rather than done (every active lane re-runs against the new
+commit next cycle, same as any other BLOCKING fix). If the recorded findings
+text does not describe an actionable code change (a question, a scope
+decision, pure prose for the human), still set verdict=iterate and record
+`$MAYOR_REOPEN_FINDINGS` verbatim in the review-fix summary so the
+re-dispatched lanes and the next human-facing synthesis see exactly what the
+mayor asked — never silently drop a reopen that produced no code change.
+
+If `$MAYOR_REOPEN_REQUESTED` was never `true` within the window, proceed to
+"### Setting code_review.verdict" and set verdict=done as originally planned.
+
 ### Setting code_review.verdict
 
 Set code_review.verdict=done ONLY on a genuine no-op pass: every active lane
@@ -289,14 +388,16 @@ had already approved before this pass ran, you changed nothing, AND either
 no actual patch change — see "Sync the worktree to the current base" above).
 In every other case — you fixed one or more BLOCKING findings and committed a
 change this pass, OR the worktree sync above reported `recreated`/`rebased`
-with `$SYNC_PATCH_UNCHANGED=false` — set code_review.verdict=iterate instead,
-even if you believe every finding raised this cycle is now addressed. The
-lanes that reported those BLOCKING findings (or approved outright) reviewed
-the OLD commit, not this one; nobody has reviewed the new commit's actual
-patch content yet, so the loop must run one more full iteration (every active
-lane again) against it before the fix can be trusted as done. Never set done
-in the same pass that committed a fix or synced to a base commit whose patch
-content differs from before.
+with `$SYNC_PATCH_UNCHANGED=false`, OR the mayor reopened this pass with new
+findings (see "### Pause for a mayor reopen on a LOW-only verdict" above) —
+set code_review.verdict=iterate instead, even if you believe every finding
+raised this cycle is now addressed. The lanes that reported those BLOCKING
+findings (or approved outright) reviewed the OLD commit, not this one;
+nobody has reviewed the new commit's actual patch content yet, so the loop
+must run one more full iteration (every active lane again) against it before
+the fix can be trusted as done. Never set done in the same pass that
+committed a fix, synced to a base commit whose patch content differs from
+before, or consumed a mayor reopen.
 
 When you commit a fix this pass, or the sync alone moved HEAD with a real
 patch content change (`$SYNC_PATCH_UNCHANGED=false`), also record

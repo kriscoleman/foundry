@@ -343,6 +343,29 @@ assert_log_count "$GC_LOG" "^bd update ${ROOT_ID} .*code_review\\.low_mail_id=ms
 assert_log_count "$GC_LOG" "LOW-only: ${WORK_BEAD} ${PR_OR_BRANCH} .* 3 LOW" 1 "subject line names the work bead, PR/branch, and LOW count"
 
 # ===========================================================================
+# CASE 1b — fk-9iqxnx: the mail body prints the real cv-reopen-findings.sh
+#   command (naming this work bead) and the pause window in minutes, instead
+#   of the old "reply to proceed or send back" text that had no effect.
+# ===========================================================================
+start_case "1b: fk-9iqxnx — mail body prints the real reopen command and window, not the old no-op reply ask"
+setup_case_env "1b"
+SYNTHESIS_FILE="${SANDBOX}/synthesis-1b.md"
+fixture "$SYNTHESIS_FILE" 0 3
+run_script
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" "cv-reopen-findings\\.sh .${WORK_BEAD}. --finding" 1 "mail body contains the actual cv-reopen-findings.sh command naming this work bead"
+assert_log_count "$GC_LOG" "within roughly 20 minute" 1 "mail body states the pause window in minutes (default 1200s -> 20)"
+assert_log_count "$GC_LOG" "Reply to proceed" 0 "the old no-op reply ask is gone"
+
+start_case "1c: fk-9iqxnx — CV_LOW_REOPEN_WINDOW_SECONDS is honored in the printed window"
+setup_case_env "1c"
+SYNTHESIS_FILE="${SANDBOX}/synthesis-1c.md"
+fixture "$SYNTHESIS_FILE" 0 3
+run_script CV_LOW_REOPEN_WINDOW_SECONDS="300"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" "within roughly 5 minute" 1 "mail body reflects a configured 300s window as 5 minutes"
+
+# ===========================================================================
 # CASE 2 — 0 BLOCKING / 2 LOW, a distinct real escalate target: mail BOTH the
 #   mayor and the escalate target, and record both mail ids.
 # ===========================================================================
