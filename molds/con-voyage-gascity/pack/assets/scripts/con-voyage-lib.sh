@@ -2954,11 +2954,14 @@ cv_write_handoff_note() {
   case "$timeout_secs" in
     *[!0-9]*|'') timeout_secs="30" ;;
   esac
-  local out rc
-  out="$(cv_with_timeout "$timeout_secs" "$gc_bin" mail send "$self" -s "con-voyage ${name} handoff" -m "$body" --json 2>&1)"
+  local out err_file err rc
+  err_file="$(mktemp)"
+  out="$(cv_with_timeout "$timeout_secs" "$gc_bin" mail send "$self" -s "con-voyage ${name} handoff" -m "$body" --json 2>"$err_file")"
   rc=$?
+  err="$(cat "$err_file" 2>/dev/null)"
+  rm -f "$err_file"
   if [ "$rc" -ne 0 ]; then
-    echo "cv_write_handoff_note: WARNING: gc mail send to self (${self}) failed or timed out for ${name} handoff: ${out}" >&2
+    echo "cv_write_handoff_note: WARNING: gc mail send to self (${self}) failed or timed out for ${name} handoff: ${out}${err:+ ${err}}" >&2
     return 1
   fi
   return 0
