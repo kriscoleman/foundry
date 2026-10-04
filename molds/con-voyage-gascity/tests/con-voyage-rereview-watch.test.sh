@@ -124,6 +124,9 @@ if [ "$sub" = "bd" ] && [ "$sub2" = "create" ]; then
   exit 0
 fi
 if [ "$sub" = "bd" ] && [ "$sub2" = "set-state" ]; then
+  if [ -n "${STUB_GC_SETSTATE_SLEEP:-}" ]; then
+    sleep "$STUB_GC_SETSTATE_SLEEP"
+  fi
   exit 0
 fi
 if [ "$sub" = "bd" ] && [ "$sub2" = "show" ]; then
@@ -621,6 +624,62 @@ rec12="$(cat "${STATE_DIR}/cv-finalize-case12.finalize")"
 assert_contains "$rec12" "last_reviewed_head_sha=${HEAD11}" "case12: bookkeeping unchanged while locked"
 rm -rf "${STATE_DIR}/.locks/cv-finalize-case12.lock"
 export STUB_GH_STATE_48="MERGED"
+
+# ===========================================================================
+# CASE 13 (review fk-k4gebi BLOCKING-1, this iteration's fix): the dedup
+# lock's whole point is that every call held under it is bounded by
+# CV_LENS_STORE_TIMEOUT_SECONDS/CV_REREVIEW_SLING_TIMEOUT_SECONDS, so
+# CV_LOCK_STALE_SECONDS can never be stolen out from under a still-alive
+# holder. A `bd set-state` that is NOT wrapped in cv_with_timeout breaks that
+# invariant: against a slow/wedged store, the call (and the lock it holds)
+# can run past CV_LOCK_STALE_SECONDS while the holder is still alive, so a
+# concurrent sweep's acquire_lock judges the lock stale and steals it —
+# double-dispatching the same PR+round. Small timeouts make a hang that
+# exceeds the derived CV_LOCK_STALE_SECONDS cheap to simulate; asserting the
+# run actually finishes (and releases the lock) well before that threshold
+# elapses is only possible if set-state's own hang was cut short by
+# cv_with_timeout, which is exactly what BLOCKING-1 required.
+# ===========================================================================
+start_case "13: bd set-state hang is bounded by cv_with_timeout, not left to outrun CV_LOCK_STALE_SECONDS"
+printf 'v9 - case13 change\n' >> "${SRC}/feature.txt"
+git_c "$SRC" add feature.txt
+git_c "$SRC" commit -q -m "fix: case13 change"
+HEAD13="$(git_c "$SRC" rev-parse HEAD)"
+git_c "$SRC" push -q origin feature-branch
+
+write_finalize "cv-finalize-case13" "fk-work13" "awaiting_merge" "$HEAD12" "1" "" "49"
+export STUB_GH_STATE_49="OPEN" STUB_GH_HEAD_49="$HEAD13" STUB_GH_BRANCH_49="feature-branch"
+export STUB_GC_NEW_BEAD_ID="rc-seed13"
+# A real git clone/fetch/diff per run_watch call already costs this suite a
+# variable few seconds of fixed overhead unrelated to the lock (measured
+# directly: case 3's run_watch alone takes several seconds with no stub
+# delay at all, and varies run to run under load). That variance means
+# comparing elapsed time against the derived CV_LOCK_STALE_SECONDS directly,
+# or against a tight margin, is not a reliable signal on a loaded box.
+# Instead, pick a stub sleep (30s) an order of magnitude larger than
+# CV_LENS_STORE_TIMEOUT_SECONDS(1s) and assert the whole run finishes in a
+# small fraction of that sleep: bounded by cv_with_timeout, the hang is
+# killed at ~1-2s (poll-interval overhead) regardless of the stub sleep
+# duration, so the run finishes in roughly baseline+2s; left unwrapped, the
+# run would have to wait out the full 30s stub sleep on top of that same
+# baseline — a difference no amount of system load noise can mask.
+export STUB_GC_SETSTATE_SLEEP="30"
+CASE13_START="$(date +%s)"
+out13="$(CV_LENS_STORE_TIMEOUT_SECONDS=1 CV_REREVIEW_SLING_TIMEOUT_SECONDS=1 run_watch)"
+CASE13_ELAPSED=$(( $(date +%s) - CASE13_START ))
+unset STUB_GC_SETSTATE_SLEEP
+assert_contains "$out13" "dispatched re-review round 2" "case13: diagnostic reports a trigger despite the slow set-state"
+if [ "$CASE13_ELAPSED" -lt 20 ]; then
+  pass "case13: whole run finished in ${CASE13_ELAPSED}s, far under the 30s stub sleep on bd set-state (the hang was bounded by cv_with_timeout)"
+else
+  fail "case13: run took ${CASE13_ELAPSED}s -- bd set-state was not bounded, and would stay held past CV_LOCK_STALE_SECONDS in production, letting a concurrent sweep steal the still-held lock"
+fi
+if [ -d "${STATE_DIR}/.locks/cv-finalize-case13.lock" ]; then
+  fail "case13: dedup lock still held after the run finished"
+else
+  pass "case13: dedup lock released after the run finished"
+fi
+export STUB_GH_STATE_49="MERGED"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
