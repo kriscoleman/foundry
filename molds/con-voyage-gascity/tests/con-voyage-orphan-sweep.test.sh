@@ -45,8 +45,10 @@ trap cleanup EXIT
 # ---------------------------------------------------------------------------
 # The `gc` stub. Records argv (one line per call) and answers:
 #   bd list --has-metadata-key gc.root_bead_id --json --limit 0 -> STUB_BDLIST_JSON
-#   bd list --pinned --json                                     -> STUB_PINNED_JSON (default [])
-#   bd blocked --json                                           -> STUB_BLOCKED_JSON (default [])
+#   bd list --pinned --json                                     -> STUB_PINNED_JSON (default []);
+#                                                                   STUB_PINNED_FETCH_FAIL=1 makes the call fail
+#   bd blocked --json                                           -> STUB_BLOCKED_JSON (default []; orphan-sweep
+#                                                                   itself never calls this any more — see case 10)
 #   bd show <id> --json                                         -> STUB_BDSHOW_JSON_<id, -/./ -> _>
 #   bd update <id> ...                                          -> STUB_BDUPDATE_FAIL_<id> gates failure
 #   bd close <id> ...                                           -> STUB_BDCLOSE_FAIL_<id> gates failure
@@ -77,6 +79,9 @@ case "$sub" in
           [ "$a" = "--pinned" ] && is_pinned_query=1
         done
         if [ "$is_pinned_query" = "1" ]; then
+          if [ "${STUB_PINNED_FETCH_FAIL:-0}" = "1" ]; then
+            exit 1
+          fi
           printf '%s' "${STUB_PINNED_JSON:-[]}"
         else
           printf '%s' "${STUB_BDLIST_JSON:-[]}"
@@ -204,14 +209,21 @@ assert_eq "0" "$(grep -c -E 'mail send' "$GC_LOG")" "no mail on a quiet tick"
 unset STUB_BDLIST_JSON STUB_BDSHOW_JSON_fk_rootB
 
 # ===========================================================================
-# CASE 3 — leaf-first ordering: lane/step, scope-check, scope, workflow
-#   (ralph), workflow-finalize under the SAME closed root close in that
-#   relative order.
+# CASE 3 (review fk-gypn9m BLOCKING-2) — leaf-first ordering using the REAL
+#   engine kind strings: lane/step, scope-check, scope, ralph (the live
+#   engine's actual gc.kind for the workflow controller, not "workflow" —
+#   iteration-1's "leaf-first (check)" trusted the script's own comment
+#   instead of the real engine kind), workflow-finalize under the SAME
+#   closed root close in that relative order. Every candidate here is ALSO
+#   listed as `bd blocked` (BLOCKING-1 fix): dependency-blocked state is the
+#   normal state of a workflow controller and must not be treated as a
+#   human hold — they still close, in leaf-first order.
 # ===========================================================================
-start_case "3: descendants close leaf-first: lane -> scope-check -> scope -> ralph -> workflow-finalize"
+start_case "3: descendants close leaf-first (real kind strings): lane -> scope-check -> scope -> ralph -> workflow-finalize"
 : > "$GC_LOG"
-export STUB_BDLIST_JSON="[$(bead_json fk-wff fk-rootC workflow-finalize),$(bead_json fk-ralph fk-rootC workflow),$(bead_json fk-scope fk-rootC scope),$(bead_json fk-schk fk-rootC scope-check),$(bead_json fk-lane3 fk-rootC "")]"
+export STUB_BDLIST_JSON="[$(bead_json fk-wff fk-rootC workflow-finalize),$(bead_json fk-ralph fk-rootC ralph),$(bead_json fk-scope fk-rootC scope),$(bead_json fk-schk fk-rootC scope-check),$(bead_json fk-lane3 fk-rootC "")]"
 export_show "fk-rootC" "closed" "abandoned: whole tree closed"
+export STUB_BLOCKED_JSON='[{"id":"fk-wff"},{"id":"fk-ralph"},{"id":"fk-scope"},{"id":"fk-schk"}]'
 out="$(GC="${STUBDIR}/gc" STUB_GC_LOG="$GC_LOG" "$SCRIPT" 2>&1)"
 rc=$?
 assert_eq "0" "$rc" "script exits 0"
@@ -221,8 +233,27 @@ fk-schk
 fk-scope
 fk-ralph
 fk-wff"
-assert_eq "$expected" "$order" "all five descendants close in leaf-first order"
-unset STUB_BDLIST_JSON STUB_BDSHOW_JSON_fk_rootC
+assert_eq "$expected" "$order" "all five descendants close in leaf-first order, dependency-blocked controllers included"
+unset STUB_BDLIST_JSON STUB_BDSHOW_JSON_fk_rootC STUB_BLOCKED_JSON
+
+# ===========================================================================
+# CASE 3b (review fk-gypn9m BLOCKING-2) — a kind this script does not
+#   recognize ranks LAST (fail-closed as a controller), not as a leaf, so it
+#   never closes ahead of a real controller it might depend on.
+# ===========================================================================
+start_case "3b: an unrecognized kind ranks last, after workflow-finalize"
+: > "$GC_LOG"
+export STUB_BDLIST_JSON="[$(bead_json fk-lane3b fk-rootC3b ""),$(bead_json fk-wff3b fk-rootC3b workflow-finalize),$(bead_json fk-mystery3b fk-rootC3b some-future-kind)]"
+export_show "fk-rootC3b" "closed" "abandoned"
+out="$(GC="${STUBDIR}/gc" STUB_GC_LOG="$GC_LOG" "$SCRIPT" 2>&1)"
+rc=$?
+assert_eq "0" "$rc" "script exits 0"
+order="$(grep -oE 'bd close fk-(lane3b|wff3b|mystery3b) ' "$GC_LOG" | awk '{print $3}')"
+expected="fk-lane3b
+fk-wff3b
+fk-mystery3b"
+assert_eq "$expected" "$order" "the unrecognized kind closes last, after workflow-finalize"
+unset STUB_BDLIST_JSON STUB_BDSHOW_JSON_fk_rootC3b
 
 # ===========================================================================
 # CASE 4 — a bead with no gc.root_bead_id is ignored (never dereferenced).
@@ -332,12 +363,14 @@ assert_eq "0" "$(grep -c -E 'mail send' "$GC_LOG")" "no digest mail on a tick wh
 unset STUB_BDLIST_JSON STUB_BDSHOW_JSON_fk_rootG STUB_PINNED_JSON
 
 # ===========================================================================
-# CASE 10 (review fk-gypn9m BLOCKING-1) — a BLOCKED (gate-held) candidate is
-#   skipped the same way a pinned one is; a sibling candidate under the same
-#   root still closes normally, and the digest mail names the skip count
-#   distinctly alongside the close count.
+# CASE 10 (review fk-gypn9m BLOCKING-1) — a dependency/gate-BLOCKED (`bd
+#   blocked`) candidate is NOT a human hold; it is normal workflow-controller
+#   state, and leaf-first ordering already sequences it correctly, so it
+#   closes just like its non-blocked sibling. `bd blocked` is never even
+#   consulted — STUB_BLOCKED_JSON is set here specifically to prove it has no
+#   effect on the skip decision any more.
 # ===========================================================================
-start_case "10: a gate-blocked candidate is skipped; a sibling under the same root still closes, digest mail names both"
+start_case "10: a gate-blocked candidate is NOT skipped; it closes like its sibling, bd blocked is not consulted"
 : > "$GC_LOG"
 export STUB_BDLIST_JSON="[$(bead_json fk-lane10 fk-rootH ""),$(bead_json fk-blocked10 fk-rootH "")]"
 export_show "fk-rootH" "closed" "abandoned"
@@ -346,20 +379,26 @@ out="$(GC="${STUBDIR}/gc" STUB_GC_LOG="$GC_LOG" "$SCRIPT" 2>&1)"
 rc=$?
 assert_eq "0" "$rc" "script exits 0"
 if grep -qE 'bd close fk-lane10 .*--force' "$GC_LOG"; then
-  pass "the non-blocked sibling fk-lane10 still closes"
+  pass "the sibling fk-lane10 closes"
 else
-  fail "expected fk-lane10 to still close; log was:
+  fail "expected fk-lane10 to close; log was:
 $(cat "$GC_LOG")"
 fi
-if grep -qE '(bd update|bd close) fk-blocked10 ' "$GC_LOG"; then
-  fail "the blocked candidate fk-blocked10 was stamped or closed"
+if grep -qE 'bd close fk-blocked10 .*--force' "$GC_LOG"; then
+  pass "the dependency-blocked candidate fk-blocked10 also closes (bd blocked is not a human-hold signal)"
 else
-  pass "the blocked candidate fk-blocked10 is never stamped or closed"
+  fail "expected fk-blocked10 to close despite being bd-blocked; log was:
+$(cat "$GC_LOG")"
 fi
-if grep -qE 'mail send mayor .*ORPHAN SWEEP: closed 1.*\(1 skipped: pinned/gated\)' "$GC_LOG"; then
-  pass "digest mail names both the closed count and the skipped count"
+if grep -qE '^bd blocked ' "$GC_LOG"; then
+  fail "bd blocked was consulted, but it is no longer part of the skip decision"
 else
-  fail "expected the digest mail subject to name both counts; log was:
+  pass "bd blocked is never consulted by the orphan sweep"
+fi
+if grep -qE 'mail send mayor .*ORPHAN SWEEP: closed 2' "$GC_LOG"; then
+  pass "digest mail reports both candidates closed"
+else
+  fail "expected the digest mail to report 2 closed; log was:
 $(cat "$GC_LOG")"
 fi
 unset STUB_BDLIST_JSON STUB_BDSHOW_JSON_fk_rootH STUB_BLOCKED_JSON
@@ -444,6 +483,48 @@ else
 $(cat "$GC_LOG")"
 fi
 unset STUB_BDLIST_JSON STUB_BDSHOW_JSON_fk_rootK STUB_MAIL_SEND_FAIL
+
+# ===========================================================================
+# CASE 14 (review fk-gypn9m BLOCKING-3) — the pinned set is fetched exactly
+#   ONCE per tick, not once per candidate: a tick with several candidates
+#   under a closed root issues a single `bd list --pinned` call.
+# ===========================================================================
+start_case "14: bd list --pinned is fetched exactly once per tick, regardless of candidate count"
+: > "$GC_LOG"
+export STUB_BDLIST_JSON="[$(bead_json fk-many14a fk-rootL ''),$(bead_json fk-many14b fk-rootL ''),$(bead_json fk-many14c fk-rootL '')]"
+export_show "fk-rootL" "closed" "abandoned"
+out="$(GC="${STUBDIR}/gc" STUB_GC_LOG="$GC_LOG" "$SCRIPT" 2>&1)"
+rc=$?
+assert_eq "0" "$rc" "script exits 0"
+assert_eq "3" "$(grep -c -E 'bd close fk-many14' "$GC_LOG")" "all three candidates close"
+assert_eq "1" "$(grep -c -E 'bd list --pinned' "$GC_LOG")" "bd list --pinned is called exactly once this tick"
+unset STUB_BDLIST_JSON STUB_BDSHOW_JSON_fk_rootL
+
+# ===========================================================================
+# CASE 15 (review fk-gypn9m BLOCKING-3) — when the one-time pinned-set fetch
+#   itself fails, the tick fails SAFE: every candidate is treated as pinned
+#   and left open, rather than force-closing blind.
+# ===========================================================================
+start_case "15: a failed bd list --pinned fetch fails safe (treats every candidate as pinned this tick)"
+: > "$GC_LOG"
+export STUB_BDLIST_JSON="[$(bead_json fk-lane15 fk-rootM '')]"
+export_show "fk-rootM" "closed" "abandoned"
+export STUB_PINNED_FETCH_FAIL=1
+out="$(GC="${STUBDIR}/gc" STUB_GC_LOG="$GC_LOG" "$SCRIPT" 2>&1)"
+rc=$?
+assert_eq "0" "$rc" "script exits 0"
+if grep -qE 'bd close fk-lane15 ' "$GC_LOG"; then
+  fail "fk-lane15 was closed despite the pinned-set fetch failing"
+else
+  pass "fk-lane15 is left open when the pinned-set fetch fails (fail-safe)"
+fi
+if grep -qE 'WARNING: bd list --pinned lookup failed' <<< "$out"; then
+  pass "diagnostic reports the pinned-fetch failure"
+else
+  fail "expected a pinned-fetch-failure WARNING; output was:
+$out"
+fi
+unset STUB_BDLIST_JSON STUB_BDSHOW_JSON_fk_rootM STUB_PINNED_FETCH_FAIL
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
