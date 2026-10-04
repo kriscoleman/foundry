@@ -1566,7 +1566,10 @@ print(','.join(sorted(x['id'] for x in items)))" 2>/dev/null || echo "unknown")
 
     route_title="Human PR feedback on ${full_repo}#${pr_number}: ${head_ref}"
     route_body="$(cv_build_pr_feedback_body "$pr_url" "$head_ref" "$feedback_summary" \
-      "pr-comment-${full_repo//\//_}-${pr_number}-nodeids-${new_ids_for_key}")"
+      "pr-comment-${full_repo//\//_}-${pr_number}-nodeids-${new_ids_for_key}")" || {
+      echo "con-voyage-pr-watch: [PART B] WARNING: could not build a trustworthy fenced body for ${full_repo}#${pr_number} (nonce generation failed), skipping this cycle" >&2
+      continue
+    }
 
     # Route the feedback as a new task bead to the implementor. gc 1.4.1's
     # `gc sling` has NO --body flag; the create-bead-from-text forms are inline

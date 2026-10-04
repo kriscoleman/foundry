@@ -1478,6 +1478,69 @@ assert_log_count 'bd (close|list)' 0 "empty root id never calls bd list or bd cl
 # would still show zero bd calls in the log, so the log assertion is the one
 # that would have caught the bug even if zsh's error text ever changes.
 # ---------------------------------------------------------------------------
+# cv_random_nonce / cv_build_pr_feedback_body: fail-closed when the primary
+# /dev/urandom+od path is unavailable (qa-test fk-spxo3z, security fk-dopfd8
+# follow-up). The prior version fell back to a date+$RANDOM+$$ mix — never
+# exercised on a real target platform and attacker-influenceable (PID and
+# wall-clock are not secret). The fix removes that fallback entirely: a
+# degraded entropy source must refuse to produce a nonce, not silently hand
+# back a weaker one. Exercised via a PATH that provides every OTHER command
+# cv_random_nonce/sourcing the lib needs, but omits `od`, so the primary path
+# fails exactly the way it would on a host actually missing `od` — not by
+# faking out /dev/urandom itself (a device file, not a PATH lookup).
+# ---------------------------------------------------------------------------
+start_case "cv_random_nonce: od unavailable on PATH -> fails closed (no nonce printed, non-zero exit, clear stderr)"
+NO_OD_PATH_DIR="${SANDBOX}/no-od-path"
+mkdir -p "$NO_OD_PATH_DIR"
+for bin in head tr date cat grep sed awk mktemp; do
+  real_bin="$(command -v "$bin" 2>/dev/null)"
+  [ -n "$real_bin" ] && ln -sf "$real_bin" "${NO_OD_PATH_DIR}/${bin}"
+done
+BASH_BIN="$(command -v bash)"
+noodpath_out=""
+noodpath_err=""
+noodpath_out="$(PATH="$NO_OD_PATH_DIR" "$BASH_BIN" -c "source '$LIB'; cv_random_nonce" 2>"${SANDBOX}/no-od.err")"
+noodpath_rc=$?
+noodpath_err="$(cat "${SANDBOX}/no-od.err")"
+assert_eq "" "$noodpath_out" "cv_random_nonce prints nothing when od is unavailable (no low-entropy fallback)"
+assert_eq "1" "$noodpath_rc" "cv_random_nonce returns non-zero when od is unavailable"
+case "$noodpath_err" in
+  *"refusing to generate a low-entropy nonce"*)
+    echo "  PASS: cv_random_nonce writes a clear fail-closed error to stderr" ;;
+  *)
+    echo "  FAIL: expected a fail-closed stderr message, got: $noodpath_err" >&2
+    FAILURES=$((FAILURES+1))
+    ;;
+esac
+
+start_case "cv_build_pr_feedback_body: propagates cv_random_nonce's fail-closed result instead of emitting a body with a blank/missing nonce"
+feedback_out=""
+feedback_err=""
+feedback_out="$(PATH="$NO_OD_PATH_DIR" "$BASH_BIN" -c "source '$LIB'; cv_build_pr_feedback_body 'https://github.com/acme/widgets/pull/1' 'fix/example' 'some feedback' 'test-key'" 2>"${SANDBOX}/feedback.err")"
+feedback_rc=$?
+feedback_err="$(cat "${SANDBOX}/feedback.err")"
+assert_eq "" "$feedback_out" "cv_build_pr_feedback_body emits nothing when it cannot obtain a trustworthy nonce"
+assert_eq "1" "$feedback_rc" "cv_build_pr_feedback_body returns non-zero when it cannot obtain a trustworthy nonce"
+case "$feedback_err" in
+  *"refusing to fence untrusted PR content"*)
+    echo "  PASS: cv_build_pr_feedback_body writes a clear fail-closed error to stderr" ;;
+  *)
+    echo "  FAIL: expected a fail-closed stderr message, got: $feedback_err" >&2
+    FAILURES=$((FAILURES+1))
+    ;;
+esac
+
+start_case "cv_random_nonce: primary path still succeeds and yields full 128-bit (32 hex char) entropy when od IS available"
+od_present_out="$(bash -c "source '$LIB'; cv_random_nonce")"
+case "$od_present_out" in
+  [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f])
+    echo "  PASS: cv_random_nonce yields a 32-char lowercase hex token on the primary path" ;;
+  *)
+    echo "  FAIL: expected a 32-char hex token, got: $od_present_out" >&2
+    FAILURES=$((FAILURES+1))
+    ;;
+esac
+
 if ! command -v zsh >/dev/null 2>&1; then
   echo
   echo "SKIP: zsh not installed on this host, skipping zsh portability cases" >&2
