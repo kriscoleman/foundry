@@ -403,6 +403,27 @@ if [ -z "${ROSTER_VARS// /}" ]; then
 fi
 PUBLISHED_HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || echo "")"
 
+# fk-bcyt7v: last_reviewed_head_sha must record the head the review loop
+# actually approved, not whatever happens to be at HEAD when publish runs.
+# apply-review-findings stamps gc.build.reviewed_head_sha on $ROOT_ID at the
+# exact moment it sets code_review.verdict=done (a genuine no-op pass — see
+# "Setting code_review.verdict" in main.apply-review-findings.md), so that
+# value IS the reviewed SHA. A commit pushed onto the branch between that
+# approval and this publish run (e.g. a mayor send-back fix, fk-cszzzt) would
+# otherwise get recorded as "reviewed" here, so con-voyage-rereview-watch
+# would never fire on it. An empty value (a pre-fk-bcyt7v root, or the
+# metadata write above failed) is "unknown", not "confirmed equal to HEAD" —
+# fall back to $PUBLISHED_HEAD_SHA so publish still records SOMETHING rather
+# than failing closed, but warn loudly since that reproduces the original bug.
+REVIEWED_HEAD_SHA=""
+if [ -n "${CV_LIB:-}" ]; then
+  REVIEWED_HEAD_SHA="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.build.reviewed_head_sha)"
+fi
+if [ -z "$REVIEWED_HEAD_SHA" ]; then
+  echo "con-voyage publish: WARNING: no gc.build.reviewed_head_sha on workflow root ${ROOT_ID} — falling back to current HEAD (${PUBLISHED_HEAD_SHA}) for last_reviewed_head_sha, which may be a later unreviewed commit (fk-bcyt7v)" >&2
+  REVIEWED_HEAD_SHA="$PUBLISHED_HEAD_SHA"
+fi
+
 {
   printf 'work_bead=%s\n' "$WORK_BEAD"
   printf 'convoy_id=%s\n' "$CONVOY_ID"
@@ -413,7 +434,7 @@ PUBLISHED_HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || echo "")"
   printf 'last_phase=%s\n' "awaiting_merge"
   printf 'root_bead_id=%s\n' "$ROOT_ID"
   printf 'roster_vars=%s\n' "$ROSTER_VARS"
-  printf 'last_reviewed_head_sha=%s\n' "$PUBLISHED_HEAD_SHA"
+  printf 'last_reviewed_head_sha=%s\n' "$REVIEWED_HEAD_SHA"
   printf 'review_round=%s\n' "1"
   printf 'rereview_root_bead_id=%s\n' ""
 } > "${CV_STATE_DIR}/${finalize_key}.finalize"
