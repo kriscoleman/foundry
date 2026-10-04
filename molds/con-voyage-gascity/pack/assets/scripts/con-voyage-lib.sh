@@ -2840,10 +2840,19 @@ cv_with_timeout() {
 # [con_voyage.assistants].NAME in TOML file FILE, or empty when FILE is
 # missing, unparseable, python3 has no tomllib (needs 3.11+), or the key is
 # absent. Never aborts; callers treat empty as "not found here, check the
-# next source" rather than a hard failure.
+# next source" rather than a hard failure. Always returns 0 explicitly
+# (fk-apujks review LOW-1): without that, python3 being absent on PATH would
+# leak bash's "command not found" exit 127 as this function's own return
+# status instead of the deterministic empty-output/warn-and-continue
+# behavior documented above.
 cv_assistant_config_bool() {
   local file="$1" name="$2"
   [ -n "$file" ] && [ -f "$file" ] || { printf ''; return 0; }
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "cv_assistant_config_bool: WARNING: python3 not found on PATH — cannot read ${name} from ${file}; treating as unset" >&2
+    printf ''
+    return 0
+  fi
   python3 -c "
 import sys
 try:
@@ -2860,7 +2869,20 @@ section = (data.get('con_voyage') or {}).get('assistants') or {}
 val = section.get(name) if isinstance(section, dict) else None
 if isinstance(val, bool):
     print('true' if val else 'false')
-" "$file" "$name" 2>/dev/null
+elif val is not None:
+    # LOW-2 (fk-apujks review): a present-but-non-bool value (e.g. a quoted
+    # 'true' string) must not silently be treated the same as 'absent' --
+    # that would let a typo in a rig's override file silently fail OPEN or
+    # CLOSED depending on what the next source in the fallback chain
+    # happens to say, with no trace of why. Warn, naming the key and the
+    # file, and still print nothing so the caller falls through to its next
+    # source (fail-soft, same as today) instead of aborting.
+    sys.stderr.write(
+        'cv_assistant_config_bool: WARNING: %s in %s is not a boolean (got %r); expected true or false; ignoring\n'
+        % (name, sys.argv[1], val)
+    )
+" "$file" "$name"
+  return 0
 }
 
 # cv_assistant_enabled NAME — print "true" or "false" for whether assistant
@@ -2913,6 +2935,19 @@ cv_write_handoff_note() {
     echo "cv_write_handoff_note: WARNING: no GC_SESSION_ID/GC_ALIAS/GC_AGENT set — cannot address a handoff note to self for ${name}" >&2
     return 1
   fi
+  # LOW-6 (fk-apujks review): each field is free text a caller controls, and
+  # cv_read_handoff_note parses the body by matching "^Label: value$" lines
+  # (MULTILINE). An embedded newline in any field would let that field's
+  # content inject a fake "Feed position:"/"Owned-bead status:"/"Next
+  # action:" line of its own, overriding a real one when the body is parsed
+  # back. Collapse embedded CR/LF to a space in every field before it ever
+  # reaches the body so no field can forge another field's line.
+  feed_position="${feed_position//$'\r'/ }"
+  feed_position="${feed_position//$'\n'/ }"
+  owned_bead_status="${owned_bead_status//$'\r'/ }"
+  owned_bead_status="${owned_bead_status//$'\n'/ }"
+  next_action="${next_action//$'\r'/ }"
+  next_action="${next_action//$'\n'/ }"
   local body
   body="$(printf 'Feed position: %s\nOwned-bead status: %s\nNext action: %s\n' "$feed_position" "$owned_bead_status" "$next_action")"
   local timeout_secs="${CV_HANDOFF_STORE_TIMEOUT_SECONDS:-30}"
@@ -2937,13 +2972,21 @@ cv_write_handoff_note() {
 # matches NAME, the lookup fails/times out, or the body doesn't parse — the
 # fail-soft contract this whole file shares: a caller missing a handoff note
 # falls back to its own normal cold-start discovery instead of trusting
-# half-parsed data. Always returns 0.
+# half-parsed data. Every one of those empty-return branches also logs one
+# line to stderr naming which branch fired (fk-apujks review LOW-4), so a
+# caller silently getting no handoff note is diagnosable from the run log
+# instead of indistinguishable from "there was never a note". Always
+# returns 0.
 #
 # Picks the LAST subject match gc mail inbox returns for NAME as "most
 # recent" (no reliable timestamp field to sort by across every gc version);
 # this is an approximation, not a hard guarantee — a caller that reads a
 # stale duplicate instead of a newer one degrades no worse than finding none
-# at all, which this function already tolerates everywhere else.
+# at all, which this function already tolerates everywhere else. After a
+# successful read, every OTHER matching note for NAME is archived so the
+# self-mailbox never grows unboundedly across repeated suspend/resume
+# cycles (fk-apujks review LOW-5) -- only the just-read, now-consumed note
+# is left behind.
 cv_read_handoff_note() {
   local name="$1"
   local gc_bin="${GC:-gc}"
@@ -2954,9 +2997,12 @@ cv_read_handoff_note() {
   local subject="con-voyage ${name} handoff"
   local inbox_json
   inbox_json="$(cv_with_timeout "$timeout_secs" "$gc_bin" mail inbox --json 2>/dev/null)"
-  [ -n "$inbox_json" ] || return 0
-  local msg_id
-  msg_id="$(printf '%s' "$inbox_json" | python3 -c "
+  if [ -z "$inbox_json" ]; then
+    echo "cv_read_handoff_note: no handoff note found for ${name} (gc mail inbox returned nothing, failed, or timed out)" >&2
+    return 0
+  fi
+  local matches
+  matches="$(printf '%s' "$inbox_json" | python3 -c "
 import sys, json
 subject = sys.argv[1]
 try:
@@ -2973,21 +3019,29 @@ elif isinstance(data, list):
     messages = data
 else:
     messages = []
-best = None
 for m in messages:
     if not isinstance(m, dict):
         continue
     if (m.get('subject') or '') != subject:
         continue
-    best = m
-if best is not None:
-    print(best.get('id') or '')
+    mid = m.get('id') or ''
+    if mid:
+        print(mid)
 " "$subject" 2>/dev/null)"
-  [ -n "$msg_id" ] || return 0
+  if [ -z "$matches" ]; then
+    echo "cv_read_handoff_note: no handoff note found for ${name} (no inbox message with subject 'con-voyage ${name} handoff')" >&2
+    return 0
+  fi
+  local msg_id
+  msg_id="$(printf '%s\n' "$matches" | tail -n 1)"
   local read_json
   read_json="$(cv_with_timeout "$timeout_secs" "$gc_bin" mail read "$msg_id" --json 2>/dev/null)"
-  [ -n "$read_json" ] || return 0
-  printf '%s' "$read_json" | python3 -c "
+  if [ -z "$read_json" ]; then
+    echo "cv_read_handoff_note: failed to read handoff note ${msg_id} for ${name} (gc mail read returned nothing, failed, or timed out)" >&2
+    return 0
+  fi
+  local parsed
+  parsed="$(printf '%s' "$read_json" | python3 -c "
 import sys, json, re
 try:
     data = json.load(sys.stdin)
@@ -3000,10 +3054,26 @@ if not isinstance(data, dict):
 body = data.get('body') or ''
 def field(label):
     m = re.search(r'^' + re.escape(label) + r':[ \t]*(.*)$', body, re.MULTILINE)
-    return m.group(1) if m else ''
-print(field('Feed position'))
-print(field('Owned-bead status'))
-print(field('Next action'))
-" 2>/dev/null
+    return m.group(1) if m else None
+feed = field('Feed position')
+bead = field('Owned-bead status')
+nxt  = field('Next action')
+if feed is None and bead is None and nxt is None:
+    raise SystemExit(0)
+print(feed or '')
+print(bead or '')
+print(nxt or '')
+" 2>/dev/null)"
+  if [ -z "$parsed" ]; then
+    echo "cv_read_handoff_note: handoff note ${msg_id} for ${name} did not parse (body has none of the expected Feed position/Owned-bead status/Next action fields)" >&2
+    return 0
+  fi
+  printf '%s\n' "$parsed"
+  local older
+  older="$(printf '%s\n' "$matches" | grep -v -x -- "$msg_id")"
+  if [ -n "$older" ]; then
+    # shellcheck disable=SC2086
+    cv_with_timeout "$timeout_secs" "$gc_bin" mail archive $older >/dev/null 2>&1
+  fi
   return 0
 }
