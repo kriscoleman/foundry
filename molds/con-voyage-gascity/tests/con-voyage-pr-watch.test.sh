@@ -323,6 +323,28 @@ JSON
 JSON
             exit 0
           fi
+          # STUB_PR11_BOTACK_REFUSAL=1 (fk-wpgt9j, review BLOCKING-1 on
+          # fk-7xu9m's bot-ack fix): is_bot_approval_noise's escape hatch
+          # treats a CHANGES_REQUESTED state, or a body containing "not
+          # automatically approving" / "refus" / "classified as critical",
+          # as a real signal that must still route -- but is_bot_ack ignored
+          # state and those phrases entirely, so a marker-free body matching
+          # one of them got re-suppressed as bot-ack right after
+          # is_bot_approval_noise correctly said "don't drop this". Three
+          # marker-free AI-reviewer-bot items, each protected by a different
+          # clause of the escape hatch, must all still route:
+          #   - PRR_refusal_changes_requested: state=CHANGES_REQUESTED, body
+          #     has no finding marker at all.
+          #   - IC_refusal_phrase: comment body says "not automatically
+          #     approving" with no finding marker.
+          #   - IC_refusal_word: comment body says "Refusing to approve
+          #     until addressed" with no finding marker.
+          if [ "${STUB_PR11_BOTACK_REFUSAL:-0}" = "1" ]; then
+            cat <<'JSON'
+{"reviews":[{"id":"PRR_refusal_changes_requested","author":{"login":"doomer-ai[bot]"},"body":"Not approving this.","state":"CHANGES_REQUESTED"}],"comments":[{"id":"IC_refusal_phrase","author":{"login":"doomer-ai[bot]"},"body":"Thanks, but not automatically approving here."},{"id":"IC_refusal_word","author":{"login":"doomer-ai[bot]"},"body":"Refusing to approve until addressed."}]}
+JSON
+            exit 0
+          fi
           cat <<'JSON'
 {"reviews":[],"comments":[{"id":"IC_test_11","author":{"login":"a-human-reviewer"},"body":"please fix the null check"},{"id":"IC_test_bot","author":{"login":"kriscoleman"},"body":"🤖 **Automated con-voyage agent** (con-voyage-ci-repair / foundry-kc/worker)\n\nFixed a thing."},{"id":"IC_test_netlify","author":{"login":"netlify"},"body":"Deploy Preview for replicated-docs ready!"}]}
 JSON
@@ -3343,6 +3365,29 @@ if printf '%s' "$OUT" | grep -qF 'SUPPRESS kriscoleman/foundry#11 comment id=IC_
   pass "pure-ack reply is suppressed and logged with reason=bot-ack"
 else
   fail "pure-ack reply is suppressed and logged with reason=bot-ack"
+fi
+
+# ===========================================================================
+# CASE 54 — review fk-wpgt9j BLOCKING-1: the bot-ack branch must not re-drop
+#   a CHANGES_REQUESTED state or a refusal phrase that
+#   is_bot_approval_noise's escape hatch already said is a real signal. A
+#   marker-free AI-reviewer-bot review with state=CHANGES_REQUESTED, and two
+#   marker-free AI-reviewer-bot comments carrying "not automatically
+#   approving" / "refus" respectively, must all still route instead of being
+#   re-suppressed as bot-ack.
+# ===========================================================================
+start_case "54: fk-wpgt9j BLOCKING-1 — CHANGES_REQUESTED / refusal phrasing routes even with no finding marker"
+setup_case_env "54"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_PR11_BOTACK_REFUSAL="1"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 1 "exactly one comment-route sling for #11 (all three protected items route together)"
+assert_log_count "$GC_LOG" 'Not approving this' 1 "the CHANGES_REQUESTED review routes despite carrying no finding marker"
+assert_log_count "$GC_LOG" 'not automatically approving here' 1 "the \"not automatically approving\" comment routes despite carrying no finding marker"
+assert_log_count "$GC_LOG" 'Refusing to approve until addressed' 1 "the \"refus\" comment routes despite carrying no finding marker"
+if printf '%s' "$OUT" | grep -qE 'SUPPRESS kriscoleman/foundry#11 .* reason=bot-ack'; then
+  fail "none of the three protected items are suppressed as bot-ack"
+else
+  pass "none of the three protected items are suppressed as bot-ack"
 fi
 
 # ===========================================================================
