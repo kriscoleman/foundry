@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.14.0](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.13.2...con-voyage-gascity-v0.14.0) (2026-10-04)
+
+
+### Features
+
+* **con-voyage:** name work branches con-voyage/&lt;bead-id&gt;-&lt;topic-slug&gt; ([68f95eb](https://github.com/kriscoleman/foundry/commit/68f95ebd50bcb2a7b6369d5c570720cf27d4fb39))
+
+
+### Bug Fixes
+
+* **con-voyage:** address [#162](https://github.com/kriscoleman/foundry/issues/162) branch-naming BLOCKING findings ([977d925](https://github.com/kriscoleman/foundry/commit/977d925a4417a076d31481770944b97b2890009f))
+* **con-voyage:** assert fragment BLOCKING examples, ban downgrade wording, cite fk-6os73y ([8cf33be](https://github.com/kriscoleman/foundry/commit/8cf33be7a22a5b6b9ecf2689ec9335d6085881c7))
+* **con-voyage:** confirm askuserquestion-watchdog cooldown is session-independent ([d4196b1](https://github.com/kriscoleman/foundry/commit/d4196b1ad5a89c627ff8325a662ff0a0ee10664a))
+* **con-voyage:** fail-closed fence nonce + forged-marker coverage ([#163](https://github.com/kriscoleman/foundry/issues/163) follow-up) ([c25fc52](https://github.com/kriscoleman/foundry/commit/c25fc52aa4037ea32d8c6a4e8219655c2ed0c5d8))
+* **con-voyage:** pack-wide reviewer severity rubric (LOW = cosmetic only) ([7b5959c](https://github.com/kriscoleman/foundry/commit/7b5959c30d509a48d2655c2ec2ea200a9858f14e))
+* **con-voyage:** retry work-branch-name persist and re-derive actual branch on discard ([8ce2b51](https://github.com/kriscoleman/foundry/commit/8ce2b5160ed70331be9838f0b81872673ed7ad68))
+* **con-voyage:** unwrap rubric phrases split across markdown soft-wraps ([c2a5a3f](https://github.com/kriscoleman/foundry/commit/c2a5a3f75a0f2ebb5153a3a7517036e4db868e16))
+
 ## [0.13.2](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.13.1...con-voyage-gascity-v0.13.2) (2026-10-03)
 
 
