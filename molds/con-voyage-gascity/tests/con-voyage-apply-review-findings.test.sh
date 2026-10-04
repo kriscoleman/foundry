@@ -153,31 +153,34 @@ assert_not_contains_near() {
   esac
 }
 assert_not_contains_near "$APPLY_MD" \
-  'REVIEWED_HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || echo "")"' \
+  'REVIEWED_HEAD_SHA=""' \
   '[ -n "$CV_LIB" ]' \
   "stamp guard no longer conjuncts on \$CV_LIB"
 
 # ---------------------------------------------------------------------------
-# review fk-qj2s9r iteration-2 BLOCKING-1 (fk-xg1nl4) — the stamp block is its
-# own fenced bash block, a separate shell invocation from the block that
-# resolves $WORKTREE/$ROOT_ID earlier in this file. Only cwd persists across
-# blocks, not shell variables. Assert the stamp block is self-contained: HEAD
-# resolved via ambient cwd (which does persist, since an earlier block already
-# cd'd into $WORKTREE), and $ROOT_ID re-derived fresh in this same block,
-# exactly like the two earlier $ROOT_ID-consuming blocks in this file already
-# do — not a bare read of a variable that was never set here.
+# review fk-qj2s9r iteration-3 BLOCKING-1 (fk-eg00bz) — a bare `git rev-parse
+# HEAD` relying on an earlier block's `cd "$WORKTREE"` still holding the
+# ambient cwd contradicts this same file's own documented cwd invariant
+# ("never rely on ambient $(pwd)"), and a cwd drift between blocks would
+# silently stamp the wrong SHA as "reviewed" with no guard catching it (the
+# value is non-empty, just wrong). Assert the stamp block instead re-derives
+# $WORKTREE fresh from bead metadata, same pattern as $ROOT_ID, and resolves
+# HEAD with an explicit `git -C "$WORKTREE"` rather than ambient cwd.
 # ---------------------------------------------------------------------------
-start_case "apply-review-findings.md: the reviewed-sha stamp resolves HEAD via ambient cwd, not a \$WORKTREE that doesn't survive across blocks"
-assert_contains "$APPLY_MD" 'REVIEWED_HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || echo "")"' "resolves HEAD against ambient cwd"
+start_case "apply-review-findings.md: the reviewed-sha stamp re-derives \$WORKTREE fresh rather than relying on ambient cwd"
+assert_contains "$APPLY_MD" 'print((d.get('"'"'metadata'"'"') or {}).get('"'"'gc.build.source_anchor_work_dir'"'"') or '"'"''"'"')' "re-derives \$WORKTREE from gc.build.source_anchor_work_dir"
+
+start_case "apply-review-findings.md: the reviewed-sha stamp resolves HEAD via an explicit \$WORKTREE, not ambient cwd"
+assert_contains "$APPLY_MD" 'REVIEWED_HEAD_SHA="$(git -C "$WORKTREE" rev-parse HEAD 2>/dev/null || echo "")"' "resolves HEAD against the re-derived \$WORKTREE"
 assert_not_contains_near "$APPLY_MD" \
-  'REVIEWED_HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || echo "")"' \
-  'git -C "$WORKTREE"' \
-  "stamp block no longer reads a \$WORKTREE that was never set in this block"
+  'REVIEWED_HEAD_SHA=""' \
+  'REVIEWED_HEAD_SHA="$(git rev-parse HEAD' \
+  "stamp block no longer reads HEAD against bare ambient cwd"
 
 start_case "apply-review-findings.md: the reviewed-sha stamp block re-derives \$ROOT_ID fresh, not a bare read"
-stamp_block_anchor_line="$(line_of "$APPLY_MD" 'REVIEWED_HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || echo "")"')"
+stamp_block_anchor_line="$(line_of "$APPLY_MD" 'REVIEWED_HEAD_SHA=""')"
 if [ -n "$stamp_block_anchor_line" ]; then
-  stamp_block_window="$(sed -n "$((stamp_block_anchor_line - 15)),${stamp_block_anchor_line}p" "$APPLY_MD")"
+  stamp_block_window="$(sed -n "$((stamp_block_anchor_line - 30)),${stamp_block_anchor_line}p" "$APPLY_MD")"
   case "$stamp_block_window" in
     *'ROOT_ID="${GC_ROOT_BEAD_ID:-}"'*"gc.root_bead_id"*) echo "  PASS: stamp block re-derives \$ROOT_ID from \$GC_ROOT_BEAD_ID / bead metadata before using it" ;;
     *) echo "  FAIL: expected the stamp block to re-derive \$ROOT_ID fresh, same as the two earlier \$ROOT_ID blocks" >&2; FAILURES=$((FAILURES+1)) ;;
