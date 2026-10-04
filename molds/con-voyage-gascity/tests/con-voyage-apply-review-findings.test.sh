@@ -153,12 +153,39 @@ assert_not_contains_near() {
   esac
 }
 assert_not_contains_near "$APPLY_MD" \
-  'REVIEWED_HEAD_SHA="$(git -C "$WORKTREE" rev-parse HEAD 2>/dev/null || echo "")"' \
+  'REVIEWED_HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || echo "")"' \
   '[ -n "$CV_LIB" ]' \
   "stamp guard no longer conjuncts on \$CV_LIB"
 
-start_case "apply-review-findings.md: the reviewed-sha stamp resolves HEAD via \$WORKTREE, not ambient cwd"
-assert_contains "$APPLY_MD" 'REVIEWED_HEAD_SHA="$(git -C "$WORKTREE" rev-parse HEAD 2>/dev/null || echo "")"' "resolves HEAD against \$WORKTREE explicitly"
+# ---------------------------------------------------------------------------
+# review fk-qj2s9r iteration-2 BLOCKING-1 (fk-xg1nl4) — the stamp block is its
+# own fenced bash block, a separate shell invocation from the block that
+# resolves $WORKTREE/$ROOT_ID earlier in this file. Only cwd persists across
+# blocks, not shell variables. Assert the stamp block is self-contained: HEAD
+# resolved via ambient cwd (which does persist, since an earlier block already
+# cd'd into $WORKTREE), and $ROOT_ID re-derived fresh in this same block,
+# exactly like the two earlier $ROOT_ID-consuming blocks in this file already
+# do — not a bare read of a variable that was never set here.
+# ---------------------------------------------------------------------------
+start_case "apply-review-findings.md: the reviewed-sha stamp resolves HEAD via ambient cwd, not a \$WORKTREE that doesn't survive across blocks"
+assert_contains "$APPLY_MD" 'REVIEWED_HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || echo "")"' "resolves HEAD against ambient cwd"
+assert_not_contains_near "$APPLY_MD" \
+  'REVIEWED_HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || echo "")"' \
+  'git -C "$WORKTREE"' \
+  "stamp block no longer reads a \$WORKTREE that was never set in this block"
+
+start_case "apply-review-findings.md: the reviewed-sha stamp block re-derives \$ROOT_ID fresh, not a bare read"
+stamp_block_anchor_line="$(line_of "$APPLY_MD" 'REVIEWED_HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || echo "")"')"
+if [ -n "$stamp_block_anchor_line" ]; then
+  stamp_block_window="$(sed -n "$((stamp_block_anchor_line - 15)),${stamp_block_anchor_line}p" "$APPLY_MD")"
+  case "$stamp_block_window" in
+    *'ROOT_ID="${GC_ROOT_BEAD_ID:-}"'*"gc.root_bead_id"*) echo "  PASS: stamp block re-derives \$ROOT_ID from \$GC_ROOT_BEAD_ID / bead metadata before using it" ;;
+    *) echo "  FAIL: expected the stamp block to re-derive \$ROOT_ID fresh, same as the two earlier \$ROOT_ID blocks" >&2; FAILURES=$((FAILURES+1)) ;;
+  esac
+else
+  echo "  FAIL: could not locate the stamp block anchor" >&2
+  FAILURES=$((FAILURES+1))
+fi
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

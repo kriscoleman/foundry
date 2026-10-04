@@ -471,7 +471,21 @@ push). Do NOT run this on a fix pass — a commit you just made this pass has
 not been reviewed by anyone yet.
 
 ```bash
-REVIEWED_HEAD_SHA="$(git -C "$WORKTREE" rev-parse HEAD 2>/dev/null || echo "")"
+ROOT_ID="${GC_ROOT_BEAD_ID:-}"
+if [ -z "$ROOT_ID" ]; then
+  ROOT_ID="$(gc bd show "$GC_BEAD_ID" --json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    d = d[0] if isinstance(d, list) else d
+except Exception:
+    d = {}
+print((d.get('metadata') or {}).get('gc.root_bead_id') or '')
+" 2>/dev/null)"
+fi
+[ -n "$ROOT_ID" ] || ROOT_ID="$GC_BEAD_ID"
+
+REVIEWED_HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || echo "")"
 if [ -n "$REVIEWED_HEAD_SHA" ] && [ -n "$ROOT_ID" ]; then
   gc bd update "$ROOT_ID" --set-metadata "gc.build.reviewed_head_sha=${REVIEWED_HEAD_SHA}" \
     || echo "con-voyage apply-review-findings: WARNING: could not stamp gc.build.reviewed_head_sha on workflow root ${ROOT_ID}" >&2
