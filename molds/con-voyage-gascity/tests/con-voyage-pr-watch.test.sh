@@ -395,6 +395,22 @@ JSON
 JSON
             exit 0
           fi
+          # STUB_PR11_BOTACK_PLURAL=1 (review fk-vka9e2/test-evidence BLOCKING-1
+          # on fk-wpgt9j's round-2 send-back): the \bbug\b/\berror\b ->
+          # \bbugs?\b/\berrors?\b widening had no test body anywhere containing
+          # the plural form, so the suite passed identically with or without
+          # the widening -- a regression reintroducing the singular-only
+          # pattern would go uncaught. Two marker-free-otherwise AI-reviewer-bot
+          # replies, each carrying ONLY a plural finding word, must still
+          # route (reason=bot_ack must NOT fire for either):
+          #   - IC_plural_bugs: "bugs" (plural of \bbug\b).
+          #   - IC_plural_errors: "errors" (plural of \berror\b).
+          if [ "${STUB_PR11_BOTACK_PLURAL:-0}" = "1" ]; then
+            cat <<'JSON'
+{"reviews":[],"comments":[{"id":"IC_plural_bugs","author":{"login":"doomer-ai[bot]"},"body":"Still seeing bugs in the retry path."},{"id":"IC_plural_errors","author":{"login":"doomer-ai[bot]"},"body":"A couple of errors remain here."}]}
+JSON
+            exit 0
+          fi
           cat <<'JSON'
 {"reviews":[],"comments":[{"id":"IC_test_11","author":{"login":"a-human-reviewer"},"body":"please fix the null check"},{"id":"IC_test_bot","author":{"login":"kriscoleman"},"body":"🤖 **Automated con-voyage agent** (con-voyage-ci-repair / foundry-kc/worker)\n\nFixed a thing."},{"id":"IC_test_netlify","author":{"login":"netlify"},"body":"Deploy Preview for replicated-docs ready!"}]}
 JSON
@@ -3499,6 +3515,28 @@ if printf '%s' "$OUT" | grep -qE 'SUPPRESS kriscoleman/foundry#11 comment id=IC_
   fail "over-inclusion item is NOT suppressed as bot_ack (it routes)"
 else
   pass "over-inclusion item is NOT suppressed as bot_ack (it routes)"
+fi
+
+# ===========================================================================
+# CASE 56 (review fk-vka9e2/test-evidence BLOCKING-1 on fk-wpgt9j's round-2
+#   send-back): pins that FINDING_MARKER_RE actually matches the PLURAL forms
+#   introduced by the \bbug\b -> \bbugs?\b / \berror\b -> \berrors?\b
+#   widening. Without this case the suite passed identically whether or not
+#   the widening was present, so a future regression back to singular-only
+#   would go uncaught. Two marker-free-otherwise AI-reviewer-bot replies,
+#   each carrying ONLY a plural finding word, must both still route.
+# ===========================================================================
+start_case "56: fk-vka9e2 test-evidence BLOCKING-1 — plural 'bugs'/'errors' still match FINDING_MARKER_RE"
+setup_case_env "56"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_PR11_BOTACK_PLURAL="1"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 1 "exactly one comment-route sling for #11 (both plural-marker items route together)"
+assert_log_count "$GC_LOG" 'Still seeing bugs in the retry path' 1 "the plural \"bugs\" item routes instead of being suppressed"
+assert_log_count "$GC_LOG" 'A couple of errors remain here' 1 "the plural \"errors\" item routes instead of being suppressed"
+if printf '%s' "$OUT" | grep -qE 'SUPPRESS kriscoleman/foundry#11 comment id=IC_plural_(bugs|errors) .* reason=bot_ack'; then
+  fail "neither plural-marker item is suppressed as bot_ack"
+else
+  pass "neither plural-marker item is suppressed as bot_ack"
 fi
 
 # ===========================================================================
