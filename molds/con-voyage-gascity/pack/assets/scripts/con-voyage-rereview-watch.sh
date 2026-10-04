@@ -108,19 +108,25 @@ case "$CV_REREVIEW_SLING_TIMEOUT_SECONDS" in
   *[!0-9]*|'') CV_REREVIEW_SLING_TIMEOUT_SECONDS="300" ;;
 esac
 # The dedup lock below (acquire_lock/release_lock) is held across the
-# read-decide-write section: up to two CV_LENS_STORE_TIMEOUT_SECONDS-bounded
-# store calls (mayor mail + bd close/bd set-state) plus the
+# read-decide-write section. The real worst case is the orphan->redispatch
+# path (a pending seed from a previous timed-out sling never attached): it
+# holds the lock across five CV_LENS_STORE_TIMEOUT_SECONDS-bounded store
+# calls (seed_bead_dependent_count's bd show, bd close on the orphaned seed,
+# the mayor mail, dispatch_rereview's bd create, and bd set-state) plus the
 # CV_REREVIEW_SLING_TIMEOUT_SECONDS-bounded dispatch_rereview sling — a
 # legitimate worst-case hold of CV_REREVIEW_SLING_TIMEOUT_SECONDS +
-# 2*CV_LENS_STORE_TIMEOUT_SECONDS. CV_LOCK_STALE_SECONDS (read by
-# acquire_lock in con-voyage-lib.sh) must exceed that hold time, or a slow
-# legitimate holder gets its own lock stolen mid-hold by a concurrent sweep
-# (review fk-k4gebi BLOCKING-1). Derive it here with headroom to spare
-# rather than relying on con-voyage-lib.sh's generic 300s default, which an
-# operator raising CV_REREVIEW_SLING_TIMEOUT_SECONDS would otherwise outrun.
-CV_LOCK_STALE_SECONDS="${CV_LOCK_STALE_SECONDS:-$((CV_REREVIEW_SLING_TIMEOUT_SECONDS + 3 * CV_LENS_STORE_TIMEOUT_SECONDS))}"
+# 5*CV_LENS_STORE_TIMEOUT_SECONDS. Every one of those calls must actually be
+# wrapped in cv_with_timeout for that bound to hold (review fk-k4gebi
+# BLOCKING-1: an unwrapped bd set-state here previously made the bound
+# false). CV_LOCK_STALE_SECONDS (read by acquire_lock in con-voyage-lib.sh)
+# must strictly exceed that hold time with real margin, or a slow legitimate
+# holder gets its own lock stolen mid-hold by a concurrent sweep. Derive it
+# here with headroom to spare (one extra store-call's worth) rather than
+# relying on con-voyage-lib.sh's generic 300s default, which an operator
+# raising CV_REREVIEW_SLING_TIMEOUT_SECONDS would otherwise outrun.
+CV_LOCK_STALE_SECONDS="${CV_LOCK_STALE_SECONDS:-$((CV_REREVIEW_SLING_TIMEOUT_SECONDS + 6 * CV_LENS_STORE_TIMEOUT_SECONDS))}"
 case "$CV_LOCK_STALE_SECONDS" in
-  *[!0-9]*|'') CV_LOCK_STALE_SECONDS=$((CV_REREVIEW_SLING_TIMEOUT_SECONDS + 3 * CV_LENS_STORE_TIMEOUT_SECONDS)) ;;
+  *[!0-9]*|'') CV_LOCK_STALE_SECONDS=$((CV_REREVIEW_SLING_TIMEOUT_SECONDS + 6 * CV_LENS_STORE_TIMEOUT_SECONDS)) ;;
 esac
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -544,7 +550,8 @@ print('{}\x1f{}\x1f{}'.format(d.get('state') or '', d.get('headRefOid') or '', d
       fi
     fi
 
-    "$GC" --city "$GC_CITY" bd set-state "$FS_WORK_BEAD" cv=re_reviewing \
+    cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" \
+      "$GC" --city "$GC_CITY" bd set-state "$FS_WORK_BEAD" cv=re_reviewing \
       --reason "con-voyage-rereview-watch: re-review round ${next_round} started for ${new_head}" >/dev/null 2>&1 \
       || echo "con-voyage-rereview-watch: WARNING: could not set cv=re_reviewing on ${FS_WORK_BEAD}" >&2
 
