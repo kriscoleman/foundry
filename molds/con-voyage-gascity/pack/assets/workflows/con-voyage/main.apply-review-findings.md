@@ -338,7 +338,25 @@ print((d.get('metadata') or {}).get('gc.root_bead_id') or '')
 fi
 [ -n "$ROOT_ID" ] || ROOT_ID="$GC_BEAD_ID"
 
-REVIEWED_HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || echo "")"
+# Re-derive $WORKTREE fresh in this block rather than relying on an earlier
+# block's `cd "$WORKTREE"` still holding the ambient cwd — a context reset or
+# a stray `cd` anywhere in between can silently move cwd without any shell
+# variable noticing, and a bare `git rev-parse HEAD` would then succeed
+# against whatever repo happens to be ambient instead of failing loud.
+WORKTREE="$(gc bd show "$ROOT_ID" --json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    d = d[0] if isinstance(d, list) else d
+except Exception:
+    d = {}
+print((d.get('metadata') or {}).get('gc.build.source_anchor_work_dir') or '')
+" 2>/dev/null)"
+
+REVIEWED_HEAD_SHA=""
+if [ -n "$WORKTREE" ] && [ -d "$WORKTREE" ]; then
+  REVIEWED_HEAD_SHA="$(git -C "$WORKTREE" rev-parse HEAD 2>/dev/null || echo "")"
+fi
 if [ -n "$REVIEWED_HEAD_SHA" ] && [ -n "$ROOT_ID" ]; then
   gc bd update "$ROOT_ID" --set-metadata "gc.build.reviewed_head_sha=${REVIEWED_HEAD_SHA}" \
     || echo "con-voyage apply-review-findings: WARNING: could not stamp gc.build.reviewed_head_sha on workflow root ${ROOT_ID}" >&2
