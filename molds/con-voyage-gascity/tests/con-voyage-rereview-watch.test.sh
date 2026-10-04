@@ -302,6 +302,11 @@ assert_contains "$rec3" "last_reviewed_head_sha=${CHANGED_HEAD}" "finalize recor
 assert_contains "$rec3" "review_round=2" "finalize record's review_round incremented"
 assert_contains "$rec3" "rereview_root_bead_id=rc-seed42" "finalize record carries the new round's seed bead id"
 assert_contains "$rec3" "last_phase=re_reviewing" "finalize record's last_phase set to re_reviewing"
+if [ -d "${STATE_DIR}/.locks/cv-finalize-case3.lock" ]; then
+  fail "dedup lock released after a successful dispatch (case3)"
+else
+  pass "dedup lock released after a successful dispatch (case3)"
+fi
 
 # ===========================================================================
 # CASE 4: a re-review round is already in flight -> never a second dispatch,
@@ -523,6 +528,11 @@ if [ -f "${STATE_DIR}/cv-finalize-case10.rereview-pending" ]; then
 else
   pass "case10: no leftover pending marker after a confirmed sling failure"
 fi
+if [ -d "${STATE_DIR}/.locks/cv-finalize-case10.lock" ]; then
+  fail "case10: dedup lock released after a confirmed sling failure"
+else
+  pass "case10: dedup lock released after a confirmed sling failure"
+fi
 unset STUB_GC_SLING_FAIL
 # case10's own record never advances last_reviewed_head_sha (that's the
 # behavior under test), so it would otherwise keep looking "changed" and
@@ -569,6 +579,11 @@ if grep -qx "rereview_root_bead_id=" "${STATE_DIR}/cv-finalize-case11b.finalize"
 else
   fail "case11 sweep1: deferred record has no root recorded yet: got $(grep rereview_root_bead_id "${STATE_DIR}/cv-finalize-case11b.finalize")"
 fi
+if [ -d "${STATE_DIR}/.locks/cv-finalize-case11b.lock" ]; then
+  fail "case11 sweep1: dedup lock released after deferring to the next sweep"
+else
+  pass "case11 sweep1: dedup lock released after deferring to the next sweep"
+fi
 
 export STUB_GC_NEW_BEAD_ID="rc-seed11b"
 out11b="$(run_watch)"
@@ -577,6 +592,35 @@ gc_log11b="$(cat "$STUB_GC_LOG")"
 assert_contains "$gc_log11b" "sling testrig/gc.run-operator rc-seed11b --on con-voyage-rereview" "case11 sweep2: deferred record's sling carries its own new seed"
 rec11b2="$(cat "${STATE_DIR}/cv-finalize-case11b.finalize")"
 assert_contains "$rec11b2" "rereview_root_bead_id=rc-seed11b" "case11 sweep2: deferred record now records its own root"
+
+# ===========================================================================
+# CASE 12 (review fk-k4gebi BLOCKING-2): a dedup_key lock already held by a
+# concurrent run -> SKIP + no dispatch, not a silent proceed. Covers the
+# acquire_lock failure branch at the top of the TRIGGER block, which no
+# earlier case exercises (every prior triggering case runs with no
+# pre-existing lock).
+# ===========================================================================
+start_case "12: dedup_key lock already held -> SKIP, no sling, no dispatch"
+printf 'v8 - case12 change\n' >> "${SRC}/feature.txt"
+git_c "$SRC" add feature.txt
+git_c "$SRC" commit -q -m "fix: case12 change"
+HEAD12="$(git_c "$SRC" rev-parse HEAD)"
+git_c "$SRC" push -q origin feature-branch
+
+write_finalize "cv-finalize-case12" "fk-work12" "awaiting_merge" "$HEAD11" "1" "" "48"
+export STUB_GH_STATE_48="OPEN" STUB_GH_HEAD_48="$HEAD12" STUB_GH_BRANCH_48="feature-branch"
+mkdir -p "${STATE_DIR}/.locks/cv-finalize-case12.lock"
+export STUB_GC_NEW_BEAD_ID="rc-seed12"
+out12="$(run_watch)"
+assert_contains "$out12" "SKIP" "case12: diagnostic reports a skip"
+assert_contains "$out12" "locked by a concurrent rereview-watch run" "case12: skip reason names the lock"
+gc_log12="$(cat "$STUB_GC_LOG")"
+assert_not_contains "$gc_log12" "sling testrig" "case12: no sling call while locked"
+assert_not_contains "$gc_log12" "bd create" "case12: no seed bead minted while locked"
+rec12="$(cat "${STATE_DIR}/cv-finalize-case12.finalize")"
+assert_contains "$rec12" "last_reviewed_head_sha=${HEAD11}" "case12: bookkeeping unchanged while locked"
+rm -rf "${STATE_DIR}/.locks/cv-finalize-case12.lock"
+export STUB_GH_STATE_48="MERGED"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
