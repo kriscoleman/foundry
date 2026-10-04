@@ -304,7 +304,7 @@ mail_out="$(cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" \
   "$GC" --city "$GC_CITY" mail send "$CV_ORPHAN_SWEEP_ESCALATE_TARGET" \
     -s "ORPHAN SWEEP: closed ${CLOSED_TOTAL} under roots ${ROOT_IDS_LIST}${skipped_suffix}" \
     -m "con-voyage-orphan-sweep closed ${CLOSED_TOTAL} stranded descendant bead(s) under already-closed workflow root(s): ${ROOT_IDS_LIST}. Each was left open by the engine re-minting work after its root closed (fk-ruuy6).${skipped_sentence}" \
-    --json 2>&1)"
+    2>&1)"
 mail_rc=$?
 if [ "$mail_rc" -ne 0 ]; then
   echo "con-voyage-orphan-sweep: WARNING: digest mail to ${CV_ORPHAN_SWEEP_ESCALATE_TARGET} failed: ${mail_out}" >&2
