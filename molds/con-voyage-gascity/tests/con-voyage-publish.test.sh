@@ -309,6 +309,34 @@ assert_contains 'lane'"'"'s own `${CV_BUILD_DIR}/<lane>-review.md` — an ABSOLU
 assert_contains '"${CV_BUILD_DIR}/review-synthesis.md"' "synthesis body_file is documented as built from the absolute CV_BUILD_DIR"
 assert_not_contains 'body_file: ".gc/build/${ROOT_ID}/review-synthesis.md"' "no longer documents the bare relative synthesis body_file path that silently breaks when cwd is the worktree"
 
+# ===========================================================================
+# CASE 15 — fk-bcyt7v: last_reviewed_head_sha must come from
+#   gc.build.reviewed_head_sha (the SHA apply-review-findings stamped at
+#   approval time), not a fresh `git rev-parse HEAD` taken at publish time.
+#   A commit pushed between approval and publish (e.g. a mayor send-back fix)
+#   must not get silently recorded as "reviewed" — that is exactly what let
+#   con-voyage-rereview-watch skip re-reviewing an unreviewed push.
+# ===========================================================================
+start_case "15: fk-bcyt7v — reads gc.build.reviewed_head_sha off the workflow root"
+assert_contains 'cv_bead_metadata "$ROOT_ID" gc.build.reviewed_head_sha' "reads the reviewed SHA apply-review-findings stamped at approval time"
+
+start_case "15: fk-bcyt7v — last_reviewed_head_sha is written from \$REVIEWED_HEAD_SHA, not the publish-time HEAD"
+assert_contains "printf 'last_reviewed_head_sha=%s\\n' \"\$REVIEWED_HEAD_SHA\"" "finalize record's last_reviewed_head_sha comes from \$REVIEWED_HEAD_SHA"
+assert_not_contains "printf 'last_reviewed_head_sha=%s\\n' \"\$PUBLISHED_HEAD_SHA\"" "no longer writes the raw publish-time HEAD as last_reviewed_head_sha"
+
+start_case "15: fk-bcyt7v — falls back to \$PUBLISHED_HEAD_SHA only when the root metadata is empty (unknown, not confirmed equal)"
+assert_contains 'REVIEWED_HEAD_SHA="$PUBLISHED_HEAD_SHA"' "falls back to the publish-time HEAD when gc.build.reviewed_head_sha is unset"
+
+start_case "15: fk-bcyt7v — the reviewed-SHA read happens before the finalize record is written"
+read_line="$(line_of 'cv_bead_metadata "$ROOT_ID" gc.build.reviewed_head_sha')"
+write_line="$(line_of "printf 'last_reviewed_head_sha=%s\\n' \"\$REVIEWED_HEAD_SHA\"")"
+if [ -n "$read_line" ] && [ -n "$write_line" ] && [ "$read_line" -lt "$write_line" ]; then
+  echo "  PASS: reviewed-SHA read (line ${read_line}) precedes the finalize record write (line ${write_line})"
+else
+  echo "  FAIL: expected the reviewed-SHA read to precede the finalize record write" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "ALL CASES PASSED"

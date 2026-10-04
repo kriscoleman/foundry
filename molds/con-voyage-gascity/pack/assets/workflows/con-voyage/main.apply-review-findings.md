@@ -309,6 +309,35 @@ Always close with gc.outcome=pass, code_review.verdict=done|iterate,
 code_review.report_path=<review summary path>, and
 code_review.output_path=<review summary path>.
 
+### Recording the reviewed HEAD SHA on a no-op pass (fk-bcyt7v)
+
+Only when you are about to set `code_review.verdict=done` below — HEAD at this
+exact moment is the commit every active lane actually reviewed and approved
+(nothing was committed this pass, and any sync was a no-op or a
+patch-identical rebase). Stamp it on `$ROOT_ID` as
+`gc.build.reviewed_head_sha` so publish records the SHA that was genuinely
+reviewed instead of whatever HEAD happens to be when publish later runs — a
+commit pushed onto the branch between this approval and publish (e.g. a
+mayor send-back fix) must not get recorded as "reviewed" (fk-bcyt7v: this is
+exactly what let con-voyage-rereview-watch skip re-reviewing an unreviewed
+push). Do NOT run this on a fix pass — a commit you just made this pass has
+not been reviewed by anyone yet.
+
+```bash
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
+REVIEWED_HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || echo "")"
+if [ -n "$REVIEWED_HEAD_SHA" ] && [ -n "$CV_LIB" ]; then
+  gc bd update "$ROOT_ID" --set-metadata "gc.build.reviewed_head_sha=${REVIEWED_HEAD_SHA}" \
+    || echo "con-voyage apply-review-findings: WARNING: could not stamp gc.build.reviewed_head_sha on workflow root ${ROOT_ID}" >&2
+else
+  echo "con-voyage apply-review-findings: WARNING: could not resolve HEAD/con-voyage-lib.sh to stamp gc.build.reviewed_head_sha on ${ROOT_ID}" >&2
+fi
+```
+
 Use the exact claimed bead id when updating metadata:
 
   # No-op pass — every lane already approved, nothing changed:

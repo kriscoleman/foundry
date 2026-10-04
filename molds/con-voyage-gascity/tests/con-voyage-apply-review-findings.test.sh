@@ -100,6 +100,29 @@ else
   FAILURES=$((FAILURES+1))
 fi
 
+# ---------------------------------------------------------------------------
+# apply-review-findings.md: fk-bcyt7v — stamp gc.build.reviewed_head_sha on
+# the workflow root at the exact moment of a genuine no-op approval (HEAD at
+# that point is the commit every active lane actually reviewed), so publish
+# can later record the TRUE reviewed SHA instead of whatever HEAD happens to
+# be when publish runs.
+# ---------------------------------------------------------------------------
+start_case "apply-review-findings.md: stamps gc.build.reviewed_head_sha on the workflow root"
+assert_contains "$APPLY_MD" 'gc bd update "$ROOT_ID" --set-metadata "gc.build.reviewed_head_sha=${REVIEWED_HEAD_SHA}"' "stamps the reviewed HEAD sha onto \$ROOT_ID"
+
+start_case "apply-review-findings.md: the reviewed-sha stamp precedes the verdict=done close"
+stamp_line="$(line_of "$APPLY_MD" 'gc bd update "$ROOT_ID" --set-metadata "gc.build.reviewed_head_sha=${REVIEWED_HEAD_SHA}"')"
+done_line="$(line_of "$APPLY_MD" "--set-metadata 'code_review.verdict=done' \\")"
+if [ -n "$stamp_line" ] && [ -n "$done_line" ] && [ "$stamp_line" -lt "$done_line" ]; then
+  echo "  PASS: the reviewed-sha stamp (line ${stamp_line}) precedes the verdict=done close example (line ${done_line})"
+else
+  echo "  FAIL: expected the reviewed-sha stamp to precede the verdict=done close example" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
+start_case "apply-review-findings.md: warns explicitly against stamping on a fix pass"
+assert_contains "$APPLY_MD" 'Do NOT run this on a fix pass' "documents that the stamp only applies to a genuine no-op approval"
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "ALL CASES PASSED"
