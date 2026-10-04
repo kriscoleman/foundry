@@ -1555,9 +1555,12 @@ FINDING_MARKER_RE = re.compile(
     re.IGNORECASE,
 )
 
-def is_bot_ack(body):
+def is_bot_ack(body, state):
     b = (body or "").strip()
     if not b:
+        return False
+    bl = b.lower()
+    if state == "CHANGES_REQUESTED" or "not automatically approving" in bl or "refus" in bl or "classified as critical" in bl:
         return False
     return not FINDING_MARKER_RE.search(b)
 
@@ -1579,7 +1582,7 @@ def classify_suppression(author, body, state):
     if is_ai_reviewer_bot(author):
         if is_bot_approval_noise(body, state):
             return "bot_approval_noise"
-        if is_bot_ack(body):
+        if is_bot_ack(body, state):
             return "bot-ack"
         return None
     if is_bot(author):
