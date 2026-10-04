@@ -1,0 +1,34 @@
+# con-voyage-orphan-sweep — close beads stranded under an already-closed
+# workflow root (fk-yli8qd; mitigates engine re-mint tracked on fk-ruuy6).
+#
+# The gascity engine keeps minting review-loop iterations (ralph/scope
+# bodies, then review lanes) AFTER a workflow root closes, and even after
+# its ralph is closed. Root cause is engine-side (internal/dispatch/
+# ralph.go processRalphCheck, no root re-check before the mint). On
+# 2026-10-04 this burned ~15 reviewer slots on dead roots fk-i2ogbp (up to
+# iteration 5) and fk-iexopm (scope body fk-guif47 re-minted after the
+# WHOLE tree was closed). Live journeys starved meanwhile, with host load
+# ~80. Each lane self-closes as orphaned_root_race, but only after claiming
+# a slot and mailing the mayor.
+#
+# This order is a pack-side MITIGATION until the engine is fixed: each
+# tick, it finds every still-open bead under an already-CLOSED workflow
+# root and closes it leaf-first (lane/step -> scope-check -> scope ->
+# ralph -> workflow-finalize), bounded per tick, so the engine finds
+# nothing left to re-mint from. Open roots and their descendants are never
+# touched; the root bead itself is never touched either (con-voyage-
+# finalize.sh / cv_close_workflow_root own that). Mails the mayor one
+# digest line per tick, only when it closed something.
+#
+# Marshal bead-sweep (fk-d0ioj2) can absorb this later; this order does not
+# build Marshal.
+
+[order]
+description = "Close open beads stranded under an already-closed graph.v2 workflow root, leaf-first, bounded per tick"
+trigger = "cooldown"
+interval = "5m"
+exec = "$PACK_DIR/assets/scripts/con-voyage-orphan-sweep.sh"
+timeout = "3m"
+
+[order.env]
+CV_ORPHAN_SWEEP_ENABLED = "true"
