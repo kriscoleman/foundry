@@ -96,6 +96,23 @@ if [ -n "$CV_LIB" ]; then
 fi
 [ -n "$WORK_BRANCH_NAME" ] || WORK_BRANCH_NAME="con-voyage/${CONVOY_ID}"
 echo "con-voyage publish: resolved base branch = ${BASE_BRANCH}"
+
+# fk-6os73y: cv_ensure_work_branch_name stamps this flag on the root after
+# exhausting its persist retries — prepare-build's computed name still works
+# for THIS run (we just fell back to recomputing it above), but nobody was
+# ever told the cache never stuck, so a human has no visibility into how
+# often this degrades. Best-effort, non-fatal: mail the mayor once and keep
+# publishing with the value already resolved above.
+if [ -n "$CV_LIB" ]; then
+  WORK_BRANCH_NAME_UNPERSISTED="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.build.work_branch_name_unpersisted)"
+  if [ "$WORK_BRANCH_NAME_UNPERSISTED" = "true" ]; then
+    echo "con-voyage publish: gc.build.work_branch_name_unpersisted=true on ${ROOT_ID} — the computed branch name never persisted to the workflow root; notifying the mayor" >&2
+    gc mail send mayor \
+      -s "con-voyage publish: work-branch name never persisted for ${ROOT_ID}" \
+      -m "gc.build.work_branch_name_unpersisted=true on workflow root ${ROOT_ID} (resolved branch: ${WORK_BRANCH_NAME}). cv_ensure_work_branch_name exhausted its persist retries earlier in this journey; this run recomputed the same name and is proceeding, but the cache never stuck — worth a look if this recurs." \
+      2>&1 || echo "note: escalation mail failed too (continuing)" >&2
+  fi
+fi
 ```
 
 If push is true:
@@ -171,7 +188,7 @@ If open_pr is true (requires push to have succeeded):
     exit 1
   fi
   "$CV_BIN" create --repo <owner/repo> --title "<conventional-commit title>" \
-    --body-file <path to the assembled PR body> --base "$BASE_BRANCH" --head <work-branch> \
+    --body-file <path to the assembled PR body> --base "$BASE_BRANCH" --head "$WORK_BRANCH_NAME" \
     --formula con-voyage --agent "<rig>/gc.publisher"
   ```
 - Do not auto-merge. The PR is opened in ready state for human review only.

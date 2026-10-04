@@ -130,7 +130,8 @@ start_case "5: the resolved \$BASE_BRANCH reaches the hygiene guard's base-ref a
 assert_contains '"$CV_GUARD" guard "$(pwd)" "origin/${BASE_BRANCH}"' "guard is called with origin/\${BASE_BRANCH}, not a hardcoded origin/main"
 
 start_case "6: the resolved \$BASE_BRANCH reaches the PR-create --base flag"
-assert_contains '--base "$BASE_BRANCH" --head <work-branch>' "cv-pr-comment.sh create receives --base \"\$BASE_BRANCH\""
+assert_contains '--base "$BASE_BRANCH" --head "$WORK_BRANCH_NAME"' "cv-pr-comment.sh create receives --base \"\$BASE_BRANCH\""
+assert_not_contains '<work-branch>' "no hand-filled <work-branch> placeholder remains anywhere in this file — --head uses the resolved \$WORK_BRANCH_NAME"
 
 # ===========================================================================
 # CASE 7 — ordering: BASE_BRANCH must be resolved before either the guard
@@ -139,7 +140,7 @@ assert_contains '--base "$BASE_BRANCH" --head <work-branch>' "cv-pr-comment.sh c
 start_case "7: BASE_BRANCH resolution precedes both of its consumers"
 resolve_line="$(line_of 'BASE_BRANCH="$(source "$CV_LIB" && cv_resolve_base_branch "$CONVOY_ID" "$(pwd)")"')"
 guard_use_line="$(line_of '"$CV_GUARD" guard "$(pwd)" "origin/${BASE_BRANCH}"')"
-pr_create_line="$(line_of '--base "$BASE_BRANCH" --head <work-branch>')"
+pr_create_line="$(line_of '--base "$BASE_BRANCH" --head "$WORK_BRANCH_NAME"')"
 
 if [ -n "$resolve_line" ] && [ -n "$guard_use_line" ] && [ "$resolve_line" -lt "$guard_use_line" ]; then
   echo "  PASS: BASE_BRANCH resolution (line ${resolve_line}) precedes the guard call (line ${guard_use_line})"
@@ -233,7 +234,7 @@ assert_contains 'gc mail send mayor \' "a failure is escalated via gc mail, not 
 assert_contains 'con-voyage publish: aggregated review comment failed for PR ${PR_NUMBER}' "the escalation mail names the failing PR"
 
 aggregate_call_line="$(line_of 'if ! CV_AGGREGATE_OUT="$("$CV_BIN" comment-aggregate "$PR_NUMBER" --repo "$REPO_FULL" \')"
-mail_call_line="$(line_of 'gc mail send mayor \')"
+mail_call_line="$(line_of 'con-voyage publish: aggregated review comment failed for PR ${PR_NUMBER}')"
 if [ -n "$aggregate_call_line" ] && [ -n "$mail_call_line" ] && [ "$aggregate_call_line" -lt "$mail_call_line" ]; then
   echo "  PASS: the comment-aggregate call (line ${aggregate_call_line}) precedes the escalation mail (line ${mail_call_line}), so the mail only fires on the captured failure"
 else
@@ -266,6 +267,29 @@ start_case "12: fk-3sch0 BLOCKING-1 — IMPLEMENTOR is the bare gc.build.impleme
 assert_contains 'IMPLEMENTOR="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.build.implementor_session)"' "IMPLEMENTOR is assigned directly from the dedicated key's bare value"
 assert_not_contains 'IMPLEMENTOR="${ROOT_RIG}/${IMPLEMENTOR_SESSION}"' "no longer prepends ROOT_RIG — that prefixed form is DEAD to implementor_alive"
 assert_not_contains 'ROOT_ROUTED_TO="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.routed_to)"' "no longer derives a rig prefix from the root's gc.routed_to for this purpose"
+
+# ===========================================================================
+# CASE 13 — fk-6os73y re-grade (operator severity rubric): a root stamped
+#   gc.build.work_branch_name_unpersisted=true by cv_ensure_work_branch_name's
+#   exhausted persist retries had no reader anywhere in the pack — a silent
+#   degraded state nobody could see. publish now checks it and mails the
+#   mayor, mirroring the comment-aggregate-failure escalation pattern (CASE
+#   11) rather than inventing a new one.
+# ===========================================================================
+start_case "13: publish reads gc.build.work_branch_name_unpersisted and mails the mayor when it is set"
+assert_contains 'cv_bead_metadata "$ROOT_ID" gc.build.work_branch_name_unpersisted' "reads the unpersisted flag off the workflow root"
+assert_contains 'gc mail send mayor \' "escalates via gc mail send mayor, matching the comment-aggregate escalation pattern"
+assert_contains 'work-branch name never persisted for' "the escalation mail names the affected root"
+
+start_case "13: the unpersisted-flag check runs after WORK_BRANCH_NAME is resolved"
+wbn_line="$(line_of '[ -n "$WORK_BRANCH_NAME" ] || WORK_BRANCH_NAME="con-voyage/${CONVOY_ID}"')"
+unpersisted_line="$(line_of 'cv_bead_metadata "$ROOT_ID" gc.build.work_branch_name_unpersisted')"
+if [ -n "$wbn_line" ] && [ -n "$unpersisted_line" ] && [ "$wbn_line" -lt "$unpersisted_line" ]; then
+  echo "  PASS: WORK_BRANCH_NAME resolution (line ${wbn_line}) precedes the unpersisted-flag check (line ${unpersisted_line})"
+else
+  echo "  FAIL: expected WORK_BRANCH_NAME resolution to precede the unpersisted-flag check" >&2
+  FAILURES=$((FAILURES+1))
+fi
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
