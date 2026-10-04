@@ -123,6 +123,43 @@ fi
 start_case "apply-review-findings.md: warns explicitly against stamping on a fix pass"
 assert_contains "$APPLY_MD" 'Do NOT run this on a fix pass' "documents that the stamp only applies to a genuine no-op approval"
 
+# ---------------------------------------------------------------------------
+# apply-review-findings.md: review fk-qj2s9r BLOCKING-1 (fk-1fwe34/fk-0bkrzd/
+# fk-qzn6vu) — the reviewed-sha stamp's guard was gated on an unused $CV_LIB
+# (copy-pasted from the neighboring implementor_session block, which actually
+# needs $CV_LIB for its cv_session_route_handle call; this stamp is a bare
+# `gc bd update` with no cv_* dependency at all). If $CV_LIB failed to
+# resolve for any unrelated reason, the stamp silently never wrote, quietly
+# resurrecting the exact pre-fix bug fk-bcyt7v exists to close. Assert the
+# guard is gated only on the inputs it actually uses ($REVIEWED_HEAD_SHA,
+# $ROOT_ID), not on $CV_LIB, so a future copy-paste can't reintroduce the
+# dead gate silently.
+# ---------------------------------------------------------------------------
+start_case "apply-review-findings.md: the reviewed-sha stamp's guard does not gate on the unused \$CV_LIB"
+assert_not_contains_near() {
+  local file="$1" anchor="$2" needle="$3" label="$4"
+  local anchor_line
+  anchor_line="$(line_of "$file" "$anchor")"
+  if [ -z "$anchor_line" ]; then
+    echo "  FAIL: ${label} (anchor not found: ${anchor})" >&2
+    FAILURES=$((FAILURES+1))
+    return
+  fi
+  local window
+  window="$(sed -n "${anchor_line},$((anchor_line + 6))p" "$file")"
+  case "$window" in
+    *"$needle"*) echo "  FAIL: ${label} (found '${needle}' within 6 lines of the stamp)" >&2; FAILURES=$((FAILURES+1)) ;;
+    *) echo "  PASS: ${label}" ;;
+  esac
+}
+assert_not_contains_near "$APPLY_MD" \
+  'REVIEWED_HEAD_SHA="$(git -C "$WORKTREE" rev-parse HEAD 2>/dev/null || echo "")"' \
+  '[ -n "$CV_LIB" ]' \
+  "stamp guard no longer conjuncts on \$CV_LIB"
+
+start_case "apply-review-findings.md: the reviewed-sha stamp resolves HEAD via \$WORKTREE, not ambient cwd"
+assert_contains "$APPLY_MD" 'REVIEWED_HEAD_SHA="$(git -C "$WORKTREE" rev-parse HEAD 2>/dev/null || echo "")"' "resolves HEAD against \$WORKTREE explicitly"
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "ALL CASES PASSED"

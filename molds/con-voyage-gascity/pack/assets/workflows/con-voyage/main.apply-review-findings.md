@@ -324,17 +324,12 @@ push). Do NOT run this on a fix pass — a commit you just made this pass has
 not been reviewed by anyone yet.
 
 ```bash
-CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
-CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
-[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
-CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
-[ -f "$CV_LIB" ] || CV_LIB=""
-REVIEWED_HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || echo "")"
-if [ -n "$REVIEWED_HEAD_SHA" ] && [ -n "$CV_LIB" ]; then
+REVIEWED_HEAD_SHA="$(git -C "$WORKTREE" rev-parse HEAD 2>/dev/null || echo "")"
+if [ -n "$REVIEWED_HEAD_SHA" ] && [ -n "$ROOT_ID" ]; then
   gc bd update "$ROOT_ID" --set-metadata "gc.build.reviewed_head_sha=${REVIEWED_HEAD_SHA}" \
     || echo "con-voyage apply-review-findings: WARNING: could not stamp gc.build.reviewed_head_sha on workflow root ${ROOT_ID}" >&2
 else
-  echo "con-voyage apply-review-findings: WARNING: could not resolve HEAD/con-voyage-lib.sh to stamp gc.build.reviewed_head_sha on ${ROOT_ID}" >&2
+  echo "con-voyage apply-review-findings: WARNING: could not resolve HEAD/ROOT_ID to stamp gc.build.reviewed_head_sha on ${ROOT_ID}" >&2
 fi
 ```
 
