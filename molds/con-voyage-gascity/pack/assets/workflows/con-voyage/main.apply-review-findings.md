@@ -312,6 +312,33 @@ case "$CV_LOW_REOPEN_WINDOW_SECONDS" in
   *[!0-9]*|'') CV_LOW_REOPEN_WINDOW_SECONDS="1200" ;;
 esac
 
+# fk-tk0dvg: this fence runs as its own independent shell, several fences
+# downstream of the ROOT_ID/CONVOY_ID derivations above — never assume either
+# survives from an earlier fence. Re-derive both the same way.
+ROOT_ID="${GC_ROOT_BEAD_ID:-}"
+if [ -z "$ROOT_ID" ]; then
+  ROOT_ID="$(gc bd show "$GC_BEAD_ID" --json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    d = d[0] if isinstance(d, list) else d
+except Exception:
+    d = {}
+print((d.get('metadata') or {}).get('gc.root_bead_id') or '')
+" 2>/dev/null)"
+fi
+[ -n "$ROOT_ID" ] || ROOT_ID="$GC_BEAD_ID"
+
+CONVOY_ID="$(gc bd show "$ROOT_ID" --json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    d = d[0] if isinstance(d, list) else d
+except Exception:
+    d = {}
+print((d.get('metadata') or {}).get('gc.build.source_anchor_id') or '')
+" 2>/dev/null)"
+
 CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
 CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
 [ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
