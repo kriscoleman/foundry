@@ -117,6 +117,11 @@
 #                   for a PR. Default: the reserved `human` alias (same
 #                   default as con-voyage-repair-watchdog.sh's own
 #                   escalation target).
+#   CV_NATIVE_PRLIST_LIMIT  `--limit` passed to PART A-native's own
+#                   `gh pr list` call (fk-travno review BLOCKING-4: gh's own
+#                   default page size is 30, so an author with more than 30
+#                   open PRs across a monitored repo silently never saw the
+#                   rest discovered by this path at all). Default: 100.
 #
 # Exit codes:
 #   0 — completed (some or all monitors may have had no actionable PRs)
@@ -153,6 +158,7 @@ CV_AUTHOR_GATE="${CV_AUTHOR_GATE:-enabled}"
 # monitor and can auto-mint con-voyage-ci-repair work. Keep it opt-in with a
 # code-free rollback until it has production mileage.
 CV_NATIVE_DISCOVERY="${CV_NATIVE_DISCOVERY:-disabled}"
+CV_NATIVE_PRLIST_LIMIT="${CV_NATIVE_PRLIST_LIMIT:-100}"
 CV_CONFLICT_STRATEGY="${CV_CONFLICT_STRATEGY:-rebase}"
 CV_LOCK_STALE_SECONDS="${CV_LOCK_STALE_SECONDS:-300}"
 CV_MINT_MAX_ATTEMPTS="${CV_MINT_MAX_ATTEMPTS:-3}"
@@ -321,16 +327,33 @@ process_pr_record() {
     return
   fi
 
+  # a_log_tag selects this record's own part-of-the-script label for every
+  # log line below ("[PART A]" for the engine-backed loop, "[PART A-native]"
+  # for the base-agnostic discovery loop) — both call sites set it explicitly
+  # immediately before calling this function (fk-travno review BLOCKING-2:
+  # every log line here previously hardcoded the literal "[PART A]" tag, so a
+  # native-discovered PR's own KEEP/DROP/SKIP/WARNING lines misreported
+  # themselves as coming from the engine-backed path).
+  a_log_tag="${a_log_tag:-[PART A]}"
+
   if [ -z "$a_failure_kind" ]; then
-    echo "con-voyage-pr-watch: [PART A] WARNING: ${a_full}#${a_num} is actionable but its state/failed_checks did not classify into a known failure_kind (checks_failed|merge_conflict|behind_base|blocked); skipping rather than minting an undifferentiated bead" >&2
+    echo "con-voyage-pr-watch: ${a_log_tag} WARNING: ${a_full}#${a_num} is actionable but its state/failed_checks did not classify into a known failure_kind (checks_failed|merge_conflict|behind_base|blocked); skipping rather than minting an undifferentiated bead" >&2
     return
   fi
 
   # Resolve the PR author AND the review/mergeability signals needed for
   # the ACTIONABLE FILTER (C6) below, in ONE gh call. The report JSON has
-  # none of these fields, so we always ask gh directly.
-  pr_view_json=$("$GH" pr view "$a_num" --repo "$a_full" \
-    --json author,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup 2>/dev/null || echo "")
+  # none of these fields, so we always ask gh directly — UNLESS the caller
+  # already fetched this exact field set (fk-travno review BLOCKING-1): PART
+  # A-native classifies failure_kind from its own `gh pr view` before ever
+  # calling this function, so a second, identical call here just to re-derive
+  # the author would double the gh calls for every native-discovered PR.
+  if [ -n "${a_pr_view_json:-}" ]; then
+    pr_view_json="$a_pr_view_json"
+  else
+    pr_view_json=$("$GH" pr view "$a_num" --repo "$a_full" \
+      --json author,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup 2>/dev/null || echo "")
+  fi
 
   # shellcheck disable=SC2016
   _PY_REVIEW_GATE='
@@ -376,7 +399,7 @@ print(author + SEP + ("1" if skip_awaiting_human else "0"))
   # AUTHOR FILTER — the airtight gate. Anything that is not exactly
   # CV_PR_AUTHOR (including an unresolved/empty author) is dropped.
   if [ "$pr_author" != "$CV_PR_AUTHOR" ]; then
-    echo "con-voyage-pr-watch: [PART A] DROP ${a_full}#${a_num} (author='${pr_author:-<unresolved>}' != '${CV_PR_AUTHOR}') — no repair bead created"
+    echo "con-voyage-pr-watch: ${a_log_tag} DROP ${a_full}#${a_num} (author='${pr_author:-<unresolved>}' != '${CV_PR_AUTHOR}') — no repair bead created"
     return
   fi
 
@@ -390,7 +413,7 @@ print(author + SEP + ("1" if skip_awaiting_human else "0"))
   # repaired regardless of review state (review state alone must never
   # suppress a real defect).
   if [ "$a_failure_kind" = "blocked" ] && [ "$skip_awaiting_human" = "1" ]; then
-    echo "con-voyage-pr-watch: [PART A] SKIP ${a_full}#${a_num} — awaiting human review only (CI green, MERGEABLE, branch up to date, reviewDecision=REVIEW_REQUIRED); not a repair"
+    echo "con-voyage-pr-watch: ${a_log_tag} SKIP ${a_full}#${a_num} — awaiting human review only (CI green, MERGEABLE, branch up to date, reviewDecision=REVIEW_REQUIRED); not a repair"
     return
   fi
 
@@ -402,7 +425,7 @@ print(author + SEP + ("1" if skip_awaiting_human else "0"))
   dedup_key="$a_dedup_key"
 
   if [ -z "$a_route" ]; then
-    echo "con-voyage-pr-watch: [PART A] WARNING: ${a_full}#${a_num} has no repair_route in backfill result; cannot create bead safely; skipping" >&2
+    echo "con-voyage-pr-watch: ${a_log_tag} WARNING: ${a_full}#${a_num} has no repair_route in backfill result; cannot create bead safely; skipping" >&2
     return
   fi
 
@@ -497,7 +520,7 @@ print(author + SEP + ("1" if skip_awaiting_human else "0"))
   if [ "$tracked_open" -eq 1 ]; then
     new_last_state="$st_last_state"
     if [ "$st_last_state" = "$a_failure_kind" ]; then
-      echo "con-voyage-pr-watch: [PART A] SKIP ${a_full}#${a_num} @ ${a_sha} — repair genuinely in-flight (dedup: ${dedup_key}, last_handled_state=${st_last_state})"
+      echo "con-voyage-pr-watch: ${a_log_tag} SKIP ${a_full}#${a_num} @ ${a_sha} — repair genuinely in-flight (dedup: ${dedup_key}, last_handled_state=${st_last_state})"
     # $st_inflight is an EXISTING, already-rig-prefixed repair bead
     # (minted below with --rig "$a_rig"), not a fresh id — the same
     # fk-7v3r bug class con-voyage-lib.sh's helpers hit: `--city` alone
@@ -509,10 +532,10 @@ print(author + SEP + ("1" if skip_awaiting_human else "0"))
       --title "$repair_title" \
       --set-metadata "failure_kind=${a_failure_kind}" \
       2>&1; then
-      echo "con-voyage-pr-watch: [PART A] UPDATE ${a_full}#${a_num} @ ${a_sha} — repair still in-flight on ${st_inflight} (dedup: ${dedup_key}); failure_kind ${st_last_state} -> ${a_failure_kind}"
+      echo "con-voyage-pr-watch: ${a_log_tag} UPDATE ${a_full}#${a_num} @ ${a_sha} — repair still in-flight on ${st_inflight} (dedup: ${dedup_key}); failure_kind ${st_last_state} -> ${a_failure_kind}"
       new_last_state="$a_failure_kind"
     else
-      echo "con-voyage-pr-watch: [PART A] WARNING: failed to update ${st_inflight} with the new failure_kind for ${a_full}#${a_num}; will retry next cycle" >&2
+      echo "con-voyage-pr-watch: ${a_log_tag} WARNING: failed to update ${st_inflight} with the new failure_kind for ${a_full}#${a_num}; will retry next cycle" >&2
     fi
     # Persist the write-back (if any) even on a skip/update cycle, so a
     # known implementor is not silently lost/re-derived every cycle. The
@@ -541,7 +564,7 @@ print(author + SEP + ("1" if skip_awaiting_human else "0"))
     rm -f "$stale_marker"
   done
 
-  echo "con-voyage-pr-watch: [PART A] KEEP ${a_full}#${a_num} (author='${pr_author}') — dispatching repair (dedup: ${dedup_key})"
+  echo "con-voyage-pr-watch: ${a_log_tag} KEEP ${a_full}#${a_num} (author='${pr_author}') — dispatching repair (dedup: ${dedup_key})"
 
   # DISPATCH (Task 3, fk-4o74 Fix 1): every open con-voyage PR has exactly
   # one live implementor responsible for it. Reuse it — mail + notify,
@@ -560,9 +583,9 @@ print(author + SEP + ("1" if skip_awaiting_human else "0"))
       -m "PR ${a_full}#${a_num} (branch ${a_branch}) needs rework: ${a_failure_kind}. cv_pr_author=${CV_PR_AUTHOR} cv_author_gate=${CV_AUTHOR_GATE} cv_conflict_strategy=${CV_CONFLICT_STRATEGY}. ${a_title}" \
       --notify 2>&1; then
       dispatched=1
-      echo "con-voyage-pr-watch: [PART A] ${a_full}#${a_num}: routed rework to existing implementor ${st_implementor} (mail+notify, no new pool worker)"
+      echo "con-voyage-pr-watch: ${a_log_tag} ${a_full}#${a_num}: routed rework to existing implementor ${st_implementor} (mail+notify, no new pool worker)"
     else
-      echo "con-voyage-pr-watch: [PART A] WARNING: mail to implementor ${st_implementor} failed for ${a_full}#${a_num}; will retry next cycle" >&2
+      echo "con-voyage-pr-watch: ${a_log_tag} WARNING: mail to implementor ${st_implementor} failed for ${a_full}#${a_num}; will retry next cycle" >&2
     fi
   else
     # MINT-ATTEMPT CAP (fk-zvkmd): a fallback mint that keeps failing (bd
@@ -595,16 +618,16 @@ print(author + SEP + ("1" if skip_awaiting_human else "0"))
         # dispatch" state this guard persists — checking it (rather than
         # re-sending mail) is what makes the short-circuit safe to
         # re-evaluate every cycle without side effects.
-        echo "con-voyage-pr-watch: [PART A] SKIP ${a_full}#${a_num} — mint already escalated after ${mint_fail_count} failed attempt(s); not re-minting (dedup: ${dedup_key})"
+        echo "con-voyage-pr-watch: ${a_log_tag} SKIP ${a_full}#${a_num} — mint already escalated after ${mint_fail_count} failed attempt(s); not re-minting (dedup: ${dedup_key})"
       else
-        echo "con-voyage-pr-watch: [PART A] ESCALATE ${a_full}#${a_num} — ${mint_fail_count} failed mint/sling attempt(s), notifying ${CV_ESCALATE_TARGET} and stopping automatic re-mint"
+        echo "con-voyage-pr-watch: ${a_log_tag} ESCALATE ${a_full}#${a_num} — ${mint_fail_count} failed mint/sling attempt(s), notifying ${CV_ESCALATE_TARGET} and stopping automatic re-mint"
         if "$GC" --city "$GC_CITY" mail send "$CV_ESCALATE_TARGET" \
           -s "con-voyage pr-watch: giving up on minting a repair for ${a_full}#${a_num}" \
           -m "Repair-bead mint/sling for ${a_full}#${a_num} (branch ${a_branch}, ${a_failure_kind}) has failed ${mint_fail_count} consecutive attempt(s). This monitor is stopping automatic re-mint for this PR — please take a look." \
           2>&1; then
           : > "$mint_escalated_file"
         else
-          echo "con-voyage-pr-watch: [PART A] WARNING: escalation mail to ${CV_ESCALATE_TARGET} failed for ${a_full}#${a_num}; will retry next cycle" >&2
+          echo "con-voyage-pr-watch: ${a_log_tag} WARNING: escalation mail to ${CV_ESCALATE_TARGET} failed for ${a_full}#${a_num}; will retry next cycle" >&2
         fi
       fi
       return
@@ -632,11 +655,11 @@ print(author + SEP + ("1" if skip_awaiting_human else "0"))
       # comment above. No --rig derivation or bd create needed; the bead
       # already exists in the right rig (it was minted there last cycle).
       repair_bead_id="$reattach_bead_id"
-      echo "con-voyage-pr-watch: [PART A] ${a_full}#${a_num}: re-attempting ci-repair attach on previously-bare bead ${repair_bead_id} (self-heal, dedup: ${dedup_key})"
+      echo "con-voyage-pr-watch: ${a_log_tag} ${a_full}#${a_num}: re-attempting ci-repair attach on previously-bare bead ${repair_bead_id} (self-heal, dedup: ${dedup_key})"
     else
       a_rig="${a_route%%/*}"
       if [ "$a_rig" = "$a_route" ] || [ -z "$a_rig" ]; then
-        echo "con-voyage-pr-watch: [PART A] WARNING: ${a_full}#${a_num} repair_route '${a_route}' has no '<rig>/' prefix; cannot derive a target rig; skipping fallback dispatch (would mis-home the repair bead and fail cross-rig routing)" >&2
+        echo "con-voyage-pr-watch: ${a_log_tag} WARNING: ${a_full}#${a_num} repair_route '${a_route}' has no '<rig>/' prefix; cannot derive a target rig; skipping fallback dispatch (would mis-home the repair bead and fail cross-rig routing)" >&2
       else
         # v2-formula mint (gc 1.4.1): con-voyage-ci-repair is a v2 workflow formula
         # that references {{convoy_id}} (the repair bead id). Such a formula CANNOT
@@ -658,7 +681,7 @@ print(author + SEP + ("1" if skip_awaiting_human else "0"))
           --silent 2>/dev/null || true)
 
         if [ -z "${repair_bead_id// /}" ]; then
-          echo "con-voyage-pr-watch: [PART A] WARNING: failed to create repair bead for ${a_full}#${a_num}; will retry next cycle" >&2
+          echo "con-voyage-pr-watch: ${a_log_tag} WARNING: failed to create repair bead for ${a_full}#${a_num}; will retry next cycle" >&2
           mint_fail_count=$((mint_fail_count + 1))
           printf '%s\n' "$mint_fail_count" > "$mint_fail_file"
         else
@@ -693,7 +716,7 @@ print(author + SEP + ("1" if skip_awaiting_human else "0"))
         dispatched=1
         new_inflight="$repair_bead_id"
         new_implementor=""
-        echo "con-voyage-pr-watch: [PART A] ${a_full}#${a_num}: repair bead ${repair_bead_id} created/attached and routed to ${a_route} (fallback — no live implementor)"
+        echo "con-voyage-pr-watch: ${a_log_tag} ${a_full}#${a_num}: repair bead ${repair_bead_id} created/attached and routed to ${a_route} (fallback — no live implementor)"
         # A successful mint clears any prior failure streak — the next
         # failure (if this bead's own dispatch later stalls) starts a fresh
         # cap budget rather than inheriting an unrelated earlier streak.
@@ -703,7 +726,7 @@ print(author + SEP + ("1" if skip_awaiting_human else "0"))
         # no longer applies.
         rm -f "$pending_attach_file"
       else
-        echo "con-voyage-pr-watch: [PART A] WARNING: repair-bead sling failed for ${a_full}#${a_num} (bead ${repair_bead_id}); will retry next cycle" >&2
+        echo "con-voyage-pr-watch: ${a_log_tag} WARNING: repair-bead sling failed for ${a_full}#${a_num} (bead ${repair_bead_id}); will retry next cycle" >&2
         mint_fail_count=$((mint_fail_count + 1))
         printf '%s\n' "$mint_fail_count" > "$mint_fail_file"
         # ROLLBACK (fk-zvkmd, FIX EXPECTATION 3): the bead WAS pre-created,
@@ -720,7 +743,7 @@ print(author + SEP + ("1" if skip_awaiting_human else "0"))
         # other already-fixed bd call in this pack (see :442-451).
         "$GC" bd close "$repair_bead_id" \
           --reason "rollback: sling to ${a_route} failed for ${a_full}#${a_num}, bead never received its real content" \
-          2>&1 || echo "con-voyage-pr-watch: [PART A] WARNING: rollback close of orphaned bead ${repair_bead_id} failed for ${a_full}#${a_num}; it may be left bare" >&2
+          2>&1 || echo "con-voyage-pr-watch: ${a_log_tag} WARNING: rollback close of orphaned bead ${repair_bead_id} failed for ${a_full}#${a_num}; it may be left bare" >&2
         # Clear the pending-attach marker (if any — written after bd create
         # on a fresh mint, or pre-existing on a self-heal retry) now that the
         # bead it pointed at is rolled back: a future cycle should see a
@@ -937,6 +960,8 @@ print("\x1f".join(str(f).replace("\x1f", " ").replace("\n", " ") for f in fields
         continue
       fi
 
+      a_log_tag="[PART A]"
+      a_pr_view_json=""
       process_pr_record
 
       release_lock "$a_dedup_key"
@@ -987,6 +1012,7 @@ while IFS=$'\x1f' read -r n_owner n_repo n_rig n_route n_bases; do
   IFS=',' read -r -a n_base_arr <<< "$n_bases"
 
   n_prs_json=$("$GH" pr list --repo "$n_full" --author "$CV_PR_AUTHOR" --state open \
+    --limit "$CV_NATIVE_PRLIST_LIMIT" \
     --json number,title,headRefName,headRefOid,baseRefName 2>/dev/null) || {
     echo "con-voyage-pr-watch: [PART A-native] WARNING: gh pr list failed for ${n_full}; skipping" >&2
     continue
@@ -1043,8 +1069,14 @@ for pr in data:
     fi
     [ "$n_base_listed" -eq 1 ] && continue
 
+    # Fetch author,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup
+    # in ONE call (fk-travno review BLOCKING-1): this is the exact superset
+    # process_pr_record needs for its own author/review-gate resolution
+    # below, so that call reuses this JSON (via a_pr_view_json) instead of
+    # asking gh again — a native-discovered PR previously paid for two
+    # identical `gh pr view` round-trips every cycle.
     n_view_json=$("$GH" pr view "$n_num" --repo "$n_full" \
-      --json statusCheckRollup,mergeStateStatus,mergeable,reviewDecision 2>/dev/null) || {
+      --json author,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup 2>/dev/null) || {
       echo "con-voyage-pr-watch: [PART A-native] WARNING: gh pr view failed for ${n_full}#${n_num}; skipping" >&2
       continue
     }
@@ -1068,6 +1100,8 @@ for pr in data:
       continue
     fi
 
+    a_log_tag="[PART A-native]"
+    a_pr_view_json="$n_view_json"
     process_pr_record
 
     release_lock "$a_dedup_key"
