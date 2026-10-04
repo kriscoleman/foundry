@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.15.0](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.14.0...con-voyage-gascity-v0.15.0) (2026-10-04)
+
+
+### Features
+
+* **con-voyage:** assistant scaffolding — feature flags + suspend/resume handoff notes ([b832b05](https://github.com/kriscoleman/foundry/commit/b832b05e6220aaa728d7c2fcb2fd0e266b28871f))
+
+
+### Bug Fixes
+
+* avoid merging stderr into a --json gc mail send call (repair fk-u0jac2) ([b201820](https://github.com/kriscoleman/foundry/commit/b201820f0a63a4630f2958816c1499c348971134))
+* **con-voyage:** address assistants-scaffolding review findings (fk-apujks) ([f930177](https://github.com/kriscoleman/foundry/commit/f930177a55601b33e3576dc6446c4d7746b31035))
+* use bash 3.2-safe idiom for cv_read_handoff_note test (review fk-ho6bs0) ([249a5a4](https://github.com/kriscoleman/foundry/commit/249a5a4082145616814908c2d2b1bc55a3c7f27f))
+
 ## [0.14.0](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.13.2...con-voyage-gascity-v0.14.0) (2026-10-04)
 
 
