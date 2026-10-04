@@ -347,7 +347,8 @@ dispatch_rereview() {
   fi
 
   echo "con-voyage-rereview-watch: ERROR: gc sling con-voyage-rereview failed after ~${sling_duration}s (exit ${sling_rc}) for ${repo_full}#${pr_number}: ${sling_out}" >&2
-  if ! "$GC" --city "$GC_CITY" bd close "$seed_bead_id" --reason "gc sling con-voyage-rereview failed (exit ${sling_rc})" >/dev/null 2>&1; then
+  if ! cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" \
+    "$GC" --city "$GC_CITY" bd close "$seed_bead_id" --reason "gc sling con-voyage-rereview failed (exit ${sling_rc})" >/dev/null 2>&1; then
     echo "con-voyage-rereview-watch: WARNING: could not close orphaned seed bead ${seed_bead_id} after a confirmed sling failure for ${repo_full}#${pr_number}" >&2
   fi
   rm -f "$pending_file"
@@ -441,6 +442,19 @@ print('{}\x1f{}\x1f{}'.format(d.get('state') or '', d.get('headRefOid') or '', d
 
     echo "con-voyage-rereview-watch: TRIGGER ${label} — new head ${new_head} carries a real code change since ${FS_LAST_REVIEWED_HEAD_SHA}; starting a re-review round"
 
+    # BLOCKING-2 (SRE): a single record's dispatch can now legitimately run up
+    # to CV_REREVIEW_SLING_TIMEOUT_SECONDS (default 300s), widening the window
+    # where two overlapping sweeps both see no rereview_root_bead_id, both
+    # mint a seed bead, and both sling the same PR+round — the pending-marker
+    # logic above assumes single-flight and does not catch that. Same
+    # mkdir-based mutex sibling monitors con-voyage-pr-watch.sh and
+    # con-voyage-repair-watchdog.sh already use (precedent: fk-11yuv,
+    # kriscoleman/foundry#81) guards the whole read-decide-write section below.
+    if ! acquire_lock "$dedup_key"; then
+      echo "con-voyage-rereview-watch: SKIP ${label} — locked by a concurrent rereview-watch run (dedup: ${dedup_key})"
+      continue
+    fi
+
     roster_vars="$FS_ROSTER_VARS"
     if [ -z "${roster_vars// /}" ] && [ -n "${FS_ROOT_BEAD_ID// /}" ]; then
       roster_vars="$(flatten_roster_vars "$FS_ROOT_BEAD_ID")"
@@ -480,7 +494,8 @@ print('{}\x1f{}\x1f{}'.format(d.get('state') or '', d.get('headRefOid') or '', d
         rm -f "$pending_file"
       else
         echo "con-voyage-rereview-watch: ${label} — pending seed ${pending_seed_bead_id} from a previous timed-out sling never attached; closing it as orphaned and retrying fresh"
-        if ! "$GC" --city "$GC_CITY" bd close "$pending_seed_bead_id" --reason "superseded: previous re-review sling for ${label} never attached" >/dev/null 2>&1; then
+        if ! cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" \
+          "$GC" --city "$GC_CITY" bd close "$pending_seed_bead_id" --reason "superseded: previous re-review sling for ${label} never attached" >/dev/null 2>&1; then
           echo "con-voyage-rereview-watch: WARNING: could not close stale pending seed ${pending_seed_bead_id} for ${label}" >&2
         fi
         rm -f "$pending_file"
@@ -491,6 +506,7 @@ print('{}\x1f{}\x1f{}'.format(d.get('state') or '', d.get('headRefOid') or '', d
     if [ -z "${new_root// /}" ]; then
       if [ "$dispatched_this_sweep" -eq 1 ]; then
         echo "con-voyage-rereview-watch: SKIP ${label} — already dispatched one re-review round this sweep; deferring to next cycle to bound sweep runtime under the order's exec timeout"
+        release_lock "$dedup_key"
         continue
       fi
 
@@ -508,6 +524,7 @@ print('{}\x1f{}\x1f{}'.format(d.get('state') or '', d.get('headRefOid') or '', d
       dispatched_this_sweep=1
       if [ -z "${new_root// /}" ]; then
         echo "con-voyage-rereview-watch: ERROR: could not dispatch a re-review round for ${label}; will retry next cycle" >&2
+        release_lock "$dedup_key"
         continue
       fi
     fi
@@ -520,6 +537,7 @@ print('{}\x1f{}\x1f{}'.format(d.get('state') or '', d.get('headRefOid') or '', d
       "$FS_PR_NUMBER" "$FS_PR_AUTHOR" "$FS_IMPLEMENTOR" "re_reviewing" "$FS_ROOT_BEAD_ID" \
       "$roster_vars" "$new_head" "$next_round" "$new_root"
     echo "con-voyage-rereview-watch: dispatched re-review round ${next_round} for ${label} -> seed bead ${new_root}"
+    release_lock "$dedup_key"
   done
 
 exit 0
