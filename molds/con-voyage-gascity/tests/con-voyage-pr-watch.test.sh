@@ -159,6 +159,45 @@ JSON
           fi
           exit 0
         fi
+        # fk-travno review BLOCKING-3: a genuine `gh pr list` failure in PART
+        # A-native must be surfaced (a WARNING to stderr) and skipped, never
+        # silently swallowed into an empty/successful result.
+        if [ "${STUB_NATIVE_PRLIST_FAIL:-0}" = "1" ]; then
+          echo "gh: pr list: simulated transient API failure" >&2
+          exit 1
+        fi
+        # fk-travno review BLOCKING-4 regression fixture: gh's own real
+        # default page size for `pr list` is 30 PRs. Emit MORE than 30
+        # unlisted-base PRs for this author, and HONOR a `--limit` flag the
+        # same way real gh does (cap the returned count at it) — proving the
+        # script must pass an explicit --limit above 30 itself, or it would
+        # silently never discover the overflow.
+        if [ "${STUB_NATIVE_PRLIST_MODE:-}" = "many" ]; then
+          if [ "$author" = "kriscoleman" ]; then
+            limit="$(flagval --limit "$@")"
+            # Real gh's own undocumented default page size when --limit is
+            # absent — mirrored here so a script that forgets --limit
+            # entirely reproduces the exact silent-truncation bug.
+            : "${limit:=30}"
+            total="${STUB_NATIVE_PRLIST_MANY_COUNT:-35}"
+            n="$total"
+            [ "$limit" -lt "$n" ] && n="$limit"
+            printf '['
+            sep=""
+            i=0
+            while [ "$i" -lt "$n" ]; do
+              num=$((2000 + i))
+              printf '%s{"number":%s,"headRefName":"con-voyage/fk-many-%s","baseRefName":"con-voyage/fk-parent-%s","headRefOid":"manysha%s","url":"https://github.com/kriscoleman/foundry/pull/%s","isDraft":false,"author":{"login":"kriscoleman"}}' \
+                "$sep" "$num" "$num" "$num" "$num" "$num"
+              sep=","
+              i=$((i + 1))
+            done
+            printf ']\n'
+          else
+            printf '[]\n'
+          fi
+          exit 0
+        fi
         if [ "${STUB_PRLIST_LEAK:-0}" = "1" ]; then
           # Upstream filter "leaked": PR #999 authored by someone else slips in
           # even though we asked for the operator's PRs. The defensive re-check
@@ -272,6 +311,18 @@ JSON
 {"reviews":[],"comments":[{"id":"IC_test_11","author":{"login":"a-human-reviewer"},"body":"please fix the null check"},{"id":"IC_test_bot","author":{"login":"kriscoleman"},"body":"🤖 **Automated con-voyage agent** (con-voyage-ci-repair / foundry-kc/worker)\n\nFixed a thing."},{"id":"IC_test_netlify","author":{"login":"netlify"},"body":"Deploy Preview for replicated-docs ready!"}]}
 JSON
           exit 0
+        fi
+        # fk-travno review BLOCKING-3: a genuine `gh pr view` failure in PART
+        # A-native (the classify-signals fetch) must be surfaced (a WARNING
+        # to stderr) and skipped, never silently swallowed. Scoped to the
+        # native fixture PR numbers only, so it never shadows any other case.
+        if [ "${STUB_NATIVE_PRVIEW_FAIL:-0}" = "1" ]; then
+          case "$num" in
+            950|951|200[0-9]|201[0-9]|202[0-9]|203[0-9])
+              echo "gh: pr view: simulated transient API failure" >&2
+              exit 1
+              ;;
+          esac
         fi
         # PART A author + review-gate resolution (C6 actionable filter). Maps
         # PR number -> author login (unchanged mapping), PLUS — for the C6
@@ -3114,6 +3165,148 @@ if printf '%s' "$OUT" | grep -q 'PART A-native\] skipped'; then
 else
   fail "expected a skip log line when CV_NATIVE_DISCOVERY is disabled"
 fi
+
+# ===========================================================================
+# CASE 55 — fk-travno review BLOCKING-1: PART A-native must fetch
+#   author/reviewDecision/mergeable/mergeStateStatus/statusCheckRollup in
+#   exactly ONE `gh pr view` call per native-discovered PR, reusing it for
+#   both failure-kind classification AND process_pr_record's own author/
+#   review-gate resolution. A pre-fix script fetched this same field set
+#   TWICE per PR (once to classify, once inside process_pr_record), doubling
+#   gh API traffic for every native-discovered PR.
+# ===========================================================================
+start_case "55: fk-travno BLOCKING-1 — PART A-native fetches gh pr view exactly once per discovered PR"
+setup_case_env "55"
+cat > "${CITY_DIR}/city.toml" <<'TOML'
+[[github.pr_monitor]]
+name = "foundry-prs"
+owner = "kriscoleman"
+repo = "foundry"
+base_branches = ["main"]
+rig = "vandoor"
+repair_route = "vandoor/gc.implementation-worker"
+TOML
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_BACKFILL_MODE="empty" STUB_NATIVE_PRLIST_MODE="unlisted"
+assert_eq "0" "$RC" "script exits 0"
+# Scoped to the author/review-gate field set PART A-native classifies AND
+# process_pr_record resolves from — NOT the unrelated PART B comment-routing
+# fetch (--json reviews,comments), which is a separate, legitimate call.
+assert_log_count "$GH_LOG" 'pr view 950 --repo kriscoleman/foundry --json author,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup' 1 "exactly one gh pr view call for the unlisted-base, actionable PR (#950) — no second lookup inside process_pr_record"
+
+# ===========================================================================
+# CASE 56 — fk-travno review BLOCKING-2: process_pr_record's own log lines
+#   for a PART A-native-discovered PR must say "[PART A-native]", not the
+#   engine-backed loop's "[PART A]" — a pre-fix script hardcoded "[PART A]"
+#   inside process_pr_record regardless of which loop called it.
+# ===========================================================================
+start_case "56: fk-travno BLOCKING-2 — process_pr_record labels a native-discovered PR's own log lines [PART A-native]"
+setup_case_env "56"
+cat > "${CITY_DIR}/city.toml" <<'TOML'
+[[github.pr_monitor]]
+name = "foundry-prs"
+owner = "kriscoleman"
+repo = "foundry"
+base_branches = ["main"]
+rig = "vandoor"
+repair_route = "vandoor/gc.implementation-worker"
+TOML
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_BACKFILL_MODE="empty" STUB_NATIVE_PRLIST_MODE="unlisted"
+assert_eq "0" "$RC" "script exits 0"
+if printf '%s' "$OUT" | grep -q 'PART A-native\] KEEP kriscoleman/foundry#950'; then
+  pass "KEEP line for the native-discovered PR is tagged [PART A-native]"
+else
+  fail "expected a '[PART A-native] KEEP kriscoleman/foundry#950' line"
+fi
+if printf '%s' "$OUT" | grep -q '\[PART A\] KEEP kriscoleman/foundry#950'; then
+  fail "the native-discovered PR's KEEP line must never be mistagged [PART A]"
+else
+  pass "the native-discovered PR's KEEP line is never mistagged [PART A]"
+fi
+
+# ===========================================================================
+# CASE 57 — fk-travno review BLOCKING-3a: a genuine `gh pr list` failure
+#   inside PART A-native must surface a WARNING and skip that monitor's repo
+#   this cycle — never crash the script, and never silently continue as if
+#   nothing happened.
+# ===========================================================================
+start_case "57: fk-travno BLOCKING-3a — PART A-native surfaces a gh pr list failure loudly"
+setup_case_env "57"
+cat > "${CITY_DIR}/city.toml" <<'TOML'
+[[github.pr_monitor]]
+name = "foundry-prs"
+owner = "kriscoleman"
+repo = "foundry"
+base_branches = ["main"]
+rig = "vandoor"
+repair_route = "vandoor/gc.implementation-worker"
+TOML
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_BACKFILL_MODE="empty" STUB_NATIVE_PRLIST_FAIL=1
+assert_eq "0" "$RC" "script exits 0 (one monitor's failure does not abort the whole cycle)"
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair' 0 "no repair bead is minted when gh pr list fails"
+if printf '%s' "$OUT" | grep -q 'PART A-native\] WARNING: gh pr list failed for kriscoleman/foundry'; then
+  pass "gh pr list failure is logged with an explicit WARNING, not swallowed"
+else
+  fail "expected a WARNING log line for the gh pr list failure"
+fi
+
+# ===========================================================================
+# CASE 58 — fk-travno review BLOCKING-3b: a genuine `gh pr view` failure
+#   inside PART A-native (the classify-signals fetch) must surface a WARNING
+#   and skip just that PR — never crash the script, never silently continue.
+# ===========================================================================
+start_case "58: fk-travno BLOCKING-3b — PART A-native surfaces a gh pr view failure loudly"
+setup_case_env "58"
+cat > "${CITY_DIR}/city.toml" <<'TOML'
+[[github.pr_monitor]]
+name = "foundry-prs"
+owner = "kriscoleman"
+repo = "foundry"
+base_branches = ["main"]
+rig = "vandoor"
+repair_route = "vandoor/gc.implementation-worker"
+TOML
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_BACKFILL_MODE="empty" STUB_NATIVE_PRLIST_MODE="unlisted" STUB_NATIVE_PRVIEW_FAIL=1
+assert_eq "0" "$RC" "script exits 0 (one PR's gh pr view failure does not abort the whole cycle)"
+assert_log_count "$GC_LOG" 'sling .*--on con-voyage-ci-repair' 0 "no repair bead is minted for either PR when gh pr view fails"
+if printf '%s' "$OUT" | grep -q 'PART A-native\] WARNING: gh pr view failed for kriscoleman/foundry#950'; then
+  pass "gh pr view failure is logged with an explicit WARNING, not swallowed"
+else
+  fail "expected a WARNING log line for the gh pr view failure"
+fi
+
+# ===========================================================================
+# CASE 59 — fk-travno review BLOCKING-4: PART A-native's own `gh pr list`
+#   must pass an explicit --limit above gh's own default page size (30), or
+#   an author with more than 30 open PRs on a monitored repo silently never
+#   has the overflow discovered at all. The stub mirrors gh's real default
+#   (caps at 30 when --limit is absent) and honors an explicit --limit, so
+#   returning all 35 synthetic PRs proves the script passed one.
+# ===========================================================================
+start_case "59: fk-travno BLOCKING-4 — PART A-native's gh pr list passes an explicit --limit above 30"
+setup_case_env "59"
+cat > "${CITY_DIR}/city.toml" <<'TOML'
+[[github.pr_monitor]]
+name = "foundry-prs"
+owner = "kriscoleman"
+repo = "foundry"
+base_branches = ["main"]
+rig = "vandoor"
+repair_route = "vandoor/gc.implementation-worker"
+TOML
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_BACKFILL_MODE="empty" STUB_NATIVE_PRLIST_MODE="many" STUB_NATIVE_PRLIST_MANY_COUNT=35
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GH_LOG" 'pr list --repo kriscoleman/foundry --author kriscoleman --state open --limit [0-9]+' 1 "gh pr list carries an explicit --limit flag"
+assert_log_count "$GH_LOG" 'pr list --repo kriscoleman/foundry --author kriscoleman --state open --limit 30 ' 0 "the --limit passed is NOT gh's own silently-truncating default of 30"
+# Scoped to the native classify fetch's own --json field set — PART B
+# separately (and legitimately) also lists/views this author's PRs with its
+# own --json reviews,comments fetch, which is out of scope for this count.
+n_pr_view_calls="$(grep -E -c -- 'pr view 20[0-9][0-9] --repo kriscoleman/foundry --json author,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup' "$GH_LOG" || true)"
+assert_eq "35" "${n_pr_view_calls:-0}" "all 35 synthetic PRs are discovered and reach gh pr view — none silently truncated at gh's default page size"
 
 # ===========================================================================
 # Summary
