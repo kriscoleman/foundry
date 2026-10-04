@@ -264,57 +264,73 @@ active) as the "roster lanes active for this sling" list above.
 con-voyage now drives the WORK BEAD's own lifecycle so it moves on the dashboard
 and never sits open after its PR lands. The work bead is the bead this con-voyage
 delivers — NOT this setup step's own claimed bead. `$SOURCE_ANCHOR_ID` (resolved
-above) is a synthetic input convoy that `tracks` the real work bead; resolve it,
-then claim it and seed its body. Assign it to the fixed
-`con-voyage:work-bead` identity — NOT this session's own actor identity — because
-the work bead carries no graph.v2 step metadata (empty gc.root_bead_id/
-gc.routed_to/gc.continuation_group); assigning it to yourself means your own next
-`gc hook --claim` immediately re-hands you that same bead as fresh routed work, a
-confirmed dispatch loop (fk-9f2n). Run this block VERBATIM (it fails safe: on any
-resolution error it falls back to the convoy id, and every bd call is best-effort
-so a bd hiccup never blocks review):
+above) is normally a synthetic input convoy that `tracks` the real work bead, but
+for a re-review round `main.rereview-seed.md` stamps it to ITS OWN graph.v2 step
+bead instead (no fresh convoy exists for a re-review). Resolve through the shared
+`cv_resolve_work_bead` helper (con-voyage-lib.sh) rather than re-deriving this
+logic inline, so the graph.v2-step-bead case (fk-9f2n loop variant, fk-tvefk0) is
+handled the same way everywhere: a step bead (has `gc.step_ref`/`gc.routed_to`/
+`gc.root_bead_id`) is resolved via the PR's finalize record (`work_bead=`),
+keyed by the workflow root's `gc.var.finalize_key`, instead of ever being treated
+as the work bead itself. Claim the resolved work bead and seed its body. Assign
+it to the fixed `con-voyage:work-bead` identity — NOT this session's own actor
+identity — because the work bead carries no graph.v2 step metadata (empty
+gc.root_bead_id/gc.routed_to/gc.continuation_group); assigning it to yourself
+means your own next `gc hook --claim` immediately re-hands you that same bead as
+fresh routed work, a confirmed dispatch loop (fk-9f2n). Run this block VERBATIM
+(it fails safe: on any resolution error it falls back to the convoy id, and
+every bd call is best-effort so a bd hiccup never blocks review):
 
 ```bash
-# Resolve the real work bead from $SOURCE_ANCHOR_ID (synthetic input convoy ->
-# its `tracks` dependency = the work bead; a non-convoy id is already the work
-# bead). Fail-safe: WORK_BEAD is never empty (falls back to the convoy id).
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
+
 CONVOY_ID="$SOURCE_ANCHOR_ID"
-WORK_BEAD="$(gc bd show "$CONVOY_ID" --json 2>/dev/null | python3 -c "
+IS_STEP_BEAD="false"
+if [ -n "$CV_LIB" ]; then
+  WORK_BEAD="$(source "$CV_LIB" && cv_resolve_work_bead "$CONVOY_ID")"
+  STEP_META_CHECK="$(gc bd show "$CONVOY_ID" --json 2>/dev/null | python3 -c "
 import sys, json
-cid = sys.argv[1]
 try:
     d = json.load(sys.stdin)
     d = d[0] if isinstance(d, list) else d
 except Exception:
-    print(cid); raise SystemExit(0)
-if not isinstance(d, dict):
-    print(cid); raise SystemExit(0)
-meta = d.get('metadata') or {}
-synthetic = str(meta.get('gc.synthetic','')).lower() in ('true','1','yes')
-if synthetic or (d.get('issue_type') or '') == 'convoy':
-    for dep in (d.get('dependencies') or []):
-        if isinstance(dep, dict):
-            dtype = dep.get('dependency_type') or dep.get('type') or ''
-            did = dep.get('id') or ''
-            if did and did != cid and dtype in ('tracks',''):
-                print(did); raise SystemExit(0)
-    print(cid); raise SystemExit(0)
-print(cid)
-" "$CONVOY_ID" 2>/dev/null || echo "$CONVOY_ID")"
+    d = {}
+meta = (d.get('metadata') or {}) if isinstance(d, dict) else {}
+print('true' if (meta.get('gc.step_ref') or meta.get('gc.routed_to') or meta.get('gc.root_bead_id')) else 'false')
+" 2>/dev/null)"
+  [ "$STEP_META_CHECK" = "true" ] && IS_STEP_BEAD="true"
+else
+  WORK_BEAD="$CONVOY_ID"
+fi
+[ -n "$WORK_BEAD" ] || WORK_BEAD="$CONVOY_ID"
 
-# Claim -> in_progress (idempotent). Assign to the fixed non-routable
-# "con-voyage:work-bead" identity, NOT --claim (which would assign to this
-# session and re-trigger the fk-9f2n dispatch loop described above). Seed the
-# description from the review context (base + branch under review, PR target,
-# active roster) so the bead carries real content even when intake left it
-# empty. Append rather than clobber if the human already wrote a description —
-# use --append-notes/note for the review context so the original ask is
-# preserved.
-gc bd update "$WORK_BEAD" --assignee "con-voyage:work-bead" --status in_progress || echo "note: could not claim work bead $WORK_BEAD (continuing)"
-gc bd set-state "$WORK_BEAD" cv=reviewing --reason "con-voyage: review started" \
-  || echo "note: could not set cv=reviewing on $WORK_BEAD (continuing)"
-gc bd note "$WORK_BEAD" "con-voyage started — base ${BASE_BRANCH}, branch <branch-under-review>, PR target <owner/repo>. Review roster: floor (acceptance, test-evidence, simplicity, security, code) + <active roster lenses>. A human lands the PR; this bead closes automatically on merge/close via the con-voyage-finalize monitor." \
-  || echo "note: could not append review context to $WORK_BEAD (continuing)"
+# fk-tvefk0: if $CONVOY_ID is itself a graph.v2 step bead AND cv_resolve_work_bead
+# could not resolve a distinct work bead for it (no PR finalize record found —
+# WORK_BEAD fell back to the step bead's own id), never claim/reassign it. That
+# bead is a workflow step, not the work this con-voyage delivers; claiming it
+# would reopen a closed step and hand it straight back out as fresh routed work
+# (the fk-9f2n loop). Skip the claim/reassign block entirely in this case.
+if [ "$IS_STEP_BEAD" = "true" ] && [ "$WORK_BEAD" = "$CONVOY_ID" ]; then
+  echo "con-voyage setup-review: source anchor ${CONVOY_ID} is a graph.v2 step bead with no resolvable finalize record — skipping work-bead claim/reassign (fk-tvefk0)" >&2
+else
+  # Claim -> in_progress (idempotent). Assign to the fixed non-routable
+  # "con-voyage:work-bead" identity, NOT --claim (which would assign to this
+  # session and re-trigger the fk-9f2n dispatch loop described above). Seed the
+  # description from the review context (base + branch under review, PR target,
+  # active roster) so the bead carries real content even when intake left it
+  # empty. Append rather than clobber if the human already wrote a description —
+  # use --append-notes/note for the review context so the original ask is
+  # preserved.
+  gc bd update "$WORK_BEAD" --assignee "con-voyage:work-bead" --status in_progress || echo "note: could not claim work bead $WORK_BEAD (continuing)"
+  gc bd set-state "$WORK_BEAD" cv=reviewing --reason "con-voyage: review started" \
+    || echo "note: could not set cv=reviewing on $WORK_BEAD (continuing)"
+  gc bd note "$WORK_BEAD" "con-voyage started — base ${BASE_BRANCH}, branch <branch-under-review>, PR target <owner/repo>. Review roster: floor (acceptance, test-evidence, simplicity, security, code) + <active roster lenses>. A human lands the PR; this bead closes automatically on merge/close via the con-voyage-finalize monitor." \
+    || echo "note: could not append review context to $WORK_BEAD (continuing)"
+fi
 ```
 
 Record `$WORK_BEAD` in the review context file (as `work_bead`) so the publish

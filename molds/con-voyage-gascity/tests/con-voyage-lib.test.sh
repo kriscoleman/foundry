@@ -208,6 +208,25 @@ start_case "cv_resolve_work_bead: dependency with no type field still resolves (
 export STUB_BDSHOW_JSON_cv_notype='{"id":"cv-notype","issue_type":"convoy","metadata":{},"dependencies":[{"id":"wb-notype"}]}'
 assert_eq "wb-notype" "$(cv_resolve_work_bead "cv-notype")" "a dependency with an absent type still resolves (back-compat)"
 
+# fk-9f2n loop variant (fk-hua0vl.ci-repair bead-id placeholder; actual bug
+# bead fk-tvefk0): main.rereview-seed.md stamps gc.build.source_anchor_id to
+# ITS OWN graph.v2 step bead (it has gc.step_ref/gc.routed_to/gc.root_bead_id,
+# never gc.synthetic or issue_type=convoy). Before this fix, that bead fell
+# through to "not a convoy: echo input", so the caller (setup-con-voyage-
+# review.md) claimed/reassigned the closed step bead itself and re-triggered
+# the dispatch loop. A graph.v2 step bead must resolve via the PR's finalize
+# record instead (keyed by the workflow root's gc.var.finalize_key).
+start_case "cv_resolve_work_bead: graph.v2 step bead (re-review seed) -> resolves via finalize record"
+export STUB_BDSHOW_JSON_step_1='{"id":"step-1","issue_type":"task","metadata":{"gc.step_ref":"con-voyage.rereview-seed","gc.routed_to":"foundry-kc/gc.implementation-worker","gc.root_bead_id":"root-1"}}'
+export STUB_BDSHOW_JSON_root_1='{"id":"root-1","issue_type":"task","metadata":{"gc.var.finalize_key":"cv-finalize-owner-repo-170"}}'
+finalize_write "cv-finalize-owner-repo-170" "real-wb-1" "orig-convoy-1" "owner/repo" "170" "kriscoleman" "" ""
+assert_eq "real-wb-1" "$(cv_resolve_work_bead "step-1")" "a graph.v2 step bead resolves to the finalize record's real work_bead, never itself"
+
+start_case "cv_resolve_work_bead: graph.v2 step bead with no resolvable finalize record -> fail-safe to input"
+export STUB_BDSHOW_JSON_step_2='{"id":"step-2","issue_type":"task","metadata":{"gc.step_ref":"con-voyage.rereview-seed","gc.root_bead_id":"root-2"}}'
+# No STUB_BDSHOW_JSON_root_2 -> root bd show "fails" -> no finalize_key resolvable.
+assert_eq "step-2" "$(cv_resolve_work_bead "step-2")" "a step bead whose finalize record cannot be resolved fails safe to the input id (never guesses)"
+
 # ---------------------------------------------------------------------------
 # cv_bead_work_dir (fk-9aunv: fold the do-work build into con-voyage as its
 # own first phase). do-work's prepare-worktree step persists the resolved
