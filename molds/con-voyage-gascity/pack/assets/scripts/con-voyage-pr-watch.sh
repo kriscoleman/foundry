@@ -1549,7 +1549,7 @@ def is_bot_approval_noise(body, state):
 # severity word, a code reference, or requested-change language keeps
 # routing regardless of how it opens.
 FINDING_MARKER_RE = re.compile(
-    r"critical|blocking|severity|vulnerab|\bbug\b|\berror\b|"
+    r"critical|blocking|severity|vulnerab|\bbugs?\b|\berrors?\b|"
     r"`[^`]+`|\bline\s+\d+\b|:\d+\b|"
     r"\bplease\b|\bshould\b|\bmust\b|\bneed(?:s|ed)?\s+to\b|recommend|\bfix\b|\bchange\b|\bupdate\b",
     re.IGNORECASE,
@@ -1572,7 +1572,7 @@ def is_bot_ack(body, state):
 # CRITICAL finding. A single predicate makes that class of drift impossible —
 # every loop now calls this and ONLY this to decide whether an item is
 # suppressed. Returns a short machine-readable reason string ("slash_command",
-# "bot_noise", "bot_approval_noise", "bot-ack", "agent_comment") when the item
+# "bot_noise", "bot_approval_noise", "bot_ack", "agent_comment") when the item
 # must be dropped, or None when it is a real candidate (the caller still
 # applies its own type-specific empty-body/PENDING rules on top of a None
 # result).
@@ -1583,7 +1583,7 @@ def classify_suppression(author, body, state):
         if is_bot_approval_noise(body, state):
             return "bot_approval_noise"
         if is_bot_ack(body, state):
-            return "bot-ack"
+            return "bot_ack"
         return None
     if is_bot(author):
         return "bot_noise"

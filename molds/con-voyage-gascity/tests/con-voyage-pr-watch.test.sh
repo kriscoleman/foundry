@@ -113,6 +113,18 @@ case "$sub" in
 JSON
         exit 0
       fi
+      # STUB_GQL_THREADS_BOTACK=1 (review fk-g13dww LOW-4): an inline
+      # review-thread comment from the SAME AI-reviewer-bot ack-only
+      # phrasing CASE 53 already pins for the issue-comments loop, proving
+      # the shared classify_suppression() predicate suppresses bot_ack
+      # identically in the inline-thread loop too, mirroring CASE 52's
+      # cross-loop parity pattern.
+      if [ "${STUB_GQL_THREADS_BOTACK:-0}" = "1" ]; then
+        cat <<'JSON'
+{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"comments":{"nodes":[{"id":"PRRC_botack_only","databaseId":556701,"path":"","line":null,"author":{"login":"doomer-ai[bot]"},"body":"Looks fine to me, thanks!"}]}}]}}}}}
+JSON
+        exit 0
+      fi
       cat <<'JSON'
 {"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"comments":{"nodes":[{"id":"PRRC_test_11","databaseId":556677,"path":"src/retry.go","line":42,"author":{"login":"a-human-reviewer"},"body":"inline: rename this var"}]}}]}}}}}
 JSON
@@ -329,8 +341,8 @@ JSON
           # automatically approving" / "refus" / "classified as critical",
           # as a real signal that must still route -- but is_bot_ack ignored
           # state and those phrases entirely, so a marker-free body matching
-          # one of them got re-suppressed as bot-ack right after
-          # is_bot_approval_noise correctly said "don't drop this". Three
+          # one of them got re-suppressed as bot_ack right after
+          # is_bot_approval_noise correctly said "don't drop this". Four
           # marker-free AI-reviewer-bot items, each protected by a different
           # clause of the escape hatch, must all still route:
           #   - PRR_refusal_changes_requested: state=CHANGES_REQUESTED, body
@@ -339,9 +351,47 @@ JSON
           #     approving" with no finding marker.
           #   - IC_refusal_word: comment body says "Refusing to approve
           #     until addressed" with no finding marker.
+          #   - IC_refusal_critical (review fk-g13dww LOW-3): comment body
+          #     says "classified as critical" -- the escape hatch's 4th `or`
+          #     clause, previously unpinned by any case.
           if [ "${STUB_PR11_BOTACK_REFUSAL:-0}" = "1" ]; then
             cat <<'JSON'
-{"reviews":[{"id":"PRR_refusal_changes_requested","author":{"login":"doomer-ai[bot]"},"body":"Not approving this.","state":"CHANGES_REQUESTED"}],"comments":[{"id":"IC_refusal_phrase","author":{"login":"doomer-ai[bot]"},"body":"Thanks, but not automatically approving here."},{"id":"IC_refusal_word","author":{"login":"doomer-ai[bot]"},"body":"Refusing to approve until addressed."}]}
+{"reviews":[{"id":"PRR_refusal_changes_requested","author":{"login":"doomer-ai[bot]"},"body":"Not approving this.","state":"CHANGES_REQUESTED"}],"comments":[{"id":"IC_refusal_phrase","author":{"login":"doomer-ai[bot]"},"body":"Thanks, but not automatically approving here."},{"id":"IC_refusal_word","author":{"login":"doomer-ai[bot]"},"body":"Refusing to approve until addressed."},{"id":"IC_refusal_critical","author":{"login":"doomer-ai[bot]"},"body":"Overall this seems classified as critical."}]}
+JSON
+            exit 0
+          fi
+          # STUB_PR11_BOTACK_ALLLOOPS=1 (review fk-g13dww LOW-4): CASE 53 only
+          # ever exercised the bot_ack branch through the issue-comments loop.
+          # classify_suppression() is provably the same function for all
+          # three scan loops, but that parity was inferred, not pinned.
+          # Combined with STUB_GQL_THREADS_BOTACK above, this feeds an
+          # ack-only AI-reviewer-bot item into the review loop, the
+          # issue-comments loop, AND the inline-thread loop, mirroring CASE
+          # 52's cross-loop-parity pattern for the other suppression reasons.
+          if [ "${STUB_PR11_BOTACK_ALLLOOPS:-0}" = "1" ]; then
+            cat <<'JSON'
+{"reviews":[{"id":"PRR_botack_only","author":{"login":"doomer-ai[bot]"},"body":"Thanks, all good here!","state":"COMMENTED"}],"comments":[{"id":"IC_botack_only_allloops","author":{"login":"doomer-ai[bot]"},"body":"Looks good, nothing else to add!"}]}
+JSON
+            exit 0
+          fi
+          # STUB_PR11_MARKER_EDGES=1 (review fk-g13dww LOW-5): pins the two
+          # documented, known edges of FINDING_MARKER_RE's heuristic (noted in
+          # the implementation summary's "Remaining Risks" as a tracked
+          # tradeoff, not a bug):
+          #   - IC_edge_under: an AI-reviewer-bot reply that avoids every
+          #     marker word ("Nit: consider refactoring this for clarity")
+          #     is classified bot_ack and dropped (under-inclusion -- a soft
+          #     suggestion silently suppressed, same failure class fk-7xu9m
+          #     fixed, just different phrasing).
+          #   - IC_edge_over: an AI-reviewer-bot reply with no real finding,
+          #     but whose incidental "example.com:8080" URL (matches
+          #     `:\d+\b`) and "keep you posted on the update" (matches
+          #     `\bupdate\b`) trip the marker regex, so it routes anyway
+          #     (over-inclusion -- safe-direction error: an extra feedback
+          #     item, never a dropped one).
+          if [ "${STUB_PR11_MARKER_EDGES:-0}" = "1" ]; then
+            cat <<'JSON'
+{"reviews":[],"comments":[{"id":"IC_edge_under","author":{"login":"doomer-ai[bot]"},"body":"Nit: consider refactoring this for clarity."},{"id":"IC_edge_over","author":{"login":"doomer-ai[bot]"},"body":"Thanks, will keep you posted on the update -- see example.com:8080 for status."}]}
 JSON
             exit 0
           fi
@@ -3350,7 +3400,7 @@ assert_eq "35" "${n_pr_view_calls:-0}" "all 35 synthetic PRs are discovered and 
 # CASE 60 — fk-7xu9m (foundry#160 follow-up): pr-watch must not route pure
 #   AI-reviewer-bot ACKNOWLEDGEMENT replies as feedback. A doomer-ai[bot]
 #   reply carrying no finding (no severity/critical marker, no code
-#   reference, no requested change) is suppressed with reason=bot-ack. The
+#   reference, no requested change) is suppressed with reason=bot_ack. The
 #   SAME author posting an ack that also carries a real finding (a critical
 #   issue with a code reference) must still route.
 # ===========================================================================
@@ -3361,33 +3411,94 @@ assert_eq "0" "$RC" "script exits 0"
 assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 1 "exactly one comment-route sling for #11 (only the finding-carrying reply routes)"
 assert_log_count "$GC_LOG" 'still a critical issue' 1 "the finding-carrying ack reply still routes with its content intact"
 assert_log_count "$GC_LOG" 'Got it' 0 "the pure-ack reply never reaches routed feedback"
-if printf '%s' "$OUT" | grep -qF 'SUPPRESS kriscoleman/foundry#11 comment id=IC_botack_only author=doomer-ai[bot] reason=bot-ack'; then
-  pass "pure-ack reply is suppressed and logged with reason=bot-ack"
+if printf '%s' "$OUT" | grep -qF 'SUPPRESS kriscoleman/foundry#11 comment id=IC_botack_only author=doomer-ai[bot] reason=bot_ack'; then
+  pass "pure-ack reply is suppressed and logged with reason=bot_ack"
 else
-  fail "pure-ack reply is suppressed and logged with reason=bot-ack"
+  fail "pure-ack reply is suppressed and logged with reason=bot_ack"
 fi
 
 # ===========================================================================
-# CASE 54 — review fk-wpgt9j BLOCKING-1: the bot-ack branch must not re-drop
+# CASE 53b (review fk-g13dww LOW-4): CASE 53 only ever exercised the bot_ack
+#   suppression through the issue-comments loop. classify_suppression() is
+#   provably the same function for all three scan loops (reviews, issue
+#   comments, inline review-thread comments), so cross-loop parity for the
+#   bot_ack reason was inferred, not pinned by a test -- unlike CASE 52,
+#   which pins cross-loop parity for the other suppression reasons. An
+#   ack-only AI-reviewer-bot item in each of the three loops must all be
+#   suppressed with reason=bot_ack, and zero feedback is routed overall.
+# ===========================================================================
+start_case "53b: review fk-g13dww LOW-4 — bot_ack suppression is identical across reviews/comments/inline loops"
+setup_case_env "53b"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_PR11_BOTACK_ALLLOOPS="1" STUB_GQL_THREADS_BOTACK="1"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 0 "no comment-route sling when every item across all three loops is ack-only"
+if printf '%s' "$OUT" | grep -qF 'SUPPRESS kriscoleman/foundry#11 review id=PRR_botack_only author=doomer-ai[bot] reason=bot_ack'; then
+  pass "review-loop ack-only item is suppressed with reason=bot_ack"
+else
+  fail "review-loop ack-only item is suppressed with reason=bot_ack"
+fi
+if printf '%s' "$OUT" | grep -qF 'SUPPRESS kriscoleman/foundry#11 comment id=IC_botack_only_allloops author=doomer-ai[bot] reason=bot_ack'; then
+  pass "comment-loop ack-only item is suppressed with reason=bot_ack"
+else
+  fail "comment-loop ack-only item is suppressed with reason=bot_ack"
+fi
+if printf '%s' "$OUT" | grep -qF 'SUPPRESS kriscoleman/foundry#11 inline id=PRRC_botack_only author=doomer-ai[bot] reason=bot_ack'; then
+  pass "inline-thread-loop ack-only item is suppressed with reason=bot_ack"
+else
+  fail "inline-thread-loop ack-only item is suppressed with reason=bot_ack"
+fi
+
+# ===========================================================================
+# CASE 54 — review fk-wpgt9j BLOCKING-1: the bot_ack branch must not re-drop
 #   a CHANGES_REQUESTED state or a refusal phrase that
 #   is_bot_approval_noise's escape hatch already said is a real signal. A
-#   marker-free AI-reviewer-bot review with state=CHANGES_REQUESTED, and two
-#   marker-free AI-reviewer-bot comments carrying "not automatically
-#   approving" / "refus" respectively, must all still route instead of being
-#   re-suppressed as bot-ack.
+#   marker-free AI-reviewer-bot review with state=CHANGES_REQUESTED, and
+#   three marker-free AI-reviewer-bot comments carrying "not automatically
+#   approving" / "refus" / "classified as critical" (review fk-g13dww LOW-3)
+#   respectively, must all still route instead of being re-suppressed as
+#   bot_ack.
 # ===========================================================================
 start_case "54: fk-wpgt9j BLOCKING-1 — CHANGES_REQUESTED / refusal phrasing routes even with no finding marker"
 setup_case_env "54"
 run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_PR11_BOTACK_REFUSAL="1"
 assert_eq "0" "$RC" "script exits 0"
-assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 1 "exactly one comment-route sling for #11 (all three protected items route together)"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 1 "exactly one comment-route sling for #11 (all four protected items route together)"
 assert_log_count "$GC_LOG" 'Not approving this' 1 "the CHANGES_REQUESTED review routes despite carrying no finding marker"
 assert_log_count "$GC_LOG" 'not automatically approving here' 1 "the \"not automatically approving\" comment routes despite carrying no finding marker"
 assert_log_count "$GC_LOG" 'Refusing to approve until addressed' 1 "the \"refus\" comment routes despite carrying no finding marker"
-if printf '%s' "$OUT" | grep -qE 'SUPPRESS kriscoleman/foundry#11 .* reason=bot-ack'; then
-  fail "none of the three protected items are suppressed as bot-ack"
+assert_log_count "$GC_LOG" 'seems classified as critical' 1 "the \"classified as critical\" comment routes despite carrying no other finding marker (review fk-g13dww LOW-3)"
+if printf '%s' "$OUT" | grep -qE 'SUPPRESS kriscoleman/foundry#11 .* reason=bot_ack'; then
+  fail "none of the four protected items are suppressed as bot_ack"
 else
-  pass "none of the three protected items are suppressed as bot-ack"
+  pass "none of the four protected items are suppressed as bot_ack"
+fi
+
+# ===========================================================================
+# CASE 55 (review fk-g13dww LOW-5): table-pins the two documented,
+#   previously-untested edges of the FINDING_MARKER_RE heuristic -- an
+#   under-inclusion (a marker-free soft suggestion is dropped) and an
+#   over-inclusion (incidental marker hits route a true ack instead of
+#   suppressing it). Both are already-known, tracked tradeoffs per the
+#   implementation summary, not bugs to fix; this case only pins the
+#   documented behavior so a future change to the regex is forced to touch
+#   a failing test instead of silently shifting the tradeoff.
+# ===========================================================================
+start_case "55: review fk-g13dww LOW-5 — FINDING_MARKER_RE under/over-inclusion edges"
+setup_case_env "55"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_PR11_MARKER_EDGES="1"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 1 "exactly one comment-route sling for #11 (only the over-inclusion item routes)"
+assert_log_count "$GC_LOG" 'Nit: consider refactoring' 0 "under-inclusion: a marker-free soft suggestion never reaches routed feedback"
+assert_log_count "$GC_LOG" 'keep you posted on the update' 1 "over-inclusion: an incidental marker hit (\"update\"/\":8080\") still routes a true ack"
+if printf '%s' "$OUT" | grep -qF 'SUPPRESS kriscoleman/foundry#11 comment id=IC_edge_under author=doomer-ai[bot] reason=bot_ack'; then
+  pass "under-inclusion item is suppressed and logged with reason=bot_ack"
+else
+  fail "under-inclusion item is suppressed and logged with reason=bot_ack"
+fi
+if printf '%s' "$OUT" | grep -qE 'SUPPRESS kriscoleman/foundry#11 comment id=IC_edge_over .* reason=bot_ack'; then
+  fail "over-inclusion item is NOT suppressed as bot_ack (it routes)"
+else
+  pass "over-inclusion item is NOT suppressed as bot_ack (it routes)"
 fi
 
 # ===========================================================================
