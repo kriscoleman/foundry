@@ -1247,6 +1247,28 @@ now_iso8601() {
 # ever invoked.
 # ---------------------------------------------------------------------------
 
+# resolve_lock_stale_seconds SLING_TIMEOUT STORE_TIMEOUT [OVERRIDE] — the
+# dedup-lock staleness threshold a caller should pass as CV_LOCK_STALE_SECONDS
+# (review fk-k4gebi BLOCKING-1, narrowed): derived with headroom from the two
+# bounded-timeout knobs that determine the real worst-case lock hold
+# (SLING_TIMEOUT + 6*STORE_TIMEOUT), unless OVERRIDE is a non-empty all-digit
+# string (an operator-set CV_LOCK_STALE_SECONDS), in which case OVERRIDE wins
+# as-is. A non-numeric or empty OVERRIDE falls back to the derived value
+# rather than producing an arithmetic error or an unintended stale-threshold
+# of 0 — the same non-numeric-fallback guard every other operator-overridable
+# timeout in this pack applies. Extracted as a standalone function (rather
+# than left inline in each caller) so the derivation and its fallback guard
+# can be pinned directly by a sourced-and-called test instead of only
+# indirectly through the dedup lock's end-to-end behavior.
+resolve_lock_stale_seconds() {
+  local sling_timeout="$1" store_timeout="$2" override="${3:-}"
+  local derived=$((sling_timeout + 6 * store_timeout))
+  case "$override" in
+    *[!0-9]*|'') printf '%s\n' "$derived" ;;
+    *) printf '%s\n' "$override" ;;
+  esac
+}
+
 # acquire_lock DEDUP_KEY — exit 0 (lock held) or 1 (held by someone else and
 # not stale). A stale lock (older than CV_LOCK_STALE_SECONDS — a crashed or
 # hung holder) is stolen rather than left to wedge this record forever.
