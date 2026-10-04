@@ -488,6 +488,96 @@ else
 fi
 unset STUB_GC_SLING_SLEEP STUB_GC_DEPCOUNT_DIR
 
+# ===========================================================================
+# CASE 10 (review fk-hbsmk BLOCKING-3): a confirmed (non-timeout) sling
+# failure -> the seed bead is closed, the pending marker is cleared, and the
+# finalize record's rereview_root_bead_id is NOT advanced (this is the exact
+# path the bead's own title, "fix seed-bead leak", targets — a wrong id or
+# reordered cleanup here would still report ALL CASES PASSED before this
+# case existed).
+# ===========================================================================
+start_case "10: confirmed sling failure (not a timeout) -> seed closed, no root recorded, pending marker cleared"
+printf 'v6 - case10 change\n' >> "${SRC}/feature.txt"
+git_c "$SRC" add feature.txt
+git_c "$SRC" commit -q -m "fix: case10 change"
+HEAD10="$(git_c "$SRC" rev-parse HEAD)"
+git_c "$SRC" push -q origin feature-branch
+
+write_finalize "cv-finalize-case10" "fk-work10" "awaiting_merge" "$HEAD9" "1" "" "45"
+export STUB_GH_STATE_45="OPEN" STUB_GH_HEAD_45="$HEAD10" STUB_GH_BRANCH_45="feature-branch"
+export STUB_GC_NEW_BEAD_ID="rc-seed10"
+export STUB_GC_SLING_FAIL=1
+export CV_LENS_STORE_TIMEOUT_SECONDS=5
+export CV_REREVIEW_SLING_TIMEOUT_SECONDS=5
+out10="$(run_watch)"
+assert_contains "$out10" "ERROR: gc sling con-voyage-rereview failed" "case10: reports a confirmed (non-timeout) sling failure"
+gc_log10="$(cat "$STUB_GC_LOG")"
+assert_contains "$gc_log10" "bd close rc-seed10 --reason gc sling con-voyage-rereview failed (exit 1)" "case10: seed bead closed with the confirmed-failure reason"
+if grep -qx "rereview_root_bead_id=" "${STATE_DIR}/cv-finalize-case10.finalize"; then
+  pass "case10: rereview_root_bead_id stays empty after a confirmed sling failure"
+else
+  fail "case10: rereview_root_bead_id stays empty after a confirmed sling failure: got $(grep rereview_root_bead_id "${STATE_DIR}/cv-finalize-case10.finalize")"
+fi
+if [ -f "${STATE_DIR}/cv-finalize-case10.rereview-pending" ]; then
+  fail "case10: no leftover pending marker after a confirmed sling failure"
+else
+  pass "case10: no leftover pending marker after a confirmed sling failure"
+fi
+unset STUB_GC_SLING_FAIL
+# case10's own record never advances last_reviewed_head_sha (that's the
+# behavior under test), so it would otherwise keep looking "changed" and
+# steal later sweeps' one-dispatch-per-sweep budget. Retire it the same way
+# case6 retires pr42 once its own assertions are done.
+export STUB_GH_STATE_45="MERGED"
+
+# ===========================================================================
+# CASE 11 (review fk-hbsmk BLOCKING-4): two simultaneously-triggering
+# .finalize records in ONE run_watch call -> only the first dispatches this
+# sweep; the second logs the one-dispatch-per-sweep defer message and is NOT
+# slung this cycle. A second sweep then dispatches the deferred record. Every
+# other case above arranges exactly one triggering record per sweep, so
+# dispatched_this_sweep never actually reached 1 while a second record was
+# still waiting — a regression that silently dropped the gate (e.g. slinging
+# both in the same sweep) would not have been caught before this case.
+# ===========================================================================
+start_case "11: two triggering records in one sweep -> only one dispatches, the other defers to the next sweep"
+printf 'v7 - case11 change\n' >> "${SRC}/feature.txt"
+git_c "$SRC" add feature.txt
+git_c "$SRC" commit -q -m "fix: case11 change"
+HEAD11="$(git_c "$SRC" rev-parse HEAD)"
+git_c "$SRC" push -q origin feature-branch
+
+write_finalize "cv-finalize-case11a" "fk-work11a" "awaiting_merge" "$HEAD10" "1" "" "46"
+write_finalize "cv-finalize-case11b" "fk-work11b" "awaiting_merge" "$HEAD10" "1" "" "47"
+export STUB_GH_STATE_46="OPEN" STUB_GH_HEAD_46="$HEAD11" STUB_GH_BRANCH_46="feature-branch"
+export STUB_GH_STATE_47="OPEN" STUB_GH_HEAD_47="$HEAD11" STUB_GH_BRANCH_47="feature-branch"
+export STUB_GC_NEW_BEAD_ID="rc-seed11a"
+export CV_LENS_STORE_TIMEOUT_SECONDS=5
+export CV_REREVIEW_SLING_TIMEOUT_SECONDS=10
+out11a="$(run_watch)"
+assert_contains "$out11a" "dispatched re-review round 2" "case11 sweep1: first record dispatches"
+assert_contains "$out11a" "already dispatched one re-review round this sweep; deferring" "case11 sweep1: second record defers"
+gc_log11a="$(cat "$STUB_GC_LOG")"
+sling_count11a="$(printf '%s\n' "$gc_log11a" | grep -c 'sling testrig' || true)"
+assert_eq "1" "$sling_count11a" "case11 sweep1: exactly one sling call this sweep"
+rec11a="$(cat "${STATE_DIR}/cv-finalize-case11a.finalize")"
+assert_contains "$rec11a" "rereview_root_bead_id=rc-seed11a" "case11 sweep1: first record records its own root"
+rec11b="$(cat "${STATE_DIR}/cv-finalize-case11b.finalize")"
+assert_contains "$rec11b" "last_reviewed_head_sha=${HEAD10}" "case11 sweep1: deferred record's bookkeeping unchanged"
+if grep -qx "rereview_root_bead_id=" "${STATE_DIR}/cv-finalize-case11b.finalize"; then
+  pass "case11 sweep1: deferred record has no root recorded yet"
+else
+  fail "case11 sweep1: deferred record has no root recorded yet: got $(grep rereview_root_bead_id "${STATE_DIR}/cv-finalize-case11b.finalize")"
+fi
+
+export STUB_GC_NEW_BEAD_ID="rc-seed11b"
+out11b="$(run_watch)"
+assert_contains "$out11b" "dispatched re-review round 2" "case11 sweep2: deferred record now dispatches"
+gc_log11b="$(cat "$STUB_GC_LOG")"
+assert_contains "$gc_log11b" "sling testrig/gc.run-operator rc-seed11b --on con-voyage-rereview" "case11 sweep2: deferred record's sling carries its own new seed"
+rec11b2="$(cat "${STATE_DIR}/cv-finalize-case11b.finalize")"
+assert_contains "$rec11b2" "rereview_root_bead_id=rc-seed11b" "case11 sweep2: deferred record now records its own root"
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "ALL CASES PASSED"
