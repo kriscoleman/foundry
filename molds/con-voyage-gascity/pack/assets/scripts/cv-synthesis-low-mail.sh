@@ -74,6 +74,16 @@ case "$CV_LENS_STORE_TIMEOUT_SECONDS" in
   *[!0-9]*|'') CV_LENS_STORE_TIMEOUT_SECONDS="30" ;;
 esac
 
+# fk-9iqxnx: the SAME window apply-review-findings' own pause loop reads
+# (CV_LOW_REOPEN_WINDOW_SECONDS, rig/city-configured, not a formula var) —
+# this mail describes it in minutes so the human reading it does not have to
+# do the arithmetic themselves.
+CV_LOW_REOPEN_WINDOW_SECONDS="${CV_LOW_REOPEN_WINDOW_SECONDS:-1200}"
+case "$CV_LOW_REOPEN_WINDOW_SECONDS" in
+  *[!0-9]*|'') CV_LOW_REOPEN_WINDOW_SECONDS="1200" ;;
+esac
+CV_LOW_REOPEN_WINDOW_MINUTES=$(( (CV_LOW_REOPEN_WINDOW_SECONDS + 59) / 60 ))
+
 # shellcheck source=con-voyage-lib.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/con-voyage-lib.sh"
 
@@ -273,7 +283,17 @@ PYEOF
   echo ""
   echo "Full synthesis: ${SYNTHESIS_FILE}"
   echo ""
-  echo "No BLOCKING findings — these are LOW only. Reply to proceed (publish as-is) or send back for another iteration."
+  echo "No BLOCKING findings — these are LOW only. A reply to this mail has no effect"
+  echo "(fk-9iqxnx) — apply-review-findings decides the verdict on its own once every"
+  echo "lane approves. To actually re-open this review with findings to address,"
+  echo "run:"
+  echo ""
+  echo "  assets/scripts/cv-reopen-findings.sh \"${WORK_BEAD}\" --finding \"<text>\""
+  echo ""
+  echo "from the city root, within roughly ${CV_LOW_REOPEN_WINDOW_MINUTES} minute(s) after"
+  echo "this review cycle concludes — apply-review-findings pauses for exactly that"
+  echo "window before publishing. If nothing re-opens it in time, this publishes with"
+  echo "the LOW findings on the PR, as designed."
 } > "$BODY_FILE"
 
 SUBJECT="LOW-only: ${WORK_BEAD} ${PR_OR_BRANCH} — ${LOW_COUNT} LOW"
