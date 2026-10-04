@@ -107,6 +107,15 @@ CV_REREVIEW_SLING_TIMEOUT_SECONDS="${CV_REREVIEW_SLING_TIMEOUT_SECONDS:-300}"
 case "$CV_REREVIEW_SLING_TIMEOUT_SECONDS" in
   *[!0-9]*|'') CV_REREVIEW_SLING_TIMEOUT_SECONDS="300" ;;
 esac
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB="${SCRIPT_DIR}/con-voyage-lib.sh"
+if [ ! -f "$LIB" ]; then
+  echo "con-voyage-rereview-watch: FATAL: shared lib not found at ${LIB}" >&2
+  exit 0
+fi
+# shellcheck source=./con-voyage-lib.sh
+source "$LIB"
+
 # The dedup lock below (acquire_lock/release_lock) is held across the
 # read-decide-write section. The real worst case is the orphan->redispatch
 # path (a pending seed from a previous timed-out sling never attached): it
@@ -123,20 +132,11 @@ esac
 # holder gets its own lock stolen mid-hold by a concurrent sweep. Derive it
 # here with headroom to spare (one extra store-call's worth) rather than
 # relying on con-voyage-lib.sh's generic 300s default, which an operator
-# raising CV_REREVIEW_SLING_TIMEOUT_SECONDS would otherwise outrun.
-CV_LOCK_STALE_SECONDS="${CV_LOCK_STALE_SECONDS:-$((CV_REREVIEW_SLING_TIMEOUT_SECONDS + 6 * CV_LENS_STORE_TIMEOUT_SECONDS))}"
-case "$CV_LOCK_STALE_SECONDS" in
-  *[!0-9]*|'') CV_LOCK_STALE_SECONDS=$((CV_REREVIEW_SLING_TIMEOUT_SECONDS + 6 * CV_LENS_STORE_TIMEOUT_SECONDS)) ;;
-esac
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LIB="${SCRIPT_DIR}/con-voyage-lib.sh"
-if [ ! -f "$LIB" ]; then
-  echo "con-voyage-rereview-watch: FATAL: shared lib not found at ${LIB}" >&2
-  exit 0
-fi
-# shellcheck source=./con-voyage-lib.sh
-source "$LIB"
+# raising CV_REREVIEW_SLING_TIMEOUT_SECONDS would otherwise outrun. The
+# derivation and its non-numeric-fallback guard live in
+# resolve_lock_stale_seconds (con-voyage-lib.sh, review fk-k4gebi BLOCKING-1
+# narrowed) so they can be pinned directly by a sourced-and-called test.
+CV_LOCK_STALE_SECONDS="$(resolve_lock_stale_seconds "$CV_REREVIEW_SLING_TIMEOUT_SECONDS" "$CV_LENS_STORE_TIMEOUT_SECONDS" "${CV_LOCK_STALE_SECONDS:-}")"
 
 CV_PR_AUTHOR="${CV_PR_AUTHOR:-}"
 if [ -z "${CV_PR_AUTHOR// /}" ]; then

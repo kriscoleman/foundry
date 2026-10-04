@@ -681,6 +681,32 @@ else
 fi
 export STUB_GH_STATE_49="MERGED"
 
+# ===========================================================================
+# CASE 14 (review fk-2v5tdv BLOCKING-1, qa-test narrowed): case 13 only
+# proves the lock survives correctly at today's default
+# CV_REREVIEW_SLING_TIMEOUT_SECONDS/CV_LENS_STORE_TIMEOUT_SECONDS values and
+# default (unset) CV_LOCK_STALE_SECONDS. It pins none of
+# resolve_lock_stale_seconds's own behavior: a future refactor that silently
+# shrinks the 6x multiplier back toward iteration-3's margin-free value, or
+# that breaks the non-numeric-override guard, would pass case 13 (and the
+# whole suite) unchanged. Source con-voyage-lib.sh directly (already done at
+# the top of this file) and call resolve_lock_stale_seconds with controlled
+# inputs instead of only exercising it indirectly through a full run_watch.
+# ===========================================================================
+start_case "14: resolve_lock_stale_seconds derives sling + 6*store with no override"
+got14="$(bash -c "source '$LIB'; resolve_lock_stale_seconds \"\$1\" \"\$2\"" _ "100" "30")"
+assert_eq "280" "$got14" "case14: derived value is sling_timeout + 6*store_timeout (100 + 6*30)"
+
+start_case "15: resolve_lock_stale_seconds falls back to the derived value on a non-numeric override"
+got15="$(bash -c "source '$LIB'; resolve_lock_stale_seconds \"\$1\" \"\$2\" \"\$3\"" _ "100" "30" "abc")"
+assert_eq "280" "$got15" "case15: non-numeric override falls back to the derived value, not the literal string"
+got15b="$(bash -c "source '$LIB'; resolve_lock_stale_seconds \"\$1\" \"\$2\" \"\$3\"" _ "100" "30" "")"
+assert_eq "280" "$got15b" "case15: empty override falls back to the derived value"
+
+start_case "16: resolve_lock_stale_seconds honors a valid numeric override"
+got16="$(bash -c "source '$LIB'; resolve_lock_stale_seconds \"\$1\" \"\$2\" \"\$3\"" _ "100" "30" "900")"
+assert_eq "900" "$got16" "case16: a valid all-digit override wins as-is over the derived value"
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "ALL CASES PASSED"
