@@ -46,10 +46,10 @@ not on "intentional per plan" grounds (fk-qbdta: a lane that already applied
 the severity rubric — an unenforced precondition with a local fix, a vacuous
 acceptance criterion, or an unstacked dependency on an unmerged slice — made
 that call deliberately; "the plan says this lands later" is exactly the
-rationale the rubric already rejects), not because the finding "is no longer
-load-bearing for correctness" (fk-6os73y synthesis fk-ymqwd9 downgraded an SRE
-BLOCKING — an unpersisted `gc.build.work_branch_name` with no reader — to LOW
-on exactly that rationale), not because the finding looks small, not because
+rationale the rubric already rejects), not because the finding "is no longer load-bearing for correctness"
+(fk-6os73y synthesis fk-ymqwd9 downgraded an SRE BLOCKING — an unpersisted
+`gc.build.work_branch_name` with no reader — to LOW on exactly that
+rationale), not because the finding looks small, not because
 you'd have called it LOW yourself. A lane's BLOCKING is authoritative;
 synthesis consolidates and deduplicates, it does not re-grade. You may note
 *why* a finding might seem less severe in the synthesis text, but the severity

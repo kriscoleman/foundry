@@ -23,9 +23,9 @@ BLOCKING includes:
 - Logic that over-matches or under-matches the intended case.
 - Logic that is needlessly complex in time or space (nested loops, full-scan
   enumerations or searches) because it hurts performance.
-- Correctness or safety that holds only because of an unenforced
-  precondition, today's caller behavior, or a promise about a future change —
-  when the fix is local to this change.
+- Correctness or safety that holds only because of an unenforced precondition,
+  today's caller behavior, or a promise about a future change — when the fix
+  is local to this change.
 - An acceptance criterion that is satisfied only vacuously (e.g. the wiring
   it claims to cover lands in another, unmerged slice).
 - A change that depends on an unmerged PR or slice and is not stacked on it.
