@@ -107,6 +107,21 @@ CV_REREVIEW_SLING_TIMEOUT_SECONDS="${CV_REREVIEW_SLING_TIMEOUT_SECONDS:-300}"
 case "$CV_REREVIEW_SLING_TIMEOUT_SECONDS" in
   *[!0-9]*|'') CV_REREVIEW_SLING_TIMEOUT_SECONDS="300" ;;
 esac
+# The dedup lock below (acquire_lock/release_lock) is held across the
+# read-decide-write section: up to two CV_LENS_STORE_TIMEOUT_SECONDS-bounded
+# store calls (mayor mail + bd close/bd set-state) plus the
+# CV_REREVIEW_SLING_TIMEOUT_SECONDS-bounded dispatch_rereview sling — a
+# legitimate worst-case hold of CV_REREVIEW_SLING_TIMEOUT_SECONDS +
+# 2*CV_LENS_STORE_TIMEOUT_SECONDS. CV_LOCK_STALE_SECONDS (read by
+# acquire_lock in con-voyage-lib.sh) must exceed that hold time, or a slow
+# legitimate holder gets its own lock stolen mid-hold by a concurrent sweep
+# (review fk-k4gebi BLOCKING-1). Derive it here with headroom to spare
+# rather than relying on con-voyage-lib.sh's generic 300s default, which an
+# operator raising CV_REREVIEW_SLING_TIMEOUT_SECONDS would otherwise outrun.
+CV_LOCK_STALE_SECONDS="${CV_LOCK_STALE_SECONDS:-$((CV_REREVIEW_SLING_TIMEOUT_SECONDS + 3 * CV_LENS_STORE_TIMEOUT_SECONDS))}"
+case "$CV_LOCK_STALE_SECONDS" in
+  *[!0-9]*|'') CV_LOCK_STALE_SECONDS=$((CV_REREVIEW_SLING_TIMEOUT_SECONDS + 3 * CV_LENS_STORE_TIMEOUT_SECONDS)) ;;
+esac
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB="${SCRIPT_DIR}/con-voyage-lib.sh"
