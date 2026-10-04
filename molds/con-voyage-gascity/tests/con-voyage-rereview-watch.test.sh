@@ -126,7 +126,22 @@ fi
 if [ "$sub" = "bd" ] && [ "$sub2" = "set-state" ]; then
   exit 0
 fi
+if [ "$sub" = "bd" ] && [ "$sub2" = "show" ]; then
+  id="${args[$((i+2))]:-}"
+  depcount=0
+  if [ -n "${STUB_GC_DEPCOUNT_DIR:-}" ] && [ -f "${STUB_GC_DEPCOUNT_DIR}/${id}" ]; then
+    depcount="$(cat "${STUB_GC_DEPCOUNT_DIR}/${id}")"
+  fi
+  printf '{"dependent_count": %s}\n' "$depcount"
+  exit 0
+fi
+if [ "$sub" = "bd" ] && [ "$sub2" = "close" ]; then
+  exit 0
+fi
 if [ "$sub" = "sling" ]; then
+  if [ -n "${STUB_GC_SLING_SLEEP:-}" ]; then
+    sleep "$STUB_GC_SLING_SLEEP"
+  fi
   if [ "${STUB_GC_SLING_FAIL:-0}" = "1" ]; then
     echo "sling failed (stub)" >&2
     exit 1
@@ -154,7 +169,7 @@ mkdir -p "$GC_CITY"
 run_watch() {
   : > "$STUB_GH_LOG"
   : > "$STUB_GC_LOG"
-  CV_STATE_DIR="$STATE_DIR" CV_REPO_CACHE_DIR="$REPO_CACHE_DIR" bash "$SCRIPT"
+  CV_STATE_DIR="$STATE_DIR" CV_REPO_CACHE_DIR="$REPO_CACHE_DIR" bash "$SCRIPT" 2>&1
 }
 
 STATE_DIR="${SANDBOX}/state"
@@ -193,11 +208,12 @@ git clone -q "$UPSTREAM" "$CACHE_DIR"
 
 write_finalize() {
   local key="$1" work_bead="$2" last_phase="$3" last_head="$4" round="$5" rereview_root="$6"
+  local pr_number="${7:-42}"
   {
     printf 'work_bead=%s\n' "$work_bead"
     printf 'convoy_id=%s\n' "fk-convoy1"
     printf 'repo_full=%s\n' "$REPO_FULL"
-    printf 'pr_number=%s\n' "42"
+    printf 'pr_number=%s\n' "$pr_number"
     printf 'pr_author=%s\n' "kriscoleman"
     printf 'implementor_session=%s\n' "testrig/gc.implementation-worker"
     printf 'last_phase=%s\n' "$last_phase"
@@ -249,6 +265,13 @@ if grep -qx "rereview_root_bead_id=" "${STATE_DIR}/cv-finalize-case2.finalize"; 
 else
   fail "rereview_root_bead_id stays empty for a non-triggering replay: got $(grep rereview_root_bead_id "${STATE_DIR}/cv-finalize-case2.finalize")"
 fi
+
+# cases 1/2's own records are fully exercised and no longer needed. Remove
+# them before case 3 (fk-marojd's one-dispatch-per-sweep budget, added below,
+# means a stray OLD record that ALSO now looks "changed" relative to the
+# shared PR#42 fixture head would steal the single dispatch slot a later
+# case's assertions expect to see for ITS OWN record).
+rm -f "${STATE_DIR}/cv-finalize-case1.finalize" "${STATE_DIR}/cv-finalize-case2.finalize"
 
 # ===========================================================================
 # CASE 3: head changed with a REAL new patch -> triggers a re-review round
@@ -328,6 +351,142 @@ write_finalize "cv-finalize-case6" "fk-work6" "awaiting_merge" "$PUBLISHED_HEAD"
 export STUB_GH_STATE_42="MERGED" STUB_GH_HEAD_42="$CHANGED_HEAD" STUB_GH_BRANCH_42="feature-branch"
 out6="$(run_watch)"
 assert_contains "$out6" "PR not OPEN" "diagnostic reports PR is not OPEN"
+# STUB_GH_STATE_42 is left at "MERGED" from here on so every pr-42 record
+# above (cases 1-6) stays permanently skipped in every later sweep below —
+# the timeout/recovery cases need a sweep where ONLY their own PR is live,
+# so they use a separate PR number (44) instead of fighting case1-6's
+# leftover records for this script's one-dispatch-per-sweep budget.
+
+# ===========================================================================
+# CASE 7 (fk-marojd acceptance 1): a sling slower than the quick STORE
+# timeout but still under its OWN, larger CV_REREVIEW_SLING_TIMEOUT_SECONDS
+# bound -> the round still dispatches and the root is recorded. This is the
+# literal bug: before the fix, every sling here was wrapped in the 30s store
+# bound and killed before it could ever finish.
+# ===========================================================================
+start_case "7: sling slower than the store timeout but under its own sling timeout -> still dispatches"
+printf 'v3 - case7 change\n' >> "${SRC}/feature.txt"
+git_c "$SRC" add feature.txt
+git_c "$SRC" commit -q -m "fix: case7 change"
+HEAD7="$(git_c "$SRC" rev-parse HEAD)"
+git_c "$SRC" push -q origin feature-branch
+
+write_finalize "cv-finalize-case7" "fk-work7" "awaiting_merge" "$CHANGED_HEAD" "2" "" "44"
+export STUB_GH_STATE_44="OPEN" STUB_GH_HEAD_44="$HEAD7" STUB_GH_BRANCH_44="feature-branch"
+export STUB_GC_NEW_BEAD_ID="rc-seed7"
+export CV_LENS_STORE_TIMEOUT_SECONDS=1
+export CV_REREVIEW_SLING_TIMEOUT_SECONDS=3
+export STUB_GC_SLING_SLEEP=1.5
+out7="$(run_watch)"
+assert_contains "$out7" "dispatched re-review round 3" "round dispatched despite a sling slower than the store timeout"
+rec7="$(cat "${STATE_DIR}/cv-finalize-case7.finalize")"
+assert_contains "$rec7" "rereview_root_bead_id=rc-seed7" "finalize record carries the new root after a slow-but-successful sling"
+if [ -f "${STATE_DIR}/cv-finalize-case7.rereview-pending" ]; then
+  fail "no leftover pending marker after a successful sling"
+else
+  pass "no leftover pending marker after a successful sling"
+fi
+unset STUB_GC_SLING_SLEEP
+
+# ===========================================================================
+# CASE 8 (fk-marojd acceptance 2): a sling that exceeds its OWN sling
+# timeout -> the first sweep names the timeout/duration, leaves the seed
+# pending (ambiguous, not a confirmed failure) and does NOT record a root;
+# the second sweep finds it never attached, closes it as orphaned, and mints
+# exactly one fresh seed instead of leaving two beads open.
+# ===========================================================================
+start_case "8: sling exceeds its own sling timeout -> timeout logged, seed left pending, no root recorded"
+printf 'v4 - case8 change\n' >> "${SRC}/feature.txt"
+git_c "$SRC" add feature.txt
+git_c "$SRC" commit -q -m "fix: case8 change"
+HEAD8="$(git_c "$SRC" rev-parse HEAD)"
+git_c "$SRC" push -q origin feature-branch
+
+write_finalize "cv-finalize-case8" "fk-work8" "awaiting_merge" "$HEAD7" "3" "" "44"
+export STUB_GH_STATE_44="OPEN" STUB_GH_HEAD_44="$HEAD8" STUB_GH_BRANCH_44="feature-branch"
+export STUB_GC_NEW_BEAD_ID="rc-seed8a"
+export CV_LENS_STORE_TIMEOUT_SECONDS=1
+export CV_REREVIEW_SLING_TIMEOUT_SECONDS=2
+export STUB_GC_SLING_SLEEP=5
+out8a="$(run_watch)"
+assert_contains "$out8a" "timed out after 2s" "diagnostic names the sling timeout value"
+assert_contains "$out8a" "ran ~" "diagnostic names the observed duration"
+rec8a="$(cat "${STATE_DIR}/cv-finalize-case8.finalize")"
+if grep -qx "rereview_root_bead_id=" "${STATE_DIR}/cv-finalize-case8.finalize"; then
+  pass "rereview_root_bead_id stays empty after a sling timeout"
+else
+  fail "rereview_root_bead_id stays empty after a sling timeout: got $(grep rereview_root_bead_id "${STATE_DIR}/cv-finalize-case8.finalize")"
+fi
+if [ -f "${STATE_DIR}/cv-finalize-case8.rereview-pending" ]; then
+  pass "pending marker recorded after a sling timeout"
+else
+  fail "pending marker recorded after a sling timeout"
+fi
+pending8="$(cat "${STATE_DIR}/cv-finalize-case8.rereview-pending")"
+assert_contains "$pending8" "seed_bead_id=rc-seed8a" "pending marker names the timed-out seed bead"
+gc_log8a="$(cat "$STUB_GC_LOG")"
+assert_not_contains "$gc_log8a" "bd close rc-seed8a" "a mere timeout does not close the seed bead yet (ambiguous, not confirmed)"
+
+start_case "8b: next sweep finds the pending seed never attached -> closes it as orphaned, mints a fresh seed"
+export STUB_GC_NEW_BEAD_ID="rc-seed8b"
+export STUB_GC_SLING_SLEEP=0
+out8b="$(run_watch)"
+assert_contains "$out8b" "never attached; closing it as orphaned" "orphan seed closed on the next sweep"
+gc_log8b="$(cat "$STUB_GC_LOG")"
+assert_contains "$gc_log8b" "bd close rc-seed8a" "bd close called on the confirmed-orphaned seed bead"
+rec8b="$(cat "${STATE_DIR}/cv-finalize-case8.finalize")"
+assert_contains "$rec8b" "rereview_root_bead_id=rc-seed8b" "fresh seed recorded as root once the orphan is cleared"
+if [ -f "${STATE_DIR}/cv-finalize-case8.rereview-pending" ]; then
+  fail "no leftover pending marker after recovering from an orphan"
+else
+  pass "no leftover pending marker after recovering from an orphan"
+fi
+unset STUB_GC_SLING_SLEEP
+
+# ===========================================================================
+# CASE 9 (fk-marojd acceptance 3): a timed-out sling that LATER actually
+# attached server-side (observed live: a manual retry of the identical
+# formula took ~96s and succeeded) -> the next sweep must record that root
+# instead of slinging a second time or minting a second seed.
+# ===========================================================================
+start_case "9: a timed-out sling later attaches server-side -> next sweep records it, does not sling again"
+printf 'v5 - case9 change\n' >> "${SRC}/feature.txt"
+git_c "$SRC" add feature.txt
+git_c "$SRC" commit -q -m "fix: case9 change"
+HEAD9="$(git_c "$SRC" rev-parse HEAD)"
+git_c "$SRC" push -q origin feature-branch
+
+write_finalize "cv-finalize-case9" "fk-work9" "awaiting_merge" "$HEAD8" "1" "" "44"
+export STUB_GH_STATE_44="OPEN" STUB_GH_HEAD_44="$HEAD9" STUB_GH_BRANCH_44="feature-branch"
+export STUB_GC_NEW_BEAD_ID="rc-seed9"
+export CV_LENS_STORE_TIMEOUT_SECONDS=1
+export CV_REREVIEW_SLING_TIMEOUT_SECONDS=2
+export STUB_GC_SLING_SLEEP=5
+out9a="$(run_watch)"
+assert_contains "$out9a" "timed out after 2s" "case9 sweep 1: reports the sling timeout"
+if [ -f "${STATE_DIR}/cv-finalize-case9.rereview-pending" ]; then
+  pass "case9 sweep 1: pending marker recorded"
+else
+  fail "case9 sweep 1: pending marker recorded"
+fi
+
+mkdir -p "${SANDBOX}/depcounts"
+printf '1\n' > "${SANDBOX}/depcounts/rc-seed9"
+export STUB_GC_DEPCOUNT_DIR="${SANDBOX}/depcounts"
+export STUB_GC_SLING_SLEEP=0
+out9b="$(run_watch)"
+assert_contains "$out9b" "completed server-side; recording it instead of dispatching again" "case9 sweep 2: recovers the backgrounded result"
+gc_log9b="$(cat "$STUB_GC_LOG")"
+assert_not_contains "$gc_log9b" "sling testrig" "case9 sweep 2: does not call gc sling again"
+assert_not_contains "$gc_log9b" "bd create" "case9 sweep 2: does not mint a second seed bead"
+rec9b="$(cat "${STATE_DIR}/cv-finalize-case9.finalize")"
+assert_contains "$rec9b" "rereview_root_bead_id=rc-seed9" "case9 sweep 2: finalize record carries the recovered seed as root"
+if [ -f "${STATE_DIR}/cv-finalize-case9.rereview-pending" ]; then
+  fail "case9 sweep 2: no leftover pending marker after recovery"
+else
+  pass "case9 sweep 2: no leftover pending marker after recovery"
+fi
+unset STUB_GC_SLING_SLEEP STUB_GC_DEPCOUNT_DIR
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

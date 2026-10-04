@@ -63,7 +63,30 @@
 #                       con-voyage-rereview).
 #   CV_REPO_CACHE_DIR   Local bare-mirror cache root for patch-id comparison
 #                       (default: "${CV_STATE_DIR}/rereview-repo-cache").
-#   CV_LENS_STORE_TIMEOUT_SECONDS  Bound on each external call (default: 30).
+#   CV_LENS_STORE_TIMEOUT_SECONDS  Bound on each quick store call — `bd
+#                       create`, `bd show`, `bd set-state`, `gh pr view`,
+#                       `mail send` (default: 30).
+#   CV_REREVIEW_SLING_TIMEOUT_SECONDS  Bound on the `gc sling` call alone
+#                       (default: 300). `gc sling` compiles a graph.v2
+#                       formula and mints many beads — under real load this
+#                       routinely takes far longer than a quick store read
+#                       (live evidence 2026-10-04: a manual sling of this
+#                       SAME formula took ~96s on a loaded host), so it needs
+#                       its own, much larger bound; wrapping it in
+#                       CV_LENS_STORE_TIMEOUT_SECONDS (30s) killed it on
+#                       every tick and no re-review round ever started.
+#                       MATH: the order's own exec timeout is 8m (480s —
+#                       con-voyage-rereview-watch.toml). This script dispatches
+#                       AT MOST ONE re-review round per sweep (see
+#                       dispatched_this_sweep below) specifically so only one
+#                       CV_REREVIEW_SLING_TIMEOUT_SECONDS-bounded call can ever
+#                       be in flight in a single run, regardless of how many
+#                       .finalize records exist — at the 300s default that
+#                       leaves ~180s of headroom for every other record's
+#                       quick, CV_LENS_STORE_TIMEOUT_SECONDS-bounded checks
+#                       plus the mail/bd-create/bd-show calls around the one
+#                       dispatch. Raise the order's own timeout instead if a
+#                       larger value than 300s is ever needed here.
 #
 # Exit code: always 0 (monitor convention — a per-record failure is logged
 # and retried next cycle, never fatal to the whole sweep).
@@ -79,6 +102,10 @@ CV_REREVIEW_FORMULA="${CV_REREVIEW_FORMULA:-con-voyage-rereview}"
 CV_LENS_STORE_TIMEOUT_SECONDS="${CV_LENS_STORE_TIMEOUT_SECONDS:-30}"
 case "$CV_LENS_STORE_TIMEOUT_SECONDS" in
   *[!0-9]*|'') CV_LENS_STORE_TIMEOUT_SECONDS="30" ;;
+esac
+CV_REREVIEW_SLING_TIMEOUT_SECONDS="${CV_REREVIEW_SLING_TIMEOUT_SECONDS:-300}"
+case "$CV_REREVIEW_SLING_TIMEOUT_SECONDS" in
+  *[!0-9]*|'') CV_REREVIEW_SLING_TIMEOUT_SECONDS="300" ;;
 esac
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -185,6 +212,43 @@ classify_head_change() {
   fi
 }
 
+# rereview_pending_file DEDUP_KEY -> prints the side-channel marker path that
+# records a seed bead whose `gc sling` attempt timed out without a confirmed
+# result (fk-marojd item 3: a timed-out sling may still finish server-side —
+# live evidence: a manual retry of the identical formula took ~96s and
+# succeeded). Never written to the shared .finalize record itself (that file
+# is also consumed by con-voyage-finalize.sh, which has no notion of this
+# in-flight-but-unconfirmed state) — same separate-marker-file convention
+# con-voyage-pr-watch.sh's PENDING-ATTACH SELF-HEAL uses for the identical
+# "bd create succeeded, the follow-on call did not confirm" shape.
+rereview_pending_file() {
+  printf '%s/%s.rereview-pending' "$CV_STATE_DIR" "$1"
+}
+
+# seed_bead_dependent_count SEED_BEAD_ID -> prints the bead's dependent_count
+# (0 on any resolution failure — fail-safe: an unresolvable count is treated
+# as "not yet attached" so the caller falls through to closing it as
+# orphaned and minting a fresh seed, rather than silently losing a result it
+# could not verify). A re-review round compiled onto a seed bead gives that
+# seed at least one dependent once `gc sling` has actually attached the
+# formula, the same signal this pack's workflow roots carry (see any
+# claimed graph.v2 bead's own BLOCKS/TRACKS listing).
+seed_bead_dependent_count() {
+  local seed_bead_id="$1"
+  [ -n "${seed_bead_id// /}" ] || { printf '0'; return 0; }
+  local json
+  json="$(cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" "$GC" --city "$GC_CITY" bd show "$seed_bead_id" --json 2>/dev/null)"
+  printf '%s' "$json" | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    d = d[0] if isinstance(d, list) else d
+except Exception:
+    d = {}
+print((d or {}).get('dependent_count') or 0)
+" 2>/dev/null || printf '0'
+}
+
 # flatten_roster_vars ROOT_BEAD_ID -> prints "key=value,key=value,..." built
 # from the workflow root's gc.graphv2_vars.v1 JSON metadata, restricted to the
 # enable_*/code_lens/implementation_target keys a re-review round needs to
@@ -227,6 +291,7 @@ dispatch_rereview() {
     return 1
   fi
   local route="${CV_REREVIEW_RIG}/gc.run-operator"
+  local pending_file; pending_file="$(rereview_pending_file "$dedup_key")"
 
   local seed_title="Con-voyage re-review: ${repo_full}#${pr_number} round ${new_round}"
   local seed_bead_id
@@ -236,6 +301,12 @@ dispatch_rereview() {
     echo "con-voyage-rereview-watch: ERROR: failed to create re-review seed bead for ${repo_full}#${pr_number}" >&2
     return 1
   fi
+
+  # Record the pending seed BEFORE the sling attempt (same ordering as
+  # con-voyage-pr-watch.sh's PENDING-ATTACH SELF-HEAL): a kill at any point
+  # from here on still leaves a trail the next sweep can check instead of
+  # minting a second seed and orphaning this one.
+  { printf 'seed_bead_id=%s\n' "$seed_bead_id"; printf 'round=%s\n' "$new_round"; } > "$pending_file"
 
   local -a var_args=()
   local IFS_OLD="$IFS"
@@ -247,17 +318,49 @@ dispatch_rereview() {
   done
   IFS="$IFS_OLD"
 
-  local sling_out
-  if ! sling_out=$(cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" \
+  local sling_out sling_rc sling_start sling_end sling_duration
+  sling_start=$(date +%s)
+  sling_out=$(cv_with_timeout "$CV_REREVIEW_SLING_TIMEOUT_SECONDS" \
     "$GC" --city "$GC_CITY" sling "$route" "$seed_bead_id" --on "$CV_REREVIEW_FORMULA" \
       --var "repo=${repo_full}" --var "pr=${pr_number}" --var "branch=${branch}" \
       --var "finalize_key=${dedup_key}" --var "review_round=${new_round}" \
-      "${var_args[@]}" 2>&1); then
-    echo "con-voyage-rereview-watch: ERROR: gc sling con-voyage-rereview failed for ${repo_full}#${pr_number}: ${sling_out}" >&2
+      "${var_args[@]}" 2>&1)
+  sling_rc=$?
+  sling_end=$(date +%s)
+  sling_duration=$((sling_end - sling_start))
+
+  if [ "$sling_rc" -eq 0 ]; then
+    rm -f "$pending_file"
+    printf '%s' "$seed_bead_id"
+    return 0
+  fi
+
+  if [ "$sling_rc" -eq 124 ]; then
+    # Ambiguous, not a confirmed failure: cv_with_timeout only guarantees
+    # the CLIENT-SIDE `gc sling` process was killed — live evidence shows
+    # the server-side dispatch it kicked off can still land afterward.
+    # Leave the seed bead open and the marker in place; the next sweep's
+    # seed_bead_dependent_count check is the one place that decides whether
+    # it actually attached (recovered) or must be closed as orphaned.
+    echo "con-voyage-rereview-watch: WARNING: gc sling con-voyage-rereview timed out after ${CV_REREVIEW_SLING_TIMEOUT_SECONDS}s (ran ~${sling_duration}s) for ${repo_full}#${pr_number} on seed ${seed_bead_id} — it may still complete server-side; leaving it pending for next cycle to check before treating it as orphaned" >&2
     return 1
   fi
-  printf '%s' "$seed_bead_id"
+
+  echo "con-voyage-rereview-watch: ERROR: gc sling con-voyage-rereview failed after ~${sling_duration}s (exit ${sling_rc}) for ${repo_full}#${pr_number}: ${sling_out}" >&2
+  if ! "$GC" --city "$GC_CITY" bd close "$seed_bead_id" --reason "gc sling con-voyage-rereview failed (exit ${sling_rc})" >/dev/null 2>&1; then
+    echo "con-voyage-rereview-watch: WARNING: could not close orphaned seed bead ${seed_bead_id} after a confirmed sling failure for ${repo_full}#${pr_number}" >&2
+  fi
+  rm -f "$pending_file"
+  return 1
 }
+
+  # dispatched_this_sweep bounds this run to at most ONE `gc sling` attempt
+  # (see CV_REREVIEW_SLING_TIMEOUT_SECONDS doc comment above for the math):
+  # with N .finalize records needing a re-review this cycle, only the first
+  # pays the up-to-CV_REREVIEW_SLING_TIMEOUT_SECONDS cost; every other
+  # trigger is deferred to the next sweep instead of stacking several slow
+  # sling attempts inside the order's single 8m exec timeout.
+  dispatched_this_sweep=0
 
   for finalize_file in "${CV_STATE_DIR}"/*.finalize; do
     [ -f "$finalize_file" ] || continue
@@ -349,20 +452,64 @@ print('{}\x1f{}\x1f{}'.format(d.get('state') or '', d.get('headRefOid') or '', d
     esac
     next_round=$((10#$next_round + 1))
 
-    mail_out=$(cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" \
-      "$GC" --city "$GC_CITY" mail send mayor \
-        -s "RE-REVIEW PENDING: ${label}" \
-        -m "con-voyage-rereview-watch: ${label} received a code-changing push to ${new_head} after publish. Starting a fresh review round (round ${next_round}) with the original roster before the PR may land." \
-        --json 2>/dev/null)
-    mail_rc=$?
-    if [ "$mail_rc" -ne 0 ]; then
-      echo "con-voyage-rereview-watch: WARNING: mayor mail (RE-REVIEW PENDING) failed for ${label}: ${mail_out}; continuing anyway (the re-review dispatch itself is the primary signal)" >&2
+    # A previous sweep's sling may have timed out client-side without a
+    # confirmed result (fk-marojd item 4): check for that pending seed
+    # FIRST, before minting a new one or counting against this sweep's
+    # one-dispatch budget — this check is a cheap store read, not a sling.
+    new_root=""
+    pending_file="$(rereview_pending_file "$dedup_key")"
+    pending_seed_bead_id=""
+    pending_round=""
+    if [ -f "$pending_file" ]; then
+      while IFS='=' read -r pkey pval || [ -n "$pkey" ]; do
+        case "$pkey" in
+          seed_bead_id) pending_seed_bead_id="$pval" ;;
+          round) pending_round="$pval" ;;
+        esac
+      done < "$pending_file"
+    fi
+    if [ -n "${pending_seed_bead_id// /}" ]; then
+      dep_count="$(seed_bead_dependent_count "$pending_seed_bead_id")"
+      case "$dep_count" in
+        *[!0-9]*|'') dep_count=0 ;;
+      esac
+      if [ "$dep_count" -gt 0 ]; then
+        echo "con-voyage-rereview-watch: ${label} — a previously timed-out sling (seed ${pending_seed_bead_id}) completed server-side; recording it instead of dispatching again"
+        new_root="$pending_seed_bead_id"
+        [ -n "${pending_round// /}" ] && next_round="$pending_round"
+        rm -f "$pending_file"
+      else
+        echo "con-voyage-rereview-watch: ${label} — pending seed ${pending_seed_bead_id} from a previous timed-out sling never attached; closing it as orphaned and retrying fresh"
+        if ! "$GC" --city "$GC_CITY" bd close "$pending_seed_bead_id" --reason "superseded: previous re-review sling for ${label} never attached" >/dev/null 2>&1; then
+          echo "con-voyage-rereview-watch: WARNING: could not close stale pending seed ${pending_seed_bead_id} for ${label}" >&2
+        fi
+        rm -f "$pending_file"
+        [ -n "${pending_round// /}" ] && next_round="$pending_round"
+      fi
     fi
 
-    new_root="$(dispatch_rereview "$dedup_key" "$FS_REPO_FULL" "$FS_PR_NUMBER" "$branch" "$roster_vars" "$next_round")"
     if [ -z "${new_root// /}" ]; then
-      echo "con-voyage-rereview-watch: ERROR: could not dispatch a re-review round for ${label}; will retry next cycle" >&2
-      continue
+      if [ "$dispatched_this_sweep" -eq 1 ]; then
+        echo "con-voyage-rereview-watch: SKIP ${label} — already dispatched one re-review round this sweep; deferring to next cycle to bound sweep runtime under the order's exec timeout"
+        continue
+      fi
+
+      mail_out=$(cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" \
+        "$GC" --city "$GC_CITY" mail send mayor \
+          -s "RE-REVIEW PENDING: ${label}" \
+          -m "con-voyage-rereview-watch: ${label} received a code-changing push to ${new_head} after publish. Starting a fresh review round (round ${next_round}) with the original roster before the PR may land." \
+          --json 2>/dev/null)
+      mail_rc=$?
+      if [ "$mail_rc" -ne 0 ]; then
+        echo "con-voyage-rereview-watch: WARNING: mayor mail (RE-REVIEW PENDING) failed for ${label}: ${mail_out}; continuing anyway (the re-review dispatch itself is the primary signal)" >&2
+      fi
+
+      new_root="$(dispatch_rereview "$dedup_key" "$FS_REPO_FULL" "$FS_PR_NUMBER" "$branch" "$roster_vars" "$next_round")"
+      dispatched_this_sweep=1
+      if [ -z "${new_root// /}" ]; then
+        echo "con-voyage-rereview-watch: ERROR: could not dispatch a re-review round for ${label}; will retry next cycle" >&2
+        continue
+      fi
     fi
 
     "$GC" --city "$GC_CITY" bd set-state "$FS_WORK_BEAD" cv=re_reviewing \
