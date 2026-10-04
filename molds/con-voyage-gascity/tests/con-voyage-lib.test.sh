@@ -1508,6 +1508,20 @@ for row in "${branch_name_cases[@]}"; do
   assert_eq "$expected" "$(cv_work_branch_name "$bead_id" "$title")" "work_branch_name('${bead_id}', '${title}')"
 done
 
+# fk-6os73y re-grade (operator severity rubric): a non-ASCII-only title (or
+# any title that slugifies to empty) must not silently fall back to the bare
+# branch name with zero signal — a human reading a stripped-down "ber-caf"
+# style slug (or a bare name with no slug at all) deserves to know why.
+start_case "cv_work_branch_name: a non-ASCII-only title falls back to the bare branch name AND logs why on stderr"
+result="$(cv_work_branch_name "fk-ob4j8y" "名前" 2>"${SANDBOX}/non_ascii_title.stderr")"
+assert_eq "con-voyage/fk-ob4j8y" "$result" "falls back to the bare con-voyage/<bead-id> name"
+assert_eq "1" "$(grep -c 'yielded no usable slug characters' "${SANDBOX}/non_ascii_title.stderr")" "logs why the slug fell back, on stderr"
+
+start_case "cv_work_branch_name: an empty title also logs why on fallback"
+result="$(cv_work_branch_name "fk-a3k6x.1" "" 2>"${SANDBOX}/empty_title.stderr")"
+assert_eq "con-voyage/fk-a3k6x.1" "$result" "falls back to the bare con-voyage/<bead-id> name"
+assert_eq "1" "$(grep -c 'yielded no usable slug characters' "${SANDBOX}/empty_title.stderr")" "logs why the slug fell back, on stderr"
+
 start_case "cv_branch_bead_id: extracts the bead id back out of EITHER branch form, never swallowing id into slug or slug into id"
 
 bead_id_cases=(

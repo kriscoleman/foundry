@@ -2583,7 +2583,10 @@ print(t)
 
 # cv_work_branch_name BEAD_ID TITLE — print the con-voyage work-branch name
 # for BEAD_ID: `con-voyage/<bead-id>-<slug-of-title>`, or the bare
-# `con-voyage/<bead-id>` when TITLE yields an empty slug (cv_branch_slug).
+# `con-voyage/<bead-id>` when TITLE yields an empty slug (cv_branch_slug) —
+# e.g. a punctuation-only or non-ASCII-only title. That fallback is logged to
+# stderr naming the title so a human can see why a branch lost its topic
+# slug, instead of silently landing on the bare name with no signal.
 # Fail-safe: an empty BEAD_ID prints an empty string rather than a malformed
 # `con-voyage/-<slug>`.
 cv_work_branch_name() {
@@ -2594,6 +2597,7 @@ cv_work_branch_name() {
   if [ -n "${slug// /}" ]; then
     printf 'con-voyage/%s-%s' "$bead_id" "$slug"
   else
+    echo "cv_work_branch_name: title '${title}' yielded no usable slug characters (empty, punctuation-only, or non-ASCII-only) — falling back to the bare con-voyage/${bead_id} branch name" >&2
     printf 'con-voyage/%s' "$bead_id"
   fi
 }
