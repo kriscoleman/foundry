@@ -25,10 +25,11 @@
 #      --force` with a reason naming the closed root (and its own close
 #      reason, when known).
 #   4. Descendants close LEAF-FIRST: plain lane/step beads, then
-#      gc.kind=scope-check, then gc.kind=scope, then gc.kind=workflow (the
-#      ralph), then gc.kind=workflow-finalize — ordering is global across
-#      all closed roots in this tick, which still guarantees every root's
-#      own leaves close before its own controllers.
+#      gc.kind=scope-check, then gc.kind=scope, then gc.kind=ralph, then
+#      gc.kind=workflow-finalize — ordering is global across all closed
+#      roots in this tick, which still guarantees every root's own leaves
+#      close before its own controllers. A kind this script doesn't
+#      recognize ranks last (fail-closed as a controller, not as a leaf).
 #   5. Bounded: at most CV_ORPHAN_SWEEP_MAX_CLOSES closes per tick (default
 #      50); any remainder is picked up on a later tick since it is still
 #      open and its root is still closed (idempotent — a bead this script
@@ -143,17 +144,21 @@ if [ -z "${CANDIDATES_TSV// /}" ]; then
   exit 0
 fi
 
-# rank_for_kind KIND — leaf beads (no gc.kind, or any kind not an explicit
-# controller stage) rank 0 and close first; controllers close in the order
-# the workflow tears down: scope-check -> scope -> workflow (the ralph) ->
-# workflow-finalize.
+# rank_for_kind KIND — leaf beads (no gc.kind) rank 0 and close first;
+# controllers close in the order the workflow tears down: scope-check ->
+# scope -> ralph -> workflow-finalize. A non-empty kind this script doesn't
+# recognize ranks LAST (fail-closed as a controller) rather than as a leaf,
+# so a future engine-introduced kind this script hasn't been taught about
+# doesn't get closed ahead of controllers that may depend on it (review
+# fk-gypn9m BLOCKING-2 fold-in of iteration-1 LOW-3).
 rank_for_kind() {
   case "$1" in
+    "") printf '0' ;;
     scope-check) printf '1' ;;
     scope) printf '2' ;;
-    workflow) printf '3' ;;
+    ralph) printf '3' ;;
     workflow-finalize) printf '4' ;;
-    *) printf '0' ;;
+    *) printf '5' ;;
   esac
 }
 
@@ -190,6 +195,49 @@ fi
 # interleaving across roots.
 SORTED_PENDING="$(printf '%s' "$PENDING" | sort -t"$(printf '\x1f')" -k1,1n -s)"
 
+# Pinned candidates (review fk-gypn9m BLOCKING-1/BLOCKING-3): a PINNED
+# candidate is a deliberate human hold (e.g. an operator pinning a sample
+# orphan for inspection) — force-closing it anyway would destroy exactly the
+# evidence that hold was meant to preserve. Ordinary dependency/gate-blocked
+# state (`bd blocked`) is NOT a human-hold signal: it is the normal state of
+# every workflow controller (scope-check depends on its lanes, scope on
+# scope-check, the ralph on scope, workflow-finalize on the ralph), and the
+# leaf-first rank ordering above already closes those dependencies before
+# their controllers — no separate skip is needed for it. Fetch the pinned
+# set ONCE per tick (not once per candidate) and look candidates up
+# in-process, mirroring the ROOT_STATUS cache above; wrap the one-time fetch
+# in cv_with_timeout so a slow store degrades this tick to "treat everything
+# as pinned, skip it all" (fail-safe) instead of hanging the whole order.
+declare -A PINNED_SET=()
+PINNED_FETCH_FAILED=0
+PINNED_JSON="$(cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" "$GC" --city "$GC_CITY" bd list --pinned --json 2>/dev/null)"
+PINNED_FETCH_RC=$?
+if [ "$PINNED_FETCH_RC" -ne 0 ] || [ -z "${PINNED_JSON// /}" ]; then
+  PINNED_FETCH_FAILED=1
+  echo "con-voyage-orphan-sweep: WARNING: bd list --pinned lookup failed; treating every candidate as pinned this tick" >&2
+else
+  while IFS= read -r pinned_id; do
+    [ -n "$pinned_id" ] && PINNED_SET["$pinned_id"]=1
+  done < <(printf '%s' "$PINNED_JSON" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    data = []
+if not isinstance(data, list):
+    data = []
+for item in data:
+    if isinstance(item, dict) and item.get('id'):
+        print(item['id'])
+" 2>/dev/null)
+fi
+
+is_pinned_candidate() {
+  local id="$1"
+  [ "$PINNED_FETCH_FAILED" = "1" ] && return 0
+  [ -n "${PINNED_SET[$id]+x}" ]
+}
+
 CLOSED_TOTAL=0
 SKIPPED_PINNED_TOTAL=0
 
@@ -200,13 +248,7 @@ while IFS=$'\x1f' read -r _rank bead_id root_id; do
     break
   fi
 
-  # BLOCKING-1 (sre): a pinned or dependency/gate-blocked candidate is a
-  # deliberate human hold (e.g. an operator pinning a sample orphan for
-  # inspection) — force-closing it anyway would destroy exactly the evidence
-  # that hold was meant to preserve. Skip it: leave it open, stamp nothing,
-  # and surface it distinctly in the digest mail instead of silently
-  # force-closing it.
-  if bead_pinned_or_blocked "$bead_id"; then
+  if is_pinned_candidate "$bead_id"; then
     echo "con-voyage-orphan-sweep: SKIP (pinned/blocked) ${bead_id} (root ${root_id}); leaving open for human review"
     SKIPPED_PINNED_TOTAL=$((SKIPPED_PINNED_TOTAL + 1))
     continue
