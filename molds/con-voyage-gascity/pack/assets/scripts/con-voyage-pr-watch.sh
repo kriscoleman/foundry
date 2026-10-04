@@ -1537,6 +1537,30 @@ def is_bot_approval_noise(body, state):
         return True
     return False
 
+# A bot reply that carries no finding at all -- no severity/critical marker,
+# no code reference, no requested change -- is pure acknowledgement noise and
+# must not mint a feedback bead, even when its phrasing does not match one of
+# the specific known noise banners above (fk-7xu9m: a doomer-ai[bot] reply
+# "Got it -- thanks for the feedback!" to a human reply became a feedback
+# bead a worker had to claim and close no-op, va-e6p7u/vandoor#10590,
+# 2026-10-03). This is deliberately a catch-all, broader net than the
+# specific phrases is_bot_approval_noise matches: it fires whenever NONE of
+# the finding markers below are present, so a reply that still carries a
+# severity word, a code reference, or requested-change language keeps
+# routing regardless of how it opens.
+FINDING_MARKER_RE = re.compile(
+    r"critical|blocking|severity|vulnerab|\bbug\b|\berror\b|"
+    r"`[^`]+`|\bline\s+\d+\b|:\d+\b|"
+    r"\bplease\b|\bshould\b|\bmust\b|\bneed(?:s|ed)?\s+to\b|recommend|\bfix\b|\bchange\b|\bupdate\b",
+    re.IGNORECASE,
+)
+
+def is_bot_ack(body):
+    b = (body or "").strip()
+    if not b:
+        return False
+    return not FINDING_MARKER_RE.search(b)
+
 # ONE shared classifier used by all three scan loops below (reviews, issue
 # comments, inline review-thread comments). fk-9xyo4/PR#160 recurred TWICE
 # because each loop carried its own hand-copied is_bot/is_ai_reviewer_bot/
@@ -1545,15 +1569,18 @@ def is_bot_approval_noise(body, state):
 # CRITICAL finding. A single predicate makes that class of drift impossible —
 # every loop now calls this and ONLY this to decide whether an item is
 # suppressed. Returns a short machine-readable reason string ("slash_command",
-# "bot_noise", "bot_approval_noise", "agent_comment") when the item must be
-# dropped, or None when it is a real candidate (the caller still applies its
-# own type-specific empty-body/PENDING rules on top of a None result).
+# "bot_noise", "bot_approval_noise", "bot-ack", "agent_comment") when the item
+# must be dropped, or None when it is a real candidate (the caller still
+# applies its own type-specific empty-body/PENDING rules on top of a None
+# result).
 def classify_suppression(author, body, state):
     if is_slash_command(body):
         return "slash_command"
     if is_ai_reviewer_bot(author):
         if is_bot_approval_noise(body, state):
             return "bot_approval_noise"
+        if is_bot_ack(body):
+            return "bot-ack"
         return None
     if is_bot(author):
         return "bot_noise"

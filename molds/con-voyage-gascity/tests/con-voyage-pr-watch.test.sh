@@ -307,6 +307,22 @@ JSON
 JSON
             exit 0
           fi
+          # STUB_PR11_BOTACK=1 (fk-7xu9m, foundry#160 follow-up): an
+          # AI-reviewer bot reply that carries no finding at all (no
+          # severity/critical marker, no code reference, no requested
+          # change) is pure acknowledgement noise and must not mint a
+          # feedback bead -- a doomer-ai[bot] reply "Got it -- thanks for
+          # the feedback!" to a human reply became a no-op feedback bead a
+          # worker had to claim and close (va-e6p7u, vandoor#10590,
+          # 2026-10-03 21:23Z). A second doomer-ai[bot] reply carries the
+          # SAME acknowledgement phrasing but ALSO a real finding (a
+          # critical issue with a code reference) and must still route.
+          if [ "${STUB_PR11_BOTACK:-0}" = "1" ]; then
+            cat <<'JSON'
+{"reviews":[],"comments":[{"id":"IC_botack_only","author":{"login":"doomer-ai[bot]"},"body":"Got it -- thanks for the feedback!"},{"id":"IC_botack_finding","author":{"login":"doomer-ai[bot]"},"body":"Thanks for flagging -- still a critical issue in `foo.go:42`."}]}
+JSON
+            exit 0
+          fi
           cat <<'JSON'
 {"reviews":[],"comments":[{"id":"IC_test_11","author":{"login":"a-human-reviewer"},"body":"please fix the null check"},{"id":"IC_test_bot","author":{"login":"kriscoleman"},"body":"🤖 **Automated con-voyage agent** (con-voyage-ci-repair / foundry-kc/worker)\n\nFixed a thing."},{"id":"IC_test_netlify","author":{"login":"netlify"},"body":"Deploy Preview for replicated-docs ready!"}]}
 JSON
@@ -3307,6 +3323,27 @@ assert_log_count "$GH_LOG" 'pr list --repo kriscoleman/foundry --author kriscole
 # own --json reviews,comments fetch, which is out of scope for this count.
 n_pr_view_calls="$(grep -E -c -- 'pr view 20[0-9][0-9] --repo kriscoleman/foundry --json author,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup' "$GH_LOG" || true)"
 assert_eq "35" "${n_pr_view_calls:-0}" "all 35 synthetic PRs are discovered and reach gh pr view — none silently truncated at gh's default page size"
+
+# ===========================================================================
+# CASE 60 — fk-7xu9m (foundry#160 follow-up): pr-watch must not route pure
+#   AI-reviewer-bot ACKNOWLEDGEMENT replies as feedback. A doomer-ai[bot]
+#   reply carrying no finding (no severity/critical marker, no code
+#   reference, no requested change) is suppressed with reason=bot-ack. The
+#   SAME author posting an ack that also carries a real finding (a critical
+#   issue with a code reference) must still route.
+# ===========================================================================
+start_case "60: fk-7xu9m — AI-reviewer-bot ack-only reply suppressed (bot-ack), ack-with-finding still routes"
+setup_case_env "60"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_PR11_BOTACK="1"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 1 "exactly one comment-route sling for #11 (only the finding-carrying reply routes)"
+assert_log_count "$GC_LOG" 'still a critical issue' 1 "the finding-carrying ack reply still routes with its content intact"
+assert_log_count "$GC_LOG" 'Got it' 0 "the pure-ack reply never reaches routed feedback"
+if printf '%s' "$OUT" | grep -qF 'SUPPRESS kriscoleman/foundry#11 comment id=IC_botack_only author=doomer-ai[bot] reason=bot-ack'; then
+  pass "pure-ack reply is suppressed and logged with reason=bot-ack"
+else
+  fail "pure-ack reply is suppressed and logged with reason=bot-ack"
+fi
 
 # ===========================================================================
 # Summary
