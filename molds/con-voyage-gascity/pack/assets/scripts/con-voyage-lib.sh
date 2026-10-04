@@ -1950,17 +1950,30 @@ cv_resolve_work_bead() {
   local json
   json=$("$gc_bin" bd show "$convoy_id" --json 2>/dev/null) || json=""
   if [ -z "$json" ]; then printf '%s' "$convoy_id"; return 0; fi
-  printf '%s' "$json" | python3 -c "
+
+  # fk-tvefk0 (fk-9f2n loop variant): main.rereview-seed.md stamps
+  # gc.build.source_anchor_id to ITS OWN graph.v2 step bead — never a
+  # synthetic input convoy, since there is no fresh convoy for a re-review
+  # round. Detect that case (gc.step_ref / gc.routed_to / gc.root_bead_id
+  # present) separately from the convoy/non-convoy branches below so a caller
+  # never claims/reassigns a closed workflow step as if it were the work bead
+  # (that reopens the step and hands it straight back out as fresh routed
+  # work). The parse below prints one of:
+  #   "resolved <id>"  — synthetic/convoy case, tracked work bead found
+  #   "step <root_id>" — a graph.v2 step bead; root_id may be empty
+  #   "fallback"        — anything else (including convoy-with-no-dependency)
+  local parsed
+  parsed="$(printf '%s' "$json" | python3 -c "
 import sys, json
 convoy_id = sys.argv[1]
 try:
     data = json.load(sys.stdin)
 except Exception:
-    print(convoy_id); raise SystemExit(0)
+    print('fallback'); raise SystemExit(0)
 if isinstance(data, list):
     data = data[0] if data else {}
 if not isinstance(data, dict):
-    print(convoy_id); raise SystemExit(0)
+    print('fallback'); raise SystemExit(0)
 meta = data.get('metadata') or {}
 synthetic = str(meta.get('gc.synthetic', '')).lower() in ('true', '1', 'yes')
 is_convoy = (data.get('issue_type') or '') == 'convoy'
@@ -1974,12 +1987,39 @@ if synthetic or is_convoy:
         dtype = dep.get('dependency_type') or dep.get('type') or ''
         dep_id = dep.get('id') or ''
         if dep_id and dep_id != convoy_id and (dtype == 'tracks' or dtype == ''):
-            print(dep_id); raise SystemExit(0)
+            print('resolved ' + dep_id); raise SystemExit(0)
     # Convoy with no usable dependency — fail safe to the input id.
-    print(convoy_id); raise SystemExit(0)
-# Not a convoy: convoy_id is already the work bead.
-print(convoy_id)
-" "$convoy_id" 2>/dev/null || printf '%s' "$convoy_id"
+    print('fallback'); raise SystemExit(0)
+is_step = bool(meta.get('gc.step_ref') or meta.get('gc.routed_to') or meta.get('gc.root_bead_id'))
+if is_step:
+    print('step ' + (meta.get('gc.root_bead_id') or '')); raise SystemExit(0)
+# Not a convoy or step bead: convoy_id is already the work bead.
+print('fallback')
+" "$convoy_id" 2>/dev/null)"
+  [ -n "$parsed" ] || parsed="fallback"
+
+  case "$parsed" in
+    "resolved "*) printf '%s' "${parsed#resolved }"; return 0 ;;
+    "step "*)
+      local root_id="${parsed#step }"
+      if [ -n "${root_id// /}" ]; then
+        local finalize_key
+        finalize_key="$(cv_bead_metadata "$root_id" gc.var.finalize_key)"
+        if [ -n "${finalize_key// /}" ]; then
+          finalize_read "$finalize_key"
+          if [ -n "${FS_WORK_BEAD// /}" ]; then
+            printf '%s' "$FS_WORK_BEAD"
+            return 0
+          fi
+        fi
+      fi
+      # No resolvable finalize record — fail safe to the input id, same as
+      # every other unresolvable case in this function.
+      printf '%s' "$convoy_id"
+      return 0
+      ;;
+    *) printf '%s' "$convoy_id"; return 0 ;;
+  esac
 }
 
 # cv_bead_work_dir BEAD_ID — print BEAD_ID's `work_dir` metadata value: the
