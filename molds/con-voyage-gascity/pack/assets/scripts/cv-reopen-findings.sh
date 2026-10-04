@@ -53,6 +53,10 @@
 #                     pool-fallback route (default: .)
 #   CV_STATE_DIR      directory holding per-PR .finalize records (default:
 #                     cv_default_state_dir)
+#   CV_LOCK_STALE_SECONDS  age (seconds) after which the POST-publish route's
+#                     cv-ci-repair-<owner>-<repo>-<num> dedup lock is treated
+#                     as abandoned and stolen (default: 300, see acquire_lock
+#                     in con-voyage-lib.sh)
 #
 # Exit codes:
 #   0 — findings recorded (PRE-publish) or routed (POST-publish).
@@ -147,9 +151,10 @@ for dep in (d.get('dependents') or []):
 " 2>/dev/null)"
 
 ROOT_ID=""
+OPEN_ROOT_CANDIDATES=""
 if [ -n "${CONVOY_ID// /}" ]; then
   ROOT_JSON="$("$GC" bd list --metadata-field "gc.build.source_anchor_id=${CONVOY_ID}" --json --limit=0 2>/dev/null || printf '[]')"
-  ROOT_ID="$(printf '%s' "$ROOT_JSON" | python3 -c "
+  OPEN_ROOT_CANDIDATES="$(printf '%s' "$ROOT_JSON" | python3 -c "
 import json, sys
 try:
     data = json.load(sys.stdin)
@@ -162,9 +167,19 @@ for b in data:
         continue
     if (b.get('status') or '') != 'closed':
         print(b.get('id') or '')
-        break
 " 2>/dev/null)"
 fi
+
+# fk-9iqxnx LOW-1: two still-open roots matching the same convoy is
+# ambiguous (e.g. a stale, abandoned-looking root left behind by an earlier
+# interrupted attempt alongside the real live one) — fail closed and name
+# every candidate rather than silently acting on whichever happened to sort
+# first.
+N_OPEN_ROOTS="$(printf '%s\n' "$OPEN_ROOT_CANDIDATES" | grep -c . || true)"
+if [ "${N_OPEN_ROOTS:-0}" -gt 1 ]; then
+  die "multiple still-open workflow roots match convoy ${CONVOY_ID} — refusing to guess which one to reopen: $(printf '%s' "$OPEN_ROOT_CANDIDATES" | tr '\n' ' ')"
+fi
+ROOT_ID="$(printf '%s\n' "$OPEN_ROOT_CANDIDATES" | head -n1)"
 
 if [ -n "${ROOT_ID// /}" ]; then
   TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -208,25 +223,17 @@ HEAD_REF="$("$GH" pr view "$FS_PR_NUMBER" --repo "$FS_REPO_FULL" --json headRefN
 [ -n "${HEAD_REF// /}" ] || die "could not resolve the head branch for ${FS_REPO_FULL}#${FS_PR_NUMBER}"
 
 # Rig-scoped pool-fallback route: mirrors con-voyage-pr-watch.sh's own
-# city.toml [[github.pr_monitor]] owner/repo -> rig lookup.
-CITY_TOML="${GC_CITY}/city.toml"
+# city.toml [[github.pr_monitor]] owner/repo -> rig lookup, via the SAME
+# shared parser (fk-9iqxnx LOW-4) rather than a second hand-rolled regex
+# parser only ever exercised against a single-block fixture.
 MONITOR_RIG=""
-if [ -f "$CITY_TOML" ]; then
-  MONITOR_RIG="$(python3 -c "
-import re, sys
-text = open(sys.argv[1], encoding='utf-8').read()
-target = sys.argv[2]
-for block in re.split(r'\n(?=\[)', text):
-    if not block.startswith('[[github.pr_monitor]]'):
-        continue
-    o = re.search(r'^\s*owner\s*=\s*\"([^\"]*)\"', block, re.M)
-    r = re.search(r'^\s*repo\s*=\s*\"([^\"]*)\"', block, re.M)
-    g = re.search(r'^\s*rig\s*=\s*\"([^\"]*)\"', block, re.M)
-    if o and r and f'{o.group(1)}/{r.group(1)}' == target:
-        print(g.group(1) if g else '')
-        break
-" "$CITY_TOML" "$FS_REPO_FULL" 2>/dev/null)"
-fi
+while IFS=$'\x1f' read -r m_owner m_repo m_rig _m_route _m_bases; do
+  [ -n "$m_owner" ] && [ -n "$m_repo" ] || continue
+  if [ "${m_owner}/${m_repo}" = "$FS_REPO_FULL" ]; then
+    MONITOR_RIG="$m_rig"
+    break
+  fi
+done <<< "$(cv_parse_pr_monitor_blocks "${GC_CITY}/city.toml")"
 if [ -n "${MONITOR_RIG// /}" ]; then
   POOL_ROUTE="${MONITOR_RIG}/${CV_IMPLEMENTOR}"
 else
@@ -244,16 +251,27 @@ ${FINDINGS_TEXT}"
 FINDINGS_HASH="$(printf '%s' "$FINDINGS_TEXT" | (shasum -a 256 2>/dev/null || sha256sum 2>/dev/null) | cut -c1-16)"
 [ -n "$FINDINGS_HASH" ] || FINDINGS_HASH="nohash"
 IDEMPOTENCY_KEY="mayor-reopen-${FS_REPO_FULL//\//_}-${FS_PR_NUMBER}-${FINDINGS_HASH}"
-ROUTE_BODY="$(cv_build_pr_feedback_body "$PR_URL" "$HEAD_REF" "$FEEDBACK_SUMMARY" "$IDEMPOTENCY_KEY")"
+ROUTE_BODY="$(cv_build_pr_feedback_body "$PR_URL" "$HEAD_REF" "$FEEDBACK_SUMMARY" "$IDEMPOTENCY_KEY" "mayor_reopen")"
 ROUTE_TITLE="Mayor re-opened findings on ${FS_REPO_FULL}#${FS_PR_NUMBER}: ${HEAD_REF}"
 
+# fk-9iqxnx LOW-2: this route can fire in the same cycle con-voyage-pr-watch.sh
+# is independently evaluating the SAME PR for a CI-repair mint. Take the
+# identical per-PR dedup lock PART A/PART A-native already use
+# ("cv-ci-repair-<owner>-<repo>-<num>") so the two paths can never double-mint
+# a bead for this PR at once — never race it.
+CI_REPAIR_DEDUP_KEY="cv-ci-repair-${FS_REPO_FULL%%/*}-${FS_REPO_FULL#*/}-${FS_PR_NUMBER}"
+if ! acquire_lock "$CI_REPAIR_DEDUP_KEY"; then
+  die "PR ${FS_REPO_FULL}#${FS_PR_NUMBER} is locked by a concurrent con-voyage-pr-watch.sh CI-repair cycle (dedup: ${CI_REPAIR_DEDUP_KEY}) — try again shortly instead of double-minting"
+fi
+trap 'release_lock "$CI_REPAIR_DEDUP_KEY"' EXIT
+
 SLING_OUT=""
-if SLING_OUT="$(printf '%s\n\n%s\n' "$ROUTE_TITLE" "$ROUTE_BODY" | "$GC" sling "$ROUTE_TARGET" --stdin 2>&1)"; then
+if SLING_OUT="$(printf '%s\n\n%s\n' "$ROUTE_TITLE" "$ROUTE_BODY" | "$GC" --city "$GC_CITY" sling "$ROUTE_TARGET" --stdin 2>&1)"; then
   echo "cv-reopen-findings: POST-publish — routed mayor findings for ${FS_REPO_FULL}#${FS_PR_NUMBER} to ${ROUTE_TARGET}; a fix push triggers the existing post-publish re-review"
   exit 0
 elif [ "$ROUTE_TARGET" != "$POOL_ROUTE" ]; then
   echo "cv-reopen-findings: WARNING: sling to recorded implementor ${ROUTE_TARGET} failed (${SLING_OUT}) — falling back to pool route ${POOL_ROUTE}" >&2
-  if SLING_OUT="$(printf '%s\n\n%s\n' "$ROUTE_TITLE" "$ROUTE_BODY" | "$GC" sling "$POOL_ROUTE" --stdin 2>&1)"; then
+  if SLING_OUT="$(printf '%s\n\n%s\n' "$ROUTE_TITLE" "$ROUTE_BODY" | "$GC" --city "$GC_CITY" sling "$POOL_ROUTE" --stdin 2>&1)"; then
     echo "cv-reopen-findings: POST-publish — routed mayor findings for ${FS_REPO_FULL}#${FS_PR_NUMBER} to pool fallback ${POOL_ROUTE}; a fix push triggers the existing post-publish re-review"
     exit 0
   fi

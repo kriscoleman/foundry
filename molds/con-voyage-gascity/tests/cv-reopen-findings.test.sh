@@ -39,6 +39,14 @@ cat > "${STUBDIR}/gc" <<'GC_STUB'
 } >> "${STUB_GC_LOG}"
 
 args=("$@")
+# Both `gc --city <dir> <rest...>` and bare `gc <rest...>` forms are used by
+# the script under test (sling calls pass --city; bd/session calls mostly
+# don't except implementor_alive's own `gc --city ... session list`). Strip
+# a leading --city <dir> once so every case below dispatches the same way
+# regardless of which form was used.
+if [ "${args[0]:-}" = "--city" ]; then
+  args=("${args[@]:2}")
+fi
 
 case "${args[0]:-}" in
   bd)
@@ -65,14 +73,6 @@ case "${args[0]:-}" in
     ;;
   session)
     if [ "${args[1]:-}" = "list" ]; then
-      cat "${STUB_SESSION_LIST_FILE:-/dev/null}" 2>/dev/null || echo '{"sessions":[]}'
-      exit 0
-    fi
-    exit 0
-    ;;
-  --city)
-    # implementor_alive invokes `gc --city "$GC_CITY" session list --json`.
-    if [ "${args[2]:-}" = "session" ] && [ "${args[3]:-}" = "list" ]; then
       cat "${STUB_SESSION_LIST_FILE:-/dev/null}" 2>/dev/null || echo '{"sessions":[]}'
       exit 0
     fi
@@ -144,6 +144,8 @@ run_script() {
       GH="${STUBDIR}/gh" \
       GC_CITY="$GC_CITY_DIR" \
       CV_STATE_DIR="${CV_STATE_DIR:-${SANDBOX}/state}" \
+      CV_LOCK_STALE_SECONDS="${STUB_LOCK_STALE_SECONDS:-300}" \
+      PATH="${STUB_PATH:-$PATH}" \
       STUB_GC_LOG="$STUB_GC_LOG" \
       STUB_GH_LOG="$STUB_GH_LOG" \
       STUB_SLING_COUNTER_FILE="$STUB_SLING_COUNTER_FILE" \
@@ -298,7 +300,7 @@ STUB_HEAD_REF="feature/widget-fix"
 run_script "fk-work2" --finding "mayor says fix the widget"
 assert_eq "0" "$RC" "exits clean"
 assert_contains "$OUT" "POST-publish" "reports the POST-publish path"
-assert_eq "1" "$(grep -c '^sling foundry-kc/gc.implementation-worker-9 --stdin' "$STUB_GC_LOG")" "routes directly to the recorded, alive implementor"
+assert_eq "1" "$(grep -c -- "--city ${GC_CITY_DIR} sling foundry-kc/gc.implementation-worker-9 --stdin" "$STUB_GC_LOG")" "routes directly to the recorded, alive implementor, with --city for parity with pr-watch"
 assert_eq "0" "$(grep -c 'acme-rig/gc.implementation-worker' "$STUB_GC_LOG")" "does not fall back to the pool route when the implementor is alive"
 assert_contains "$(cat "${SANDBOX}/sling-body-1.txt")" "mayor says fix the widget" "the routed bead body carries the mayor's finding text"
 assert_contains "$(cat "${SANDBOX}/sling-body-1.txt")" "acme/widgets/pull/42" "the routed bead body names the PR"
@@ -312,7 +314,7 @@ STUB_SESSION_LIST_FILE="$STUB_SESSION_LIST_DEAD"
 STUB_HEAD_REF="feature/widget-fix"
 run_script "fk-work2" --finding "mayor says fix the widget"
 assert_eq "0" "$RC" "exits clean"
-assert_eq "1" "$(grep -c '^sling acme-rig/gc.implementation-worker --stdin' "$STUB_GC_LOG")" "falls back to the rig-scoped pool route from city.toml"
+assert_eq "1" "$(grep -c -- "--city ${GC_CITY_DIR} sling acme-rig/gc.implementation-worker --stdin" "$STUB_GC_LOG")" "falls back to the rig-scoped pool route from city.toml, with --city for parity with pr-watch"
 assert_eq "0" "$(grep -c 'gc.implementation-worker-9' "$STUB_GC_LOG")" "never targets the dead implementor session"
 
 start_case "POST-publish: direct route to a live-but-unroutable implementor falls through to the pool route on sling failure"
@@ -325,7 +327,7 @@ STUB_SLING_FAIL_TARGETS="foundry-kc/gc.implementation-worker-9"
 run_script "fk-work2" --finding "mayor says fix the widget"
 assert_eq "0" "$RC" "exits clean after falling through"
 assert_contains "$OUT" "falling back to pool route" "logs the fallback"
-assert_eq "1" "$(grep -c '^sling acme-rig/gc.implementation-worker --stdin' "$STUB_GC_LOG")" "retries via the pool route after the direct sling fails"
+assert_eq "1" "$(grep -c -- "--city ${GC_CITY_DIR} sling acme-rig/gc.implementation-worker --stdin" "$STUB_GC_LOG")" "retries via the pool route after the direct sling fails, with --city for parity with pr-watch"
 STUB_SLING_FAIL_TARGETS=""
 
 start_case "POST-publish: neither an open root nor a .finalize record exists -> fails loud"
@@ -367,6 +369,147 @@ FIRST_KEY="$(printf '%s' "$FIRST_BODY" | grep -oE 'idempotency: .*' )"
 SECOND_KEY="$(printf '%s' "$SECOND_BODY" | grep -oE 'idempotency: .*' )"
 assert_contains "$FIRST_KEY" "mayor-reopen-acme_widgets-42-" "the idempotency key is the expected mayor-reopen shape"
 assert_eq "$FIRST_KEY" "$SECOND_KEY" "idempotency key is identical for identical findings text"
+
+# ===========================================================================
+# LOW-1 (review fk-9iqxnx): multiple still-open workflow roots match the same
+# convoy. Picking the first one silently is an ambiguous guess; fail closed
+# and name every candidate instead.
+# ===========================================================================
+STUB_BDLIST_ROOT_FILE_MULTI="${SANDBOX}/root-list-multi-open.json"
+cat > "$STUB_BDLIST_ROOT_FILE_MULTI" <<'JSON'
+[
+  {"id": "fk-root-a", "status": "in_progress"},
+  {"id": "fk-root-closed", "status": "closed"},
+  {"id": "fk-root-b", "status": "open"}
+]
+JSON
+
+start_case "PRE-publish: multiple open workflow roots match the same convoy -> fails closed naming every candidate"
+setup_env multiroot1
+STUB_BDSHOW_DEPS_FILE="${SANDBOX}/deps-fk-work1.json"
+STUB_BDLIST_ROOT_FILE="$STUB_BDLIST_ROOT_FILE_MULTI"
+run_script "fk-work1" --finding "ambiguous root test"
+assert_eq "1" "$RC" "exits non-zero rather than guessing"
+assert_contains "$OUT" "fk-root-a" "names the first candidate root"
+assert_contains "$OUT" "fk-root-b" "names the second candidate root"
+assert_not_contains "$OUT" "fk-root-closed" "never lists the already-closed root as a candidate"
+assert_eq "0" "$(grep -c 'bd update fk-root-a' "$STUB_GC_LOG")" "never mutates either candidate root"
+assert_eq "0" "$(grep -c 'bd update fk-root-b' "$STUB_GC_LOG")" "never mutates either candidate root"
+
+# ===========================================================================
+# LOW-4 (review fk-9iqxnx): the [[github.pr_monitor]] rig lookup shares
+# con-voyage-lib.sh's cv_parse_pr_monitor_blocks instead of a hand-rolled
+# python regex parser, and must pick the right block among several.
+# ===========================================================================
+start_case "POST-publish: resolves the correct rig from a city.toml with multiple [[github.pr_monitor]] blocks"
+setup_env multiblock1
+cat > "${GC_CITY_DIR}/city.toml" <<'EOF'
+[[github.pr_monitor]]
+owner = "other-owner"
+repo = "other-repo"
+rig = "other-rig"
+
+[[github.pr_monitor]]
+owner = "acme"
+repo = "widgets"
+rig = "acme-rig"
+EOF
+STUB_BDSHOW_DEPS_FILE="$STUB_BDSHOW_DEPS_FILE_NONE"
+STUB_BDLIST_ROOT_FILE="${SANDBOX}/empty-list.json"
+STUB_SESSION_LIST_FILE="$STUB_SESSION_LIST_DEAD"
+STUB_HEAD_REF="feature/widget-fix"
+run_script "fk-work2" --finding "mayor says fix the widget"
+assert_eq "0" "$RC" "exits clean"
+assert_eq "1" "$(grep -c -- "--city ${GC_CITY_DIR} sling acme-rig/gc.implementation-worker --stdin" "$STUB_GC_LOG")" "picks the SECOND block's rig (acme-rig), matching on owner/repo rather than block order"
+assert_eq "0" "$(grep -c 'other-rig' "$STUB_GC_LOG")" "never routes to the non-matching block's rig"
+# Restore the single-block fixture used by every other case below.
+cat > "${GC_CITY_DIR}/city.toml" <<'EOF'
+[[github.pr_monitor]]
+owner = "acme"
+repo = "widgets"
+rig = "acme-rig"
+EOF
+
+# ===========================================================================
+# LOW-3 (review fk-9iqxnx): FINDINGS_HASH falls back to the literal "nohash"
+# when neither shasum nor sha256sum is on PATH.
+# ===========================================================================
+NOHASH_STUBDIR="${SANDBOX}/nohash-stub"
+mkdir -p "$NOHASH_STUBDIR"
+cat > "${NOHASH_STUBDIR}/shasum" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+cp "${NOHASH_STUBDIR}/shasum" "${NOHASH_STUBDIR}/sha256sum"
+chmod +x "${NOHASH_STUBDIR}/shasum" "${NOHASH_STUBDIR}/sha256sum"
+
+start_case "POST-publish: FINDINGS_HASH falls back to the literal 'nohash' when no hasher is available"
+setup_env nohash1
+STUB_BDSHOW_DEPS_FILE="$STUB_BDSHOW_DEPS_FILE_NONE"
+STUB_BDLIST_ROOT_FILE="${SANDBOX}/empty-list.json"
+STUB_SESSION_LIST_FILE="$STUB_SESSION_LIST_ALIVE"
+STUB_HEAD_REF="feature/widget-fix"
+STUB_PATH="${NOHASH_STUBDIR}:${PATH}"
+run_script "fk-work2" --finding "hash fallback check"
+assert_eq "0" "$RC" "exits clean even without a hasher available"
+BODY="$(cat "${SANDBOX}/sling-body-1.txt")"
+assert_contains "$BODY" "idempotency: mayor-reopen-acme_widgets-42-nohash" "falls back to the literal 'nohash' idempotency suffix"
+STUB_PATH=""
+
+# ===========================================================================
+# LOW-2 (review fk-9iqxnx): the POST-publish route must take the SAME per-PR
+# dedup lock con-voyage-pr-watch.sh's CI-repair minting uses
+# (cv-ci-repair-<owner>-<repo>-<num>), so the two can never double-mint for
+# the same PR in the same cycle.
+# ===========================================================================
+start_case "POST-publish: a concurrent CI-repair lock for the same PR blocks the mayor-reopen route instead of racing it"
+setup_env lockheld1
+STUB_BDSHOW_DEPS_FILE="$STUB_BDSHOW_DEPS_FILE_NONE"
+STUB_BDLIST_ROOT_FILE="${SANDBOX}/empty-list.json"
+STUB_SESSION_LIST_FILE="$STUB_SESSION_LIST_ALIVE"
+STUB_HEAD_REF="feature/widget-fix"
+LOCK_DIR="${SANDBOX}/state/.locks/cv-ci-repair-acme-widgets-42.lock"
+mkdir -p "$LOCK_DIR"
+echo 99999 > "${LOCK_DIR}/pid"
+STUB_LOCK_STALE_SECONDS="300"
+run_script "fk-work2" --finding "mayor says fix the widget"
+assert_eq "1" "$RC" "exits non-zero rather than racing the held lock"
+assert_contains "$OUT" "cv-ci-repair-acme-widgets-42" "names the contended dedup key"
+assert_eq "0" "$(grep -c '^sling \|--city .* sling ' "$STUB_GC_LOG")" "never slings while the CI-repair lock is held"
+rm -rf "${SANDBOX}/state/.locks"
+STUB_LOCK_STALE_SECONDS=""
+
+start_case "POST-publish: a stale CI-repair lock (older than CV_LOCK_STALE_SECONDS) is stolen, not left blocking forever"
+setup_env lockstale1
+STUB_BDSHOW_DEPS_FILE="$STUB_BDSHOW_DEPS_FILE_NONE"
+STUB_BDLIST_ROOT_FILE="${SANDBOX}/empty-list.json"
+STUB_SESSION_LIST_FILE="$STUB_SESSION_LIST_ALIVE"
+STUB_HEAD_REF="feature/widget-fix"
+LOCK_DIR="${SANDBOX}/state/.locks/cv-ci-repair-acme-widgets-42.lock"
+mkdir -p "$LOCK_DIR"
+echo 99999 > "${LOCK_DIR}/pid"
+touch -t 202001010000 "$LOCK_DIR" 2>/dev/null || touch -d '2020-01-01' "$LOCK_DIR" 2>/dev/null || true
+STUB_LOCK_STALE_SECONDS="1"
+run_script "fk-work2" --finding "mayor says fix the widget"
+assert_eq "0" "$RC" "exits clean after stealing the stale lock"
+assert_eq "1" "$(grep -c -- "--city ${GC_CITY_DIR} sling foundry-kc/gc.implementation-worker-9 --stdin" "$STUB_GC_LOG")" "proceeds to route after reclaiming the stale lock"
+rm -rf "${SANDBOX}/state/.locks"
+STUB_LOCK_STALE_SECONDS=""
+
+# ===========================================================================
+# LOW-6 (review fk-9iqxnx): the routed bead body must be labeled as a mayor
+# reopen, not mislabeled as human PR review feedback.
+# ===========================================================================
+start_case "POST-publish: the routed bead body is labeled as a mayor reopen, not as human PR review feedback"
+setup_env labeled1
+STUB_BDSHOW_DEPS_FILE="$STUB_BDSHOW_DEPS_FILE_NONE"
+STUB_BDLIST_ROOT_FILE="${SANDBOX}/empty-list.json"
+STUB_SESSION_LIST_FILE="$STUB_SESSION_LIST_ALIVE"
+STUB_HEAD_REF="feature/widget-fix"
+run_script "fk-work2" --finding "mayor says fix the widget"
+BODY="$(cat "${SANDBOX}/sling-body-1.txt")"
+assert_contains "$BODY" "Mayor re-opened findings on PR" "the body's own provenance line calls out the mayor reopen"
+assert_not_contains "$BODY" "New human review feedback" "never mislabels a mayor reopen as human PR review feedback"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

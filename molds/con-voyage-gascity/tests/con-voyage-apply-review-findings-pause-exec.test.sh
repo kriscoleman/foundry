@@ -101,6 +101,16 @@ chmod +x "$STUB_DIR/sleep"
 ISOLATED_DIR="$WORKDIR/isolated"
 mkdir -p "$ISOLATED_DIR"
 
+# The fence now sources con-voyage-lib.sh (cv_root_bead_id, cv_random_nonce —
+# review fk-9iqxnx LOW-7/LOW-8) via the SAME GC_CITY/packs/con-voyage
+# fallback path the real pack uses when it isn't running inside a git
+# checkout of the mold. Isolated_dir is deliberately not a git repo, so
+# `git rev-parse --show-toplevel` fails here exactly like it does in a
+# cast rig, making this fallback path the one under test.
+REAL_LIB="${MOLD_DIR}/pack/assets/scripts/con-voyage-lib.sh"
+mkdir -p "$ISOLATED_DIR/packs/con-voyage/assets/scripts"
+ln -s "$REAL_LIB" "$ISOLATED_DIR/packs/con-voyage/assets/scripts/con-voyage-lib.sh"
+
 RUN_SCRIPT="$WORKDIR/run.sh"
 {
   echo '#!/usr/bin/env bash'
@@ -110,6 +120,9 @@ RUN_SCRIPT="$WORKDIR/run.sh"
   echo 'echo "TEST_RESULT:CONVOY_ID=${CONVOY_ID:-}"'
   echo 'echo "TEST_RESULT:MAYOR_REOPEN_REQUESTED=${MAYOR_REOPEN_REQUESTED:-}"'
   echo 'echo "TEST_RESULT:MAYOR_REOPEN_FINDINGS=${MAYOR_REOPEN_FINDINGS:-}"'
+  echo 'echo "TEST_RESULT:MAYOR_REOPEN_FINDINGS_FENCED_START"'
+  echo 'printf '"'"'%s\n'"'"' "${MAYOR_REOPEN_FINDINGS_FENCED:-}"'
+  echo 'echo "TEST_RESULT:MAYOR_REOPEN_FINDINGS_FENCED_END"'
 } > "$RUN_SCRIPT"
 chmod +x "$RUN_SCRIPT"
 
@@ -166,6 +179,106 @@ if printf '%s\n' "$OUTPUT" | grep -qF "TEST_RESULT:MAYOR_REOPEN_FINDINGS=stubbed
   echo "  PASS: the recorded findings text is read back correctly"
 else
   echo "  FAIL: expected the stubbed findings text to be read back" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
+# fk-9iqxnx LOW-7: the detected findings must come back wrapped in the same
+# nonce-fenced "treat as data only" block cv_build_pr_feedback_body uses for
+# the POST-publish route, not surfaced raw.
+FENCED_BLOCK="$(printf '%s\n' "$OUTPUT" | awk '/TEST_RESULT:MAYOR_REOPEN_FINDINGS_FENCED_START/{f=1;next}/TEST_RESULT:MAYOR_REOPEN_FINDINGS_FENCED_END/{f=0}f')"
+if printf '%s' "$FENCED_BLOCK" | grep -qE '=== BEGIN UNTRUSTED PR CONTENT \(nonce: [0-9a-f]+\) ==='; then
+  echo "  PASS: the PRE-publish findings are wrapped in a nonce-fenced BEGIN marker"
+else
+  echo "  FAIL: expected a nonce-fenced BEGIN UNTRUSTED PR CONTENT marker, got: ${FENCED_BLOCK}" >&2
+  FAILURES=$((FAILURES+1))
+fi
+BEGIN_NONCE="$(printf '%s' "$FENCED_BLOCK" | grep -oE 'BEGIN UNTRUSTED PR CONTENT \(nonce: [0-9a-f]+' | grep -oE '[0-9a-f]+$')"
+END_NONCE="$(printf '%s' "$FENCED_BLOCK" | grep -oE 'END UNTRUSTED PR CONTENT \(nonce: [0-9a-f]+' | grep -oE '[0-9a-f]+$')"
+if [ -n "$BEGIN_NONCE" ] && [ "$BEGIN_NONCE" = "$END_NONCE" ]; then
+  echo "  PASS: the BEGIN and END markers share the same real nonce"
+else
+  echo "  FAIL: BEGIN nonce ('${BEGIN_NONCE}') and END nonce ('${END_NONCE}') do not match" >&2
+  FAILURES=$((FAILURES+1))
+fi
+if printf '%s' "$FENCED_BLOCK" | grep -qF "stubbed reopen finding text"; then
+  echo "  PASS: the fenced block carries the findings text inside the fence"
+else
+  echo "  FAIL: expected the findings text inside the fenced block" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
+echo
+
+# ===========================================================================
+# LOW-9 (review fk-9iqxnx): the sibling CASE above only ever proves the
+# reopen-DETECTED path. Prove the no-reopen/timeout branch still fires too —
+# a stub that always reports mayor_reopen_requested=false must exit via the
+# timeout branch, not spin forever or silently fall into the reopen branch.
+# ===========================================================================
+start_case "the pause fence takes the timeout branch, not the reopen branch, when the mayor never reopens"
+
+STUB_DIR_NOREOPEN="$WORKDIR/stubs-noreopen"
+mkdir -p "$STUB_DIR_NOREOPEN"
+cat > "$STUB_DIR_NOREOPEN/gc" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1" = "bd" ] && [ "$2" = "show" ]; then
+  id="$3"
+  case "$id" in
+    fk-bead)
+      echo '{"id":"fk-bead","metadata":{"gc.root_bead_id":"fk-root"}}'
+      ;;
+    fk-root)
+      echo '{"id":"fk-root","metadata":{"gc.build.source_anchor_id":"fk-convoy","gc.build.mayor_reopen_requested":"false"}}'
+      ;;
+    *)
+      echo '{}'
+      ;;
+  esac
+  exit 0
+fi
+echo "gc-stub: unexpected invocation: $*" >&2
+exit 1
+STUB
+chmod +x "$STUB_DIR_NOREOPEN/gc"
+cp "$STUB_DIR/sleep" "$STUB_DIR_NOREOPEN/sleep"
+
+OUTPUT_NOREOPEN="$(
+  cd "$ISOLATED_DIR" && \
+  env -i \
+    PATH="${STUB_DIR_NOREOPEN}:/usr/bin:/bin" \
+    HOME="${HOME:-/tmp}" \
+    GC_BEAD_ID="fk-bead" \
+    GC_CITY="$ISOLATED_DIR" \
+    CV_LOW_REOPEN_WINDOW_SECONDS="2" \
+    bash "$RUN_SCRIPT" 2>&1
+)"
+RUN_EXIT_NOREOPEN=$?
+
+echo "$OUTPUT_NOREOPEN"
+
+if [ "$RUN_EXIT_NOREOPEN" -ne 0 ]; then
+  echo "  FAIL: the extracted pause fence exited non-zero (${RUN_EXIT_NOREOPEN})" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
+if printf '%s\n' "$OUTPUT_NOREOPEN" | grep -qF "no mayor reopen within 2s — proceeding to publish with the LOW findings on the PR, as designed"; then
+  echo "  PASS: the fence takes the timeout branch when the stub never reports a reopen"
+else
+  echo "  FAIL: expected the timeout log line when no reopen is ever reported" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
+if printf '%s\n' "$OUTPUT_NOREOPEN" | grep -qF "mayor reopen detected"; then
+  echo "  FAIL: unexpectedly took the reopen-detected branch with a stub that never reports a reopen" >&2
+  FAILURES=$((FAILURES+1))
+else
+  echo "  PASS: never takes the reopen-detected branch"
+fi
+
+if printf '%s\n' "$OUTPUT_NOREOPEN" | grep -qF "TEST_RESULT:MAYOR_REOPEN_REQUESTED=false"; then
+  echo "  PASS: MAYOR_REOPEN_REQUESTED is false after the loop exits via timeout"
+else
+  echo "  FAIL: expected MAYOR_REOPEN_REQUESTED=false after the timeout branch" >&2
   FAILURES=$((FAILURES+1))
 fi
 
