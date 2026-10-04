@@ -191,12 +191,25 @@ fi
 SORTED_PENDING="$(printf '%s' "$PENDING" | sort -t"$(printf '\x1f')" -k1,1n -s)"
 
 CLOSED_TOTAL=0
+SKIPPED_PINNED_TOTAL=0
 
 while IFS=$'\x1f' read -r _rank bead_id root_id; do
   [ -n "${bead_id// /}" ] || continue
   if [ "$CLOSED_TOTAL" -ge "$CV_ORPHAN_SWEEP_MAX_CLOSES" ]; then
     echo "con-voyage-orphan-sweep: reached CV_ORPHAN_SWEEP_MAX_CLOSES (${CV_ORPHAN_SWEEP_MAX_CLOSES}) this tick; remaining candidates will be picked up next tick"
     break
+  fi
+
+  # BLOCKING-1 (sre): a pinned or dependency/gate-blocked candidate is a
+  # deliberate human hold (e.g. an operator pinning a sample orphan for
+  # inspection) — force-closing it anyway would destroy exactly the evidence
+  # that hold was meant to preserve. Skip it: leave it open, stamp nothing,
+  # and surface it distinctly in the digest mail instead of silently
+  # force-closing it.
+  if bead_pinned_or_blocked "$bead_id"; then
+    echo "con-voyage-orphan-sweep: SKIP (pinned/blocked) ${bead_id} (root ${root_id}); leaving open for human review"
+    SKIPPED_PINNED_TOTAL=$((SKIPPED_PINNED_TOTAL + 1))
+    continue
   fi
 
   root_reason="${ROOT_REASON[$root_id]:-}"
@@ -220,7 +233,11 @@ while IFS=$'\x1f' read -r _rank bead_id root_id; do
 done <<< "$SORTED_PENDING"
 
 if [ "$CLOSED_TOTAL" -eq 0 ]; then
-  echo "con-voyage-orphan-sweep: no candidates actually closed this tick (all bd close attempts failed, or none found under a closed root)"
+  if [ "$SKIPPED_PINNED_TOTAL" -gt 0 ]; then
+    echo "con-voyage-orphan-sweep: no candidates closed this tick (${SKIPPED_PINNED_TOTAL} skipped: pinned/gated)"
+  else
+    echo "con-voyage-orphan-sweep: no candidates actually closed this tick (all bd close attempts failed, or none found under a closed root)"
+  fi
   exit 0
 fi
 
@@ -234,10 +251,17 @@ for root_id in "${!ROOT_CLOSED_COUNT[@]}"; do
   fi
 done
 
+skipped_suffix=""
+skipped_sentence=""
+if [ "$SKIPPED_PINNED_TOTAL" -gt 0 ]; then
+  skipped_suffix=" (${SKIPPED_PINNED_TOTAL} skipped: pinned/gated)"
+  skipped_sentence=" ${SKIPPED_PINNED_TOTAL} other candidate(s) under these roots were pinned or gate-blocked and left open for human review instead of being force-closed."
+fi
+
 mail_out="$(cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" \
   "$GC" --city "$GC_CITY" mail send "$CV_ORPHAN_SWEEP_ESCALATE_TARGET" \
-    -s "ORPHAN SWEEP: closed ${CLOSED_TOTAL} under roots ${ROOT_IDS_LIST}" \
-    -m "con-voyage-orphan-sweep closed ${CLOSED_TOTAL} stranded descendant bead(s) under already-closed workflow root(s): ${ROOT_IDS_LIST}. Each was left open by the engine re-minting work after its root closed (fk-ruuy6)." \
+    -s "ORPHAN SWEEP: closed ${CLOSED_TOTAL} under roots ${ROOT_IDS_LIST}${skipped_suffix}" \
+    -m "con-voyage-orphan-sweep closed ${CLOSED_TOTAL} stranded descendant bead(s) under already-closed workflow root(s): ${ROOT_IDS_LIST}. Each was left open by the engine re-minting work after its root closed (fk-ruuy6).${skipped_sentence}" \
     --json 2>&1)"
 mail_rc=$?
 if [ "$mail_rc" -ne 0 ]; then

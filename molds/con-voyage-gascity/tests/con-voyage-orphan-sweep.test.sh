@@ -6,7 +6,10 @@
 # mitigation: each tick, it finds every still-open bead under an already-
 # CLOSED workflow root and closes it leaf-first (lane/step -> scope-check ->
 # scope -> ralph -> workflow-finalize), so the engine finds nothing left to
-# re-mint from. Open roots and their descendants are never touched.
+# re-mint from. Open roots and their descendants are never touched. A
+# candidate that is pinned or dependency/gate-blocked (bead_pinned_or_blocked,
+# con-voyage-lib.sh) is also left untouched rather than force-closed (review
+# fk-gypn9m BLOCKING-1).
 #
 # Run:  bash tests/con-voyage-orphan-sweep.test.sh   (exit 0 => all cases passed)
 
@@ -42,6 +45,8 @@ trap cleanup EXIT
 # ---------------------------------------------------------------------------
 # The `gc` stub. Records argv (one line per call) and answers:
 #   bd list --has-metadata-key gc.root_bead_id --json --limit 0 -> STUB_BDLIST_JSON
+#   bd list --pinned --json                                     -> STUB_PINNED_JSON (default [])
+#   bd blocked --json                                           -> STUB_BLOCKED_JSON (default [])
 #   bd show <id> --json                                         -> STUB_BDSHOW_JSON_<id, -/./ -> _>
 #   bd update <id> ...                                          -> STUB_BDUPDATE_FAIL_<id> gates failure
 #   bd close <id> ...                                           -> STUB_BDCLOSE_FAIL_<id> gates failure
@@ -67,7 +72,19 @@ case "$sub" in
     bdsub="${args[$((i+1))]:-}"
     case "$bdsub" in
       list)
-        printf '%s' "${STUB_BDLIST_JSON:-[]}"
+        is_pinned_query=0
+        for a in "${args[@]}"; do
+          [ "$a" = "--pinned" ] && is_pinned_query=1
+        done
+        if [ "$is_pinned_query" = "1" ]; then
+          printf '%s' "${STUB_PINNED_JSON:-[]}"
+        else
+          printf '%s' "${STUB_BDLIST_JSON:-[]}"
+        fi
+        exit 0
+        ;;
+      blocked)
+        printf '%s' "${STUB_BLOCKED_JSON:-[]}"
         exit 0
         ;;
       show)
@@ -281,6 +298,152 @@ rc=$?
 assert_eq "0" "$rc" "script exits 0 when disabled"
 assert_eq "0" "$(wc -l < "$GC_LOG" | tr -d ' ')" "no gc calls at all when disabled"
 unset STUB_BDLIST_JSON STUB_BDSHOW_JSON_fk_rootF
+
+# ===========================================================================
+# CASE 9 (review fk-gypn9m BLOCKING-1) — a PINNED candidate under a closed
+#   root is skipped: never stamped, never closed, left open for human review.
+#   A pure-skip tick (nothing else closes) sends no digest mail.
+# ===========================================================================
+start_case "9: a pinned candidate under a closed root is skipped, not force-closed"
+: > "$GC_LOG"
+export STUB_BDLIST_JSON="[$(bead_json fk-pinned9 fk-rootG "")]"
+export_show "fk-rootG" "closed" "abandoned"
+export STUB_PINNED_JSON='[{"id":"fk-pinned9"}]'
+out="$(GC="${STUBDIR}/gc" STUB_GC_LOG="$GC_LOG" "$SCRIPT" 2>&1)"
+rc=$?
+assert_eq "0" "$rc" "script exits 0"
+if grep -qE 'SKIP \(pinned/blocked\) fk-pinned9' <<< "$out"; then
+  pass "diagnostic reports the pinned skip for fk-pinned9"
+else
+  fail "expected a pinned-skip diagnostic for fk-pinned9; output was:
+$out"
+fi
+if grep -qE 'bd update fk-pinned9 ' "$GC_LOG"; then
+  fail "a pinned candidate was stamped with skip/abandon metadata"
+else
+  pass "a pinned candidate is never stamped"
+fi
+if grep -qE 'bd close fk-pinned9 ' "$GC_LOG"; then
+  fail "a pinned candidate was force-closed"
+else
+  pass "a pinned candidate is never closed"
+fi
+assert_eq "0" "$(grep -c -E 'mail send' "$GC_LOG")" "no digest mail on a tick where everything was skipped"
+unset STUB_BDLIST_JSON STUB_BDSHOW_JSON_fk_rootG STUB_PINNED_JSON
+
+# ===========================================================================
+# CASE 10 (review fk-gypn9m BLOCKING-1) — a BLOCKED (gate-held) candidate is
+#   skipped the same way a pinned one is; a sibling candidate under the same
+#   root still closes normally, and the digest mail names the skip count
+#   distinctly alongside the close count.
+# ===========================================================================
+start_case "10: a gate-blocked candidate is skipped; a sibling under the same root still closes, digest mail names both"
+: > "$GC_LOG"
+export STUB_BDLIST_JSON="[$(bead_json fk-lane10 fk-rootH ""),$(bead_json fk-blocked10 fk-rootH "")]"
+export_show "fk-rootH" "closed" "abandoned"
+export STUB_BLOCKED_JSON='[{"id":"fk-blocked10"}]'
+out="$(GC="${STUBDIR}/gc" STUB_GC_LOG="$GC_LOG" "$SCRIPT" 2>&1)"
+rc=$?
+assert_eq "0" "$rc" "script exits 0"
+if grep -qE 'bd close fk-lane10 .*--force' "$GC_LOG"; then
+  pass "the non-blocked sibling fk-lane10 still closes"
+else
+  fail "expected fk-lane10 to still close; log was:
+$(cat "$GC_LOG")"
+fi
+if grep -qE '(bd update|bd close) fk-blocked10 ' "$GC_LOG"; then
+  fail "the blocked candidate fk-blocked10 was stamped or closed"
+else
+  pass "the blocked candidate fk-blocked10 is never stamped or closed"
+fi
+if grep -qE 'mail send mayor .*ORPHAN SWEEP: closed 1.*\(1 skipped: pinned/gated\)' "$GC_LOG"; then
+  pass "digest mail names both the closed count and the skipped count"
+else
+  fail "expected the digest mail subject to name both counts; log was:
+$(cat "$GC_LOG")"
+fi
+unset STUB_BDLIST_JSON STUB_BDSHOW_JSON_fk_rootH STUB_BLOCKED_JSON
+
+# ===========================================================================
+# CASE 11 (review fk-gypn9m BLOCKING-2) — bd update (skip/abandon stamp)
+#   fails: the close still proceeds and is still counted.
+# ===========================================================================
+start_case "11: bd update (metadata stamp) fails -> close still proceeds and is counted"
+: > "$GC_LOG"
+export STUB_BDLIST_JSON="[$(bead_json fk-lane11 fk-rootI "")]"
+export_show "fk-rootI" "closed" "abandoned"
+export STUB_BDUPDATE_FAIL_fk_lane11=1
+out="$(GC="${STUBDIR}/gc" STUB_GC_LOG="$GC_LOG" "$SCRIPT" 2>&1)"
+rc=$?
+assert_eq "0" "$rc" "script exits 0"
+if grep -qE 'WARNING: could not stamp metadata on fk-lane11' <<< "$out"; then
+  pass "diagnostic reports the stamp failure"
+else
+  fail "expected a stamp-failure WARNING for fk-lane11; output was:
+$out"
+fi
+if grep -qE 'bd close fk-lane11 .*--force' "$GC_LOG"; then
+  pass "the close still proceeds despite the failed stamp"
+else
+  fail "expected fk-lane11 to still be closed; log was:
+$(cat "$GC_LOG")"
+fi
+assert_eq "1" "$(grep -c -E 'mail send mayor .*ORPHAN SWEEP: closed 1' "$GC_LOG")" "the close is still counted toward the digest mail"
+unset STUB_BDLIST_JSON STUB_BDSHOW_JSON_fk_rootI STUB_BDUPDATE_FAIL_fk_lane11
+
+# ===========================================================================
+# CASE 12 (review fk-gypn9m BLOCKING-2) — bd close --force fails for one of
+#   two candidates: the failed one is NOT counted toward CLOSED_TOTAL, and
+#   the digest mail reflects only the successful one.
+# ===========================================================================
+start_case "12: bd close --force fails for one of two candidates -> not counted, mail reflects only the successful one"
+: > "$GC_LOG"
+export STUB_BDLIST_JSON="[$(bead_json fk-lane12ok fk-rootJ ""),$(bead_json fk-lane12fail fk-rootJ "")]"
+export_show "fk-rootJ" "closed" "abandoned"
+export STUB_BDCLOSE_FAIL_fk_lane12fail=1
+out="$(GC="${STUBDIR}/gc" STUB_GC_LOG="$GC_LOG" "$SCRIPT" 2>&1)"
+rc=$?
+assert_eq "0" "$rc" "script exits 0"
+if grep -qE 'WARNING: bd close --force failed for fk-lane12fail' <<< "$out"; then
+  pass "diagnostic reports the close failure for fk-lane12fail"
+else
+  fail "expected a close-failure WARNING for fk-lane12fail; output was:
+$out"
+fi
+if grep -qE 'mail send mayor .*ORPHAN SWEEP: closed 1 under' "$GC_LOG"; then
+  pass "digest mail counts only the successfully closed candidate (1), not the failed one"
+else
+  fail "expected the digest mail to report exactly 1 closed; log was:
+$(cat "$GC_LOG")"
+fi
+unset STUB_BDLIST_JSON STUB_BDSHOW_JSON_fk_rootJ STUB_BDCLOSE_FAIL_fk_lane12fail
+
+# ===========================================================================
+# CASE 13 (review fk-gypn9m BLOCKING-2) — the digest mail itself fails after
+#   a successful sweep: the script still exits 0 and logs a warning rather
+#   than mis-reporting status.
+# ===========================================================================
+start_case "13: digest mail fails after a successful sweep -> still exits 0, warning logged"
+: > "$GC_LOG"
+export STUB_BDLIST_JSON="[$(bead_json fk-lane13 fk-rootK "")]"
+export_show "fk-rootK" "closed" "abandoned"
+export STUB_MAIL_SEND_FAIL=1
+out="$(GC="${STUBDIR}/gc" STUB_GC_LOG="$GC_LOG" "$SCRIPT" 2>&1)"
+rc=$?
+assert_eq "0" "$rc" "script still exits 0 when the digest mail fails"
+if grep -qE 'WARNING: digest mail to mayor failed' <<< "$out"; then
+  pass "diagnostic reports the digest mail failure"
+else
+  fail "expected a digest-mail-failure WARNING; output was:
+$out"
+fi
+if grep -qE 'bd close fk-lane13 .*--force' "$GC_LOG"; then
+  pass "the close itself still happened before the mail failure"
+else
+  fail "expected fk-lane13 to have been closed; log was:
+$(cat "$GC_LOG")"
+fi
+unset STUB_BDLIST_JSON STUB_BDSHOW_JSON_fk_rootK STUB_MAIL_SEND_FAIL
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
