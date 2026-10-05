@@ -247,27 +247,38 @@ rereview_pending_file() {
 }
 
 # seed_bead_dependent_count SEED_BEAD_ID -> prints the bead's dependent_count
-# (0 on any resolution failure — fail-safe: an unresolvable count is treated
-# as "not yet attached" so the caller falls through to closing it as
-# orphaned and minting a fresh seed, rather than silently losing a result it
-# could not verify). A re-review round compiled onto a seed bead gives that
-# seed at least one dependent once `gc sling` has actually attached the
-# formula, the same signal this pack's workflow roots carry (see any
-# claimed graph.v2 bead's own BLOCKS/TRACKS listing).
+# on a successfully resolved store query, or the sentinel "ERR" when the
+# query itself failed (cv_with_timeout killed it, bd show errored, or the
+# output did not parse as a JSON object) — review fk-2v5tdv BLOCKING-2:
+# collapsing both cases to "0" made a transient store failure during the
+# recovery check indistinguishable from a confirmed-0 dependent count, so a
+# timeout here re-triggered the exact double-dispatch this mechanism exists
+# to prevent. The caller branches on ERR separately: it must NOT be treated
+# as "not yet attached" (that fail-safe is still correct for a genuine
+# confirmed 0 — see below). A re-review round compiled onto a seed bead
+# gives that seed at least one dependent once `gc sling` has actually
+# attached the formula, the same signal this pack's workflow roots carry
+# (see any claimed graph.v2 bead's own BLOCKS/TRACKS listing).
 seed_bead_dependent_count() {
   local seed_bead_id="$1"
   [ -n "${seed_bead_id// /}" ] || { printf '0'; return 0; }
   local json
   json="$(cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" "$GC" --city "$GC_CITY" bd show "$seed_bead_id" --json 2>/dev/null)"
+  if [ -z "${json// /}" ]; then
+    printf 'ERR'
+    return 0
+  fi
   printf '%s' "$json" | python3 -c "
 import json, sys
 try:
     d = json.load(sys.stdin)
     d = d[0] if isinstance(d, list) else d
+    if not isinstance(d, dict):
+        raise ValueError('resolved value is not a JSON object')
+    print(d.get('dependent_count') if d.get('dependent_count') is not None else 0)
 except Exception:
-    d = {}
-print((d or {}).get('dependent_count') or 0)
-" 2>/dev/null || printf '0'
+    print('ERR')
+" 2>/dev/null || printf 'ERR'
 }
 
 # flatten_roster_vars ROOT_BEAD_ID -> prints "key=value,key=value,..." built
@@ -279,12 +290,17 @@ print((d or {}).get('dependent_count') or 0)
 # con-voyage-lib.sh's bare-call convention); only the JSON-parse-and-filter
 # logic is shared, via cv_flatten_roster_vars_from_json (review fk-n74o9
 # BLOCKING-2 — this used to duplicate that logic inline and had already
-# drifted cosmetically from con-voyage-lib.sh's copy).
+# drifted cosmetically from con-voyage-lib.sh's copy). The bd-show call is
+# cv_with_timeout-wrapped (review fk-2v5tdv BLOCKING-1): this function is
+# reached from inside the dedup-lock critical section on the
+# empty-roster_vars/non-empty-root_bead_id recovery branch, and every call
+# under that lock must be bounded for CV_LOCK_STALE_SECONDS to hold.
 flatten_roster_vars() {
   local root_bead_id="$1"
   [ -n "${root_bead_id// /}" ] || return 0
   local raw
-  raw="$("$GC" --city "$GC_CITY" bd show "$root_bead_id" --json 2>/dev/null | python3 -c "
+  raw="$(cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" \
+    "$GC" --city "$GC_CITY" bd show "$root_bead_id" --json 2>/dev/null | python3 -c "
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -463,6 +479,18 @@ print('{}\x1f{}\x1f{}'.format(d.get('state') or '', d.get('headRefOid') or '', d
 
     echo "con-voyage-rereview-watch: TRIGGER ${label} — new head ${new_head} carries a real code change since ${FS_LAST_REVIEWED_HEAD_SHA}; starting a re-review round"
 
+    # Resolved BEFORE acquire_lock (review fk-2v5tdv BLOCKING-1): this is a
+    # read of the workflow root's own metadata, nothing the dedup lock
+    # protects, so it does not need to run inside the critical section below.
+    # Keeping it out preserves the lock-span comment's five-store-call
+    # enumeration (and the margin resolve_lock_stale_seconds derives from
+    # it) exactly as written — a sixth call here would otherwise burn that
+    # margin to zero.
+    roster_vars="$FS_ROSTER_VARS"
+    if [ -z "${roster_vars// /}" ] && [ -n "${FS_ROOT_BEAD_ID// /}" ]; then
+      roster_vars="$(flatten_roster_vars "$FS_ROOT_BEAD_ID")"
+    fi
+
     # BLOCKING-2 (SRE): a single record's dispatch can now legitimately run up
     # to CV_REREVIEW_SLING_TIMEOUT_SECONDS (default 300s), widening the window
     # where two overlapping sweeps both see no rereview_root_bead_id, both
@@ -474,11 +502,6 @@ print('{}\x1f{}\x1f{}'.format(d.get('state') or '', d.get('headRefOid') or '', d
     if ! acquire_lock "$dedup_key"; then
       echo "con-voyage-rereview-watch: SKIP ${label} — locked by a concurrent rereview-watch run (dedup: ${dedup_key})"
       continue
-    fi
-
-    roster_vars="$FS_ROSTER_VARS"
-    if [ -z "${roster_vars// /}" ] && [ -n "${FS_ROOT_BEAD_ID// /}" ]; then
-      roster_vars="$(flatten_roster_vars "$FS_ROOT_BEAD_ID")"
     fi
 
     next_round="${FS_REVIEW_ROUND:-1}"
@@ -505,6 +528,16 @@ print('{}\x1f{}\x1f{}'.format(d.get('state') or '', d.get('headRefOid') or '', d
     fi
     if [ -n "${pending_seed_bead_id// /}" ]; then
       dep_count="$(seed_bead_dependent_count "$pending_seed_bead_id")"
+      # review fk-2v5tdv BLOCKING-2: a resolution failure (ERR) is NOT a
+      # confirmed 0 — closing the seed or minting a fresh one on an
+      # unresolved count is exactly the double-dispatch this mechanism
+      # exists to prevent. Leave the pending marker untouched and defer;
+      # the next sweep gets a fresh store read.
+      if [ "$dep_count" = "ERR" ]; then
+        echo "con-voyage-rereview-watch: WARNING: could not resolve dependent_count for ${pending_seed_bead_id}; deferring to next sweep" >&2
+        release_lock "$dedup_key"
+        continue
+      fi
       case "$dep_count" in
         *[!0-9]*|'') dep_count=0 ;;
       esac

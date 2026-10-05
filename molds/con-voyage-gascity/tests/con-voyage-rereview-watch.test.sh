@@ -131,6 +131,9 @@ if [ "$sub" = "bd" ] && [ "$sub2" = "set-state" ]; then
 fi
 if [ "$sub" = "bd" ] && [ "$sub2" = "show" ]; then
   id="${args[$((i+2))]:-}"
+  if [ -n "${STUB_GC_BDSHOW_HANG_ID:-}" ] && [ "$id" = "$STUB_GC_BDSHOW_HANG_ID" ]; then
+    sleep "${STUB_GC_BDSHOW_HANG_SECONDS:-30}"
+  fi
   depcount=0
   if [ -n "${STUB_GC_DEPCOUNT_DIR:-}" ] && [ -f "${STUB_GC_DEPCOUNT_DIR}/${id}" ]; then
     depcount="$(cat "${STUB_GC_DEPCOUNT_DIR}/${id}")"
@@ -706,6 +709,98 @@ assert_eq "280" "$got15b" "case15: empty override falls back to the derived valu
 start_case "16: resolve_lock_stale_seconds honors a valid numeric override"
 got16="$(bash -c "source '$LIB'; resolve_lock_stale_seconds \"\$1\" \"\$2\" \"\$3\"" _ "100" "30" "900")"
 assert_eq "900" "$got16" "case16: a valid all-digit override wins as-is over the derived value"
+
+# ===========================================================================
+# CASE 17 (review fk-2v5tdv BLOCKING-1, this iteration's fix): flatten_roster_vars's
+# own bd show must be bounded by cv_with_timeout, the same invariant case13
+# pins for bd set-state. No earlier case reaches this function at all —
+# write_finalize always seeds a non-empty roster_vars, so the
+# empty-roster_vars/non-empty-root_bead_id recovery branch that calls
+# flatten_roster_vars has no coverage before this case.
+# ===========================================================================
+start_case "17: flatten_roster_vars's bd show hang is bounded by cv_with_timeout"
+printf 'v10 - case17 change\n' >> "${SRC}/feature.txt"
+git_c "$SRC" add feature.txt
+git_c "$SRC" commit -q -m "fix: case17 change"
+HEAD17="$(git_c "$SRC" rev-parse HEAD)"
+git_c "$SRC" push -q origin feature-branch
+
+{
+  printf 'work_bead=fk-work17\n'
+  printf 'convoy_id=fk-convoy17\n'
+  printf 'repo_full=%s\n' "$REPO_FULL"
+  printf 'pr_number=50\n'
+  printf 'pr_author=kriscoleman\n'
+  printf 'implementor_session=testrig/gc.implementation-worker\n'
+  printf 'last_phase=awaiting_merge\n'
+  printf 'root_bead_id=fk-root17-hangs\n'
+  printf 'roster_vars=\n'
+  printf 'last_reviewed_head_sha=%s\n' "$HEAD13"
+  printf 'review_round=1\n'
+  printf 'rereview_root_bead_id=\n'
+} > "${STATE_DIR}/cv-finalize-case17.finalize"
+export STUB_GH_STATE_50="OPEN" STUB_GH_HEAD_50="$HEAD17" STUB_GH_BRANCH_50="feature-branch"
+export STUB_GC_NEW_BEAD_ID="rc-seed17"
+export STUB_GC_BDSHOW_HANG_ID="fk-root17-hangs"
+export STUB_GC_BDSHOW_HANG_SECONDS="30"
+CASE17_START="$(date +%s)"
+out17="$(CV_LENS_STORE_TIMEOUT_SECONDS=1 CV_REREVIEW_SLING_TIMEOUT_SECONDS=1 run_watch)"
+CASE17_ELAPSED=$(( $(date +%s) - CASE17_START ))
+unset STUB_GC_BDSHOW_HANG_ID STUB_GC_BDSHOW_HANG_SECONDS
+assert_contains "$out17" "dispatched re-review round 2" "case17: diagnostic reports a trigger despite the slow flatten_roster_vars bd show"
+if [ "$CASE17_ELAPSED" -lt 20 ]; then
+  pass "case17: whole run finished in ${CASE17_ELAPSED}s, far under the 30s stub sleep on flatten_roster_vars's bd show (the hang was bounded by cv_with_timeout)"
+else
+  fail "case17: run took ${CASE17_ELAPSED}s -- flatten_roster_vars's bd show was not bounded, and would stay held past CV_LOCK_STALE_SECONDS in production if it ran under the lock"
+fi
+if [ -d "${STATE_DIR}/.locks/cv-finalize-case17.lock" ]; then
+  fail "case17: dedup lock still held after the run finished"
+else
+  pass "case17: dedup lock released after the run finished"
+fi
+export STUB_GH_STATE_50="MERGED"
+
+# ===========================================================================
+# CASE 18 (review fk-2v5tdv BLOCKING-2, this iteration's fix): a pending
+# seed's dependent_count resolution failure (store timeout/parse failure)
+# must NOT be treated as a confirmed 0 -- that would close a seed that may
+# have genuinely attached server-side and dispatch a second sling for the
+# same PR+round, the exact double-dispatch this mechanism exists to
+# prevent. No earlier case simulates a bd show failure on this path (case9
+# only covers confirmed-0 and confirmed-1).
+# ===========================================================================
+start_case "18: pending seed dependent_count resolution failure -> deferred, not treated as orphaned"
+printf 'v11 - case18 change\n' >> "${SRC}/feature.txt"
+git_c "$SRC" add feature.txt
+git_c "$SRC" commit -q -m "fix: case18 change"
+HEAD18="$(git_c "$SRC" rev-parse HEAD)"
+git_c "$SRC" push -q origin feature-branch
+
+write_finalize "cv-finalize-case18" "fk-work18" "awaiting_merge" "$HEAD17" "1" "" "51"
+export STUB_GH_STATE_51="OPEN" STUB_GH_HEAD_51="$HEAD18" STUB_GH_BRANCH_51="feature-branch"
+printf 'seed_bead_id=rc-seed18-pending\nround=2\n' > "${STATE_DIR}/cv-finalize-case18.rereview-pending"
+export STUB_GC_BDSHOW_HANG_ID="rc-seed18-pending"
+export STUB_GC_BDSHOW_HANG_SECONDS="30"
+out18="$(CV_LENS_STORE_TIMEOUT_SECONDS=1 CV_REREVIEW_SLING_TIMEOUT_SECONDS=1 run_watch)"
+unset STUB_GC_BDSHOW_HANG_ID STUB_GC_BDSHOW_HANG_SECONDS
+assert_contains "$out18" "WARNING: could not resolve dependent_count for rc-seed18-pending; deferring to next sweep" "case18: diagnostic names the unresolved seed and defers"
+gc_log18="$(cat "$STUB_GC_LOG")"
+assert_not_contains "$gc_log18" "bd close rc-seed18-pending" "case18: the unresolved seed is NOT closed as orphaned"
+assert_not_contains "$gc_log18" "sling testrig" "case18: no fresh sling dispatched while the seed's status is unresolved"
+if [ -f "${STATE_DIR}/cv-finalize-case18.rereview-pending" ]; then
+  pass "case18: pending marker survives an unresolved dependent_count check"
+else
+  fail "case18: pending marker was removed despite the dependent_count check failing to resolve"
+fi
+pending18="$(cat "${STATE_DIR}/cv-finalize-case18.rereview-pending")"
+assert_contains "$pending18" "seed_bead_id=rc-seed18-pending" "case18: pending marker still names the original unresolved seed"
+if [ -d "${STATE_DIR}/.locks/cv-finalize-case18.lock" ]; then
+  fail "case18: dedup lock still held after deferring"
+else
+  pass "case18: dedup lock released after deferring"
+fi
+rm -f "${STATE_DIR}/cv-finalize-case18.rereview-pending"
+export STUB_GH_STATE_51="MERGED"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
