@@ -179,6 +179,40 @@ fi
 start_case "6: review-context active roster comes from cv_active_roster_vars, not var-name guesswork"
 assert_contains 'ACTIVE_ROSTER="$(source "$CV_LIB" && cv_active_roster_vars "$ROOT_ID")"' "review-context section calls cv_active_roster_vars on the workflow root"
 
+# ===========================================================================
+# CASE 7 (fk-gnb3m6, review fk-hbsmk BLOCKING-2) — the fk-9f2n loop guard
+# lives entirely in THIS file's embedded bash, not in cv_resolve_work_bead:
+# IS_STEP_BEAD is re-derived here from its own `bd show "$CONVOY_ID"` call,
+# and the claim/reassign of $WORK_BEAD is gated on
+# `[ "$IS_STEP_BEAD" = "true" ] && [ "$WORK_BEAD" = "$CONVOY_ID" ]`. Pin both
+# the guard's presence and that the unconditional claim call it replaced does
+# not reappear outside that guard (the regression this file exists to catch
+# per its own header: fk-6i53/fk-ohoy, confirmed live on fk-tbs0h/fk-czkvb).
+# con-voyage-lib.test.sh covers cv_resolve_work_bead itself; this case covers
+# the control flow around it that the production incident actually hit.
+# ===========================================================================
+start_case "7: IS_STEP_BEAD is re-derived from CONVOY_ID's own metadata and gates the work-bead claim/reassign"
+assert_contains "print('true' if (meta.get('gc.step_ref') or meta.get('gc.routed_to') or meta.get('gc.root_bead_id')) else 'false')" "computes IS_STEP_BEAD from a bd show of \$CONVOY_ID's gc.step_ref/gc.routed_to/gc.root_bead_id metadata"
+assert_contains 'if [ "$IS_STEP_BEAD" = "true" ] && [ "$WORK_BEAD" = "$CONVOY_ID" ]; then' "gates the skip decision on IS_STEP_BEAD=true AND WORK_BEAD unresolved (still equal to CONVOY_ID)"
+
+claim_call='gc bd update "$WORK_BEAD" --assignee "con-voyage:work-bead" --status in_progress'
+claim_call_count="$(count_of "$claim_call")"
+if [ "$claim_call_count" -eq 1 ]; then
+  echo "  PASS: the work-bead claim/reassign call appears exactly once (no second, unconditional copy outside the guard)"
+else
+  echo "  FAIL: expected exactly 1 occurrence of the work-bead claim/reassign call, found ${claim_call_count}" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
+skip_guard_line="$(line_of 'if [ "$IS_STEP_BEAD" = "true" ] && [ "$WORK_BEAD" = "$CONVOY_ID" ]; then')"
+claim_call_line="$(line_of "$claim_call")"
+if [ -n "$skip_guard_line" ] && [ -n "$claim_call_line" ] && [ "$skip_guard_line" -lt "$claim_call_line" ]; then
+  echo "  PASS: the skip-guard condition (line ${skip_guard_line}) precedes the claim/reassign call (line ${claim_call_line}), i.e. the call sits inside the guarded branch"
+else
+  echo "  FAIL: expected the skip-guard condition to precede the claim/reassign call" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "ALL CASES PASSED"

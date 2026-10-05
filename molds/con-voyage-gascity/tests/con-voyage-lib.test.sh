@@ -227,6 +227,27 @@ export STUB_BDSHOW_JSON_step_2='{"id":"step-2","issue_type":"task","metadata":{"
 # No STUB_BDSHOW_JSON_root_2 -> root bd show "fails" -> no finalize_key resolvable.
 assert_eq "step-2" "$(cv_resolve_work_bead "step-2")" "a step bead whose finalize record cannot be resolved fails safe to the input id (never guesses)"
 
+# fk-gnb3m6 (review fk-hbsmk BLOCKING-1): the step-bead branch above reads the
+# finalize record through finalize_read, which reads
+# "${CV_STATE_DIR}/<dedup_key>.finalize". Every other finalize_read caller
+# defaults CV_STATE_DIR via cv_default_state_dir before calling it; this test
+# unsets CV_STATE_DIR entirely (unlike every case above, which runs under the
+# sandbox's exported CV_STATE_DIR) to prove cv_resolve_work_bead defaults it
+# itself instead of relying on an ambient global happening to be set.
+start_case "cv_resolve_work_bead: graph.v2 step bead resolves via finalize record even with CV_STATE_DIR unset"
+export STUB_BDSHOW_JSON_step_3='{"id":"step-3","issue_type":"task","metadata":{"gc.step_ref":"con-voyage.rereview-seed","gc.routed_to":"foundry-kc/gc.implementation-worker","gc.root_bead_id":"root-3"}}'
+export STUB_BDSHOW_JSON_root_3='{"id":"root-3","issue_type":"task","metadata":{"gc.var.finalize_key":"cv-finalize-owner-repo-171"}}'
+UNSET_STATE_DIR_RIG="${SANDBOX}/unset-state-dir-rig"
+mkdir -p "${UNSET_STATE_DIR_RIG}/.gc/cv-pr-watch"
+CV_STATE_DIR="${UNSET_STATE_DIR_RIG}/.gc/cv-pr-watch" \
+  finalize_write "cv-finalize-owner-repo-171" "real-wb-3" "orig-convoy-3" "owner/repo" "171" "kriscoleman" "" ""
+result="$(PATH="${STUBDIR}:${PATH}" GC_RIG_ROOT="$UNSET_STATE_DIR_RIG" bash -c "
+unset GC CV_STATE_DIR
+source '$LIB'
+cv_resolve_work_bead 'step-3'
+" 2>/dev/null)"
+assert_eq "real-wb-3" "$result" "a graph.v2 step bead resolves via the finalize record even when the caller never set CV_STATE_DIR"
+
 # ---------------------------------------------------------------------------
 # cv_bead_work_dir (fk-9aunv: fold the do-work build into con-voyage as its
 # own first phase). do-work's prepare-worktree step persists the resolved
