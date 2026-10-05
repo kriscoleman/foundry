@@ -2006,7 +2006,23 @@ print('fallback')
         local finalize_key
         finalize_key="$(cv_bead_metadata "$root_id" gc.var.finalize_key)"
         if [ -n "${finalize_key// /}" ]; then
+          # fk-gnb3m6: every other finalize_read caller defaults CV_STATE_DIR
+          # before calling it (main.publish.md, main.rereview-finalize.md,
+          # con-voyage-finalize.sh, con-voyage-rereview-watch.sh,
+          # con-voyage-repair-watchdog.sh) — this call site must too, or the
+          # resolve-via-finalize-record path can never fire in production.
+          # Save/restore so we don't leak a changed value to the caller's
+          # own shell when CV_STATE_DIR was already unset.
+          local __cv_resolve_had_state_dir=1
+          [ "${CV_STATE_DIR+set}" = "set" ] || __cv_resolve_had_state_dir=0
+          local __cv_resolve_prev_state_dir="${CV_STATE_DIR:-}"
+          CV_STATE_DIR="${CV_STATE_DIR:-$(cv_default_state_dir)}"
           finalize_read "$finalize_key"
+          if [ "$__cv_resolve_had_state_dir" = "1" ]; then
+            CV_STATE_DIR="$__cv_resolve_prev_state_dir"
+          else
+            unset CV_STATE_DIR
+          fi
           if [ -n "${FS_WORK_BEAD// /}" ]; then
             printf '%s' "$FS_WORK_BEAD"
             return 0
