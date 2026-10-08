@@ -186,8 +186,14 @@ if [ -z "$CV_LIB" ]; then
   echo "con-voyage build: con-voyage-lib.sh not found — cannot sync ${WORKTREE} to its current base" >&2
   exit 1
 fi
+# fk-wmhr96: if a stacked base was declared (`base_branch` sling var, applied
+# as this journey's convoy target by prepare-build before any worktree
+# existed), pass it through as the explicit base so a re-sync here can never
+# drift the worktree back onto origin's plain default — empty when no base
+# was declared, which is byte-identical to the pre-fk-wmhr96 two-arg call.
+CONVOY_TARGET="$(source "$CV_LIB" && cv_convoy_target "$CONVOY_ID")"
 SYNC_ERR_FILE="$(mktemp)"
-SYNC_RESULT="$(export CV_PACK_ROOT; source "$CV_LIB" && cv_sync_worktree_to_base "$WORKTREE" "$WORK_BRANCH_NAME" 2>"$SYNC_ERR_FILE")"
+SYNC_RESULT="$(export CV_PACK_ROOT; source "$CV_LIB" && cv_sync_worktree_to_base "$WORKTREE" "$WORK_BRANCH_NAME" "$CONVOY_TARGET" 2>"$SYNC_ERR_FILE")"
 SYNC_RC=$?
 SYNC_ERR_TEXT="$(cat "$SYNC_ERR_FILE")"
 rm -f "$SYNC_ERR_FILE"

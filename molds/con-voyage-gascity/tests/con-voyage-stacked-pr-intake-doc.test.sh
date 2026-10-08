@@ -4,19 +4,25 @@
 #
 # fk-qppb4 built the full engine-side stacked-PR primitive — `gc convoy
 # target <convoy-id> <base-branch>`, `cv_resolve_base_branch`,
-# `cv_ensure_branch_based_on` — and documented it in README.md. But the
+# `cv_ensure_branch_based_on` — and documented it in README.md. The
 # facilitator-facing runbook (skills/con-voyage/SKILL.md, the file actually
-# loaded when a human or the mayor runs `/con-voyage`) never mentioned it:
-# a facilitator following the skill at intake has no way to discover that
-# declaring a dependent slice is one `gc convoy target` call, so dependent
-# slices keep shipping as independent PRs off main (sc-139247 wave 2: s3/s4
-# both depend on slice 2, each PR opened against main anyway).
+# loaded when a human or the mayor runs `/con-voyage`) originally told the
+# facilitator to call `gc convoy target` on a pre-made convoy before
+# slinging — but `gc sling ... --on con-voyage` always mints its own fresh
+# input convoy (`convoy_id` is a reserved v2 token), so that pre-made
+# convoy's target was silently ignored, and calling `gc convoy target` AFTER
+# the sling instead raced prepare-build (fk-wmhr96: confirmed live twice,
+# vandoor va-69b17/va-fn5k1 — a build attempt resolved the default base
+# before the post-sling target call landed, and the dead workflow still
+# minted downstream review lanes).
 #
-# This test pins that the skill's Phase 0 (Intake) actually tells the
-# facilitator how and when to declare a dependency, using the real
-# `gc convoy target` primitive — not a reinvented formula var — and flags
-# the known CI-repair boundary (base_branches in city.toml) so a stacked
-# PR's own CI failures don't silently go unrepaired.
+# fk-wmhr96 replaced that two-step, racy recipe with a single sling-time
+# `base_branch` formula var, applied deterministically inside prepare-build
+# before any worktree exists. This test pins that the skill's Phase 0
+# (Intake) documents THAT recipe — not the old pre-sling/post-sling
+# `gc convoy target` call — and still flags the known CI-repair boundary
+# (base_branches in city.toml) so a stacked PR's own CI failures don't
+# silently go unrepaired.
 #
 # Run:  bash tests/con-voyage-stacked-pr-intake-doc.test.sh
 
@@ -44,13 +50,17 @@ assert_contains() {
   fi
 }
 
-start_case "SKILL.md documents the gc convoy target primitive for a dependent slice"
-assert_contains "$SKILL_FILE" 'gc convoy target <convoy-id> <base-branch>' \
-  "SKILL.md shows the worked gc convoy target invocation"
+start_case "SKILL.md documents the sling-time base_branch var for a dependent slice"
+assert_contains "$SKILL_FILE" '--var base_branch=<base-branch>' \
+  "SKILL.md shows the worked base_branch sling invocation"
 
-start_case "SKILL.md tells the facilitator WHEN to declare it (intake, before sling)"
-assert_contains "$SKILL_FILE" 'declare it now, before the sling below' \
-  "SKILL.md intake step calls out declaring the dependency before slinging"
+start_case "SKILL.md tells the facilitator WHEN to declare it (at sling time, not before/after)"
+assert_contains "$SKILL_FILE" 'declare it **at sling time**' \
+  "SKILL.md intake step calls out declaring the dependency at sling time"
+
+start_case "SKILL.md warns against the old pre-sling convoy-target recipe (fk-wmhr96)"
+assert_contains "$SKILL_FILE" 'Do **not** pre-create a convoy and call' \
+  "SKILL.md explicitly steers the facilitator away from the racy pre/post-sling gc convoy target recipe"
 
 start_case "SKILL.md names this as GitHub stacked PRs, not a bespoke mechanism"
 assert_contains "$SKILL_FILE" 'GitHub stacked PR' \
