@@ -84,6 +84,9 @@ case "$sub" in
           fi
           printf '%s' "${STUB_PINNED_JSON:-[]}"
         else
+          if [ "${STUB_CANDIDATES_HANG:-0}" = "1" ]; then
+            sleep "${STUB_HANG_SECONDS:-20}"
+          fi
           printf '%s' "${STUB_BDLIST_JSON:-[]}"
         fi
         exit 0
@@ -527,6 +530,29 @@ fi
 unset STUB_BDLIST_JSON STUB_BDSHOW_JSON_fk_rootM STUB_PINNED_FETCH_FAIL
 
 echo
+# ===========================================================================
+# LOW-8 (review fk-gypn9m, re-graded BLOCKING): the initial candidate-
+# enumeration `bd list` call must be bounded by cv_with_timeout like the
+# script's other two store calls (pinned lookup, digest mail), not left to
+# hang the whole tick on a slow store.
+# ===========================================================================
+start_case "LOW-8: a hung candidate-enumeration bd list is bounded, not left to hang the tick"
+: > "$GC_LOG"
+export STUB_CANDIDATES_HANG=1 STUB_HANG_SECONDS=20
+START_TS=$(date +%s)
+out="$(GC="${STUBDIR}/gc" STUB_GC_LOG="$GC_LOG" CV_LENS_STORE_TIMEOUT_SECONDS=1 "$SCRIPT" 2>&1)"
+rc=$?
+END_TS=$(date +%s)
+elapsed=$((END_TS - START_TS))
+assert_eq "0" "$rc" "script exits 0 despite a hung candidate-list call"
+if [ "$elapsed" -lt 10 ]; then
+  pass "the hung candidate-list call was killed well before its own 20s hang finished (elapsed ${elapsed}s)"
+else
+  fail "the run took ${elapsed}s — the timeout did not bound the candidate-list call"
+fi
+assert_eq "0" "$(grep -c -E 'mail send' "$GC_LOG")" "no digest mail on a tick that degraded to no-candidates"
+unset STUB_CANDIDATES_HANG STUB_HANG_SECONDS
+
 if [ "$FAILURES" -eq 0 ]; then
   echo "ALL CASES PASSED"
   exit 0
