@@ -464,6 +464,70 @@ out="$(run_lookout 2>&1)"; rc=$?
 assert_log_lacks "handoff" "closed sessions never handed off"
 
 # ===========================================================================
+start_case "fk-xtbtcw: pane merely QUOTING a limit phrase does not false-open the breaker"
+# ===========================================================================
+# Regression for con-voyage-rate-limit-lookout opening the breaker on a
+# session whose pane scrollback just quotes limit language (a lookout mail
+# body, a skill excerpt) rather than showing Claude Code's own banner.
+reset_world
+write_sessions "$TWO_CLAUDE_SESSIONS"
+write_peek rc-wrk1 <<'EOF'
+con-voyage rate-limit lookout: claude limit circuit breaker OPEN
+The lookout observed a "rate limit reached" condition earlier today; see the
+runbook section on what to do when a usage limit reached banner appears, and
+note the fix for limit will reset parsing in fk-xtbtcw.
+⏺ Back to normal work, applying review findings
+EOF
+write_peek rc-inv <<'EOF'
+⏺ Coordinating as usual
+EOF
+out="$(run_lookout 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && pass "exit 0" || fail "exit code $rc (output: $out)"
+assert_log_lacks "handoff --target rc-wrk1" "quoted limit text does not trigger a handoff"
+assert_log_lacks "mail send mayor" "quoted limit text does not open the breaker / mail the mayor"
+assert_file_contains "${STATE_DIR}/breaker.state" "state=closed" "breaker stays closed on quoted-only text"
+assert_file_contains "${STATE_DIR}/breaker.state" "reset_hint_epoch=0" "no reset hint stored from quoted-only text"
+
+# ===========================================================================
+start_case "fk-xtbtcw: Claude Code's real banner still trips the breaker even with quoted text earlier in the pane"
+# ===========================================================================
+reset_world
+write_sessions "$TWO_CLAUDE_SESSIONS"
+write_peek rc-wrk1 <<'EOF'
+con-voyage rate-limit lookout: an earlier mail mentioned "rate limit reached"
+in its subject line, purely for context, and is not itself a live banner.
+⏺ Working on the fix…
+✗ Claude usage limit reached. Your limit will reset at 6pm
+EOF
+write_peek rc-inv <<'EOF'
+⏺ Coordinating
+EOF
+out="$(run_lookout 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && pass "exit 0" || fail "exit code $rc (output: $out)"
+assert_log_contains "mail send mayor" "real banner at the tail still escalates (no regression)"
+assert_log_contains "handoff --target rc-wrk1" "real banner at the tail still hands off the limited session"
+assert_file_contains "${STATE_DIR}/breaker.state" "state=open" "breaker opens on a real banner at the tail"
+
+# ===========================================================================
+start_case "fk-xtbtcw: transient 'API Error: 529 ... overloaded' retry does not open the breaker on its own"
+# ===========================================================================
+reset_world
+write_sessions "$TWO_CLAUDE_SESSIONS"
+write_peek rc-wrk1 <<'EOF'
+⏺ Applying review findings
+API Error: 529 {"type":"overloaded_error","message":"Overloaded"} · Retrying…
+⏺ Retry succeeded, continuing
+EOF
+write_peek rc-inv <<'EOF'
+⏺ Coordinating
+EOF
+out="$(run_lookout 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && pass "exit 0" || fail "exit code $rc (output: $out)"
+assert_log_lacks "handoff --target rc-wrk1" "529 overloaded retry alone does not trigger a handoff"
+assert_log_lacks "mail send mayor" "529 overloaded retry alone does not open the breaker"
+assert_file_contains "${STATE_DIR}/breaker.state" "state=closed" "breaker stays closed on a transient 529 retry"
+
+# ===========================================================================
 start_case "malformed numeric env knobs coerce to defaults instead of breaking"
 # ===========================================================================
 reset_world

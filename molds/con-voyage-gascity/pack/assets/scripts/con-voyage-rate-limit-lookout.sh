@@ -881,17 +881,29 @@ try:
     text = open(sys.argv[1], 'r', errors='replace').read()
 except Exception:
     text = ''
+
+# fk-xtbtcw: a claude pane's scrollback routinely QUOTES limit language that
+# never came from Claude Code itself — a lookout mail body, a skill
+# excerpt, a Slack thread pasted into the pane. A whole-scrollback substring
+# search false-opens the breaker on that quoted text. Claude Code's own
+# usage/rate-limit banner is emitted live, at the current tail of the pane,
+# prefixed with its own '✗' glyph — so anchor detection to recent, glyph-
+# prefixed lines instead of searching the entire captured buffer. A bare
+# 'overloaded' (Claude Code's transient 529 retry banner, which auto-
+# recovers) is intentionally NOT a limited signal on its own.
+BANNER_LINES = 12
+tail_text = '\n'.join(text.splitlines()[-BANNER_LINES:])
+BANNER_GLYPH = '✗'
 limited_patterns = [
-    r'usage limit reached',
-    r'limit will reset',
-    r'rate limit reached',
-    r'hit your\b.{0,40}\blimit',
-    r'api error:\s*429',
-    r'\boverloaded\b',
+    r'^\s*' + BANNER_GLYPH + r'.*usage limit reached',
+    r'^\s*' + BANNER_GLYPH + r'.*rate limit reached',
+    r'^\s*' + BANNER_GLYPH + r'.*limit will reset',
+    r'^\s*' + BANNER_GLYPH + r'.*hit your\b.{0,40}\blimit',
+    r'^\s*' + BANNER_GLYPH + r'.*api error:\s*429',
 ]
-limited = any(re.search(p, text, re.IGNORECASE) for p in limited_patterns)
+limited = any(re.search(p, tail_text, re.IGNORECASE | re.MULTILINE) for p in limited_patterns)
 reset_hint = ''
-m = re.search(r'(?:limit will reset|resets)\s*(?:at|around)?\s*([^\n.]{1,40})', text, re.IGNORECASE)
+m = re.search(r'(?:limit will reset|resets)\s*(?:at|around)?\s*([^\n.]{1,40})', tail_text, re.IGNORECASE)
 if m:
     reset_hint = m.group(1).strip()
 compact_pct = -1
@@ -900,7 +912,7 @@ if m:
     compact_pct = int(m.group(1))
 elif re.search(r'context low', text, re.IGNORECASE):
     compact_pct = 0
-auto_resume = bool(re.search(r'continuing automatically|continuing shortly', text, re.IGNORECASE))
+auto_resume = bool(re.search(r'continuing automatically|continuing shortly', tail_text, re.IGNORECASE))
 print(SEP.join(['1' if limited else '0', reset_hint, str(compact_pct), '1' if auto_resume else '0']))
 " "$1"
 }
@@ -1055,7 +1067,11 @@ if [ -n "$LIMITED_ROWS" ]; then
   BREAKER_LAST_LIMIT_AT="$now"
   if [ -n "$first_reset_hint" ]; then
     parsed="$(parse_reset_epoch "$first_reset_hint" "$now")"
-    [ -n "$parsed" ] && BREAKER_RESET_HINT_EPOCH="$parsed"
+    # fk-xtbtcw: a hint that parses to the past (or now) is a mis-parse, not
+    # a real reset time -- ignore it rather than storing it on the breaker.
+    if [ -n "$parsed" ] && [ "$parsed" -gt "$now" ]; then
+      BREAKER_RESET_HINT_EPOCH="$parsed"
+    fi
   fi
 
   # ESCALATE FIRST: breaker.state open is on disk before anything slow
