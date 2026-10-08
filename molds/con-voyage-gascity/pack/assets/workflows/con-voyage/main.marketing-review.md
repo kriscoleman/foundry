@@ -18,6 +18,8 @@ reserved for cases where shipping without alignment causes measurable GTM damage
 Close with gc.outcome=pass, code_review.marketing_verdict=approve|iterate,
 and code_review.output_path=<marketing review report path>.
 
+**`gc.outcome` is always `pass` here — it never changes with the verdict below; even when the verdict is `iterate`/`changes_required`, `gc.outcome` stays `pass` regardless of that verdict.**
+
   bd update "$CLAIMED_BEAD_ID" \
     --set-metadata 'gc.outcome=pass' \
     --set-metadata 'code_review.marketing_verdict=approve' \

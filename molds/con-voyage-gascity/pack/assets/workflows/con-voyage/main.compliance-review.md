@@ -19,6 +19,8 @@ PII leaks to logs or unencrypted storage are always BLOCKING.
 Close with gc.outcome=pass, code_review.compliance_verdict=approve|iterate,
 and code_review.output_path=<compliance review report path>.
 
+**`gc.outcome` is always `pass` here — it never changes with the verdict below; even when the verdict is `iterate`/`changes_required`, `gc.outcome` stays `pass` regardless of that verdict.**
+
   bd update "$CLAIMED_BEAD_ID" \
     --set-metadata 'gc.outcome=pass' \
     --set-metadata 'code_review.compliance_verdict=approve' \

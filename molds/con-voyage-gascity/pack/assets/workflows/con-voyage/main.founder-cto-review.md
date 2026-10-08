@@ -15,6 +15,8 @@ Tag each finding BLOCKING or LOW with file:line and a concrete fix.
 Close with gc.outcome=pass, code_review.founder_cto_verdict=approve|iterate,
 and code_review.output_path=<founder-CTO review report path>.
 
+**`gc.outcome` is always `pass` here — it never changes with the verdict below; even when the verdict is `iterate`/`changes_required`, `gc.outcome` stays `pass` regardless of that verdict.**
+
   bd update "$CLAIMED_BEAD_ID" \
     --set-metadata 'gc.outcome=pass' \
     --set-metadata 'code_review.founder_cto_verdict=approve' \
