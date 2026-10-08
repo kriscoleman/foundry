@@ -200,10 +200,22 @@ echo "apply-review-findings: sync patch-unchanged: ${SYNC_PATCH_UNCHANGED}"
 # per review-loop iteration under graph.v2, so there is no stale-value
 # carryover risk) and re-read them explicitly down there instead of relying
 # on shell-variable inheritance across separate Bash tool invocations.
+#
+# fk-zesuqz (review fk-9gdsik BLOCKING-1): also stamp a positive
+# gc.apply_review.sync_persisted=true marker in this SAME atomic call. The
+# gate below defaults SYNC_RESULT/FIX_COMMIT_SHA to stamp-eligible values
+# when a re-read comes back empty, so it cannot otherwise tell "this call
+# wrote a genuine noop" from "this call's write silently failed" — both look
+# identical (empty re-read) to the gate. Requiring sync_persisted="true" on
+# the gate's re-read closes that fail-open hole: if this update call fails,
+# NONE of its keys land (one gc bd update invocation, one atomic write), so
+# sync_persisted stays unset and the gate fails closed instead of defaulting
+# to noop.
 gc bd update "$GC_BEAD_ID" \
   --set-metadata "gc.apply_review.sync_result=${SYNC_RESULT}" \
   --set-metadata "gc.apply_review.sync_patch_unchanged=${SYNC_PATCH_UNCHANGED}" \
-  || echo "apply-review-findings: WARNING: could not persist sync_result/sync_patch_unchanged to ${GC_BEAD_ID} — the no-op stamp gate below may misjudge this pass" >&2
+  --set-metadata 'gc.apply_review.sync_persisted=true' \
+  || echo "apply-review-findings: WARNING: could not persist sync_result/sync_patch_unchanged to ${GC_BEAD_ID} — the no-op stamp gate below will fail closed for this pass" >&2
 ```
 
 `CV_TOPLEVEL` for this bootstrap call is now resolved from `GC_RIG_ROOT`
@@ -282,8 +294,16 @@ if [ -n "$CV_GUARD" ] && [ -x "$CV_GUARD" ]; then
 fi
 git commit -m "fix: <brief description of the review fix> (review {convoy_id})"
 FIX_COMMIT_SHA="$(git rev-parse HEAD)"
-gc bd update "$GC_BEAD_ID" --set-metadata "gc.apply_review.fix_commit_sha=${FIX_COMMIT_SHA}" \
-  || echo "apply-review-findings: WARNING: could not persist fix_commit_sha to ${GC_BEAD_ID} — the no-op stamp gate below may misjudge this pass" >&2
+# fk-zesuqz (review fk-9gdsik BLOCKING-1): gc.apply_review.fix_commit_recorded
+# is stamped true in this SAME atomic call as fix_commit_sha. The gate below
+# treats an empty re-read of fix_commit_sha as "no fix this pass" — which is
+# wrong if a fix WAS committed but this persistence write itself failed. A
+# failed call leaves fix_commit_recorded unset too, so the gate can tell
+# "really no fix" from "a fix happened but didn't persist" and fail closed.
+gc bd update "$GC_BEAD_ID" \
+  --set-metadata "gc.apply_review.fix_commit_sha=${FIX_COMMIT_SHA}" \
+  --set-metadata 'gc.apply_review.fix_commit_recorded=true' \
+  || echo "apply-review-findings: WARNING: could not persist fix_commit_sha to ${GC_BEAD_ID} — the no-op stamp gate below will fail closed for this pass" >&2
 ```
 
 Commit ONLY when you actually changed files this pass — never an empty/no-op
@@ -297,14 +317,27 @@ findings to fix:
 
   ```bash
   [ -n "${FIX_COMMIT_SHA:-}" ] || FIX_COMMIT_SHA="$(git rev-parse HEAD)"
-  gc bd update "$GC_BEAD_ID" --set-metadata "gc.apply_review.fix_commit_sha=${FIX_COMMIT_SHA}" \
-    || echo "apply-review-findings: WARNING: could not persist fix_commit_sha to ${GC_BEAD_ID}" >&2
+  gc bd update "$GC_BEAD_ID" \
+    --set-metadata "gc.apply_review.fix_commit_sha=${FIX_COMMIT_SHA}" \
+    --set-metadata 'gc.apply_review.fix_commit_recorded=true' \
+    || echo "apply-review-findings: WARNING: could not persist fix_commit_sha to ${GC_BEAD_ID} — the no-op stamp gate below will fail closed for this pass" >&2
   ```
 
 - `$SYNC_PATCH_UNCHANGED=true` (a clean rebase/recreate replayed the identical
   patch onto a newer base): leave `FIX_COMMIT_SHA` unset. There is no new
   patch content for any lane to review, so this is handled as a genuine no-op
   pass below, not a fix pass — see "Setting code_review.verdict".
+
+In every case where you did NOT commit a fix this pass (a genuine no-op, or
+the `$SYNC_PATCH_UNCHANGED=true` clean-rebase no-op above), stamp the explicit
+negative marker instead, so the gate below can tell "confirmed no fix this
+pass" from "the fix-commit decision was never recorded" (fk-zesuqz, review
+fk-9gdsik BLOCKING-1):
+
+```bash
+gc bd update "$GC_BEAD_ID" --set-metadata 'gc.apply_review.fix_commit_recorded=false' \
+  || echo "apply-review-findings: WARNING: could not persist fix_commit_recorded=false to ${GC_BEAD_ID} — the no-op stamp gate below will fail closed for this pass" >&2
+```
 
 ### Pause for a mayor reopen on a LOW-only verdict (fk-9iqxnx)
 
@@ -551,34 +584,42 @@ CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
 CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
 [ -f "$CV_LIB" ] || CV_LIB=""
 
-FIX_COMMIT_SHA=""
-SYNC_RESULT="noop"
-SYNC_PATCH_UNCHANGED="false"
+# fk-zesuqz (review fk-9gdsik BLOCKING-1): every value re-read below defaults
+# to an "__unresolved__" sentinel, never to a stamp-eligible value. A bare
+# empty `cv_bead_metadata` read is ambiguous between "the key was never
+# written" and "the read (or the earlier write) failed" — both must fail this
+# gate closed, not fall through to the genuine-no-op branch. The two
+# "_persisted"/"_recorded" markers below are the positive confirmation that
+# the earlier blocks' writes actually landed; only when those read back as
+# their expected confirmed value does SYNC_RESULT/FIX_COMMIT_SHA get trusted.
+SYNC_PERSISTED="__unresolved__"
+FIX_COMMIT_RECORDED="__unresolved__"
+FIX_COMMIT_SHA="__unresolved__"
+SYNC_RESULT="__unresolved__"
+SYNC_PATCH_UNCHANGED="__unresolved__"
 if [ -n "$CV_LIB" ]; then
+  SYNC_PERSISTED="$(source "$CV_LIB" && cv_bead_metadata "$GC_BEAD_ID" gc.apply_review.sync_persisted)"
+  FIX_COMMIT_RECORDED="$(source "$CV_LIB" && cv_bead_metadata "$GC_BEAD_ID" gc.apply_review.fix_commit_recorded)"
   FIX_COMMIT_SHA="$(source "$CV_LIB" && cv_bead_metadata "$GC_BEAD_ID" gc.apply_review.fix_commit_sha)"
-  SYNC_RESULT_READ="$(source "$CV_LIB" && cv_bead_metadata "$GC_BEAD_ID" gc.apply_review.sync_result)"
-  [ -n "$SYNC_RESULT_READ" ] && SYNC_RESULT="$SYNC_RESULT_READ"
-  SYNC_PATCH_UNCHANGED_READ="$(source "$CV_LIB" && cv_bead_metadata "$GC_BEAD_ID" gc.apply_review.sync_patch_unchanged)"
-  [ -n "$SYNC_PATCH_UNCHANGED_READ" ] && SYNC_PATCH_UNCHANGED="$SYNC_PATCH_UNCHANGED_READ"
+  SYNC_RESULT="$(source "$CV_LIB" && cv_bead_metadata "$GC_BEAD_ID" gc.apply_review.sync_result)"
+  SYNC_PATCH_UNCHANGED="$(source "$CV_LIB" && cv_bead_metadata "$GC_BEAD_ID" gc.apply_review.sync_patch_unchanged)"
 else
-  echo "con-voyage apply-review-findings: WARNING: con-voyage-lib.sh not found — cannot re-read fix_commit_sha/sync_result/sync_patch_unchanged from ${GC_BEAD_ID}; failing closed (skipping the reviewed_head_sha stamp)" >&2
+  echo "con-voyage apply-review-findings: WARNING: con-voyage-lib.sh not found — cannot re-read gate state from ${GC_BEAD_ID}; failing closed (skipping the reviewed_head_sha stamp)" >&2
 fi
 
 STAMP_NOOP_PASS="false"
-if [ -z "$CV_LIB" ]; then
-  STAMP_NOOP_PASS="false"
-elif [ -z "${FIX_COMMIT_SHA:-}" ]; then
-  case "${SYNC_RESULT:-noop}" in
+if [ -n "$CV_LIB" ] && [ "$SYNC_PERSISTED" = "true" ] && [ "$FIX_COMMIT_RECORDED" = "false" ]; then
+  case "$SYNC_RESULT" in
     noop) STAMP_NOOP_PASS="true" ;;
     recreated|rebased)
-      [ "${SYNC_PATCH_UNCHANGED:-false}" = "true" ] && STAMP_NOOP_PASS="true"
+      [ "$SYNC_PATCH_UNCHANGED" = "true" ] && STAMP_NOOP_PASS="true"
       ;;
     *) STAMP_NOOP_PASS="false" ;;
   esac
 fi
 
 if [ "$STAMP_NOOP_PASS" != "true" ]; then
-  echo "con-voyage apply-review-findings: skipping gc.build.reviewed_head_sha stamp — this pass is not a genuine no-op (FIX_COMMIT_SHA=${FIX_COMMIT_SHA:-<unset>}, SYNC_RESULT=${SYNC_RESULT:-<unset>}, SYNC_PATCH_UNCHANGED=${SYNC_PATCH_UNCHANGED:-<unset>})" >&2
+  echo "con-voyage apply-review-findings: skipping gc.build.reviewed_head_sha stamp — this pass is not a confirmed genuine no-op (SYNC_PERSISTED=${SYNC_PERSISTED}, FIX_COMMIT_RECORDED=${FIX_COMMIT_RECORDED}, FIX_COMMIT_SHA=${FIX_COMMIT_SHA}, SYNC_RESULT=${SYNC_RESULT}, SYNC_PATCH_UNCHANGED=${SYNC_PATCH_UNCHANGED})" >&2
 else
   # Stamp the attempted-marker as its own independent call, before trying the
   # real stamp below — so publish (main.publish.md) can tell "this root's
