@@ -489,6 +489,78 @@ cv_ensure_branch_based_on() {
   echo "cv-lib: ${dir} is now based on ${base_branch}"
 }
 
+# cv_worktree_sync_lock_dir DIR — the deterministic lock path for DIR (fk-dy2ygk).
+# A sibling directory derived purely from DIR's own path, not CV_STATE_DIR: a
+# review lane (cv-review-lane-worktree.sh, a separate standalone script) and
+# cv_sync_worktree_to_base below must agree on the SAME lock for the SAME
+# shared worktree regardless of which process's CV_STATE_DIR/city config is
+# in effect when each one runs. Prints nothing else; callers interpolate it
+# directly.
+cv_worktree_sync_lock_dir() {
+  local dir="$1"
+  printf '%s' "${dir%/}.cvsynclock"
+}
+
+# cv_worktree_sync_lock_acquire DIR [TIMEOUT_SECONDS] — fk-dy2ygk: mutual
+# exclusion for a shared con-voyage source-anchor worktree. THE BUG this
+# closes: cv_sync_worktree_to_base mutates DIR in place (fetch, then
+# checkout -B or rebase --onto) with no coordination against a concurrent
+# reader, while every active review lane's cv-review-lane-worktree.sh
+# `acquire` reads DIR's HEAD and forks a private lane worktree from it. A
+# lane racing an in-flight rebase can read a transient/stale HEAD and grade
+# code nobody will ever see land (live evidence 2026-10-04..2026-10-06, 5
+# occurrences, all on the shared rereview-worktree mechanism: "lanes grade
+# stale/phantom HEAD"). Blocking (not failing) on contention here is
+# deliberate: a lane should wait out a sync in progress and then review
+# whatever it leaves behind, not refuse to run — same philosophy as
+# acquire_lock's stale-lock reclaim above, but keyed by worktree path instead
+# of a CV_STATE_DIR dedup_key, since this lock must be reachable without a
+# shared state directory.
+#
+# Returns 0 once the lock is held. Returns 1 if TIMEOUT_SECONDS (default
+# CV_WORKTREE_SYNC_LOCK_TIMEOUT_SECONDS, else 120) elapses first — a caller
+# must treat that as a failure to safely proceed, not silently continue
+# unlocked. A lock older than CV_WORKTREE_SYNC_LOCK_STALE_SECONDS (default
+# 600) is presumed abandoned by a crashed holder and reclaimed rather than
+# left to wedge every future sync/lane acquire on this worktree forever.
+cv_worktree_sync_lock_acquire() {
+  local dir="$1"
+  local timeout="${2:-${CV_WORKTREE_SYNC_LOCK_TIMEOUT_SECONDS:-120}}"
+  local stale="${CV_WORKTREE_SYNC_LOCK_STALE_SECONDS:-600}"
+  local lockdir
+  lockdir="$(cv_worktree_sync_lock_dir "$dir")"
+  local waited=0
+  while ! mkdir "$lockdir" 2>/dev/null; do
+    if python3 -c "
+import os, sys, time
+try:
+    age = time.time() - os.stat(sys.argv[1]).st_mtime
+except Exception:
+    sys.exit(1)
+sys.exit(0 if age > float(sys.argv[2]) else 1)
+" "$lockdir" "$stale" 2>/dev/null; then
+      rm -rf "$lockdir" 2>/dev/null
+      echo "cv-lib: NOTICE: reclaimed a stale worktree sync lock for ${dir} (>${stale}s; prior holder presumed dead)" >&2
+      continue
+    fi
+    if [ "$waited" -ge "$timeout" ]; then
+      echo "cv-lib: ERROR cv_worktree_sync_lock_acquire: timed out after ${timeout}s waiting for the sync lock on ${dir}" >&2
+      return 1
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  printf '%s\n' "$$" > "${lockdir}/pid" 2>/dev/null || true
+  return 0
+}
+
+# cv_worktree_sync_lock_release DIR — always safe to call even if the lock was
+# never acquired.
+cv_worktree_sync_lock_release() {
+  local dir="$1"
+  rm -rf "$(cv_worktree_sync_lock_dir "$dir")" 2>/dev/null || true
+}
+
 # cv_sync_worktree_to_base DIR [BRANCH_NAME] [EXPLICIT_BASE] — fk-hbsmk: make
 # sure DIR starts from the CURRENT origin default base before any
 # code-writing step begins, instead of trusting a long-lived worktree/local
@@ -548,6 +620,19 @@ cv_sync_worktree_to_base() {
     echo "cv-lib: ERROR cv_sync_worktree_to_base: '${dir}' is not inside a git working tree" >&2
     return 1
   fi
+
+  # fk-dy2ygk: hold the SAME lock a review lane's cv-review-lane-worktree.sh
+  # `acquire` takes on this exact directory, for the whole fetch/rebase below
+  # — never let a lane read this worktree's HEAD mid-mutation (see
+  # cv_worktree_sync_lock_acquire's doc comment). The RETURN trap releases it
+  # on every exit path below (including the early returns already in this
+  # function), so none of the existing return-code semantics change.
+  if ! cv_worktree_sync_lock_acquire "$dir"; then
+    echo "cv-lib: ERROR cv_sync_worktree_to_base: could not acquire the worktree sync lock for ${dir}" >&2
+    return 1
+  fi
+  # shellcheck disable=SC2064  # intentional: expand $dir now, not at trap time
+  trap "cv_worktree_sync_lock_release \"${dir}\"" RETURN
 
   local fetch_timeout="${CV_SYNC_FETCH_TIMEOUT_SECONDS:-60}"
   if ! cv_with_timeout "$fetch_timeout" git -C "$dir" fetch -q origin >&2; then

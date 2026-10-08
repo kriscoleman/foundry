@@ -97,6 +97,60 @@ lane_dir_for() {
   printf '%s/%s%s%s' "$parent" "$base" "$LANE_SUFFIX_MARK" "$lane_id"
 }
 
+# sync_lock_dir SRC — fk-dy2ygk: MUST derive the identical path
+# con-voyage-lib.sh's cv_worktree_sync_lock_dir computes for the same SRC —
+# the two files intentionally duplicate this one-line convention rather than
+# share a sourced dependency, so this standalone script keeps working with no
+# con-voyage-lib.sh on PATH. If you change this, change the other side too.
+sync_lock_dir() {
+  printf '%s' "${1%/}.cvsynclock"
+}
+
+# sync_lock_acquire SRC — blocks (bounded, with stale-lock reclaim) until no
+# cv_sync_worktree_to_base call holds the lock on SRC. THE BUG this closes:
+# acquire below reads SRC's HEAD and forks a private lane worktree from it;
+# without this, that read can land mid-fetch/rebase in
+# cv_sync_worktree_to_base and observe a transient or stale HEAD (live
+# evidence 2026-10-04..2026-10-06: review lanes grading phantom/stale code on
+# the shared rereview worktree). Mirrors
+# con-voyage-lib.sh's cv_worktree_sync_lock_acquire exactly; kept duplicated
+# here rather than sourced for the same standalone-script reason as the path
+# convention above.
+sync_lock_acquire() {
+  local dir="$1"
+  local timeout="${CV_WORKTREE_SYNC_LOCK_TIMEOUT_SECONDS:-120}"
+  local stale="${CV_WORKTREE_SYNC_LOCK_STALE_SECONDS:-600}"
+  local lockdir
+  lockdir="$(sync_lock_dir "$dir")"
+  local waited=0
+  while ! mkdir "$lockdir" 2>/dev/null; do
+    if python3 -c "
+import os, sys, time
+try:
+    age = time.time() - os.stat(sys.argv[1]).st_mtime
+except Exception:
+    sys.exit(1)
+sys.exit(0 if age > float(sys.argv[2]) else 1)
+" "$lockdir" "$stale" 2>/dev/null; then
+      rm -rf "$lockdir" 2>/dev/null
+      echo "cv-review-lane-worktree: NOTICE: reclaimed a stale worktree sync lock for ${dir} (>${stale}s; prior holder presumed dead)" >&2
+      continue
+    fi
+    if [ "$waited" -ge "$timeout" ]; then
+      echo "cv-review-lane-worktree: ERROR: timed out after ${timeout}s waiting for the sync lock on ${dir}" >&2
+      return 1
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  printf '%s\n' "$$" > "${lockdir}/pid" 2>/dev/null || true
+  return 0
+}
+
+sync_lock_release() {
+  rm -rf "$(sync_lock_dir "$1")" 2>/dev/null || true
+}
+
 cmd_acquire() {
   local src="$1" lane_id_raw="${2:-}"
   require_git_worktree "$src" "acquire"
@@ -106,6 +160,15 @@ cmd_acquire() {
   local lane_id lane_dir
   lane_id="$(sanitize_lane_id "$lane_id_raw")"
   lane_dir="$(lane_dir_for "$src" "$lane_id")"
+
+  # fk-dy2ygk: hold the lock across both the HEAD read and the worktree
+  # add/checkout below — never let either observe a concurrent
+  # cv_sync_worktree_to_base mutation of $src mid-flight. An EXIT trap (not
+  # RETURN) is required here: a failure further down calls `die`, which
+  # `exit`s the whole one-shot script process rather than returning from this
+  # function, and a RETURN trap never fires on `exit`.
+  sync_lock_acquire "$src" || die "acquire: could not acquire the worktree sync lock for '${src}'"
+  trap 'sync_lock_release "'"$src"'"' EXIT
 
   local head_commit
   head_commit="$(git -C "$src" rev-parse HEAD 2>/dev/null)" \
