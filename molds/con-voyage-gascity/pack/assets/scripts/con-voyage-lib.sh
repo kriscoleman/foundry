@@ -1701,7 +1701,17 @@ cv_rig_for_bead_id() {
   [ -n "${prefix:-}" ] && [ "$prefix" != "$bead_id" ] || { printf ''; return 0; }
   local gc_bin="${GC:-gc}"
   local json
-  json=$("$gc_bin" --city "${GC_CITY:-.}" rig list --json 2>/dev/null) || json=""
+  # fk-ykq66p BLOCKING-3 (review fk-...): bound this like every sibling
+  # `gc rig list --json` call site in this pack — `gc` store calls are
+  # confirmed to sometimes take 100+s under pool contention, and this is
+  # the mayor's own reopen tool, created specifically to replace a prior
+  # affordance that silently had no effect. A hang here would reproduce
+  # that same "mayor takes an action and nothing visibly happens" failure.
+  local cv_rig_lookup_timeout="${CV_LENS_STORE_TIMEOUT_SECONDS:-30}"
+  case "$cv_rig_lookup_timeout" in
+    *[!0-9]*|'') cv_rig_lookup_timeout="30" ;;
+  esac
+  json=$(cv_with_timeout "$cv_rig_lookup_timeout" "$gc_bin" --city "${GC_CITY:-.}" rig list --json 2>/dev/null) || json=""
   [ -n "$json" ] || { printf ''; return 0; }
   printf '%s' "$json" | python3 -c "
 import sys, json
