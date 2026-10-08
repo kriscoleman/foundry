@@ -192,8 +192,61 @@ assert_contains 'ACTIVE_ROSTER="$(source "$CV_LIB" && cv_active_roster_vars "$RO
 # the control flow around it that the production incident actually hit.
 # ===========================================================================
 start_case "7: IS_STEP_BEAD is re-derived from CONVOY_ID's own metadata and gates the work-bead claim/reassign"
-assert_contains "print('true' if (meta.get('gc.step_ref') or meta.get('gc.routed_to') or meta.get('gc.root_bead_id')) else 'false')" "computes IS_STEP_BEAD from a bd show of \$CONVOY_ID's gc.step_ref/gc.routed_to/gc.root_bead_id metadata"
 assert_contains 'if [ "$IS_STEP_BEAD" = "true" ] && [ "$WORK_BEAD" = "$CONVOY_ID" ]; then' "gates the skip decision on IS_STEP_BEAD=true AND WORK_BEAD unresolved (still equal to CONVOY_ID)"
+
+# Behavioral check for the STEP_META_CHECK python one-liner itself (fk-cq1p32,
+# review fk-hbsmk/fk-pbadx/fk-up9s4z BLOCKING-1): a textual assert_contains
+# pinning the heuristic's *old* source string gives false coverage — it
+# passes identically whether the heuristic is broad (gc.step_ref OR
+# gc.routed_to OR gc.root_bead_id) or correctly narrowed to gc.step_ref
+# alone, since it never actually runs the snippet. Extract the python block
+# verbatim from the .md and execute it against stubbed bd-show JSON so a
+# future re-widening of the heuristic fails this test on behavior, not text.
+step_meta_check_py="$(awk '/STEP_META_CHECK=/{flag=1; next} flag && /^[[:space:]]*" 2>\/dev\/null\)"[[:space:]]*$/{flag=0} flag' "$SETUP_REVIEW_MD")"
+if [ -z "$step_meta_check_py" ]; then
+  echo "  FAIL: could not extract the STEP_META_CHECK python block from ${SETUP_REVIEW_MD} (markers may have drifted)" >&2
+  FAILURES=$((FAILURES+1))
+else
+  run_step_meta_check() {
+    printf '%s' "$1" | python3 -c "$step_meta_check_py"
+  }
+
+  result="$(run_step_meta_check '{"metadata": {"gc.step_ref": "con-voyage.main.foo"}}')"
+  if [ "$result" = "true" ]; then
+    echo "  PASS: a bead with gc.step_ref set is classified as a step bead (true)"
+  else
+    echo "  FAIL: expected 'true' for a bead with gc.step_ref set, got '${result}'" >&2
+    FAILURES=$((FAILURES+1))
+  fi
+
+  # fk-cq1p32: the regression itself — an ordinary work bead carrying a stale
+  # gc.root_bead_id (no gc.step_ref) left over from an earlier, unrelated
+  # graph.v2 dispatch must NOT be classified as a step bead, or the
+  # claim/reassign block below is silently skipped for a normal build.
+  result="$(run_step_meta_check '{"metadata": {"gc.root_bead_id": "fk-unrelated-root"}}')"
+  if [ "$result" = "false" ]; then
+    echo "  PASS: a bead with only a stale gc.root_bead_id (no gc.step_ref) is NOT classified as a step bead (false) — claim/reassign proceeds"
+  else
+    echo "  FAIL: expected 'false' for a bead with only a stale gc.root_bead_id, got '${result}' — this would silently skip the claim/reassign of an ordinary work bead" >&2
+    FAILURES=$((FAILURES+1))
+  fi
+
+  result="$(run_step_meta_check '{"metadata": {"gc.routed_to": "foundry-kc/gc.implementation-worker"}}')"
+  if [ "$result" = "false" ]; then
+    echo "  PASS: a bead with only gc.routed_to (no gc.step_ref) is NOT classified as a step bead (false)"
+  else
+    echo "  FAIL: expected 'false' for a bead with only gc.routed_to, got '${result}'" >&2
+    FAILURES=$((FAILURES+1))
+  fi
+
+  result="$(run_step_meta_check '{"metadata": {}}')"
+  if [ "$result" = "false" ]; then
+    echo "  PASS: a bead with no relevant metadata is NOT classified as a step bead (false)"
+  else
+    echo "  FAIL: expected 'false' for a bead with no relevant metadata, got '${result}'" >&2
+    FAILURES=$((FAILURES+1))
+  fi
+fi
 
 claim_call='gc bd update "$WORK_BEAD" --assignee "con-voyage:work-bead" --status in_progress'
 claim_call_count="$(count_of "$claim_call")"
