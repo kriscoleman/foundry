@@ -48,6 +48,21 @@ independent of this threshold. Default 50.
 """
 default = "50"
 
+[vars.base_branch]
+description = """
+Declare the branch this journey stacks on, at sling time (fk-wmhr96). Set
+this instead of calling `gc convoy target <convoy> <base>` after the sling —
+`gc sling ... --on con-voyage` always mints its own fresh input convoy, so a
+pre-made convoy's target is ignored and a post-sling `gc convoy target` call
+races prepare-build, which can already be building off the default base by
+the time it lands. Setting base_branch here is applied deterministically as
+this journey's first step, before any worktree is created, so prepare-build,
+the review diff, the hygiene guard, and the eventual PR --base all agree on
+it from the start. Leave unset (default) for the default branch — behavior
+is then byte-identical to not declaring a base at all.
+"""
+default = ""
+
 # ---------------------------------------------------------------------------
 # Build phase — folds the do-work build in as con-voyage's own first phase
 # (fk-9aunv: "implement-then-escort — one-sling journey"), so a single sling

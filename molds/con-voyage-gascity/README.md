@@ -493,23 +493,36 @@ On each 10-minute tick the order script:
    maintained via a state file keyed by `(repo, PR-number, max-comment-id)` so
    the same comment is never routed twice.
 
-### GitHub stacked PRs (fk-qppb4) — base-branch threading and its boundary
+### GitHub stacked PRs (fk-qppb4, fk-wmhr96) — base-branch threading and its boundary
 
 A con-voyage journey can target a branch other than the repo default so slice
-N+1 stacks on slice N's own PR branch. Set it once per journey, before
-launching do-work/con-voyage against the journey's convoy — reusing the
-existing convoy-target primitive rather than a parallel formula var, since a
-convoy already carries exactly this field for child work beads to inherit:
+N+1 stacks on slice N's own PR branch. Declare it **at sling time** with the
+`base_branch` formula var:
 
 ```bash
-gc convoy target <input-convoy-id> <base-branch>
+gc sling <target> <work-bead> --on con-voyage --var base_branch=<base-branch> [...]
 ```
 
-`con-voyage-lib.sh`'s `cv_resolve_base_branch` reads this back (falling
-through to today's `origin/HEAD -> origin/main -> main` default when unset —
-byte-identical behavior for every non-stacked journey) and threads it through
-the setup step's worktree-base correction (`cv_ensure_branch_based_on`), the
-hygiene guard's base-ref, and the PR `--base` on create.
+Do not pre-create a convoy and call `gc convoy target <convoy-id>
+<base-branch>` on it before slinging, and do not call `gc convoy target`
+after slinging either: `gc sling ... --on con-voyage` always mints its own
+fresh input convoy (`convoy_id` is a reserved v2 token), so a pre-made
+convoy's target is silently ignored, and setting the target after the sling
+races prepare-build — which can already be resolving the default base before
+a post-sling `gc convoy target` call lands (fk-wmhr96, confirmed live
+twice). `base_branch` avoids both failure modes: prepare-build applies it as
+the convoy's target deterministically, as this journey's first step, before
+any worktree is created.
+
+Under the hood this is still the same convoy-target primitive `con-voyage-
+lib.sh`'s `cv_resolve_base_branch` reads back (falling through to today's
+`origin/HEAD -> origin/main -> main` default when unset — byte-identical
+behavior for every non-stacked journey, and for any journey that still sets
+the target directly via `gc convoy target` early enough on its own). It
+threads through the initial build worktree's own base
+(`cv_sync_worktree_to_base`'s explicit-base argument), the setup step's
+worktree-base correction (`cv_ensure_branch_based_on`), the hygiene guard's
+base-ref, and the PR `--base` on create.
 
 **Known boundary — Part A (CI repair) does not see a stacked PR until its
 base is listed in `base_branches`.** Part A's actionable-PR discovery goes

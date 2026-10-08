@@ -454,6 +454,61 @@ else
 fi
 
 # ===========================================================================
+# CASE 8 — fk-wmhr96: a caller-supplied EXPLICIT_BASE (3rd arg) declares a
+#   stacked base branch that is NOT origin's default — the sync must land the
+#   worktree on that branch's tip, not origin/main, even though origin/main
+#   also resolves to a real commit in this repo (so the default resolution
+#   order alone would never reach the declared base).
+# ===========================================================================
+start_case "8: explicit base arg (3rd positional) syncs onto a declared stacked base, not origin's default"
+UPSTREAM8="${SANDBOX}/repo8-upstream.git"
+git init -q -b main --bare "$UPSTREAM8"
+REPO8="$(mk_repo repo8)"
+git_c "$REPO8" remote add origin "$UPSTREAM8"
+git_c "$REPO8" push -q -u origin main
+git_c "$REPO8" remote set-head origin main
+# A stacked base branch diverges from main with its own commit.
+git_c "$REPO8" checkout -q -b stacked-base
+printf 'stacked\n' > "${REPO8}/stacked.txt"
+git_c "$REPO8" add stacked.txt
+git_c "$REPO8" commit -q -m "feat: stacked base content"
+git_c "$REPO8" push -q -u origin stacked-base
+stacked_tip8="$(git_c "$REPO8" rev-parse stacked-base)"
+main_tip8="$(git_c "$REPO8" rev-parse main)"
+git_c "$REPO8" checkout -q main
+WT8="${SANDBOX}/repo8-worktree"
+git_c "$REPO8" worktree add -q --detach "$WT8" HEAD
+result8="$(cv_sync_worktree_to_base "$WT8" "con-voyage/repo8-worktree" "stacked-base" 2>/dev/null)"
+rc8=$?
+assert_eq "0" "$rc8" "exits 0"
+assert_eq "recreated" "$result8" "reports recreated"
+assert_eq "$stacked_tip8" "$(git_c "$WT8" rev-parse HEAD)" "HEAD matches the declared stacked-base tip, not origin/main"
+if [ "$(git_c "$WT8" rev-parse HEAD)" = "$main_tip8" ]; then
+  fail "worktree landed on origin/main's tip despite an explicit stacked-base argument"
+fi
+assert_eq "con-voyage/repo8-worktree" "$(git_c "$WT8" symbolic-ref --short HEAD 2>/dev/null)" "worktree is on the named branch"
+
+# ===========================================================================
+# CASE 9 — an empty/unset explicit-base argument is byte-identical to the
+#   pre-fk-wmhr96 two-arg call: falls through to origin/HEAD -> origin/main.
+# ===========================================================================
+start_case "9: an empty explicit-base argument falls through to the default resolution order"
+UPSTREAM9="${SANDBOX}/repo9-upstream.git"
+git init -q -b main --bare "$UPSTREAM9"
+REPO9="$(mk_repo repo9)"
+git_c "$REPO9" remote add origin "$UPSTREAM9"
+git_c "$REPO9" push -q -u origin main
+git_c "$REPO9" remote set-head origin main
+main_tip9="$(git_c "$REPO9" rev-parse main)"
+WT9="${SANDBOX}/repo9-worktree"
+git_c "$REPO9" worktree add -q --detach "$WT9" HEAD
+result9="$(cv_sync_worktree_to_base "$WT9" "con-voyage/repo9-worktree" "" 2>/dev/null)"
+rc9=$?
+assert_eq "0" "$rc9" "exits 0"
+assert_eq "noop" "$result9" "reports noop (already current on origin/main, the default)"
+assert_eq "$main_tip9" "$(git_c "$WT9" rev-parse HEAD)" "HEAD matches origin/main (default), unaffected by the new empty 3rd arg"
+
+# ===========================================================================
 # Structural checks — the helper must actually be wired into every
 # code-writing step's START, not just exist unused in the lib.
 # ===========================================================================

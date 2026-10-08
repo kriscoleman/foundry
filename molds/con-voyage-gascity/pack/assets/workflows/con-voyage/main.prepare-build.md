@@ -48,6 +48,29 @@ if [ -z "$CONVOY_ID" ]; then
 fi
 ```
 
+## Declare a stacked base branch, if one was set at sling time (fk-wmhr96)
+
+`gc sling ... --on con-voyage` always mints its own fresh input convoy, so a
+pre-made convoy's own `gc convoy target` is ignored, and setting the target
+AFTER the sling races this very step — prepare-build can already be
+resolving the default base by the time a post-sling `gc convoy target` call
+lands. `base_branch` is a formula var instead: it is available on `$ROOT_ID`
+before this, the first step, ever runs, so applying it here — right after
+`$CONVOY_ID` is known and before any worktree is touched — is deterministic,
+not a race. `cv_convoy_target`/`cv_resolve_base_branch` (used by this step's
+own sync below, and by setup-con-voyage-review/publish downstream) already
+treat the convoy's target as the source of truth, so setting it here is the
+only change needed for the rest of the journey to agree on the declared base:
+
+```bash
+BASE_BRANCH_VAR="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.var.base_branch)"
+if [ -n "$BASE_BRANCH_VAR" ]; then
+  gc convoy target "$CONVOY_ID" "$BASE_BRANCH_VAR" \
+    || { echo "con-voyage prepare-build: failed to set convoy target ${BASE_BRANCH_VAR} on ${CONVOY_ID} from base_branch" >&2; exit 1; }
+  echo "con-voyage prepare-build: declared base_branch=${BASE_BRANCH_VAR} — set as convoy target on ${CONVOY_ID}"
+fi
+```
+
 ## Resolve the stable work-branch name (fk-6os73y)
 
 Compute the journey's branch name ONCE here — `con-voyage/<CONVOY_ID>-<topic-
@@ -228,8 +251,11 @@ if [ "$SHORT_CIRCUIT" = "false" ]; then
   # build.md/apply-review-findings.md/ci-repair.md already apply at their
   # own start (fk-hbsmk) — so a contaminated worktree is never handed off
   # as "resolved" even briefly, rather than relying solely on a downstream
-  # step to catch it later.
-  SYNC_RESULT="$(source "$CV_LIB" && cv_sync_worktree_to_base "$WORKTREE" "$WORK_BRANCH_NAME")" \
+  # step to catch it later. Pass BASE_BRANCH_VAR through as the explicit base
+  # (fk-wmhr96) so a declared stacked base lands the worktree on it from
+  # creation — empty when unset, which is byte-identical to the default
+  # origin/HEAD -> origin/main -> main resolution.
+  SYNC_RESULT="$(source "$CV_LIB" && cv_sync_worktree_to_base "$WORKTREE" "$WORK_BRANCH_NAME" "$BASE_BRANCH_VAR")" \
     || { echo "con-voyage prepare-build: failed to sync fresh worktree ${WORKTREE} to its current base — refusing to hand off a possibly-contaminated worktree" >&2; exit 1; }
   echo "con-voyage prepare-build: worktree sync: ${SYNC_RESULT}"
 

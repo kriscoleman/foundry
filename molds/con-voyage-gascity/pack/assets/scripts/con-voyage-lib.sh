@@ -489,12 +489,20 @@ cv_ensure_branch_based_on() {
   echo "cv-lib: ${dir} is now based on ${base_branch}"
 }
 
-# cv_sync_worktree_to_base DIR [BRANCH_NAME] — fk-hbsmk: make sure DIR starts
-# from the CURRENT origin default base before any code-writing step begins,
-# instead of trusting a long-lived worktree/local main that can silently be
-# many commits stale (evidence: 4 of 7 foundry-kc con-voyage builds on
-# 2026-09-26 started detached on a local main 18 commits behind origin/main,
-# because a stale-copy `find` resolution loaded an old cv-worktree-prep.sh).
+# cv_sync_worktree_to_base DIR [BRANCH_NAME] [EXPLICIT_BASE] — fk-hbsmk: make
+# sure DIR starts from the CURRENT origin default base before any
+# code-writing step begins, instead of trusting a long-lived worktree/local
+# main that can silently be many commits stale (evidence: 4 of 7 foundry-kc
+# con-voyage builds on 2026-09-26 started detached on a local main 18 commits
+# behind origin/main, because a stale-copy `find` resolution loaded an old
+# cv-worktree-prep.sh).
+#
+# EXPLICIT_BASE (fk-wmhr96) — when non-empty, declares the branch DIR must be
+# stacked on instead of origin's default (origin/HEAD -> origin/main ->
+# main). This is how a sling-time `base_branch` formula var reaches the
+# worktree sync deterministically, without racing a post-sling `gc convoy
+# target` call. Empty/omitted is byte-identical to the pre-fk-wmhr96
+# two-arg call.
 #
 # Never `git merge`. Fails closed (non-zero, no partial rebase left behind)
 # rather than silently proceed on an unconfirmed base:
@@ -533,7 +541,7 @@ cv_ensure_branch_based_on() {
 # content conflict (see above).
 #
 cv_sync_worktree_to_base() {
-  local dir="$1" branch_name="${2:-}"
+  local dir="$1" branch_name="${2:-}" explicit_base="${3:-}"
 
   if [ -z "$dir" ] || [ ! -d "$dir" ] \
     || ! git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -574,8 +582,22 @@ cv_sync_worktree_to_base() {
   [ -n "$current_branch" ] \
     || { echo "cv-lib: ERROR cv_sync_worktree_to_base: ${dir} is still detached after ensure-branch" >&2; return 1; }
 
-  local base_ref base_sha
-  base_ref="$(bash "$prep_script" resolve-base "$dir" 2>/dev/null)"
+  # fk-wmhr96: EXPLICIT_BASE (a declared stacked base, e.g. from the
+  # con-voyage `base_branch` formula var) overrides the origin/HEAD ->
+  # origin/main -> main default order. The fetch above already pulled every
+  # branch a normal clone's default refspec covers, so origin/<explicit_base>
+  # is tried first — falling back to the bare name only if that ref doesn't
+  # exist (e.g. a local-only branch in a hermetic test fixture) — and resolve-
+  # base's own explicit-arg handling is reused as-is rather than reimplemented
+  # here, so this can never disagree with guard/cv_resolve_base_branch about
+  # what a declared base resolves to.
+  local base_ref base_sha resolve_explicit=""
+  if [ -n "$explicit_base" ]; then
+    resolve_explicit="origin/${explicit_base}"
+    git -C "$dir" rev-parse --verify --quiet "${resolve_explicit}^{commit}" >/dev/null 2>&1 \
+      || resolve_explicit="$explicit_base"
+  fi
+  base_ref="$(bash "$prep_script" resolve-base "$dir" "$resolve_explicit" 2>/dev/null)"
   base_sha="$(git -C "$dir" rev-parse --verify --quiet "${base_ref}^{commit}" 2>/dev/null || true)"
 
   if [ -z "$base_sha" ]; then
