@@ -193,6 +193,16 @@ case "$SYNC_RESULT" in
 esac
 echo "apply-review-findings: sync patch-unchanged: ${SYNC_PATCH_UNCHANGED}"
 
+# fk-im9rqm (review fk-9gdsik iteration 5 BLOCKING-1): capture HEAD exactly as
+# it stands right after the sync call above completes, before anything in
+# this pass has a chance to commit a fix on top of it. This is the ONE value
+# the stamp gate below can check against the worktree's actual, mechanically
+# observable state — unlike fix_commit_recorded (a discretionary flip-write
+# that can itself fail), a fix commit unconditionally moves git HEAD past
+# this point. Persisting it lets the gate fail closed on a HEAD mismatch
+# regardless of whether the fix_commit_recorded=true write below succeeds.
+POST_SYNC_HEAD="$(git -C "$WORKTREE" rev-parse HEAD 2>/dev/null)"
+
 # fk-j29mzp (review BLOCKING-1): each fenced ```bash block in this file runs
 # as its own independent shell — SYNC_RESULT/SYNC_PATCH_UNCHANGED computed
 # here do NOT survive into the later "Recording the reviewed HEAD SHA" gate's
@@ -224,7 +234,8 @@ gc bd update "$GC_BEAD_ID" \
   --set-metadata "gc.apply_review.sync_patch_unchanged=${SYNC_PATCH_UNCHANGED}" \
   --set-metadata 'gc.apply_review.sync_persisted=true' \
   --set-metadata 'gc.apply_review.fix_commit_recorded=false' \
-  || echo "apply-review-findings: WARNING: could not persist sync_result/sync_patch_unchanged/fix_commit_recorded to ${GC_BEAD_ID} — the no-op stamp gate below will fail closed for this pass" >&2
+  --set-metadata "gc.apply_review.post_sync_head=${POST_SYNC_HEAD}" \
+  || echo "apply-review-findings: WARNING: could not persist sync_result/sync_patch_unchanged/fix_commit_recorded/post_sync_head to ${GC_BEAD_ID} — the no-op stamp gate below will fail closed for this pass" >&2
 ```
 
 `CV_TOPLEVEL` for this bootstrap call is now resolved from `GC_RIG_ROOT`
@@ -602,15 +613,18 @@ FIX_COMMIT_RECORDED="__unresolved__"
 FIX_COMMIT_SHA="__unresolved__"
 SYNC_RESULT="__unresolved__"
 SYNC_PATCH_UNCHANGED="__unresolved__"
+POST_SYNC_HEAD="__unresolved__"
 if [ -n "$CV_LIB" ]; then
   SYNC_PERSISTED="$(source "$CV_LIB" && cv_bead_metadata "$GC_BEAD_ID" gc.apply_review.sync_persisted)"
   FIX_COMMIT_RECORDED="$(source "$CV_LIB" && cv_bead_metadata "$GC_BEAD_ID" gc.apply_review.fix_commit_recorded)"
   FIX_COMMIT_SHA="$(source "$CV_LIB" && cv_bead_metadata "$GC_BEAD_ID" gc.apply_review.fix_commit_sha)"
   SYNC_RESULT="$(source "$CV_LIB" && cv_bead_metadata "$GC_BEAD_ID" gc.apply_review.sync_result)"
   SYNC_PATCH_UNCHANGED="$(source "$CV_LIB" && cv_bead_metadata "$GC_BEAD_ID" gc.apply_review.sync_patch_unchanged)"
+  POST_SYNC_HEAD="$(source "$CV_LIB" && cv_bead_metadata "$GC_BEAD_ID" gc.apply_review.post_sync_head)"
 else
   echo "con-voyage apply-review-findings: WARNING: con-voyage-lib.sh not found — cannot re-read gate state from ${GC_BEAD_ID}; failing closed (skipping the reviewed_head_sha stamp)" >&2
 fi
+[ -n "$POST_SYNC_HEAD" ] || POST_SYNC_HEAD="__unresolved__"
 
 STAMP_NOOP_PASS="false"
 if [ -n "$CV_LIB" ] && [ "$SYNC_PERSISTED" = "true" ] && [ "$FIX_COMMIT_RECORDED" = "false" ]; then
@@ -623,8 +637,25 @@ if [ -n "$CV_LIB" ] && [ "$SYNC_PERSISTED" = "true" ] && [ "$FIX_COMMIT_RECORDED
   esac
 fi
 
+# fk-im9rqm (review fk-9gdsik iteration 5 BLOCKING-1): fix_commit_recorded=false
+# is only trustworthy when its own write actually fired, which assumes the
+# separate flip-to-true write on a fix pass never fails — unenforced
+# elsewhere in this gate. Independently confirm against the ONE mechanically
+# reliable signal a fix commit always produces regardless of any bd write's
+# success: the worktree's current HEAD must still equal the HEAD recorded
+# right after the sync step, before this pass could have committed anything.
+# A fix pass whose flip-to-true write failed still moves HEAD past
+# $POST_SYNC_HEAD, so this comparison fails the gate closed exactly in that
+# scenario, independent of $FIX_COMMIT_RECORDED's own reliability.
+if [ "$STAMP_NOOP_PASS" = "true" ]; then
+  if [ "$POST_SYNC_HEAD" = "__unresolved__" ] || [ -z "$POST_SYNC_HEAD" ] \
+    || [ "$REVIEWED_HEAD_SHA" != "$POST_SYNC_HEAD" ]; then
+    STAMP_NOOP_PASS="false"
+  fi
+fi
+
 if [ "$STAMP_NOOP_PASS" != "true" ]; then
-  echo "con-voyage apply-review-findings: skipping gc.build.reviewed_head_sha stamp — this pass is not a confirmed genuine no-op (SYNC_PERSISTED=${SYNC_PERSISTED}, FIX_COMMIT_RECORDED=${FIX_COMMIT_RECORDED}, FIX_COMMIT_SHA=${FIX_COMMIT_SHA}, SYNC_RESULT=${SYNC_RESULT}, SYNC_PATCH_UNCHANGED=${SYNC_PATCH_UNCHANGED})" >&2
+  echo "con-voyage apply-review-findings: skipping gc.build.reviewed_head_sha stamp — this pass is not a confirmed genuine no-op (SYNC_PERSISTED=${SYNC_PERSISTED}, FIX_COMMIT_RECORDED=${FIX_COMMIT_RECORDED}, FIX_COMMIT_SHA=${FIX_COMMIT_SHA}, SYNC_RESULT=${SYNC_RESULT}, SYNC_PATCH_UNCHANGED=${SYNC_PATCH_UNCHANGED}, POST_SYNC_HEAD=${POST_SYNC_HEAD}, REVIEWED_HEAD_SHA=${REVIEWED_HEAD_SHA})" >&2
 else
   # Stamp the attempted-marker as its own independent call, before trying the
   # real stamp below — so publish (main.publish.md) can tell "this root's

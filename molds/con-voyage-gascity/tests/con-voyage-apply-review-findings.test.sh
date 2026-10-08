@@ -253,6 +253,38 @@ start_case "apply-review-findings.md: the gate requires both sync_persisted=true
 assert_contains "$APPLY_MD" '[ "$SYNC_PERSISTED" = "true" ] && [ "$FIX_COMMIT_RECORDED" = "false" ]' "gate conjuncts both confirmation markers before evaluating SYNC_RESULT"
 
 # ---------------------------------------------------------------------------
+# fk-im9rqm (review fk-9gdsik iteration 5 BLOCKING-1/BLOCKING-2): the
+# fix_commit_recorded=false default is only trustworthy if the separate
+# flip-to-true write on a fix pass never fails — unenforced anywhere else in
+# this gate. Pin that a HEAD-consistency check exists independent of that
+# write's reliability: the sync step's own atomic persist call also records
+# the worktree's HEAD immediately after sync (post_sync_head), and the gate
+# refuses to trust a confirmed-noop determination unless the worktree's
+# current HEAD still equals that persisted value.
+# ---------------------------------------------------------------------------
+start_case "apply-review-findings.md: the sync-result persist call also stamps the post-sync HEAD"
+assert_contains "$APPLY_MD" 'POST_SYNC_HEAD="$(git -C "$WORKTREE" rev-parse HEAD 2>/dev/null)"' "captures HEAD right after the sync call completes"
+assert_contains "$APPLY_MD" '--set-metadata "gc.apply_review.post_sync_head=${POST_SYNC_HEAD}"' "persists post_sync_head in the same atomic call as sync_persisted/fix_commit_recorded"
+
+start_case "apply-review-findings.md: the post-sync HEAD persist call is the same atomic gc bd update as sync_persisted/fix_commit_recorded"
+post_sync_persist_line="$(line_of "$APPLY_MD" '--set-metadata "gc.apply_review.post_sync_head=${POST_SYNC_HEAD}"')"
+sync_persisted_persist_line="$(line_of "$APPLY_MD" "--set-metadata 'gc.apply_review.sync_persisted=true'")"
+if [ -n "$post_sync_persist_line" ] && [ -n "$sync_persisted_persist_line" ] \
+  && [ "$((post_sync_persist_line - sync_persisted_persist_line))" -le 2 ] \
+  && [ "$post_sync_persist_line" -gt "$sync_persisted_persist_line" ]; then
+  echo "  PASS: post_sync_head (line ${post_sync_persist_line}) is a line within the same fence as sync_persisted=true (line ${sync_persisted_persist_line})"
+else
+  echo "  FAIL: expected post_sync_head to be persisted immediately alongside sync_persisted=true in the same atomic call" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
+start_case "apply-review-findings.md: the gate re-read defaults POST_SYNC_HEAD to an unresolved sentinel"
+assert_contains "$APPLY_MD" 'POST_SYNC_HEAD="__unresolved__"' "POST_SYNC_HEAD defaults to __unresolved__, not a stamp-eligible value"
+
+start_case "apply-review-findings.md: the gate independently requires the worktree HEAD to match the persisted post-sync HEAD"
+assert_contains "$APPLY_MD" '[ "$REVIEWED_HEAD_SHA" != "$POST_SYNC_HEAD" ]' "gate fails closed on a HEAD mismatch even when fix_commit_recorded=false and sync_result=noop"
+
+# ---------------------------------------------------------------------------
 # fk-zesuqz (review fk-9gdsik BLOCKING-3): no executable test previously
 # exercised the actual persist-then-re-read round trip the gate depends on —
 # every prior assertion above is a textual/static check that would pass
@@ -300,17 +332,24 @@ stub_bead_persist() {
 gate_decision() {
   # Mirrors main.apply-review-findings.md's STAMP_NOOP_PASS gate exactly:
   # unresolved sentinel defaults, requires both confirmation markers before
-  # trusting SYNC_RESULT at all.
-  local bead_id="$1"
-  local sync_persisted fix_commit_recorded sync_result sync_patch_unchanged
+  # trusting SYNC_RESULT at all, and (fk-im9rqm review fk-9gdsik iteration 5
+  # BLOCKING-1) independently confirms the worktree's actual HEAD
+  # ($reviewed_head_sha, the 2nd arg) still equals the HEAD persisted right
+  # after the sync step ($post_sync_head) — a fix commit moves HEAD past
+  # that point mechanically, regardless of whether the separate
+  # fix_commit_recorded=true flip write itself succeeded.
+  local bead_id="$1" reviewed_head_sha="$2"
+  local sync_persisted fix_commit_recorded sync_result sync_patch_unchanged post_sync_head
   sync_persisted="$(stub_bead_metadata "$bead_id" gc.apply_review.sync_persisted)"
   fix_commit_recorded="$(stub_bead_metadata "$bead_id" gc.apply_review.fix_commit_recorded)"
   sync_result="$(stub_bead_metadata "$bead_id" gc.apply_review.sync_result)"
   sync_patch_unchanged="$(stub_bead_metadata "$bead_id" gc.apply_review.sync_patch_unchanged)"
+  post_sync_head="$(stub_bead_metadata "$bead_id" gc.apply_review.post_sync_head)"
   [ -n "$sync_persisted" ] || sync_persisted="__unresolved__"
   [ -n "$fix_commit_recorded" ] || fix_commit_recorded="__unresolved__"
   [ -n "$sync_result" ] || sync_result="__unresolved__"
   [ -n "$sync_patch_unchanged" ] || sync_patch_unchanged="__unresolved__"
+  [ -n "$post_sync_head" ] || post_sync_head="__unresolved__"
 
   local stamp_noop_pass="false"
   if [ "$sync_persisted" = "true" ] && [ "$fix_commit_recorded" = "false" ]; then
@@ -322,13 +361,19 @@ gate_decision() {
       *) stamp_noop_pass="false" ;;
     esac
   fi
+  if [ "$stamp_noop_pass" = "true" ]; then
+    if [ "$post_sync_head" = "__unresolved__" ] || [ -z "$post_sync_head" ] \
+      || [ "$reviewed_head_sha" != "$post_sync_head" ]; then
+      stamp_noop_pass="false"
+    fi
+  fi
   printf '%s' "$stamp_noop_pass"
 }
 GATE_LIB_EOF
 
 gate_roundtrip_case() {
-  local label="$1" bead_id="$2" expected="$3"
-  shift 3
+  local label="$1" bead_id="$2" expected="$3" reviewed_head_sha="$4"
+  shift 4
 
   start_case "gate round trip: ${label}"
 
@@ -339,13 +384,15 @@ gate_roundtrip_case() {
 
   # Re-read and decide in a second, separate subshell/invocation ("the
   # later, independent stamp-gate fence") — genuinely re-parses the store
-  # file from scratch, not an inherited shell variable.
+  # file from scratch, not an inherited shell variable. $reviewed_head_sha
+  # stands in for the worktree's actual `git rev-parse HEAD` at gate time,
+  # resolved independently of anything persisted to the store.
   local actual
   actual="$(bash -c '
     export STORE_FILE="$1"
     source "$2"
-    gate_decision "$3"
-  ' _ "$STORE_FILE" "$GATE_LIB_FILE" "$bead_id" 2>/dev/null)"
+    gate_decision "$3" "$4"
+  ' _ "$STORE_FILE" "$GATE_LIB_FILE" "$bead_id" "$reviewed_head_sha" 2>/dev/null)"
 
   if [ "$actual" = "$expected" ]; then
     echo "  PASS: ${label} (STAMP_NOOP_PASS=${actual})"
@@ -355,42 +402,69 @@ gate_roundtrip_case() {
   fi
 }
 
-gate_roundtrip_case "confirmed genuine no-op (sync_persisted=true, fix_commit_recorded=false, sync_result=noop) -> stamp-eligible" \
-  "gate-rt-noop" "true" \
+gate_roundtrip_case "confirmed genuine no-op (sync_persisted=true, fix_commit_recorded=false, sync_result=noop, HEAD unchanged since sync) -> stamp-eligible" \
+  "gate-rt-noop" "true" "headA" \
   'gc.apply_review.sync_persisted=true' \
   'gc.apply_review.fix_commit_recorded=false' \
   'gc.apply_review.sync_result=noop' \
-  'gc.apply_review.sync_patch_unchanged=false'
+  'gc.apply_review.sync_patch_unchanged=false' \
+  'gc.apply_review.post_sync_head=headA'
 
 gate_roundtrip_case "fix committed this pass (fix_commit_recorded=true) -> never stamp-eligible" \
-  "gate-rt-fixed" "false" \
+  "gate-rt-fixed" "false" "headB" \
   'gc.apply_review.sync_persisted=true' \
   'gc.apply_review.fix_commit_recorded=true' \
   'gc.apply_review.sync_result=noop' \
-  'gc.apply_review.sync_patch_unchanged=false'
+  'gc.apply_review.sync_patch_unchanged=false' \
+  'gc.apply_review.post_sync_head=headA'
 
-gate_roundtrip_case "clean rebase with patch unchanged (recreated+patch_unchanged=true) -> stamp-eligible" \
-  "gate-rt-rebase-clean" "true" \
+gate_roundtrip_case "clean rebase with patch unchanged (recreated+patch_unchanged=true, HEAD matches the post-rebase sha) -> stamp-eligible" \
+  "gate-rt-rebase-clean" "true" "headC" \
   'gc.apply_review.sync_persisted=true' \
   'gc.apply_review.fix_commit_recorded=false' \
   'gc.apply_review.sync_result=recreated' \
-  'gc.apply_review.sync_patch_unchanged=true'
+  'gc.apply_review.sync_patch_unchanged=true' \
+  'gc.apply_review.post_sync_head=headC'
 
 gate_roundtrip_case "the sync_result persist call never ran this pass (sync_persisted unset) -> fails closed" \
-  "gate-rt-no-sync-write" "false"
+  "gate-rt-no-sync-write" "false" "headA"
 
 gate_roundtrip_case "sync_persisted write succeeded but fix_commit_recorded write never ran (ambiguous fix state) -> fails closed" \
-  "gate-rt-ambiguous-fix" "false" \
+  "gate-rt-ambiguous-fix" "false" "headA" \
   'gc.apply_review.sync_persisted=true' \
   'gc.apply_review.sync_result=noop' \
-  'gc.apply_review.sync_patch_unchanged=false'
+  'gc.apply_review.sync_patch_unchanged=false' \
+  'gc.apply_review.post_sync_head=headA'
 
 gate_roundtrip_case "unrecognized sync_result value -> fails closed" \
-  "gate-rt-garbage-value" "false" \
+  "gate-rt-garbage-value" "false" "headA" \
   'gc.apply_review.sync_persisted=true' \
   'gc.apply_review.fix_commit_recorded=false' \
   'gc.apply_review.sync_result=garbage' \
-  'gc.apply_review.sync_patch_unchanged=false'
+  'gc.apply_review.sync_patch_unchanged=false' \
+  'gc.apply_review.post_sync_head=headA'
+
+# fk-im9rqm (review fk-9gdsik iteration 5 BLOCKING-1/BLOCKING-2): the
+# scenario that actually reproduces fk-bcyt7v under this file's own design —
+# a fix WAS committed this pass (HEAD moved from the post-sync head "headA"
+# to the new fix commit "headFix"), but the fix-committing fence's
+# fix_commit_recorded=true flip write failed (the file's own design already
+# treats that write as fallible — "|| echo WARNING", never a hard failure).
+# fix_commit_recorded is therefore still "false" and sync_result is still
+# "noop" from the earlier atomic call, which would make the pre-fk-im9rqm
+# gate treat this as a confirmed genuine no-op and stamp the unreviewed fix
+# HEAD as reviewed. The HEAD-consistency guard must independently catch this
+# by comparing the gate-time HEAD ("headFix") against the persisted
+# post_sync_head ("headA") and fail closed on the mismatch — this is also
+# the structural pin for BLOCKING-2: it fails on the pre-fix gate_decision
+# and passes only once the HEAD-consistency guard is added.
+gate_roundtrip_case "fix committed + fix_commit_recorded flip write failed + sync_result=noop -> must fail closed (fk-bcyt7v regression guard)" \
+  "gate-rt-fix-flip-write-failed" "false" "headFix" \
+  'gc.apply_review.sync_persisted=true' \
+  'gc.apply_review.fix_commit_recorded=false' \
+  'gc.apply_review.sync_result=noop' \
+  'gc.apply_review.sync_patch_unchanged=false' \
+  'gc.apply_review.post_sync_head=headA'
 
 start_case "apply-review-findings.md: a non-eligible pass logs a skip instead of stamping"
 assert_contains "$APPLY_MD" 'skipping gc.build.reviewed_head_sha stamp' "logs explicitly when the bash gate blocks the stamp"
