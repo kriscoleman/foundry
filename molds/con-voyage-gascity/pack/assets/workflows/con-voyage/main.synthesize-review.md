@@ -142,11 +142,12 @@ Use explicit close metadata — do not rely on remembering this from prose
 alone:
 
 ```bash
-bd update "$CLAIMED_BEAD_ID" \
-  --set-metadata 'gc.outcome=pass' \
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/cv-review-lane-close.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+bash "${CV_PACK_ROOT}/assets/scripts/cv-review-lane-close.sh" "$CLAIMED_BEAD_ID" 'Con-voyage review synthesis complete.' \
   --set-metadata "code_review.synthesis_path=<synthesis path>" \
   --set-metadata "code_review.output_path=<synthesis path>"
-bd close "$CLAIMED_BEAD_ID" --reason 'Con-voyage review synthesis complete.'
 ```
 
 This synthesis is the source content the facilitator later posts to the PR as

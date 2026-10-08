@@ -18,11 +18,12 @@ and code_review.output_path=<QA test review report path>.
 
 **`gc.outcome` is always `pass` here — it never changes with the verdict below; even when the verdict is `iterate`/`changes_required`, `gc.outcome` stays `pass` regardless of that verdict.**
 
-  bd update "$CLAIMED_BEAD_ID" \
-    --set-metadata 'gc.outcome=pass' \
-    --set-metadata 'code_review.qa_test_verdict=approve' \
-    --set-metadata 'code_review.output_path=<QA test review report path>'
-  bd close "$CLAIMED_BEAD_ID" --reason 'Con-voyage QA test-engineering review approved.'
+  CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+  CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+  [ -f "${CV_PACK_ROOT}/assets/scripts/cv-review-lane-close.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+  bash "${CV_PACK_ROOT}/assets/scripts/cv-review-lane-close.sh" "$CLAIMED_BEAD_ID" 'Con-voyage QA test-engineering review approved.' \
+      --set-metadata 'code_review.qa_test_verdict=approve' \
+      --set-metadata 'code_review.output_path=<QA test review report path>'
 
 Do not set gc.verdict or code_review.report_path. Do not commit, push, or modify code.
 Do not invoke provider-native subagents. You are the QA test-engineering review lane.
