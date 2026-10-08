@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.16.2](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.16.1...con-voyage-gascity-v0.16.2) (2026-10-08)
+
+
+### Bug Fixes
+
+* close fail-open hole in the reviewed-head stamp gate and pin the real publish exit ordering (review fk-9gdsik) ([b75fca2](https://github.com/kriscoleman/foundry/commit/b75fca24e27f56f35cce8cd20ce45c60897c3fab))
+* close HEAD-consistency hole in reviewed-head stamp gate (review fk-9gdsik BLOCKING-1/2) ([1656c15](https://github.com/kriscoleman/foundry/commit/1656c15823f68dc5d9aea1ea5ac7ca9d40602c01))
+* **con-voyage:** hard-fail publish on a missing reviewed-head stamp ([14fba4a](https://github.com/kriscoleman/foundry/commit/14fba4a4ec30cf59483820c71b1b75570c72de4c))
+* make fix_commit_recorded default unconditionally and mechanically (review fk-9gdsik BLOCKING-1) ([119bb80](https://github.com/kriscoleman/foundry/commit/119bb80521406de1d2cbe790548d6504296b82c1))
+* persist cross-fence stamp-gate state and give publish hard-fail a failure contract (review fk-9gdsik) ([a72c414](https://github.com/kriscoleman/foundry/commit/a72c4142ab5ef1a00f5890cecc3ddbcec7623d89))
+
 ## [0.16.1](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.16.0...con-voyage-gascity-v0.16.1) (2026-10-08)
 
 
