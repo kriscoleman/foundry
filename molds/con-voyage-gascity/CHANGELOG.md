@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.16.1](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.16.0...con-voyage-gascity-v0.16.1) (2026-10-08)
+
+
+### Bug Fixes
+
+* **con-voyage:** add latch-bead guard to every review lens prompt ([c76c1ae](https://github.com/kriscoleman/foundry/commit/c76c1aef5ad8e7bdf79daeee432d9a669e031116))
+* **con-voyage:** declare a stacked base branch at sling time (fk-wmhr96) ([c5550d3](https://github.com/kriscoleman/foundry/commit/c5550d397f69c255cd7ca50c90e92c8ce5f467ac))
+* **con-voyage:** resolve step bead to real work bead in re-review seed ([4a668d2](https://github.com/kriscoleman/foundry/commit/4a668d27afdd458421632bb882dd12a84f00f5d7))
+* default CV_STATE_DIR in cv_resolve_work_bead, add setup-review guard coverage (review fk-hbsmk) ([e0dcb17](https://github.com/kriscoleman/foundry/commit/e0dcb1741606b0bc1e24f114d09d32076b421672))
+* narrow setup-review's STEP_META_CHECK to gc.step_ref only (review fk-hbsmk/fk-pbadx/fk-up9s4z BLOCKING-1) ([98286ac](https://github.com/kriscoleman/foundry/commit/98286ac2dfff02c4bce1b41b004e3a44b200d586))
+* pin floor-lane-&gt;run_target mapping as guard-coverage regression test (review fk-hbsmk) ([dd186d3](https://github.com/kriscoleman/foundry/commit/dd186d3dec88b77b2cc63f32999b09585ed15755))
+* stop resolving ci-repair base target against the wrong bead (review fk-qolcm3) ([0b4c0dc](https://github.com/kriscoleman/foundry/commit/0b4c0dc74ca0e0f747008ae41880c99e1a52ee27))
+* thread declared stacked base through all sync call sites (review fk-jvu5md) ([117123f](https://github.com/kriscoleman/foundry/commit/117123ff10ff1e335b6f6609cc2208ffbbba1ca2))
+* tighten cv_resolve_work_bead step-bead heuristic to gc.step_ref (review fk-up9s4z) ([2d5eef2](https://github.com/kriscoleman/foundry/commit/2d5eef2db758d2b0175fd98140d282025c09fb5b))
+
 ## [0.16.0](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.15.0...con-voyage-gascity-v0.16.0) (2026-10-08)
 
 
