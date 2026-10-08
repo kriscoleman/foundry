@@ -127,6 +127,20 @@
 #                                       Default: 15
 #   CV_LOOKOUT_HANDOFF_COOLDOWN_SECONDS Minimum seconds between two handoffs
 #                                       of the SAME session. Default: 1800
+#   CV_LOOKOUT_BANNER_TAIL_LINES        Tail lines of a peek searched for
+#                                       Claude Code's own limit banner.
+#                                       Default: 40 (fk-xtbtcw: widened from
+#                                       a buried 12-line literal after it
+#                                       let the real banner scroll out of
+#                                       view before the next peek)
+#   CV_LOOKOUT_BANNER_GLYPH             Glyph prefix anchoring a real banner
+#                                       line. Default: ✗
+#   CV_LOOKOUT_BANNER_JOIN_LINES        Extra tail lines joined onto a
+#                                       glyph-anchored line before matching
+#                                       the limit phrase, so a pane-width
+#                                       wrap doesn't split banner text across
+#                                       lines the match can't cross.
+#                                       Default: 2
 #   CV_LOOKOUT_BREAKER_RESET_SECONDS    Limit-free window before an open,
 #                                       non-flipped breaker closes
 #                                       (all-clear). Default: 3600
@@ -228,6 +242,9 @@ CV_LOOKOUT_PEEK_TIMEOUT_SECONDS="${CV_LOOKOUT_PEEK_TIMEOUT_SECONDS:-10}"
 CV_LOOKOUT_TIME_BUDGET_SECONDS="${CV_LOOKOUT_TIME_BUDGET_SECONDS:-90}"
 CV_LOOKOUT_COMPACT_HANDOFF_PERCENT="${CV_LOOKOUT_COMPACT_HANDOFF_PERCENT:-15}"
 CV_LOOKOUT_HANDOFF_COOLDOWN_SECONDS="${CV_LOOKOUT_HANDOFF_COOLDOWN_SECONDS:-1800}"
+CV_LOOKOUT_BANNER_TAIL_LINES="${CV_LOOKOUT_BANNER_TAIL_LINES:-40}"
+CV_LOOKOUT_BANNER_GLYPH="${CV_LOOKOUT_BANNER_GLYPH:-✗}"
+CV_LOOKOUT_BANNER_JOIN_LINES="${CV_LOOKOUT_BANNER_JOIN_LINES:-2}"
 CV_LOOKOUT_BREAKER_RESET_SECONDS="${CV_LOOKOUT_BREAKER_RESET_SECONDS:-3600}"
 CV_LOOKOUT_BREAKER_REMIND_SECONDS="${CV_LOOKOUT_BREAKER_REMIND_SECONDS:-1800}"
 CV_LOOKOUT_ESCALATE_TARGET="${CV_LOOKOUT_ESCALATE_TARGET:-mayor}"
@@ -249,6 +266,9 @@ CV_LOOKOUT_FLIP_REPROBE_BACKOFF_SECONDS="${CV_LOOKOUT_FLIP_REPROBE_BACKOFF_SECON
 # A malformed override must never silently break the numeric gates below —
 # same fail-safe coercion posture as con-voyage-review-watchdog.sh.
 case "$CV_LOOKOUT_PEEK_LINES" in                  *[!0-9]*|'') CV_LOOKOUT_PEEK_LINES="80" ;; esac
+case "$CV_LOOKOUT_BANNER_TAIL_LINES" in           *[!0-9]*|'') CV_LOOKOUT_BANNER_TAIL_LINES="40" ;; esac
+case "$CV_LOOKOUT_BANNER_JOIN_LINES" in           *[!0-9]*|'') CV_LOOKOUT_BANNER_JOIN_LINES="2" ;; esac
+[ -n "$CV_LOOKOUT_BANNER_GLYPH" ] || CV_LOOKOUT_BANNER_GLYPH="✗"
 case "$CV_LOOKOUT_PEEK_TIMEOUT_SECONDS" in        *[!0-9]*|'') CV_LOOKOUT_PEEK_TIMEOUT_SECONDS="10" ;; esac
 case "$CV_LOOKOUT_TIME_BUDGET_SECONDS" in         *[!0-9]*|'') CV_LOOKOUT_TIME_BUDGET_SECONDS="90" ;; esac
 case "$CV_LOOKOUT_COMPACT_HANDOFF_PERCENT" in     *[!0-9]*|'') CV_LOOKOUT_COMPACT_HANDOFF_PERCENT="15" ;; esac
@@ -874,8 +894,11 @@ fi
 # ---------------------------------------------------------------------------
 classify_peek() {
   # classify_peek PEEK_TEXT_FILE -> SEP-joined "limited SEP reset_hint SEP compact_pct SEP auto_resume"
+  CV_LOOKOUT_BANNER_TAIL_LINES="$CV_LOOKOUT_BANNER_TAIL_LINES" \
+  CV_LOOKOUT_BANNER_GLYPH="$CV_LOOKOUT_BANNER_GLYPH" \
+  CV_LOOKOUT_BANNER_JOIN_LINES="$CV_LOOKOUT_BANNER_JOIN_LINES" \
   python3 -c "
-import re, sys
+import os, re, sys
 SEP = '\x1f'
 try:
     text = open(sys.argv[1], 'r', errors='replace').read()
@@ -891,17 +914,40 @@ except Exception:
 # prefixed lines instead of searching the entire captured buffer. A bare
 # 'overloaded' (Claude Code's transient 529 retry banner, which auto-
 # recovers) is intentionally NOT a limited signal on its own.
-BANNER_LINES = 12
-tail_text = '\n'.join(text.splitlines()[-BANNER_LINES:])
-BANNER_GLYPH = '✗'
-limited_patterns = [
-    r'^\s*' + BANNER_GLYPH + r'.*usage limit reached',
-    r'^\s*' + BANNER_GLYPH + r'.*rate limit reached',
-    r'^\s*' + BANNER_GLYPH + r'.*limit will reset',
-    r'^\s*' + BANNER_GLYPH + r'.*hit your\b.{0,40}\blimit',
-    r'^\s*' + BANNER_GLYPH + r'.*api error:\s*429',
+#
+# review fk-xtbtcw BLOCKING-1/BLOCKING-2: the original fix anchored to a
+# hardcoded 12-line tail AND required the glyph and the full limit phrase on
+# the exact same captured line. Both are too narrow for a real banner: (1) a
+# session that keeps printing after the banner appears pushes it out of a
+# 12-line window before the next scheduled peek, and (2) tmux wraps long
+# lines at the pane's column width, so the real banner text can itself land
+# on two physical lines. Widen the tail window to a configurable, more
+# generous default, and match the limit phrase against a short JOINED
+# window starting at each glyph-anchored line (not the single line alone),
+# so a pane-width wrap can't split the phrase across a boundary the match
+# can't cross — while still requiring the glyph at the START of a real tail
+# line, which is what defeats quoted scrollback text.
+BANNER_LINES = int(os.environ.get('CV_LOOKOUT_BANNER_TAIL_LINES') or '40')
+tail_lines = text.splitlines()[-BANNER_LINES:]
+tail_text = '\n'.join(tail_lines)
+BANNER_GLYPH = os.environ.get('CV_LOOKOUT_BANNER_GLYPH') or '✗'
+BANNER_JOIN_LINES = int(os.environ.get('CV_LOOKOUT_BANNER_JOIN_LINES') or '2')
+banner_suffixes = [
+    r'usage limit reached',
+    r'rate limit reached',
+    r'limit will reset',
+    r'hit your\b.{0,40}\blimit',
+    r'api error:\s*429',
 ]
-limited = any(re.search(p, tail_text, re.IGNORECASE | re.MULTILINE) for p in limited_patterns)
+glyph_re = re.compile(r'^\s*' + re.escape(BANNER_GLYPH))
+limited = False
+for i, line in enumerate(tail_lines):
+    if not glyph_re.match(line):
+        continue
+    window = ' '.join(tail_lines[i:i + 1 + BANNER_JOIN_LINES])
+    if any(re.search(suffix, window, re.IGNORECASE) for suffix in banner_suffixes):
+        limited = True
+        break
 reset_hint = ''
 m = re.search(r'(?:limit will reset|resets)\s*(?:at|around)?\s*([^\n.]{1,40})', tail_text, re.IGNORECASE)
 if m:

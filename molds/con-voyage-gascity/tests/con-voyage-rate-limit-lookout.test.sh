@@ -528,6 +528,56 @@ assert_log_lacks "mail send mayor" "529 overloaded retry alone does not open the
 assert_file_contains "${STATE_DIR}/breaker.state" "state=closed" "breaker stays closed on a transient 529 retry"
 
 # ===========================================================================
+start_case "fk-xtbtcw: real banner scrolled past the tail window by subsequent output is still detected"
+# ===========================================================================
+# Review fk-xtbtcw BLOCKING-1: a hardcoded 12-line tail window let a real
+# banner scroll out of view before the lookout's next scheduled peek if the
+# session kept printing afterward (retry chatter, continued tool output).
+reset_world
+write_sessions "$TWO_CLAUDE_SESSIONS"
+write_peek rc-wrk1 <<'EOF'
+✗ Claude usage limit reached. Your limit will reset at 6pm
+noise1
+noise2
+noise3
+noise4
+noise5
+noise6
+noise7
+noise8
+noise9
+noise10
+noise11
+noise12
+EOF
+write_peek rc-inv <<'EOF'
+⏺ Coordinating
+EOF
+out="$(run_lookout 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && pass "exit 0" || fail "exit code $rc (output: $out)"
+assert_file_contains "${STATE_DIR}/breaker.state" "state=open" "breaker still opens once banner scrolls past the old 12-line tail window"
+
+# ===========================================================================
+start_case "fk-xtbtcw: real banner wrapped across two pane lines by terminal width is still detected"
+# ===========================================================================
+# Review fk-xtbtcw BLOCKING-2: tmux wraps long lines at the pane's column
+# width, so the real banner's glyph and limit phrase can land on two
+# physical lines. The old same-line-only match missed this.
+reset_world
+write_sessions "$TWO_CLAUDE_SESSIONS"
+write_peek rc-wrk1 <<'EOF'
+⏺ Working on the fix…
+✗ Claude usage limit
+reached. Your limit will reset at 6pm
+EOF
+write_peek rc-inv <<'EOF'
+⏺ Coordinating
+EOF
+out="$(run_lookout 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && pass "exit 0" || fail "exit code $rc (output: $out)"
+assert_file_contains "${STATE_DIR}/breaker.state" "state=open" "wrapped real banner still opens the breaker"
+
+# ===========================================================================
 start_case "malformed numeric env knobs coerce to defaults instead of breaking"
 # ===========================================================================
 reset_world
@@ -538,7 +588,7 @@ EOF
 write_peek rc-inv <<'EOF'
 ⏺ ok
 EOF
-out="$(run_lookout CV_LOOKOUT_COMPACT_HANDOFF_PERCENT=abc CV_LOOKOUT_BREAKER_RESET_SECONDS= CV_LOOKOUT_PEEK_LINES=-4 CV_LOOKOUT_TIME_BUDGET_SECONDS=bogus CV_LOOKOUT_FLIP_DWELL_SECONDS=nope 2>&1)"; rc=$?
+out="$(run_lookout CV_LOOKOUT_COMPACT_HANDOFF_PERCENT=abc CV_LOOKOUT_BREAKER_RESET_SECONDS= CV_LOOKOUT_PEEK_LINES=-4 CV_LOOKOUT_TIME_BUDGET_SECONDS=bogus CV_LOOKOUT_FLIP_DWELL_SECONDS=nope CV_LOOKOUT_BANNER_TAIL_LINES=bogus CV_LOOKOUT_BANNER_JOIN_LINES=-1 2>&1)"; rc=$?
 [ "$rc" -eq 0 ] && pass "exit 0 with garbage env" || fail "exit code $rc (output: $out)"
 assert_log_contains "handoff --target rc-wrk1" "compact handoff still works with coerced defaults"
 
