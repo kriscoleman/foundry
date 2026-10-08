@@ -404,11 +404,19 @@ CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
 CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
 [ -f "$CV_LIB" ] || CV_LIB=""
 if [ -n "$CV_LIB" ]; then
-  # SRE BLOCKING-1 (fk-wmhr96 review): thread any declared stacked base
-  # through here too, same as main.build.md and main.apply-review-findings.md
-  # — otherwise a repair pass silently un-stacks the branch if the declared
-  # base gained new history since build.
-  CONVOY_TARGET="$(source "$CV_LIB" && cv_convoy_target "{convoy_id}")"
+  # SRE BLOCKING-1 (fk-wmhr96 review, iteration 2): `{convoy_id}` here is
+  # this ci-repair step's OWN gc-internal work-item bead (see the Claim
+  # section above), never the original con-voyage workflow's root bead —
+  # `{repair_bead}` is minted fresh by con-voyage-pr-watch.sh with no
+  # metadata link back to that root, so there is no reference available to
+  # this step today for a `gc convoy target` lookup. Calling
+  # cv_convoy_target on the wrong id silently resolves to "" on every call
+  # (no target is ever set on this bead), which is indistinguishable from
+  # "correctly found no declared stacked base" — so leave it unresolved
+  # here rather than wire in an id that looks right but names the wrong
+  # bead. cv_sync_worktree_to_base's own origin/HEAD -> origin/main -> main
+  # default-base resolution is what this falls through to.
+  CONVOY_TARGET=""
   SYNC_RESULT="$(export CV_PACK_ROOT; source "$CV_LIB" && cv_sync_worktree_to_base "$(pwd)" "" "$CONVOY_TARGET")" \
     || echo "ci-repair: could not sync the rig-root workspace to its current base (non-fatal here — {branch} is about to be checked out explicitly below)" >&2
   [ -n "${SYNC_RESULT:-}" ] && echo "ci-repair: workspace sync: ${SYNC_RESULT}"
