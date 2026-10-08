@@ -18,7 +18,7 @@
 #
 # Usage:
 #   cv-review-lane-worktree.sh acquire <source-work-dir> <lane-id>
-#   cv-review-lane-worktree.sh sweep <source-work-dir>
+#   cv-review-lane-worktree.sh sweep <source-work-dir> [--force]
 #
 # acquire prints the absolute lane worktree path on stdout (and only that) on
 # success. Idempotent and re-run-safe: calling acquire again with the same
@@ -29,11 +29,23 @@
 # stale content or a prior cycle's leftover mutation.
 #
 # sweep removes every lane worktree previously acquired for <source-work-dir>
-# (matched by the `--review-` naming convention below). Intended to run once
-# per review cycle (synthesize-review, after all lanes have reported) so lane
-# worktrees do not accumulate across rounds. It never touches
-# <source-work-dir> itself or any worktree that does not match the
-# convention.
+# (matched by the `--review-` naming convention below) WHOSE LANE-ID RESOLVES
+# AS A CLOSED BEAD (fk-vqzpq9). The lane-id passed to `acquire` is each lane's
+# own review bead id, so sweep reads it back via `gc bd show <lane-id>
+# --json` and only reaps a worktree whose bead is closed. A lane worktree
+# whose bead is still open/in_progress — or whose status cannot be resolved
+# at all (no `gc`/con-voyage-lib.sh on PATH, a lookup failure, ...) — is
+# SKIPPED and reported, never removed: fail safe, not fail open. Evidence
+# (2026-10-08, workflow fk-2l3c8i iteration 2): a review LANE (not
+# synthesize-review) ran sweep after closing its own bead and reaped a
+# still-in_progress sibling lane's worktree out from under it.
+#
+# Pass --force to remove every matching lane worktree unconditionally,
+# skipping the liveness check — for synthesize-review's own post-cycle sweep,
+# which runs once all lanes have already reported and closed.
+#
+# sweep never touches <source-work-dir> itself or any worktree that does not
+# match the convention.
 #
 # Exit codes:
 #   0 — success
@@ -200,6 +212,24 @@ sync_lock_release() {
   rm -rf "$lockdir" 2>/dev/null || true
 }
 
+# lane_bead_closed <lane-id> — true (exit 0) only when <lane-id>'s own bead
+# resolves to status "closed". Sources con-voyage-lib.sh's `bead_status` (same
+# directory as this script) for the actual `gc bd show` lookup. Any failure
+# to resolve — lib missing, `gc` missing, lookup error — is NOT closed (exit
+# 1): sweep's caller must treat that as "still active, do not reap".
+lane_bead_closed() {
+  local lane_id="$1"
+  [ -n "$lane_id" ] || return 1
+  local script_dir cv_lib
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
+  cv_lib="${script_dir}/con-voyage-lib.sh"
+  [ -f "$cv_lib" ] || return 1
+  local result status
+  result="$(source "$cv_lib" && bead_status "$lane_id" id)" || return 1
+  status="${result%%$'\x1f'*}"
+  [ "$status" = "closed" ]
+}
+
 cmd_acquire() {
   local src="$1" lane_id_raw="${2:-}"
   require_git_worktree "$src" "acquire"
@@ -265,30 +295,47 @@ cmd_acquire() {
 
 cmd_sweep() {
   local src="$1"
+  shift || true
+  local force=0
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      --force) force=1 ;;
+      *) usage; die "sweep: unknown argument '${arg}'" ;;
+    esac
+  done
   require_git_worktree "$src" "sweep"
-  src="$(canonicalize_dir "$src")" || die "sweep: could not resolve real path of '${1}'"
+  src="$(canonicalize_dir "$src")" || die "sweep: could not resolve real path of '${1:-$src}'"
 
   local base pattern
   base="$(basename "$src")"
   pattern="${base}${LANE_SUFFIX_MARK}"
 
   local any=0
+  local skipped=0
   while IFS= read -r line; do
     case "$line" in
       worktree\ *)
         local path="${line#worktree }"
-        case "$(basename "$path")" in
+        local name="$(basename "$path")"
+        case "$name" in
           "${pattern}"*)
-            git -C "$src" worktree remove --force "$path" >/dev/null 2>&1 \
-              && { echo "cv-review-lane-worktree: removed ${path}"; any=1; } \
-              || echo "cv-review-lane-worktree: WARNING: could not remove ${path}" >&2
+            local lane_id="${name#"${pattern}"}"
+            if [ "$force" -eq 1 ] || lane_bead_closed "$lane_id"; then
+              git -C "$src" worktree remove --force "$path" >/dev/null 2>&1 \
+                && { echo "cv-review-lane-worktree: removed ${path}"; any=1; } \
+                || echo "cv-review-lane-worktree: WARNING: could not remove ${path}" >&2
+            else
+              echo "cv-review-lane-worktree: skip ${path} — lane bead '${lane_id}' is still open/in_progress (or its status could not be resolved)"
+              skipped=1
+            fi
             ;;
         esac
         ;;
     esac
   done < <(git -C "$src" worktree list --porcelain 2>/dev/null)
 
-  if [ "$any" -eq 0 ]; then
+  if [ "$any" -eq 0 ] && [ "$skipped" -eq 0 ]; then
     echo "cv-review-lane-worktree: sweep clean — no lane worktrees found for ${src}"
   fi
   git -C "$src" worktree prune >/dev/null 2>&1 || true
@@ -300,7 +347,7 @@ shift || true
 
 case "$SUBCOMMAND" in
   acquire) cmd_acquire "${1:-}" "${2:-}" ;;
-  sweep) cmd_sweep "${1:-}" ;;
+  sweep) cmd_sweep "${1:-}" "${@:2}" ;;
   *)
     usage
     die "unknown subcommand '${SUBCOMMAND}' (expected acquire or sweep)"
