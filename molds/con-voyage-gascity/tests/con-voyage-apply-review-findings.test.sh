@@ -190,6 +190,48 @@ else
   FAILURES=$((FAILURES+1))
 fi
 
+# ---------------------------------------------------------------------------
+# #174 regrade follow-up BLOCKING-2 (fk-j29mzp): the reviewed-sha stamp was
+# gated only by prose ("Only when you are about to set verdict=done") with no
+# bash enforcement — a misjudged pass could still execute the stamp bash
+# block and record an unreviewed HEAD as reviewed. Gate the actual stamp in
+# bash on the same in-scope vars "Setting code_review.verdict" above uses to
+# make this same no-op determination ($SYNC_PATCH_UNCHANGED and
+# $FIX_COMMIT_SHA, alongside $SYNC_RESULT which that same decision already
+# depends on) so a fix pass or a patch-changing sync can never reach the
+# `gc bd update ... gc.build.reviewed_head_sha=` call.
+# ---------------------------------------------------------------------------
+start_case "apply-review-findings.md: the reviewed-sha stamp is gated in bash on \$FIX_COMMIT_SHA, not prose alone"
+assert_contains "$APPLY_MD" '[ -z "${FIX_COMMIT_SHA:-}" ]' "bash gate checks \$FIX_COMMIT_SHA is unset before considering a stamp"
+
+start_case "apply-review-findings.md: the reviewed-sha stamp is gated in bash on \$SYNC_PATCH_UNCHANGED, not prose alone"
+assert_contains "$APPLY_MD" '[ "${SYNC_PATCH_UNCHANGED:-false}" = "true" ]' "bash gate checks \$SYNC_PATCH_UNCHANGED for a recreated/rebased sync"
+
+start_case "apply-review-findings.md: the bash gate precedes the actual reviewed_head_sha stamp call"
+gate_line="$(line_of "$APPLY_MD" '[ -z "${FIX_COMMIT_SHA:-}" ]')"
+stamp_call_line="$(line_of "$APPLY_MD" 'gc bd update "$ROOT_ID" --set-metadata "gc.build.reviewed_head_sha=${REVIEWED_HEAD_SHA}"')"
+if [ -n "$gate_line" ] && [ -n "$stamp_call_line" ] && [ "$gate_line" -lt "$stamp_call_line" ]; then
+  echo "  PASS: the bash gate (line ${gate_line}) precedes the stamp call (line ${stamp_call_line})"
+else
+  echo "  FAIL: expected the bash gate to precede the actual stamp call" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
+start_case "apply-review-findings.md: a non-eligible pass logs a skip instead of stamping"
+assert_contains "$APPLY_MD" 'skipping gc.build.reviewed_head_sha stamp' "logs explicitly when the bash gate blocks the stamp"
+
+start_case "apply-review-findings.md: stamps gc.build.reviewed_head_sha_attempted unconditionally on every eligible no-op pass"
+assert_contains "$APPLY_MD" "gc bd update \"\$ROOT_ID\" --set-metadata 'gc.build.reviewed_head_sha_attempted=true'" "stamps the attempted-marker as its own independent call"
+
+start_case "apply-review-findings.md: the attempted-marker stamp does not depend on \$REVIEWED_HEAD_SHA/\$WORKTREE resolving"
+attempted_line="$(line_of "$APPLY_MD" "gc bd update \"\$ROOT_ID\" --set-metadata 'gc.build.reviewed_head_sha_attempted=true'")"
+if [ -n "$attempted_line" ] && [ -n "$stamp_call_line" ] && [ "$attempted_line" -lt "$stamp_call_line" ]; then
+  echo "  PASS: the attempted-marker stamp (line ${attempted_line}) is a separate, earlier call than the real stamp (line ${stamp_call_line}), so it still records even if the real stamp's HEAD/ROOT_ID resolution fails"
+else
+  echo "  FAIL: expected the attempted-marker to be stamped independently, before the real reviewed_head_sha stamp" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "ALL CASES PASSED"

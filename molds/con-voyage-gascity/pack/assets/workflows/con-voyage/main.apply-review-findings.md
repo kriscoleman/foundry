@@ -511,11 +511,40 @@ REVIEWED_HEAD_SHA=""
 if [ -n "$WORKTREE" ] && [ -d "$WORKTREE" ]; then
   REVIEWED_HEAD_SHA="$(git -C "$WORKTREE" rev-parse HEAD 2>/dev/null || echo "")"
 fi
-if [ -n "$REVIEWED_HEAD_SHA" ] && [ -n "$ROOT_ID" ]; then
-  gc bd update "$ROOT_ID" --set-metadata "gc.build.reviewed_head_sha=${REVIEWED_HEAD_SHA}" \
-    || echo "con-voyage apply-review-findings: WARNING: could not stamp gc.build.reviewed_head_sha on workflow root ${ROOT_ID}" >&2
+
+# fk-j29mzp (#174 regrade BLOCKING-2): gate the actual stamp in bash on the
+# same in-scope vars "Setting code_review.verdict" above uses to make this
+# same no-op determination ($SYNC_RESULT, $SYNC_PATCH_UNCHANGED,
+# $FIX_COMMIT_SHA) — the prose above ("Only when you are about to set
+# verdict=done") is not enforcement, and a misjudged pass must never reach
+# the gc.build.reviewed_head_sha stamp call.
+STAMP_NOOP_PASS="false"
+if [ -z "${FIX_COMMIT_SHA:-}" ]; then
+  case "${SYNC_RESULT:-noop}" in
+    noop) STAMP_NOOP_PASS="true" ;;
+    recreated|rebased)
+      [ "${SYNC_PATCH_UNCHANGED:-false}" = "true" ] && STAMP_NOOP_PASS="true"
+      ;;
+  esac
+fi
+
+if [ "$STAMP_NOOP_PASS" != "true" ]; then
+  echo "con-voyage apply-review-findings: skipping gc.build.reviewed_head_sha stamp — this pass is not a genuine no-op (FIX_COMMIT_SHA=${FIX_COMMIT_SHA:-<unset>}, SYNC_RESULT=${SYNC_RESULT:-<unset>}, SYNC_PATCH_UNCHANGED=${SYNC_PATCH_UNCHANGED:-<unset>})" >&2
 else
-  echo "con-voyage apply-review-findings: WARNING: could not resolve HEAD/ROOT_ID to stamp gc.build.reviewed_head_sha on ${ROOT_ID}" >&2
+  # Stamp the attempted-marker as its own independent call, before trying the
+  # real stamp below — so publish (main.publish.md) can tell "this root's
+  # pack version tried and the write failed" from "this root never ran this
+  # code at all" even if $REVIEWED_HEAD_SHA/$ROOT_ID fail to resolve or the
+  # real stamp call itself errors out.
+  gc bd update "$ROOT_ID" --set-metadata 'gc.build.reviewed_head_sha_attempted=true' \
+    || echo "con-voyage apply-review-findings: WARNING: could not stamp gc.build.reviewed_head_sha_attempted on workflow root ${ROOT_ID}" >&2
+
+  if [ -n "$REVIEWED_HEAD_SHA" ] && [ -n "$ROOT_ID" ]; then
+    gc bd update "$ROOT_ID" --set-metadata "gc.build.reviewed_head_sha=${REVIEWED_HEAD_SHA}" \
+      || echo "con-voyage apply-review-findings: WARNING: could not stamp gc.build.reviewed_head_sha on workflow root ${ROOT_ID}" >&2
+  else
+    echo "con-voyage apply-review-findings: WARNING: could not resolve HEAD/ROOT_ID to stamp gc.build.reviewed_head_sha on ${ROOT_ID}" >&2
+  fi
 fi
 ```
 
