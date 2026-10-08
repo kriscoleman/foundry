@@ -953,7 +953,19 @@ for i, line in enumerate(tail_lines):
     window = ' '.join(tail_lines[i:i + 1 + BANNER_JOIN_LINES])
     for suffix in banner_suffixes:
         m = re.search(suffix, window, re.IGNORECASE)
-        if m and m.start() < len(line):
+        if not m or m.start() >= len(line):
+            continue
+        if m.end() <= len(line):
+            limited = True
+            break
+        # review fk-xtbtcw BLOCKING-1 (iter 3, qa-test): a match that starts
+        # in the glyph line but spans past it is only a genuine pane-width
+        # wrap when a MAJORITY of the matched phrase's own characters sit on
+        # the glyph line -- a real wrap breaks late in the phrase. An
+        # unrelated glyph line whose tail merely happens to begin a limit
+        # phrase typically contributes only a small minority before an
+        # unrelated next line supplies the rest.
+        if (len(line) - m.start()) * 2 >= (m.end() - m.start()):
             limited = True
             break
     if limited:
