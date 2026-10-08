@@ -170,7 +170,7 @@ run_script() {
       STUB_HEAD_REF="${STUB_HEAD_REF:-}" \
       STUB_GH_FAIL="${STUB_GH_FAIL:-0}" \
       STUB_BDUPDATE_FAIL="${STUB_BDUPDATE_FAIL:-0}" \
-      bash "$SCRIPT" "$@" 2>&1
+      "${RUN_SCRIPT_BASH:-bash}" "$SCRIPT" "$@" 2>&1
   )"
   RC=$?
 }
@@ -297,6 +297,46 @@ assert_eq "1" "$(grep -c -- "--rig vandoor bd list --metadata-field gc.build.sou
 STUB_RIGLIST_FILE=""
 STUB_BDSHOW_DEPS_FILE="${SANDBOX}/deps-fk-work1.json"
 STUB_BDLIST_ROOT_FILE="${SANDBOX}/root-list-open.json"
+
+# ===========================================================================
+# review fk-... BLOCKING-1/BLOCKING-2: when cv_rig_for_bead_id cannot resolve
+# a rig (no matching prefix in `gc rig list --json`), the old code let
+# RIG_ARGS stay a zero-length array and silently fell back to the exact
+# cwd-based, unrouted `bd list` query this change exists to fix — the one
+# behavior the original bug report says must never happen again (an open
+# rig workflow root could be missed and findings never reopened). That
+# fallback's "${RIG_ARGS[@]}" expansion also aborted with "unbound
+# variable" under `set -u` on bash 3.2 (stock macOS /bin/bash, which this
+# script's shebang can resolve to), swallowed by the error-hiding
+# `2>/dev/null` substitution. The fix fails loud instead of falling back;
+# this case proves BOTH gaps are closed by asserting the script now dies
+# with a clear message and never queries any store without --rig, driven
+# explicitly under /bin/bash — the one bash guaranteed to still be 3.2 on
+# any Mac — when it exists on this host.
+# ===========================================================================
+if [ -x /bin/bash ] && /bin/bash -c 'case "$BASH_VERSION" in 3.*) exit 0;; *) exit 1;; esac' 2>/dev/null; then
+  NOMATCH_RIGLIST_FILE="${SANDBOX}/rig-list-nomatch.json"
+  cat > "$NOMATCH_RIGLIST_FILE" <<'JSON'
+{"rigs": [
+  {"name": "repl-city", "prefix": "rc", "hq": true}
+]}
+JSON
+
+  start_case "PRE-publish: cv_rig_for_bead_id resolves no rig (bash 3.2) -> fails loud instead of silently falling back to the unrouted lookup"
+  setup_env bash32nomatch
+  STUB_RIGLIST_FILE="$NOMATCH_RIGLIST_FILE"
+  RUN_SCRIPT_BASH="/bin/bash"
+  run_script "fk-work1" --finding "address the mayor note about X"
+  RUN_SCRIPT_BASH=""
+  assert_eq "1" "$RC" "exits non-zero under bash 3.2 when no rig prefix matches, rather than silently proceeding"
+  assert_not_contains "$OUT" "unbound variable" "never aborts on an unguarded empty-array expansion under set -u"
+  assert_contains "$OUT" "could not resolve the rig" "names the failure clearly"
+  assert_eq "0" "$(grep -c 'bd list --metadata-field' "$STUB_GC_LOG")" "never queries any store (routed or unrouted) once the rig can't be resolved"
+  assert_eq "0" "$(grep -c '^sling \|--city .* sling ' "$STUB_GC_LOG")" "never routes a PR-feedback bead either"
+  STUB_RIGLIST_FILE=""
+else
+  echo "(skipping bash-3.2 regression case: /bin/bash is not bash 3.x on this host)"
+fi
 
 start_case "PRE-publish: multiple --finding values join with newlines"
 setup_env prepublish2

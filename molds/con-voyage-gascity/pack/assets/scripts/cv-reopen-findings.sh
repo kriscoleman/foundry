@@ -160,8 +160,21 @@ if [ -n "${CONVOY_ID// /}" ]; then
   # root). Resolve the rig explicitly from the work bead's own id prefix and
   # pass --rig so the lookup is correct regardless of cwd.
   WORK_BEAD_RIG="$(cv_rig_for_bead_id "$WORK_BEAD")"
-  RIG_ARGS=()
-  [ -n "${WORK_BEAD_RIG// /}" ] && RIG_ARGS=(--rig "$WORK_BEAD_RIG")
+  # fk-ykq66p BLOCKING-1/BLOCKING-2 (review): an unresolved rig is a
+  # "can't verify whether a root is open" state, not a "no root is open"
+  # state. The previous code silently dropped --rig and fell through to the
+  # exact cwd-based, unrouted bd list this change exists to fix (a BLOCKING
+  # verdict could get re-graded, never find the open root, and publish
+  # anyway) — and because the fallback left RIG_ARGS a zero-length array,
+  # expanding "${RIG_ARGS[@]}" unguarded also aborts with "unbound
+  # variable" under `set -u` on bash 3.2 (stock macOS /bin/bash), which this
+  # script's shebang can resolve to; that abort fired inside this command
+  # substitution, so the error was swallowed by `2>/dev/null` too. Fail loud
+  # instead: never query any store without the correct --rig.
+  if [ -z "${WORK_BEAD_RIG// /}" ]; then
+    die "could not resolve the rig that owns work bead ${WORK_BEAD} (cv_rig_for_bead_id returned empty); refusing to query the city store directly, which would silently miss this rig's own open workflow root — check 'gc rig list --json' and this bead's id prefix"
+  fi
+  RIG_ARGS=(--rig "$WORK_BEAD_RIG")
   ROOT_JSON="$("$GC" --city "$GC_CITY" "${RIG_ARGS[@]}" bd list --metadata-field "gc.build.source_anchor_id=${CONVOY_ID}" --json --limit=0 2>/dev/null || printf '[]')"
   OPEN_ROOT_CANDIDATES="$(printf '%s' "$ROOT_JSON" | python3 -c "
 import json, sys
