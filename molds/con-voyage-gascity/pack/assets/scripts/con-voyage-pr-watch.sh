@@ -1462,12 +1462,14 @@ print(json.dumps(out))
     # shellcheck disable=SC2016
     _PY_SCAN_COMMENTS='
 import sys, json, re
+from datetime import datetime, timezone
 
 pr_data    = json.load(sys.stdin)   # PR JSON from stdin
 seen_ids   = set(line.strip() for line in sys.argv[1].splitlines() if line.strip())
 agent_re   = re.compile(sys.argv[2])
 full_repo  = sys.argv[3] if len(sys.argv) > 3 else ""
 pr_number  = sys.argv[4] if len(sys.argv) > 4 else ""
+suppression_log_path = sys.argv[5] if len(sys.argv) > 5 else ""
 
 BOT_SUFFIXES = ["[bot]"]
 BOT_LOGINS   = {"github-actions", "dependabot", "renovate", "stale", "codecov", "netlify"}
@@ -1550,8 +1552,10 @@ def is_bot_approval_noise(body, state):
 # routing regardless of how it opens.
 FINDING_MARKER_RE = re.compile(
     r"critical|blocking|severity|vulnerab|\bbugs?\b|\berrors?\b|"
-    r"`[^`]+`|\bline\s+\d+\b|:\d+\b|"
-    r"\bplease\b|\bshould\b|\bmust\b|\bneed(?:s|ed)?\s+to\b|recommend|\bfix\b|\bchange\b|\bupdate\b",
+    r"`[^`]+`|\bline\s+\d+\b|:\d+\b|%3a\d+|"
+    r"\bplease\b|\bshould\b|\bmust\b|\bneed(?:s|ed)?\s+to\b|recommend|\bfix\b|\bchange\b|\bupdate\b|"
+    r"\bbreak(?:s|ing)?\b|\bregress(?:ion)?\b|migration path|\bintentional\b|"
+    r"worth confirming|before this ships",
     re.IGNORECASE,
 )
 
@@ -1563,6 +1567,28 @@ def is_bot_ack(body, state):
     if state == "CHANGES_REQUESTED" or "not automatically approving" in bl or "refus" in bl or "classified as critical" in bl:
         return False
     return not FINDING_MARKER_RE.search(b)
+
+# ADVERSARY MARKERS (fk-igqet1): Doomer stamps every one of its own comments
+# with a stable, machine-readable HTML-comment marker -- `adversary-review:v2
+# ... finding=<id>` on a real finding, `adversary-feedback-ack:v1` on its own
+# acknowledgement of a human reply with no finding attached. These are ground
+# truth from the producer itself and must be checked BEFORE the prose
+# heuristic below, not as a supplement to it: on 2026-10-08 ~14:00Z Doomer
+# posted a real finding (replicatedhq/vandoor#10620, review comment
+# 4219884349) whose prose happened to avoid every FINDING_MARKER_RE word (no
+# backticks, no should/must/fix/change, the "loc=...%3A529" ref was
+# URL-encoded so the old `:\d+` missed it, and "needs a migration path" did
+# not match `need(s) to`) -- classify_suppression() dropped it as bot_ack with
+# no durable trace. A marker-bearing comment must never depend on prose
+# phrasing to route.
+ADVERSARY_FINDING_MARKER_RE = re.compile(r"adversary-review:v2\b.*?\bfinding=", re.IGNORECASE | re.DOTALL)
+ADVERSARY_ACK_MARKER_RE = re.compile(r"adversary-feedback-ack:v1\b", re.IGNORECASE)
+
+def has_adversary_finding_marker(body):
+    return bool(ADVERSARY_FINDING_MARKER_RE.search(body or ""))
+
+def has_adversary_ack_marker(body):
+    return bool(ADVERSARY_ACK_MARKER_RE.search(body or ""))
 
 # ONE shared classifier used by all three scan loops below (reviews, issue
 # comments, inline review-thread comments). fk-9xyo4/PR#160 recurred TWICE
@@ -1580,6 +1606,10 @@ def classify_suppression(author, body, state):
     if is_slash_command(body):
         return "slash_command"
     if is_ai_reviewer_bot(author):
+        if has_adversary_finding_marker(body):
+            return None
+        if has_adversary_ack_marker(body):
+            return "bot_ack"
         if is_bot_approval_noise(body, state):
             return "bot_approval_noise"
         if is_bot_ack(body, state):
@@ -1591,18 +1621,32 @@ def classify_suppression(author, body, state):
         return "agent_comment"
     return None
 
-# SUPPRESSION LOG (fk-1ff6ge / PR#160 round 2, finding 5): a comment that gets
-# filtered out here leaves zero trace anywhere else, so a WRONGLY dropped
-# human comment is invisible until someone notices feedback never arrived --
-# that is exactly how the original Doomer drop (fk-9xyo4) went unnoticed for
-# as long as it did. Every suppression now prints one line to stderr naming
-# the PR, the dropped items dedup id, its author, and the reason, so a bad
-# drop is visible in the monitors own run log instead of silently vanishing.
+# SUPPRESSION LOG (fk-1ff6ge / PR#160 round 2, finding 5; durable record added
+# fk-igqet1): a comment that gets filtered out here leaves zero trace
+# anywhere else, so a WRONGLY dropped human comment is invisible until
+# someone notices feedback never arrived -- that is exactly how the original
+# Doomer drop (fk-9xyo4) went unnoticed for as long as it did, and how the
+# 2026-10-08 recurrence went unnoticed for 7 hours (the stderr-only line was
+# nowhere to be found afterwards; this run log is not retained). Every
+# suppression now prints one line to stderr naming the PR, the dropped items
+# dedup id, its author, and the reason, AND appends the same record to a
+# per-PR state file under CV_STATE_DIR (when a path is supplied) so the drop
+# survives past this run -- an operator can answer "why was this dropped?"
+# after the fact instead of only during a live tail of the monitors own log.
 def log_suppression(item_type, nid, author, reason):
     sys.stderr.write(
         "con-voyage-pr-watch: [PART B] SUPPRESS %s#%s %s id=%s author=%s reason=%s\n"
         % (full_repo, pr_number, item_type, nid, author, reason)
     )
+    if suppression_log_path:
+        try:
+            with open(suppression_log_path, "a") as f:
+                f.write(
+                    "%s SUPPRESS %s#%s %s id=%s author=%s reason=%s\n"
+                    % (datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), full_repo, pr_number, item_type, nid, author, reason)
+                )
+        except OSError:
+            pass
 
 found      = []
 new_ids    = set()
@@ -1700,7 +1744,8 @@ else:
 all_ids = seen_ids | new_ids
 print("SEEN_IDS:" + "\n".join(sorted(all_ids)))
 '
-    new_comments=$(printf '%s' "$pr_comments_json" | python3 -c "$_PY_SCAN_COMMENTS" "$seen_ids_content" "$CV_AGENT_PREFIX_PATTERN" "$full_repo" "$pr_number") || {
+    suppression_log_file="${CV_STATE_DIR}/${state_key}.suppressions.log"
+    new_comments=$(printf '%s' "$pr_comments_json" | python3 -c "$_PY_SCAN_COMMENTS" "$seen_ids_content" "$CV_AGENT_PREFIX_PATTERN" "$full_repo" "$pr_number" "$suppression_log_file") || {
       echo "con-voyage-pr-watch: [PART B] WARNING: comment parsing failed for ${full_repo}#${pr_number}" >&2
       continue
     }

@@ -411,6 +411,24 @@ JSON
 JSON
             exit 0
           fi
+          # STUB_PR11_ADVERSARY_MARKERS=1 (fk-igqet1): the REAL bodies pulled
+          # from replicatedhq/vandoor#10620, verbatim (escaped for JSON/heredoc).
+          # IC_adv_finding_4219884349 is the comment Doomer posted that pr-watch
+          # dropped as bot_ack on 2026-10-08 -- it carries an
+          # `adversary-review:v2 ... finding=` marker and must ALWAYS route
+          # regardless of prose, AND independently trip the widened
+          # FINDING_MARKER_RE heuristic (breaking / migration path /
+          # intentional / worth confirming / before this ships / %3A529).
+          # IC_adv_ack_4220824462 carries only `adversary-feedback-ack:v1` (no
+          # adversary-review marker) and must still be suppressed as bot_ack.
+          # IC_adv_finding_4219667973 is a second real adversary-review finding
+          # (naming-convention nit) that must also route.
+          if [ "${STUB_PR11_ADVERSARY_MARKERS:-0}" = "1" ]; then
+            cat <<'JSON'
+{"reviews":[],"comments":[{"id":"IC_adv_finding_4219884349","author":{"login":"doomer-ai[bot]"},"body":"**If you have the time**\n\nThe resolved-opts guard hard-rejects PUTs from customers still carrying legacy dev-mode/non-dev type state, breaking the preserve invariant for existing data. Low urgency, but worth confirming whether that's intentional or needs a migration path before this ships.\n\n<!-- adversary-review:v2 adversary=registry.doomer.ai%2Flibrary%2Freview%2Fcode%40sha256%3A59b5b3eb200a11cd4db5fb7fcffe2291f85c45bd72d9cf1d1633a4cbd15e6011 package=registry.doomer.ai%2Flibrary%2Freview%2Fcode%40sha256%3A59b5b3eb200a11cd4db5fb7fcffe2291f85c45bd72d9cf1d1633a4cbd15e6011 version=0.0.26 finding=conventions.inferred-2-put-preserve-invariant-breaks-legacy-devmode-customers rule=conventions.inferred head=919f595cc3dbe6b7a787ff69384d31eef2c9dac7 loc=handlers%2Fvendor-api%2Freplv3%2Fcustomers%2Fcustomer_update.go%3A529 -->"},{"id":"IC_adv_ack_4220824462","author":{"login":"doomer-ai[bot]"},"body":"Renamed to TestBindDevModeGuard and kept t.Run sub-scenarios, commit 919f595 pushed.\n\n<!-- adversary-feedback-ack:v1 feedback=978dff18-8bd0-43a6-a399-26197ce6ee1b -->"},{"id":"IC_adv_finding_4219667973","author":{"login":"doomer-ai[bot]"},"body":"**If you have the time**\n\n`TestBind_DevModeGuard` breaks the PascalCase-no-underscores naming rule. Rename to `TestBindDevModeGuard`; use `t.Run` strings for the three scenarios, or make it a table-driven test if you prefer.\n\n<!-- adversary-review:v2 adversary=registry.doomer.ai%2Flibrary%2Freview%2Fcode%40sha256%3A59b5b3eb200a11cd4db5fb7fcffe2291f85c45bd72d9cf1d1633a4cbd15e6011 package=registry.doomer.ai%2Flibrary%2Freview%2Fcode%40sha256%3A59b5b3eb200a11cd4db5fb7fcffe2291f85c45bd72d9cf1d1633a4cbd15e6011 version=0.0.26 finding=conventions.mechanical-underscore-test-name-bind-test rule=conventions.declared head=504230a5ba0d6f7d384f33a68415825aa0561d2a loc=handlers%2Fvendor-api%2Freplv3%2Fcustomers%2Fcustomer_update_bind_test.go%3A38 -->"}]}
+JSON
+            exit 0
+          fi
           cat <<'JSON'
 {"reviews":[],"comments":[{"id":"IC_test_11","author":{"login":"a-human-reviewer"},"body":"please fix the null check"},{"id":"IC_test_bot","author":{"login":"kriscoleman"},"body":"🤖 **Automated con-voyage agent** (con-voyage-ci-repair / foundry-kc/worker)\n\nFixed a thing."},{"id":"IC_test_netlify","author":{"login":"netlify"},"body":"Deploy Preview for replicated-docs ready!"}]}
 JSON
@@ -3537,6 +3555,58 @@ if printf '%s' "$OUT" | grep -qE 'SUPPRESS kriscoleman/foundry#11 comment id=IC_
   fail "neither plural-marker item is suppressed as bot_ack"
 else
   pass "neither plural-marker item is suppressed as bot_ack"
+fi
+
+# ===========================================================================
+# CASE 57 (fk-igqet1): pr-watch drops real AI-reviewer findings as bot_ack.
+#   On 2026-10-08 ~14:00Z, Doomer posted a real finding
+#   (replicatedhq/vandoor#10620, review comment 4219884349) that pr-watch
+#   dropped as bot_ack because FINDING_MARKER_RE found no marker in its
+#   prose. Doomer's own comments carry stable, machine-readable markers in
+#   an HTML comment (`adversary-review:v2 ... finding=<id>` for a real
+#   finding, `adversary-feedback-ack:v1` for an acknowledgement with no
+#   finding), and those markers must be checked FIRST, ahead of the prose
+#   heuristic:
+#     - an adversary-review:v2 comment with a finding= id must ALWAYS route,
+#       whatever its prose says (this pins the exact 4219884349 regression,
+#       plus a second real finding 4219667973);
+#     - an adversary-feedback-ack:v1 comment with NO adversary-review marker
+#       must still be suppressed as bot_ack (keeps the fk-7xu9m fix, pinned
+#       with the real 4220824462 body);
+#     - the widened FINDING_MARKER_RE heuristic (breaking/migration
+#       path/intentional/worth confirming/before this ships/%3A<digits>)
+#       independently catches the 4219884349 prose too, so an item would
+#       still route even if the marker check were ever removed.
+# ===========================================================================
+start_case "57: fk-igqet1 — adversary-review:v2/adversary-feedback-ack:v1 markers override prose heuristic"
+setup_case_env "57"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_PR11_ADVERSARY_MARKERS="1"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 1 "exactly one comment-route sling for #11 (both real findings route together, the ack does not)"
+if printf '%s' "$OUT" | grep -qE 'SUPPRESS kriscoleman/foundry#11 comment id=IC_adv_finding_4219884349 .* reason=bot_ack'; then
+  fail "4219884349 (adversary-review:v2 finding) is NOT suppressed as bot_ack"
+else
+  pass "4219884349 (adversary-review:v2 finding) is NOT suppressed as bot_ack"
+fi
+if printf '%s' "$OUT" | grep -qE 'SUPPRESS kriscoleman/foundry#11 comment id=IC_adv_finding_4219667973 .* reason=bot_ack'; then
+  fail "4219667973 (adversary-review:v2 finding) is NOT suppressed as bot_ack"
+else
+  pass "4219667973 (adversary-review:v2 finding) is NOT suppressed as bot_ack"
+fi
+if printf '%s' "$OUT" | grep -qF 'SUPPRESS kriscoleman/foundry#11 comment id=IC_adv_ack_4220824462 author=doomer-ai[bot] reason=bot_ack'; then
+  pass "4220824462 (adversary-feedback-ack:v1, no finding marker) is suppressed as bot_ack"
+else
+  fail "4220824462 (adversary-feedback-ack:v1, no finding marker) is suppressed as bot_ack"
+fi
+# Durable suppression record (acceptance: the drop must survive the run so
+# an operator can answer "why was this dropped?" after the fact) --
+# log_suppression's stderr line alone does not persist; it must also be
+# written to a per-PR state file under CV_STATE_DIR.
+SUPPRESSION_LOG="${STATE_DIR}/kriscoleman_foundry_11.suppressions.log"
+if [ -f "$SUPPRESSION_LOG" ] && grep -qF 'id=IC_adv_ack_4220824462' "$SUPPRESSION_LOG" && grep -qF 'reason=bot_ack' "$SUPPRESSION_LOG"; then
+  pass "suppression of 4220824462 is durably recorded under CV_STATE_DIR"
+else
+  fail "suppression of 4220824462 is durably recorded under CV_STATE_DIR"
 fi
 
 # ===========================================================================
