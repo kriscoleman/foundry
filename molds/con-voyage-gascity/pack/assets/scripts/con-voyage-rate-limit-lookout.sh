@@ -905,28 +905,21 @@ try:
 except Exception:
     text = ''
 
-# fk-xtbtcw: a claude pane's scrollback routinely QUOTES limit language that
-# never came from Claude Code itself — a lookout mail body, a skill
-# excerpt, a Slack thread pasted into the pane. A whole-scrollback substring
-# search false-opens the breaker on that quoted text. Claude Code's own
-# usage/rate-limit banner is emitted live, at the current tail of the pane,
-# prefixed with its own '✗' glyph — so anchor detection to recent, glyph-
-# prefixed lines instead of searching the entire captured buffer. A bare
-# 'overloaded' (Claude Code's transient 529 retry banner, which auto-
-# recovers) is intentionally NOT a limited signal on its own.
-#
-# review fk-xtbtcw BLOCKING-1/BLOCKING-2: the original fix anchored to a
-# hardcoded 12-line tail AND required the glyph and the full limit phrase on
-# the exact same captured line. Both are too narrow for a real banner: (1) a
-# session that keeps printing after the banner appears pushes it out of a
-# 12-line window before the next scheduled peek, and (2) tmux wraps long
-# lines at the pane's column width, so the real banner text can itself land
-# on two physical lines. Widen the tail window to a configurable, more
-# generous default, and match the limit phrase against a short JOINED
-# window starting at each glyph-anchored line (not the single line alone),
-# so a pane-width wrap can't split the phrase across a boundary the match
-# can't cross — while still requiring the glyph at the START of a real tail
-# line, which is what defeats quoted scrollback text.
+# fk-xtbtcw: Claude Code's own live usage/rate-limit banner always leads
+# with its glyph directly followed by the limit phrase itself (optionally
+# prefixed by the word claude), e.g. glyph-space-Claude-usage-limit-reached.
+# A pane that merely QUOTES limit language (a mail body, a runbook excerpt)
+# or a glyph-prefixed bullet that is unrelated (this pack's own CI pass/fail
+# output) never has the phrase starting immediately after the glyph -- there
+# is always other text in between. Anchoring the match to the glyph line's
+# own start (not a character-count ratio, not mere containment) is what
+# tells a real banner apart from both false-open shapes (review fk-xtbtcw
+# BLOCKING-1, iteration 4). The match is still searched across a short
+# JOINED window of the glyph line plus the next BANNER_JOIN_LINES lines, so
+# a genuine pane-width wrap of the real banner (the glyph line ends
+# mid-phrase) is still detected. A bare overloaded retry banner (Claude
+# Code's transient 529, which auto-recovers) is intentionally NOT a limited
+# signal on its own.
 BANNER_LINES = int(os.environ.get('CV_LOOKOUT_BANNER_TAIL_LINES') or '40')
 tail_lines = text.splitlines()[-BANNER_LINES:]
 tail_text = '\n'.join(tail_lines)
@@ -940,35 +933,16 @@ banner_suffixes = [
     r'api error:\s*429',
 ]
 glyph_re = re.compile(r'^\s*' + re.escape(BANNER_GLYPH))
+banner_re = re.compile(
+    r'^\s*' + re.escape(BANNER_GLYPH) + r'\s+(?:claude\s+)?(?:'
+    + '|'.join(banner_suffixes) + r')', re.IGNORECASE)
 limited = False
 for i, line in enumerate(tail_lines):
     if not glyph_re.match(line):
         continue
-    # review fk-vaw6jx BLOCKING-1: joining trailing lines unconditionally let
-    # an unrelated glyph-prefixed line (a CI ✗ bullet, say) sweep in a limit
-    # phrase that only shows up a line or two further down by coincidence.
-    # Require the match to actually START within this glyph line's own text
-    # -- a genuine pane-width wrap of the real banner always begins there;
-    # an unrelated later line's content never should.
     window = ' '.join(tail_lines[i:i + 1 + BANNER_JOIN_LINES])
-    for suffix in banner_suffixes:
-        m = re.search(suffix, window, re.IGNORECASE)
-        if not m or m.start() >= len(line):
-            continue
-        if m.end() <= len(line):
-            limited = True
-            break
-        # review fk-xtbtcw BLOCKING-1 (iter 3, qa-test): a match that starts
-        # in the glyph line but spans past it is only a genuine pane-width
-        # wrap when a MAJORITY of the matched phrase's own characters sit on
-        # the glyph line -- a real wrap breaks late in the phrase. An
-        # unrelated glyph line whose tail merely happens to begin a limit
-        # phrase typically contributes only a small minority before an
-        # unrelated next line supplies the rest.
-        if (len(line) - m.start()) * 2 >= (m.end() - m.start()):
-            limited = True
-            break
-    if limited:
+    if banner_re.match(window):
+        limited = True
         break
 reset_hint = ''
 m = re.search(r'(?:limit will reset|resets)\s*(?:at|around)?\s*([^\n.]{1,40})', tail_text, re.IGNORECASE)

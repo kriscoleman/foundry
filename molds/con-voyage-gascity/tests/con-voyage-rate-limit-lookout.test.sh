@@ -633,6 +633,55 @@ assert_log_lacks "mail send mayor" "straddled incidental limit phrase does not o
 assert_file_contains "${STATE_DIR}/breaker.state" "state=closed" "breaker stays closed when the limit phrase only completes via an unrelated next line"
 
 # ===========================================================================
+start_case "review fk-xtbtcw BLOCKING-1 (iteration 4): a ✗ CI/test bullet whose own text merely NAMES a limit phrase does not false-open the breaker"
+# ===========================================================================
+# The iteration-4 fix's contained-match acceptance path treated "the glyph
+# is present, and the matched phrase is fully contained on that line" as
+# sufficient. '✗' is Claude Code's generic failure glyph, also used by this
+# pack's own test/CI output for plain pass/fail bullets, so a failed test
+# assertion or grep whose own text happens to quote a limit phrase still has
+# it fully contained on the glyph line and false-opened the breaker.
+reset_world
+write_sessions "$TWO_CLAUDE_SESSIONS"
+write_peek rc-wrk1 <<'EOF'
+✗ test: a quoted 'rate limit reached' line does not false-open
+✗ grep -n "usage limit reached" con-voyage-rate-limit-lookout.sh
+Build summary: 2 failed, 40 passed
+EOF
+write_peek rc-inv <<'EOF'
+⏺ Coordinating
+EOF
+out="$(run_lookout 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && pass "exit 0" || fail "exit code $rc (output: $out)"
+assert_log_lacks "handoff --target rc-wrk1" "a CI bullet merely naming a limit phrase does not trigger a handoff"
+assert_log_lacks "mail send mayor" "a CI bullet merely naming a limit phrase does not open the breaker"
+assert_file_contains "${STATE_DIR}/breaker.state" "state=closed" "breaker stays closed when the limit phrase is only contained inside an unrelated ✗ bullet's own text"
+
+# ===========================================================================
+start_case "review fk-xtbtcw BLOCKING-1 (iteration 4): a short limit phrase that merely STARTS on an unrelated glyph line's tail does not false-open the breaker"
+# ===========================================================================
+# The iteration-4 fix's majority-straddle acceptance path (character-count
+# ratio) let almost any coincidental two-line join of one of the SHORTER
+# banner_suffixes patterns (here: "hit your ... limit", 's own match landing
+# mostly on the glyph line by construction) count as a genuine wrap,
+# regardless of whether the glyph line's own content relates to a real
+# banner at all.
+reset_world
+write_sessions "$TWO_CLAUDE_SESSIONS"
+write_peek rc-wrk1 <<'EOF'
+✗ Unrelated CI note: we may have hit your
+limit reached in an unrelated sentence
+EOF
+write_peek rc-inv <<'EOF'
+⏺ Coordinating
+EOF
+out="$(run_lookout 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && pass "exit 0" || fail "exit code $rc (output: $out)"
+assert_log_lacks "handoff --target rc-wrk1" "a short-phrase majority-straddle on an unrelated glyph line does not trigger a handoff"
+assert_log_lacks "mail send mayor" "a short-phrase majority-straddle on an unrelated glyph line does not open the breaker"
+assert_file_contains "${STATE_DIR}/breaker.state" "state=closed" "breaker stays closed when the limit phrase only majority-straddles an unrelated glyph line's tail"
+
+# ===========================================================================
 start_case "malformed numeric env knobs coerce to defaults instead of breaking"
 # ===========================================================================
 reset_world
