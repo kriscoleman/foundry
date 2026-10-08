@@ -40,6 +40,16 @@ assert_contains() {
   fi
 }
 
+assert_not_contains() {
+  local file="$1" needle="$2" label="$3"
+  if grep -qF -- "$needle" "$file"; then
+    echo "  FAIL: $label (found verbatim in $file, expected it gone)" >&2
+    FAILURES=$((FAILURES+1))
+  else
+    echo "  PASS: $label"
+  fi
+}
+
 line_of() {
   local file="$1" needle="$2"
   grep -nF -- "$needle" "$file" | head -1 | cut -d: -f1
@@ -201,14 +211,14 @@ fi
 # depends on) so a fix pass or a patch-changing sync can never reach the
 # `gc bd update ... gc.build.reviewed_head_sha=` call.
 # ---------------------------------------------------------------------------
-start_case "apply-review-findings.md: the reviewed-sha stamp is gated in bash on \$FIX_COMMIT_SHA, not prose alone"
-assert_contains "$APPLY_MD" '[ -z "${FIX_COMMIT_SHA:-}" ]' "bash gate checks \$FIX_COMMIT_SHA is unset before considering a stamp"
+start_case "apply-review-findings.md: the reviewed-sha stamp is gated in bash on \$FIX_COMMIT_RECORDED, not prose alone"
+assert_contains "$APPLY_MD" '[ "$FIX_COMMIT_RECORDED" = "false" ]' "bash gate checks the confirmed fix_commit_recorded=false marker before considering a stamp"
 
 start_case "apply-review-findings.md: the reviewed-sha stamp is gated in bash on \$SYNC_PATCH_UNCHANGED, not prose alone"
-assert_contains "$APPLY_MD" '[ "${SYNC_PATCH_UNCHANGED:-false}" = "true" ]' "bash gate checks \$SYNC_PATCH_UNCHANGED for a recreated/rebased sync"
+assert_contains "$APPLY_MD" '[ "$SYNC_PATCH_UNCHANGED" = "true" ]' "bash gate checks \$SYNC_PATCH_UNCHANGED for a recreated/rebased sync"
 
 start_case "apply-review-findings.md: the bash gate precedes the actual reviewed_head_sha stamp call"
-gate_line="$(line_of "$APPLY_MD" '[ -z "${FIX_COMMIT_SHA:-}" ]')"
+gate_line="$(line_of "$APPLY_MD" '[ "$FIX_COMMIT_RECORDED" = "false" ]')"
 stamp_call_line="$(line_of "$APPLY_MD" 'gc bd update "$ROOT_ID" --set-metadata "gc.build.reviewed_head_sha=${REVIEWED_HEAD_SHA}"')"
 if [ -n "$gate_line" ] && [ -n "$stamp_call_line" ] && [ "$gate_line" -lt "$stamp_call_line" ]; then
   echo "  PASS: the bash gate (line ${gate_line}) precedes the stamp call (line ${stamp_call_line})"
@@ -216,6 +226,171 @@ else
   echo "  FAIL: expected the bash gate to precede the actual stamp call" >&2
   FAILURES=$((FAILURES+1))
 fi
+
+# ---------------------------------------------------------------------------
+# fk-zesuqz (review fk-9gdsik BLOCKING-1): the gate must fail CLOSED when a
+# cross-fence persistence write/read fails, not just when it reads back an
+# unrecognized value. Pin that the gate requires a positively-confirmed
+# "the write landed" marker for both the sync-result write and the
+# fix-commit-decision write, and that neither variable defaults to a
+# stamp-eligible value.
+# ---------------------------------------------------------------------------
+start_case "apply-review-findings.md: the sync-result persist call also stamps a positive sync_persisted confirmation marker"
+assert_contains "$APPLY_MD" "--set-metadata 'gc.apply_review.sync_persisted=true'" "sync_result persist call also writes sync_persisted=true atomically"
+
+start_case "apply-review-findings.md: a committed fix stamps a positive fix_commit_recorded confirmation marker alongside the sha"
+assert_contains "$APPLY_MD" "--set-metadata 'gc.apply_review.fix_commit_recorded=true'" "fix-commit persist calls also write fix_commit_recorded=true atomically"
+
+start_case "apply-review-findings.md: a genuine no-fix pass explicitly records fix_commit_recorded=false"
+assert_contains "$APPLY_MD" "--set-metadata 'gc.apply_review.fix_commit_recorded=false'" "the no-fix path stamps an explicit negative marker, not silence"
+
+start_case "apply-review-findings.md: the gate re-read defaults to an unresolved sentinel, never a stamp-eligible value"
+assert_contains "$APPLY_MD" 'SYNC_RESULT="__unresolved__"' "SYNC_RESULT defaults to __unresolved__, not noop"
+assert_contains "$APPLY_MD" 'FIX_COMMIT_RECORDED="__unresolved__"' "FIX_COMMIT_RECORDED defaults to __unresolved__"
+assert_not_contains "$APPLY_MD" 'SYNC_RESULT="noop"' "SYNC_RESULT no longer defaults straight to the stamp-eligible noop value"
+
+start_case "apply-review-findings.md: the gate requires both sync_persisted=true AND fix_commit_recorded=false before trusting SYNC_RESULT"
+assert_contains "$APPLY_MD" '[ "$SYNC_PERSISTED" = "true" ] && [ "$FIX_COMMIT_RECORDED" = "false" ]' "gate conjuncts both confirmation markers before evaluating SYNC_RESULT"
+
+# ---------------------------------------------------------------------------
+# fk-zesuqz (review fk-9gdsik BLOCKING-3): no executable test previously
+# exercised the actual persist-then-re-read round trip the gate depends on —
+# every prior assertion above is a textual/static check that would pass
+# identically on a gate that never actually re-reads durable state (that is
+# exactly what shipped in iteration 1). Exercise the real round trip through
+# an isolated flat-file metadata store (a hermetic stand-in for the real
+# beads store — the live `bd`/`gc` CLI auto-discovers and can mutate the REAL
+# store even with --db threaded through every call, and `bd init` pulls a full
+# remote clone, both wrong for a fast unit test): write the gate-state keys in
+# one subshell, then re-read them via a second, separate subshell (mirroring
+# the cross-fence boundary a real workflow run crosses between bash blocks),
+# and run the SAME STAMP_NOOP_PASS decision logic the workflow file's gate
+# uses over the read-back values. This is runtime confidence over the actual
+# decision logic, not prose confidence, and would have caught iteration 1's
+# dead gate (which never re-read anything at all).
+# ---------------------------------------------------------------------------
+STORE_DIR="$(mktemp -d)"
+trap 'rm -rf "$STORE_DIR"' EXIT
+STORE_FILE="${STORE_DIR}/metadata.store"
+: > "$STORE_FILE"
+
+# A standalone helper file (NOT this test script) sourced fresh inside each
+# subshell below — sourcing this test script itself would re-run every case
+# in it, recursively.
+GATE_LIB_FILE="${STORE_DIR}/gate-lib.sh"
+cat > "$GATE_LIB_FILE" <<'GATE_LIB_EOF'
+# stub_bead_metadata BEAD_ID KEY — same empty-on-anything-wrong contract as
+# the real cv_bead_metadata (con-voyage-lib.sh): prints the last persisted
+# value for BEAD_ID/KEY, or an empty string if it was never written.
+stub_bead_metadata() {
+  local bead_id="$1" key="$2"
+  awk -F'\t' -v id="$bead_id" -v k="$key" '$1 == id && $2 == k { v = $3 } END { if (v != "") print v }' "$STORE_FILE"
+}
+
+# stub_bead_persist BEAD_ID KEY=VALUE [KEY=VALUE...] — simulates an atomic
+# multi-key gc bd update: appends all pairs in one call.
+stub_bead_persist() {
+  local bead_id="$1"; shift
+  local pair
+  for pair in "$@"; do
+    printf '%s\t%s\t%s\n' "$bead_id" "${pair%%=*}" "${pair#*=}" >> "$STORE_FILE"
+  done
+}
+
+gate_decision() {
+  # Mirrors main.apply-review-findings.md's STAMP_NOOP_PASS gate exactly:
+  # unresolved sentinel defaults, requires both confirmation markers before
+  # trusting SYNC_RESULT at all.
+  local bead_id="$1"
+  local sync_persisted fix_commit_recorded sync_result sync_patch_unchanged
+  sync_persisted="$(stub_bead_metadata "$bead_id" gc.apply_review.sync_persisted)"
+  fix_commit_recorded="$(stub_bead_metadata "$bead_id" gc.apply_review.fix_commit_recorded)"
+  sync_result="$(stub_bead_metadata "$bead_id" gc.apply_review.sync_result)"
+  sync_patch_unchanged="$(stub_bead_metadata "$bead_id" gc.apply_review.sync_patch_unchanged)"
+  [ -n "$sync_persisted" ] || sync_persisted="__unresolved__"
+  [ -n "$fix_commit_recorded" ] || fix_commit_recorded="__unresolved__"
+  [ -n "$sync_result" ] || sync_result="__unresolved__"
+  [ -n "$sync_patch_unchanged" ] || sync_patch_unchanged="__unresolved__"
+
+  local stamp_noop_pass="false"
+  if [ "$sync_persisted" = "true" ] && [ "$fix_commit_recorded" = "false" ]; then
+    case "$sync_result" in
+      noop) stamp_noop_pass="true" ;;
+      recreated|rebased)
+        [ "$sync_patch_unchanged" = "true" ] && stamp_noop_pass="true"
+        ;;
+      *) stamp_noop_pass="false" ;;
+    esac
+  fi
+  printf '%s' "$stamp_noop_pass"
+}
+GATE_LIB_EOF
+
+gate_roundtrip_case() {
+  local label="$1" bead_id="$2" expected="$3"
+  shift 3
+
+  start_case "gate round trip: ${label}"
+
+  # Persist in one subshell ("the earlier, separate fenced block").
+  if [ "$#" -gt 0 ]; then
+    ( export STORE_FILE; source "$GATE_LIB_FILE"; stub_bead_persist "$bead_id" "$@" )
+  fi
+
+  # Re-read and decide in a second, separate subshell/invocation ("the
+  # later, independent stamp-gate fence") — genuinely re-parses the store
+  # file from scratch, not an inherited shell variable.
+  local actual
+  actual="$(bash -c '
+    export STORE_FILE="$1"
+    source "$2"
+    gate_decision "$3"
+  ' _ "$STORE_FILE" "$GATE_LIB_FILE" "$bead_id" 2>/dev/null)"
+
+  if [ "$actual" = "$expected" ]; then
+    echo "  PASS: ${label} (STAMP_NOOP_PASS=${actual})"
+  else
+    echo "  FAIL: ${label} (expected STAMP_NOOP_PASS=${expected}, got ${actual:-<empty>})" >&2
+    FAILURES=$((FAILURES+1))
+  fi
+}
+
+gate_roundtrip_case "confirmed genuine no-op (sync_persisted=true, fix_commit_recorded=false, sync_result=noop) -> stamp-eligible" \
+  "gate-rt-noop" "true" \
+  'gc.apply_review.sync_persisted=true' \
+  'gc.apply_review.fix_commit_recorded=false' \
+  'gc.apply_review.sync_result=noop' \
+  'gc.apply_review.sync_patch_unchanged=false'
+
+gate_roundtrip_case "fix committed this pass (fix_commit_recorded=true) -> never stamp-eligible" \
+  "gate-rt-fixed" "false" \
+  'gc.apply_review.sync_persisted=true' \
+  'gc.apply_review.fix_commit_recorded=true' \
+  'gc.apply_review.sync_result=noop' \
+  'gc.apply_review.sync_patch_unchanged=false'
+
+gate_roundtrip_case "clean rebase with patch unchanged (recreated+patch_unchanged=true) -> stamp-eligible" \
+  "gate-rt-rebase-clean" "true" \
+  'gc.apply_review.sync_persisted=true' \
+  'gc.apply_review.fix_commit_recorded=false' \
+  'gc.apply_review.sync_result=recreated' \
+  'gc.apply_review.sync_patch_unchanged=true'
+
+gate_roundtrip_case "the sync_result persist call never ran this pass (sync_persisted unset) -> fails closed" \
+  "gate-rt-no-sync-write" "false"
+
+gate_roundtrip_case "sync_persisted write succeeded but fix_commit_recorded write never ran (ambiguous fix state) -> fails closed" \
+  "gate-rt-ambiguous-fix" "false" \
+  'gc.apply_review.sync_persisted=true' \
+  'gc.apply_review.sync_result=noop' \
+  'gc.apply_review.sync_patch_unchanged=false'
+
+gate_roundtrip_case "unrecognized sync_result value -> fails closed" \
+  "gate-rt-garbage-value" "false" \
+  'gc.apply_review.sync_persisted=true' \
+  'gc.apply_review.fix_commit_recorded=false' \
+  'gc.apply_review.sync_result=garbage' \
+  'gc.apply_review.sync_patch_unchanged=false'
 
 start_case "apply-review-findings.md: a non-eligible pass logs a skip instead of stamping"
 assert_contains "$APPLY_MD" 'skipping gc.build.reviewed_head_sha stamp' "logs explicitly when the bash gate blocks the stamp"

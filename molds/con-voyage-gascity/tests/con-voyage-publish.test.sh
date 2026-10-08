@@ -354,12 +354,21 @@ assert_contains 'cv_bead_metadata "$ROOT_ID" gc.build.reviewed_head_sha_attempte
 start_case "16: fk-bcyt7v follow-up — a missing stamp on a post-fix root (attempted=true) is a hard error, not a silent fallback"
 assert_contains 'REVIEWED_HEAD_SHA_ATTEMPTED' "resolves the attempted-stamp marker into its own variable"
 assert_contains '[ "$REVIEWED_HEAD_SHA_ATTEMPTED" = "true" ]' "branches on the attempted-stamp marker before falling back"
+# fk-zesuqz (review fk-9gdsik BLOCKING-2): the prior /exit 1/ scan matched the
+# fix commit's own explanatory comment ("an `exit 1` here, before the
+# finalize record...") rather than the real exit statement, so it could not
+# fail even if a regression moved the real exit back before the finalize
+# write. Require a standalone `exit 1` statement (not a comment mentioning
+# it) that comes after BOTH the attempted-stamp branch AND the finalize
+# record write — pinning the exact ordering property BLOCKING-2 fixed.
+finalize_write_line="$(line_of '} > "${CV_STATE_DIR}/${finalize_key}.finalize"')"
 branch_line="$(line_of '[ "$REVIEWED_HEAD_SHA_ATTEMPTED" = "true" ]')"
-exit_line="$(awk -v start="${branch_line:-0}" 'NR > start && /exit 1/ {print NR; exit}' "$PUBLISH_MD")"
-if [ -n "$branch_line" ] && [ -n "$exit_line" ]; then
-  echo "  PASS: an exit 1 (line ${exit_line}) follows the attempted-stamp check (line ${branch_line})"
+exit_line="$(awk -v start="${branch_line:-0}" 'NR > start && /^[[:space:]]*exit 1[[:space:]]*$/ {print NR; exit}' "$PUBLISH_MD")"
+if [ -n "$branch_line" ] && [ -n "$finalize_write_line" ] && [ -n "$exit_line" ] \
+  && [ "$exit_line" -gt "$finalize_write_line" ]; then
+  echo "  PASS: the real exit 1 (line ${exit_line}) follows both the attempted-stamp check (line ${branch_line}) and the finalize record write (line ${finalize_write_line})"
 else
-  echo "  FAIL: expected an exit 1 after branching on the attempted-stamp marker" >&2
+  echo "  FAIL: expected a standalone exit 1 statement after both the attempted-stamp check and the finalize record write" >&2
   FAILURES=$((FAILURES+1))
 fi
 
