@@ -1715,6 +1715,57 @@ case "$feedback_err" in
     ;;
 esac
 
+# ---------------------------------------------------------------------------
+# cv_build_pr_feedback_body must hand workers a RESOLVED cv-pr-comment.sh
+# path, not just name it in prose (fk-kza51h, dogfood friction 2026-10-08
+# 11:35Z mail rc-wisp-zzyj2dy): vandoor/gc.implementation-worker-2 working a
+# routed human-PR-feedback bead (va-oikb0, replicatedhq/vandoor#10620) could
+# not find cv-pr-comment.sh on PATH or in its cached mold copy and closed the
+# bead blocked with the fix pushed but no replies posted, because
+# CV_PR_REPLY_INTEGRITY_REMINDER names the script by bare basename only. The
+# fix resolves an absolute path via cv_pack_script before building the body,
+# appends it to the body, and fails loud (non-zero exit, no output) rather
+# than emit an unworkable bead when the script cannot be resolved.
+# ---------------------------------------------------------------------------
+start_case "cv_build_pr_feedback_body: output names a resolved, existing absolute cv-pr-comment.sh path"
+resolved_bin="$(cv_pack_script cv-pr-comment.sh)"
+if [ -z "$resolved_bin" ] || [ ! -f "$resolved_bin" ]; then
+  echo "  FAIL: cv_pack_script could not resolve a real cv-pr-comment.sh in this checkout — cannot exercise the positive case" >&2
+  FAILURES=$((FAILURES+1))
+else
+  path_body="$(cv_build_pr_feedback_body 'https://github.com/acme/widgets/pull/1' 'fix/example' 'some feedback' 'test-key-path')"
+  case "$path_body" in
+    *"$resolved_bin"*)
+      echo "  PASS: body includes the resolved absolute cv-pr-comment.sh path (${resolved_bin})" ;;
+    *)
+      echo "  FAIL: body does not include the resolved path ${resolved_bin}" >&2
+      FAILURES=$((FAILURES+1)) ;;
+  esac
+fi
+
+start_case "cv_build_pr_feedback_body: fails loud (no output, non-zero exit, clear stderr) when cv-pr-comment.sh cannot be resolved"
+NO_SCRIPT_REPO="${SANDBOX}/no-cv-pr-comment-repo"
+NO_SCRIPT_CITY="${SANDBOX}/no-cv-pr-comment-city"
+mkdir -p "$NO_SCRIPT_REPO" "$NO_SCRIPT_CITY/packs/con-voyage/assets/scripts"
+git -C "$NO_SCRIPT_REPO" init -q -b main
+noscript_out=""
+noscript_err=""
+noscript_out="$(
+  cd "$NO_SCRIPT_REPO" && GC_CITY="$NO_SCRIPT_CITY" bash -c "source '$LIB'; cv_build_pr_feedback_body 'https://github.com/acme/widgets/pull/1' 'fix/example' 'some feedback' 'test-key-missing'" 2>"${SANDBOX}/noscript.err"
+)"
+noscript_rc=$?
+noscript_err="$(cat "${SANDBOX}/noscript.err")"
+assert_eq "" "$noscript_out" "cv_build_pr_feedback_body emits nothing when cv-pr-comment.sh cannot be resolved"
+assert_eq "1" "$noscript_rc" "cv_build_pr_feedback_body returns non-zero when cv-pr-comment.sh cannot be resolved"
+case "$noscript_err" in
+  *"cv-pr-comment.sh"*)
+    echo "  PASS: cv_build_pr_feedback_body writes a clear fail-loud error naming cv-pr-comment.sh" ;;
+  *)
+    echo "  FAIL: expected a clear fail-loud stderr message naming cv-pr-comment.sh, got: $noscript_err" >&2
+    FAILURES=$((FAILURES+1))
+    ;;
+esac
+
 start_case "cv_random_nonce: primary path still succeeds and yields full 128-bit (32 hex char) entropy when od IS available"
 od_present_out="$(bash -c "source '$LIB'; cv_random_nonce")"
 case "$od_present_out" in
