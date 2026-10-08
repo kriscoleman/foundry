@@ -608,6 +608,31 @@ assert_log_lacks "mail send mayor" "unrelated glyph bullets + incidental limit t
 assert_file_contains "${STATE_DIR}/breaker.state" "state=closed" "breaker stays closed when the limit phrase only appears via an unrelated glyph line's join window"
 
 # ===========================================================================
+start_case "fk-xtbtcw: a glyph line's own incidental tail plus an unrelated next line straddling the limit phrase does not false-open the breaker"
+# ===========================================================================
+# Review fk-xtbtcw BLOCKING-1 (iteration 3, qa-test lane): the iteration-2
+# fix only required the matched phrase to START inside the glyph line's own
+# text (m.start() < len(line)), not that the WHOLE phrase lives there. A
+# glyph line whose own trailing text happens to begin a limit-phrase regex,
+# followed by an unrelated next line that happens to complete it, still
+# satisfies m.start() < len(line) even though this is not a real wrapped
+# banner.
+reset_world
+write_sessions "$TWO_CLAUDE_SESSIONS"
+write_peek rc-wrk1 <<'EOF'
+✗ Flaky test retried; we briefly hit the rate
+limit reached note is just in the log, nothing to see here, false alarm
+EOF
+write_peek rc-inv <<'EOF'
+⏺ Coordinating
+EOF
+out="$(run_lookout 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && pass "exit 0" || fail "exit code $rc (output: $out)"
+assert_log_lacks "handoff --target rc-wrk1" "straddled incidental limit phrase does not trigger a handoff"
+assert_log_lacks "mail send mayor" "straddled incidental limit phrase does not open the breaker"
+assert_file_contains "${STATE_DIR}/breaker.state" "state=closed" "breaker stays closed when the limit phrase only completes via an unrelated next line"
+
+# ===========================================================================
 start_case "malformed numeric env knobs coerce to defaults instead of breaking"
 # ===========================================================================
 reset_world
