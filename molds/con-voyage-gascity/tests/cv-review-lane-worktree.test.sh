@@ -39,13 +39,40 @@ fi
 
 REAL_GIT="$(command -v git)" || { echo "FATAL: git not found on PATH" >&2; exit 2; }
 
+# Recording `gc` stub for sweep's lane-liveness check (fk-vqzpq9): for
+# `bd show <id> --json` it echoes STUB_BDSHOW_JSON_<id, dashes->underscores>
+# verbatim, mirroring the stub convention in con-voyage-lib.test.sh. Lives on
+# a PATH prefix only swapped in for the specific sweep calls that need it, so
+# every other command in this file keeps using the real `git`/environment.
+FAKE_GC_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cv-review-lane-wt-test-gc.XXXXXX")"
+cat > "${FAKE_GC_DIR}/gc" <<'GC_STUB'
+#!/usr/bin/env bash
+if [ "$1" = "bd" ] && [ "$2" = "show" ]; then
+  id="$3"
+  var="STUB_BDSHOW_JSON_${id//-/_}"
+  printf '%s' "${!var:-}"
+  exit 0
+fi
+exit 1
+GC_STUB
+chmod +x "${FAKE_GC_DIR}/gc"
+# A PATH with git and bash but deliberately no gc binary, for the "status
+# can't be resolved at all" case. bash and git/dirname/basename/tr/sed can
+# live in different directories (e.g. homebrew bash vs. /usr/bin git on
+# macOS), and homebrew's bin also happens to hold the REAL gc — so this
+# isolates bash into its own directory rather than reusing bash's real
+# parent dir wholesale.
+NO_GC_BIN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cv-review-lane-wt-test-nogc.XXXXXX")"
+ln -s "$(command -v bash)" "${NO_GC_BIN_DIR}/bash"
+NO_GC_PATH="${NO_GC_BIN_DIR}:$(dirname "$REAL_GIT"):/usr/bin:/bin"
+
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/cv-review-lane-wt-test.XXXXXX")"
 # Canonicalize: on macOS, $TMPDIR resolves under a symlink (/var ->
 # /private/var). The script under test always returns realpath'd worktree
 # paths (to match `git worktree list`'s own output), so path assertions below
 # must compare against the same canonicalized form, not the raw mktemp path.
 SANDBOX="$(cd "$SANDBOX" && pwd -P)"
-cleanup() { rm -rf "$SANDBOX"; }
+cleanup() { rm -rf "$SANDBOX" "${FAKE_GC_DIR:-}" "${NO_GC_BIN_DIR:-}"; }
 trap cleanup EXIT
 
 FAILURES=0
@@ -193,7 +220,14 @@ git_c "$OTHER_REPO" worktree add -q --detach "$OTHER_SRC" HEAD
 run_script acquire "$OTHER_SRC" "lane-acceptance"
 assert_eq "0" "$RC" "acquire on an unrelated source exits 0"
 OTHER_LANE="$OUT"
+# Both of SRC1's lanes report closed, so a plain sweep (no --force) reaps them.
+ORIG_PATH="$PATH"
+export STUB_BDSHOW_JSON_lane_acceptance='[{"status":"closed"}]'
+export STUB_BDSHOW_JSON_lane_test_evidence='[{"status":"closed"}]'
+PATH="${FAKE_GC_DIR}:${ORIG_PATH}"
 run_script sweep "$SRC1"
+PATH="$ORIG_PATH"
+unset STUB_BDSHOW_JSON_lane_acceptance STUB_BDSHOW_JSON_lane_test_evidence
 assert_eq "0" "$RC" "sweep exits 0"
 if [ -d "$LANE1" ]; then fail "sweep left ${LANE1} on disk"; else pass "sweep removed ${LANE1}"; fi
 if [ -d "$LANE2" ]; then fail "sweep left ${LANE2} on disk"; else pass "sweep removed ${LANE2}"; fi
@@ -277,6 +311,75 @@ PATH="$ORIG_PATH"
 
 assert_eq "0" "$RC" "acquire's reuse-guard survives a SIGPIPE/pipefail race on a true match (fk-iw972)"
 assert_eq "$LANE_PF" "$OUT" "acquire still returns the correct, already-existing lane worktree path despite the race"
+
+# ===========================================================================
+# CASE 11 — fk-vqzpq9: sweep must never reap a still-active lane's worktree.
+#   Only closed lanes are removed; an open/in_progress lane is skipped and
+#   reported, not torn down. --force bypasses the check entirely (the
+#   explicit post-cycle sweep synthesize-review runs after every lane
+#   reports).
+# ===========================================================================
+start_case "11: sweep skips a still-open/in_progress lane and only reaps closed lanes"
+REPO3="$(mk_repo repo3)"
+SRC3="${SANDBOX}/repo3-src"
+git_c "$REPO3" worktree add -q --detach "$SRC3" HEAD
+run_script acquire "$SRC3" "lane-closed-one"
+assert_eq "0" "$RC" "acquire for the closed lane exits 0"
+LANE_CLOSED="$OUT"
+run_script acquire "$SRC3" "lane-open-one"
+assert_eq "0" "$RC" "acquire for the open lane exits 0"
+LANE_OPEN="$OUT"
+
+ORIG_PATH="$PATH"
+export STUB_BDSHOW_JSON_lane_closed_one='[{"status":"closed"}]'
+export STUB_BDSHOW_JSON_lane_open_one='[{"status":"in_progress"}]'
+PATH="${FAKE_GC_DIR}:${ORIG_PATH}"
+run_script sweep "$SRC3"
+PATH="$ORIG_PATH"
+unset STUB_BDSHOW_JSON_lane_closed_one STUB_BDSHOW_JSON_lane_open_one
+
+assert_eq "0" "$RC" "sweep exits 0 with a mix of closed and open lanes"
+if [ -d "$LANE_CLOSED" ]; then fail "sweep left the CLOSED lane's worktree on disk: ${LANE_CLOSED}"; else pass "sweep removed the closed lane's worktree"; fi
+if [ -d "$LANE_OPEN" ]; then pass "sweep SKIPPED the still-open lane's worktree"; else fail "sweep incorrectly removed an open/in_progress lane's worktree — would reap a live review (fk-vqzpq9)"; fi
+case "$OUT" in
+  *"skip"*"lane-open-one"*) pass "sweep reported the skipped lane in its output" ;;
+  *) fail "sweep did not report skipping the open lane; output: ${OUT}" ;;
+esac
+
+# --force bypasses the liveness check entirely.
+ORIG_PATH="$PATH"
+export STUB_BDSHOW_JSON_lane_open_one='[{"status":"in_progress"}]'
+PATH="${FAKE_GC_DIR}:${ORIG_PATH}"
+run_script sweep "$SRC3" --force
+PATH="$ORIG_PATH"
+unset STUB_BDSHOW_JSON_lane_open_one
+assert_eq "0" "$RC" "sweep --force exits 0"
+if [ -d "$LANE_OPEN" ]; then fail "sweep --force left the open lane's worktree on disk"; else pass "sweep --force reaped the open lane's worktree"; fi
+
+# ===========================================================================
+# CASE 12 — an unresolvable lane bead status (no gc on PATH at all) must fail
+#   SAFE: skip, do not reap. --force still reaps regardless.
+# ===========================================================================
+start_case "12: sweep treats an unresolvable lane bead status as still active (fail safe)"
+REPO4="$(mk_repo repo4)"
+SRC4="${SANDBOX}/repo4-src"
+git_c "$REPO4" worktree add -q --detach "$SRC4" HEAD
+run_script acquire "$SRC4" "lane-unknown"
+assert_eq "0" "$RC" "acquire for the unknown-status lane exits 0"
+LANE_UNKNOWN="$OUT"
+
+ORIG_PATH="$PATH"
+PATH="$NO_GC_PATH"
+run_script sweep "$SRC4"
+PATH="$ORIG_PATH"
+assert_eq "0" "$RC" "sweep exits 0 even when lane status cannot be resolved at all"
+if [ -d "$LANE_UNKNOWN" ]; then pass "sweep left the worktree alone when the lane's bead status could not be resolved"; else fail "sweep reaped a lane worktree despite being unable to confirm it was closed"; fi
+
+ORIG_PATH="$PATH"
+PATH="$NO_GC_PATH"
+run_script sweep "$SRC4" --force
+PATH="$ORIG_PATH"
+if [ -d "$LANE_UNKNOWN" ]; then fail "sweep --force left the unknown-status lane's worktree on disk"; else pass "sweep --force reaps regardless of unresolved status"; fi
 
 # ===========================================================================
 # Summary

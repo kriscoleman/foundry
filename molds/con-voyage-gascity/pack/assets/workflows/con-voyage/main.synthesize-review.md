@@ -151,7 +151,12 @@ simplicity) and any other lane that ran build/test/lint commands did so inside t
 own private worktree acquired via `cv-review-lane-worktree.sh acquire`, never the
 shared source-anchor work_dir — see the per-lane worktree isolation note in each
 lane's own instructions. After writing the synthesis, sweep this cycle's per-lane
-copies so they do not accumulate across review rounds:
+copies so they do not accumulate across review rounds. Synthesis runs only after
+every lane has already reported and closed, so pass `--force`: sweep's own
+liveness check (fk-vqzpq9 — a lane worktree whose bead is still open/in_progress is
+skipped, never reaped, to stop a lane from tearing down a sibling's still-active
+worktree) would otherwise depend on this step's own `gc bd show` read of each lane
+bead being perfectly up to date:
 
 ```bash
 CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
@@ -160,7 +165,7 @@ CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
 CV_LANE_WT_BIN="${CV_PACK_ROOT}/assets/scripts/cv-review-lane-worktree.sh"
 [ -f "$CV_LANE_WT_BIN" ] || CV_LANE_WT_BIN=""
 if [ -n "$CV_LANE_WT_BIN" ]; then
-  bash "$CV_LANE_WT_BIN" sweep "<source anchor work_dir from the review context>" \
+  bash "$CV_LANE_WT_BIN" sweep "<source anchor work_dir from the review context>" --force \
     || echo "note: per-lane worktree sweep failed (continuing)"
 else
   echo "note: cv-review-lane-worktree.sh not found — skipping per-lane worktree sweep (continuing)"
