@@ -578,6 +578,36 @@ out="$(run_lookout 2>&1)"; rc=$?
 assert_file_contains "${STATE_DIR}/breaker.state" "state=open" "wrapped real banner still opens the breaker"
 
 # ===========================================================================
+start_case "fk-vaw6jx: unrelated glyph-prefixed bullets do not adopt incidental limit text a couple lines later"
+# ===========================================================================
+# Review fk-vaw6jx BLOCKING-1: the BLOCKING-2 wrap fix above joined ANY
+# glyph-anchored line with the next BANNER_JOIN_LINES lines before searching
+# for the limit phrase, with no check that the two actually belong to the
+# same banner. This pack's own CI output uses the same glyph as a plain
+# pass/fail bullet, so three ordinary test-failure bullets followed a couple
+# lines later by an incidental "rate limit reached" mention (a runbook note,
+# a quoted mail excerpt) got swept into the same join window and false-opened
+# the breaker — exactly what the fk-xtbtcw fix above exists to prevent, just
+# via a different glyph occurrence.
+reset_world
+write_sessions "$TWO_CLAUDE_SESSIONS"
+write_peek rc-wrk1 <<'EOF'
+✗ test_foo failed
+✗ test_bar failed
+✗ test_baz failed
+Build summary: 3 failed, 10 passed
+See the runbook note: a rate limit reached banner may appear during retries.
+EOF
+write_peek rc-inv <<'EOF'
+⏺ Coordinating
+EOF
+out="$(run_lookout 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && pass "exit 0" || fail "exit code $rc (output: $out)"
+assert_log_lacks "handoff --target rc-wrk1" "unrelated glyph bullets + incidental limit text do not trigger a handoff"
+assert_log_lacks "mail send mayor" "unrelated glyph bullets + incidental limit text do not open the breaker"
+assert_file_contains "${STATE_DIR}/breaker.state" "state=closed" "breaker stays closed when the limit phrase only appears via an unrelated glyph line's join window"
+
+# ===========================================================================
 start_case "malformed numeric env knobs coerce to defaults instead of breaking"
 # ===========================================================================
 reset_world

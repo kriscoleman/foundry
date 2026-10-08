@@ -944,9 +944,19 @@ limited = False
 for i, line in enumerate(tail_lines):
     if not glyph_re.match(line):
         continue
+    # review fk-vaw6jx BLOCKING-1: joining trailing lines unconditionally let
+    # an unrelated glyph-prefixed line (a CI ✗ bullet, say) sweep in a limit
+    # phrase that only shows up a line or two further down by coincidence.
+    # Require the match to actually START within this glyph line's own text
+    # -- a genuine pane-width wrap of the real banner always begins there;
+    # an unrelated later line's content never should.
     window = ' '.join(tail_lines[i:i + 1 + BANNER_JOIN_LINES])
-    if any(re.search(suffix, window, re.IGNORECASE) for suffix in banner_suffixes):
-        limited = True
+    for suffix in banner_suffixes:
+        m = re.search(suffix, window, re.IGNORECASE)
+        if m and m.start() < len(line):
+            limited = True
+            break
+    if limited:
         break
 reset_hint = ''
 m = re.search(r'(?:limit will reset|resets)\s*(?:at|around)?\s*([^\n.]{1,40})', tail_text, re.IGNORECASE)
