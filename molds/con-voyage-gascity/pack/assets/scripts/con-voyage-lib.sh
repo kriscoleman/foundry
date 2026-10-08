@@ -594,8 +594,19 @@ cv_sync_worktree_to_base() {
   local base_ref base_sha resolve_explicit=""
   if [ -n "$explicit_base" ]; then
     resolve_explicit="origin/${explicit_base}"
-    git -C "$dir" rev-parse --verify --quiet "${resolve_explicit}^{commit}" >/dev/null 2>&1 \
-      || resolve_explicit="$explicit_base"
+    if ! git -C "$dir" rev-parse --verify --quiet "${resolve_explicit}^{commit}" >/dev/null 2>&1; then
+      resolve_explicit="$explicit_base"
+      # fk-wmhr96 review BLOCKING-3: neither origin/<explicit_base> nor the
+      # bare name resolves to a commit — an unresolvable declared base (typo,
+      # or a branch never pushed to origin) must not silently fall through to
+      # the default base order with no signal. Surface it loud; resolve-base
+      # below still runs its own default fallback so the caller isn't blocked
+      # on a transient fetch gap, but the operator now has a reason to look.
+      if ! git -C "$dir" rev-parse --verify --quiet "${resolve_explicit}^{commit}" >/dev/null 2>&1; then
+        echo "cv-lib: WARNING cv_sync_worktree_to_base: declared base '${explicit_base}' does not resolve to a commit in ${dir} (checked origin/${explicit_base} and ${explicit_base}) — falling back to the default base instead" >&2
+        resolve_explicit=""
+      fi
+    fi
   fi
   base_ref="$(bash "$prep_script" resolve-base "$dir" "$resolve_explicit" 2>/dev/null)"
   base_sha="$(git -C "$dir" rev-parse --verify --quiet "${base_ref}^{commit}" 2>/dev/null || true)"
