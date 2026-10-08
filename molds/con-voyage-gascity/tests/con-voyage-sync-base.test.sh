@@ -561,6 +561,15 @@ assert_md_contains() {
   fi
 }
 
+assert_md_not_contains() {
+  local file="$1" needle="$2" label="$3"
+  if grep -qF -- "$needle" "$file"; then
+    fail "$label (found verbatim in ${file}, expected it gone)"
+  else
+    pass "$label"
+  fi
+}
+
 md_line_of() {
   local file="$1" needle="$2"
   grep -nF -- "$needle" "$file" | head -1 | cut -d: -f1
@@ -929,8 +938,19 @@ start_case "apply-review-findings.md: threads cv_convoy_target as the explicit 3
 assert_md_contains "$APPLY_MD" 'cv_convoy_target "$CONVOY_ID"' "apply-review-findings.md resolves CONVOY_TARGET via cv_convoy_target"
 assert_md_contains "$APPLY_MD" 'cv_sync_worktree_to_base "$WORKTREE" "$WORK_BRANCH_NAME" "$CONVOY_TARGET"' "apply-review-findings.md passes \$CONVOY_TARGET as the explicit 3rd arg"
 
-start_case "ci-repair.md: threads cv_convoy_target as the explicit 3rd arg to cv_sync_worktree_to_base (fk-wmhr96 BLOCKING-2)"
-assert_md_contains "$CI_REPAIR_MD" 'cv_convoy_target "{convoy_id}"' "ci-repair.md resolves CONVOY_TARGET via cv_convoy_target"
+# fk-qolcm3 BLOCKING-1 (iteration 2): `{convoy_id}` in ci-repair.md is this
+# step's OWN gc-internal work-item bead, never the original con-voyage
+# workflow's root bead — `cv_convoy_target "{convoy_id}"` silently resolved
+# the WRONG bead's (always-unset) target, which is indistinguishable from
+# correctly finding no declared stacked base. No reference to the real
+# workflow root is available to this step today, so it must leave
+# CONVOY_TARGET unresolved explicitly rather than wire in an id that looks
+# right but names the wrong bead.
+start_case "ci-repair.md: does not resolve CONVOY_TARGET via cv_convoy_target against its own step bead (fk-qolcm3 BLOCKING-1)"
+assert_md_not_contains "$CI_REPAIR_MD" 'cv_convoy_target "{convoy_id}"' "ci-repair.md must not call cv_convoy_target against its own gc-internal step bead"
+
+start_case "ci-repair.md: threads the explicitly-empty CONVOY_TARGET as the 3rd arg to cv_sync_worktree_to_base (fk-wmhr96 BLOCKING-2, fk-qolcm3 BLOCKING-1)"
+assert_md_contains "$CI_REPAIR_MD" 'CONVOY_TARGET=""' "ci-repair.md sets CONVOY_TARGET explicitly empty (no real workflow-root reference available)"
 assert_md_contains "$CI_REPAIR_MD" 'cv_sync_worktree_to_base "$(pwd)" "" "$CONVOY_TARGET"' "ci-repair.md passes \$CONVOY_TARGET as the explicit 3rd arg"
 
 # ===========================================================================
