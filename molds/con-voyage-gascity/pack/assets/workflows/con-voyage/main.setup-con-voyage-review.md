@@ -300,7 +300,7 @@ try:
 except Exception:
     d = {}
 meta = (d.get('metadata') or {}) if isinstance(d, dict) else {}
-print('true' if (meta.get('gc.step_ref') or meta.get('gc.routed_to') or meta.get('gc.root_bead_id')) else 'false')
+print('true' if meta.get('gc.step_ref') else 'false')
 " 2>/dev/null)"
   [ "$STEP_META_CHECK" = "true" ] && IS_STEP_BEAD="true"
 else
