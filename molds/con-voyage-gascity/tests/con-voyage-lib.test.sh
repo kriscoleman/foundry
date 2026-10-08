@@ -227,6 +227,21 @@ export STUB_BDSHOW_JSON_step_2='{"id":"step-2","issue_type":"task","metadata":{"
 # No STUB_BDSHOW_JSON_root_2 -> root bd show "fails" -> no finalize_key resolvable.
 assert_eq "step-2" "$(cv_resolve_work_bead "step-2")" "a step bead whose finalize record cannot be resolved fails safe to the input id (never guesses)"
 
+# review fk-up9s4z BLOCKING-1 (QA lane): gc.step_ref/gc.routed_to/gc.root_bead_id
+# are leftover breadcrumbs a dispatched task can carry from an EARLIER,
+# unrelated graph.v2 run even after it's an ordinary work bead again. Before
+# this fix, the step-bead branch above triggered on gc.routed_to OR
+# gc.root_bead_id alone, so a stale gc.root_bead_id pointing at a different
+# root that itself has a resolvable gc.var.finalize_key would silently
+# resolve this bead to that UNRELATED root's work_bead instead of leaving it
+# alone. Only gc.step_ref is stamped exclusively on an actual graph.v2
+# workflow step bead, so the heuristic must require it specifically.
+start_case "cv_resolve_work_bead: ordinary task bead with stale gc.root_bead_id (no gc.step_ref) -> itself, never the unrelated root's work_bead"
+export STUB_BDSHOW_JSON_fk_stale='{"id":"fk-stale","issue_type":"task","metadata":{"gc.root_bead_id":"root-unrelated"}}'
+export STUB_BDSHOW_JSON_root_unrelated='{"id":"root-unrelated","issue_type":"task","metadata":{"gc.var.finalize_key":"cv-finalize-owner-repo-999"}}'
+finalize_write "cv-finalize-owner-repo-999" "unrelated-wb" "orig-convoy-999" "owner/repo" "999" "kriscoleman" "" ""
+assert_eq "fk-stale" "$(cv_resolve_work_bead "fk-stale")" "a stale gc.root_bead_id with no gc.step_ref must not resolve through an unrelated root's finalize record"
+
 # fk-gnb3m6 (review fk-hbsmk BLOCKING-1): the step-bead branch above reads the
 # finalize record through finalize_read, which reads
 # "${CV_STATE_DIR}/<dedup_key>.finalize". Every other finalize_read caller

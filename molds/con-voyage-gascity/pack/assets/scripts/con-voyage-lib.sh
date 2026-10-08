@@ -1954,10 +1954,14 @@ cv_resolve_work_bead() {
   # fk-tvefk0 (fk-9f2n loop variant): main.rereview-seed.md stamps
   # gc.build.source_anchor_id to ITS OWN graph.v2 step bead — never a
   # synthetic input convoy, since there is no fresh convoy for a re-review
-  # round. Detect that case (gc.step_ref / gc.routed_to / gc.root_bead_id
-  # present) separately from the convoy/non-convoy branches below so a caller
-  # never claims/reassigns a closed workflow step as if it were the work bead
-  # (that reopens the step and hands it straight back out as fresh routed
+  # round. Detect that case (gc.step_ref present — review fk-up9s4z
+  # BLOCKING-1: gc.routed_to/gc.root_bead_id alone are not enough, since an
+  # ordinary dispatched task can carry either as a stale breadcrumb from an
+  # earlier, unrelated graph.v2 run; gc.step_ref is the one key stamped only
+  # on an actual workflow step bead) separately from the convoy/non-convoy
+  # branches below so a caller never claims/reassigns a closed workflow step
+  # as if it were the work bead (that reopens the step and hands it straight
+  # back out as fresh routed
   # work). The parse below prints one of:
   #   "resolved <id>"  — synthetic/convoy case, tracked work bead found
   #   "step <root_id>" — a graph.v2 step bead; root_id may be empty
@@ -1990,7 +1994,7 @@ if synthetic or is_convoy:
             print('resolved ' + dep_id); raise SystemExit(0)
     # Convoy with no usable dependency — fail safe to the input id.
     print('fallback'); raise SystemExit(0)
-is_step = bool(meta.get('gc.step_ref') or meta.get('gc.routed_to') or meta.get('gc.root_bead_id'))
+is_step = bool(meta.get('gc.step_ref'))
 if is_step:
     print('step ' + (meta.get('gc.root_bead_id') or '')); raise SystemExit(0)
 # Not a convoy or step bead: convoy_id is already the work bead.

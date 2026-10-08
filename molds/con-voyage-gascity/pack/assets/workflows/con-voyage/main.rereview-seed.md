@@ -109,11 +109,13 @@ gc bd update "$ROOT_ID" \
 
 `gc.build.source_anchor_id` is set to THIS step's own claimed bead
 (`$GC_BEAD_ID`) rather than a synthetic convoy: `cv_resolve_work_bead`
-(con-voyage-lib.sh) falls back to returning its input id unchanged for any
-non-synthetic, non-convoy bead, so the review loop's own work-bead
-resolution still terminates correctly — it simply will not find a tracked
-"real" work bead distinct from this one, which is expected for a re-review
-round (there is no fresh convoy here, only a PR that already shipped once).
+(con-voyage-lib.sh) detects this as a graph.v2 step-bead anchor (via
+`gc.step_ref`, stamped on every real workflow step bead) and resolves it
+through the workflow root's finalize record when one exists, falling back
+to returning its input id unchanged only when no finalize record is
+resolvable — so the review loop's own work-bead resolution still terminates
+correctly either way, usually landing on the real, already-shipped PR's
+work bead rather than this step bead itself.
 
 ## Close
 
