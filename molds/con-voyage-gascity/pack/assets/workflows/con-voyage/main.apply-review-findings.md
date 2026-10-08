@@ -211,11 +211,20 @@ echo "apply-review-findings: sync patch-unchanged: ${SYNC_PATCH_UNCHANGED}"
 # NONE of its keys land (one gc bd update invocation, one atomic write), so
 # sync_persisted stays unset and the gate fails closed instead of defaulting
 # to noop.
+#
+# fk-9gdsik (review iteration 3 BLOCKING-1, SRE): also default
+# gc.apply_review.fix_commit_recorded=false in this SAME unconditional call,
+# which runs every pass regardless of outcome — never a separate prose-gated
+# step an agent pass can skip. The only two places that flip it to `true` are
+# the fix-committing fences below; everything else (a genuine no-op, or a
+# clean patch-identical rebase) leaves this default standing, so the gate
+# below always sees a mechanical, not agent-discretionary, value.
 gc bd update "$GC_BEAD_ID" \
   --set-metadata "gc.apply_review.sync_result=${SYNC_RESULT}" \
   --set-metadata "gc.apply_review.sync_patch_unchanged=${SYNC_PATCH_UNCHANGED}" \
   --set-metadata 'gc.apply_review.sync_persisted=true' \
-  || echo "apply-review-findings: WARNING: could not persist sync_result/sync_patch_unchanged to ${GC_BEAD_ID} — the no-op stamp gate below will fail closed for this pass" >&2
+  --set-metadata 'gc.apply_review.fix_commit_recorded=false' \
+  || echo "apply-review-findings: WARNING: could not persist sync_result/sync_patch_unchanged/fix_commit_recorded to ${GC_BEAD_ID} — the no-op stamp gate below will fail closed for this pass" >&2
 ```
 
 `CV_TOPLEVEL` for this bootstrap call is now resolved from `GC_RIG_ROOT`
@@ -329,15 +338,11 @@ findings to fix:
   pass below, not a fix pass — see "Setting code_review.verdict".
 
 In every case where you did NOT commit a fix this pass (a genuine no-op, or
-the `$SYNC_PATCH_UNCHANGED=true` clean-rebase no-op above), stamp the explicit
-negative marker instead, so the gate below can tell "confirmed no fix this
-pass" from "the fix-commit decision was never recorded" (fk-zesuqz, review
-fk-9gdsik BLOCKING-1):
-
-```bash
-gc bd update "$GC_BEAD_ID" --set-metadata 'gc.apply_review.fix_commit_recorded=false' \
-  || echo "apply-review-findings: WARNING: could not persist fix_commit_recorded=false to ${GC_BEAD_ID} — the no-op stamp gate below will fail closed for this pass" >&2
-```
+the `$SYNC_PATCH_UNCHANGED=true` clean-rebase no-op above), no further action
+is needed here: `gc.apply_review.fix_commit_recorded` already defaults to
+`false` from the unconditional sync-persist call above (fk-9gdsik review
+iteration 3 BLOCKING-1) — there is no longer a separate, skippable
+negative-marker step for an agent pass to miss.
 
 ### Pause for a mayor reopen on a LOW-only verdict (fk-9iqxnx)
 
