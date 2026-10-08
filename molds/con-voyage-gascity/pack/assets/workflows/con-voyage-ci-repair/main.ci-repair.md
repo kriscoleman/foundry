@@ -404,7 +404,12 @@ CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
 CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
 [ -f "$CV_LIB" ] || CV_LIB=""
 if [ -n "$CV_LIB" ]; then
-  SYNC_RESULT="$(source "$CV_LIB" && cv_sync_worktree_to_base "$(pwd)")" \
+  # SRE BLOCKING-1 (fk-wmhr96 review): thread any declared stacked base
+  # through here too, same as main.build.md and main.apply-review-findings.md
+  # — otherwise a repair pass silently un-stacks the branch if the declared
+  # base gained new history since build.
+  CONVOY_TARGET="$(source "$CV_LIB" && cv_convoy_target "{convoy_id}")"
+  SYNC_RESULT="$(export CV_PACK_ROOT; source "$CV_LIB" && cv_sync_worktree_to_base "$(pwd)" "" "$CONVOY_TARGET")" \
     || echo "ci-repair: could not sync the rig-root workspace to its current base (non-fatal here — {branch} is about to be checked out explicitly below)" >&2
   [ -n "${SYNC_RESULT:-}" ] && echo "ci-repair: workspace sync: ${SYNC_RESULT}"
 else

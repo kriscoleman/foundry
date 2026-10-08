@@ -171,7 +171,14 @@ PRE_SYNC_HEAD="$(git -C "$WORKTREE" rev-parse HEAD 2>/dev/null)"
 PRE_SYNC_BASE_REF="$(source "$CV_LIB" && cv_worktree_prep_resolve_base "$WORKTREE")"
 PRE_SYNC_BASE_SHA="$(git -C "$WORKTREE" rev-parse --verify --quiet "${PRE_SYNC_BASE_REF}^{commit}" 2>/dev/null || true)"
 
-SYNC_RESULT="$(export CV_PACK_ROOT; source "$CV_LIB" && cv_sync_worktree_to_base "$WORKTREE" "$WORK_BRANCH_NAME")" \
+# fk-wmhr96 (review BLOCKING-1): thread any declared stacked base (`gc convoy
+# target`) through to the sync below, the same way main.build.md's own sync
+# call already does — without this, a declared base silently drops to
+# origin/main the moment it advances mid-journey, which is exactly the normal
+# condition this step runs under (every BLOCKING-finding iteration).
+CONVOY_TARGET="$(source "$CV_LIB" && cv_convoy_target "$CONVOY_ID")"
+
+SYNC_RESULT="$(export CV_PACK_ROOT; source "$CV_LIB" && cv_sync_worktree_to_base "$WORKTREE" "$WORK_BRANCH_NAME" "$CONVOY_TARGET")" \
   || { echo "apply-review-findings: failed to sync to the current base — refusing to review/fix on a possibly-stale base" >&2; exit 1; }
 echo "apply-review-findings: worktree sync: ${SYNC_RESULT}"
 

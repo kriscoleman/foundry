@@ -509,6 +509,35 @@ assert_eq "noop" "$result9" "reports noop (already current on origin/main, the d
 assert_eq "$main_tip9" "$(git_c "$WT9" rev-parse HEAD)" "HEAD matches origin/main (default), unaffected by the new empty 3rd arg"
 
 # ===========================================================================
+# CASE 10 — review fk-wmhr96 BLOCKING-3: an explicit_base that resolves to
+#   NEITHER origin/<explicit_base> NOR the bare name (typo, or a branch never
+#   pushed to origin) must not silently fall through to the default base with
+#   no signal — it must emit a surfaced warning on stderr, and still fail
+#   SAFE by falling back to the default base rather than hanging or erroring.
+# ===========================================================================
+start_case "10: an unresolvable explicit base warns on stderr instead of silently falling through"
+UPSTREAM10="${SANDBOX}/repo10-upstream.git"
+git init -q -b main --bare "$UPSTREAM10"
+REPO10="$(mk_repo repo10)"
+git_c "$REPO10" remote add origin "$UPSTREAM10"
+git_c "$REPO10" push -q -u origin main
+git_c "$REPO10" remote set-head origin main
+main_tip10="$(git_c "$REPO10" rev-parse main)"
+WT10="${SANDBOX}/repo10-worktree"
+git_c "$REPO10" worktree add -q --detach "$WT10" HEAD
+STDERR10="${SANDBOX}/case10-stderr.txt"
+result10="$(cv_sync_worktree_to_base "$WT10" "con-voyage/repo10-worktree" "nonexistent-declared-base" 2>"$STDERR10")"
+rc10=$?
+assert_eq "0" "$rc10" "exits 0 (fails safe, not closed)"
+assert_eq "noop" "$result10" "falls back to the default base (already current on origin/main)"
+assert_eq "$main_tip10" "$(git_c "$WT10" rev-parse HEAD)" "HEAD matches origin/main (default fallback), not left unresolved"
+if grep -qi "nonexistent-declared-base" "$STDERR10"; then
+  pass "emits a surfaced warning naming the unresolvable declared base"
+else
+  fail "expected a warning on stderr naming the unresolvable explicit base (got: $(cat "$STDERR10"))"
+fi
+
+# ===========================================================================
 # Structural checks — the helper must actually be wired into every
 # code-writing step's START, not just exist unused in the lib.
 # ===========================================================================
@@ -883,6 +912,26 @@ if [ -n "$sync_line_repair" ] && [ -n "$checkout_line_repair" ] && [ "$sync_line
 else
   fail "expected the sync call to precede the PR-branch checkout"
 fi
+
+# ===========================================================================
+# review fk-wmhr96 BLOCKING-1/2: every code-writing step's sync call must
+# thread a declared stacked base (`cv_convoy_target`) through as the explicit
+# 3rd arg to cv_sync_worktree_to_base. A sync call left on the bare 2-arg (or
+# 1-arg) form silently un-stacks the branch the moment origin/main advances
+# past the declared base mid-journey — a no-op right up until it isn't, which
+# is exactly how this slipped past review once already (BLOCKING-1/2 above).
+# ===========================================================================
+start_case "build.md: threads cv_convoy_target as the explicit 3rd arg to cv_sync_worktree_to_base"
+assert_md_contains "$BUILD_MD" 'cv_convoy_target "$CONVOY_ID"' "build.md resolves CONVOY_TARGET via cv_convoy_target"
+assert_md_contains "$BUILD_MD" 'cv_sync_worktree_to_base "$WORKTREE" "$WORK_BRANCH_NAME" "$CONVOY_TARGET"' "build.md passes \$CONVOY_TARGET as the explicit 3rd arg"
+
+start_case "apply-review-findings.md: threads cv_convoy_target as the explicit 3rd arg to cv_sync_worktree_to_base (fk-wmhr96 BLOCKING-1)"
+assert_md_contains "$APPLY_MD" 'cv_convoy_target "$CONVOY_ID"' "apply-review-findings.md resolves CONVOY_TARGET via cv_convoy_target"
+assert_md_contains "$APPLY_MD" 'cv_sync_worktree_to_base "$WORKTREE" "$WORK_BRANCH_NAME" "$CONVOY_TARGET"' "apply-review-findings.md passes \$CONVOY_TARGET as the explicit 3rd arg"
+
+start_case "ci-repair.md: threads cv_convoy_target as the explicit 3rd arg to cv_sync_worktree_to_base (fk-wmhr96 BLOCKING-2)"
+assert_md_contains "$CI_REPAIR_MD" 'cv_convoy_target "{convoy_id}"' "ci-repair.md resolves CONVOY_TARGET via cv_convoy_target"
+assert_md_contains "$CI_REPAIR_MD" 'cv_sync_worktree_to_base "$(pwd)" "" "$CONVOY_TARGET"' "ci-repair.md passes \$CONVOY_TARGET as the explicit 3rd arg"
 
 # ===========================================================================
 # review fk-hbsmk BLOCKING-1: both implementor-routed steps (build.md and
