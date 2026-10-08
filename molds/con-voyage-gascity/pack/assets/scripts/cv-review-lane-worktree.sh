@@ -214,9 +214,13 @@ sync_lock_release() {
 
 # lane_bead_closed <lane-id> — true (exit 0) only when <lane-id>'s own bead
 # resolves to status "closed". Sources con-voyage-lib.sh's `bead_status` (same
-# directory as this script) for the actual `gc bd show` lookup. Any failure
-# to resolve — lib missing, `gc` missing, lookup error — is NOT closed (exit
-# 1): sweep's caller must treat that as "still active, do not reap".
+# directory as this script) for the actual `gc bd show` lookup, wrapped in
+# `cv_with_timeout` (review fk-o0f68q BLOCKING-1) so a slow/stuck store call
+# under lock contention or pool load can't hang this function indefinitely —
+# the same bound already applied to other `gc bd show` call sites in
+# con-voyage-lib.sh. Any failure to resolve — lib missing, `gc` missing,
+# lookup error, or a timeout — is NOT closed (exit 1): sweep's caller must
+# treat that as "still active, do not reap".
 lane_bead_closed() {
   local lane_id="$1"
   [ -n "$lane_id" ] || return 1
@@ -224,8 +228,12 @@ lane_bead_closed() {
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
   cv_lib="${script_dir}/con-voyage-lib.sh"
   [ -f "$cv_lib" ] || return 1
+  local cv_lens_store_timeout="${CV_LENS_STORE_TIMEOUT_SECONDS:-30}"
+  case "$cv_lens_store_timeout" in
+    *[!0-9]*|'') cv_lens_store_timeout="30" ;;
+  esac
   local result status
-  result="$(source "$cv_lib" && bead_status "$lane_id" id)" || return 1
+  result="$(source "$cv_lib" && cv_with_timeout "$cv_lens_store_timeout" bead_status "$lane_id" id)" || return 1
   status="${result%%$'\x1f'*}"
   [ "$status" = "closed" ]
 }
