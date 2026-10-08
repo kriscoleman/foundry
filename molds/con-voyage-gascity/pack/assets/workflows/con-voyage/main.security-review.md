@@ -33,11 +33,12 @@ Write your findings to the review artifact root. Close with:
 
 Use explicit close metadata:
 
-  bd update "$CLAIMED_BEAD_ID" \
-    --set-metadata 'gc.outcome=pass' \
-    --set-metadata 'code_review.security_verdict=approve' \
-    --set-metadata 'code_review.output_path=<security review report path>'
-  bd close "$CLAIMED_BEAD_ID" --reason 'Con-voyage security review approved.'
+  CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+  CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+  [ -f "${CV_PACK_ROOT}/assets/scripts/cv-review-lane-close.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+  bash "${CV_PACK_ROOT}/assets/scripts/cv-review-lane-close.sh" "$CLAIMED_BEAD_ID" 'Con-voyage security review approved.' \
+      --set-metadata 'code_review.security_verdict=approve' \
+      --set-metadata 'code_review.output_path=<security review report path>'
 
 Set security_verdict=iterate if any BLOCKING finding exists.
 
