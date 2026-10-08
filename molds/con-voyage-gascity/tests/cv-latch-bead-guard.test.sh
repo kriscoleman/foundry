@@ -35,6 +35,7 @@ FRAGMENT="${FRAGMENTS_DIR}/cv-latch-bead-guard.template.md"
 ROLE_WORKER_FRAGMENT="${FRAGMENTS_DIR}/gc-role-worker.template.md"
 ROLE_WORKER_TOKEN='{{ template "gc-role-worker" . }}'
 INCLUDE_TOKEN='{{ template "cv-latch-bead-guard" . }}'
+FORMULA_TOML="${MOLD_DIR}/pack/formulas/con-voyage.formula.toml"
 
 LENSES=(
   cv-api-platform-contract
@@ -137,6 +138,47 @@ for kind in "${LATCH_KINDS[@]}"; do
   assert_contains "$ROLE_WORKER_FRAGMENT" "${kind}" \
     "vendored fragment's Notes section still mentions gc.kind=${kind}"
 done
+
+# review fk-hbsmk BLOCKING-1: pin the floor-lane -> gc.run_target mapping so a
+# future change that either (a) drops coverage on security/code (the two
+# floor lanes this fix actually guards) or (b) silently re-routes
+# acceptance/test-evidence/simplicity onto a con-voyage-owned, guardable
+# persona without anyone extending the guard to match is caught here instead
+# of shipping unnoticed. The 3 "unguarded" floor lanes are a disclosed,
+# tracked residual (fk-bzjqn, upstream gc hook --claim fix covers all of
+# gc.implementation-worker/run-operator/these 3 lanes at once) — not an
+# oversight of this change.
+start_case "the floor-lane -> gc.run_target mapping matches what this fix can and cannot guard"
+assert_floor_lane_route() {
+  local lane_id="$1" expected_target="$2" guarded="$3"
+  local actual
+  actual="$(awk -v id="\"${lane_id}\"" '
+    $0 ~ ("id = " id) { found=1 }
+    found && /gc\.run_target/ {
+      line = $0
+      sub(/.*gc\.run_target" = "/, "", line)
+      sub(/".*/, "", line)
+      print line
+      exit
+    }
+  ' "$FORMULA_TOML")"
+  if [ "$actual" = "$expected_target" ]; then
+    echo "  PASS: ${lane_id} routes to ${expected_target} (guarded=${guarded})"
+  else
+    echo "  FAIL: ${lane_id} routes to '${actual}', expected '${expected_target}' (guarded=${guarded})" >&2
+    FAILURES=$((FAILURES+1))
+  fi
+}
+if [ -f "$FORMULA_TOML" ]; then
+  assert_floor_lane_route "{target}.acceptance-review" "gc.implementation-reviewer" "no"
+  assert_floor_lane_route "{target}.test-evidence-review" "gc.gap-analyst" "no"
+  assert_floor_lane_route "{target}.simplicity-review" "gc.design-implementation-reviewer" "no"
+  assert_floor_lane_route "{target}.security-review" "con-voyage.cv-security-reviewer" "yes"
+  assert_floor_lane_route "{target}.code-review" "{code_lens}" "yes"
+else
+  echo "  FAIL: formula toml not found at $FORMULA_TOML" >&2
+  FAILURES=$((FAILURES+1))
+fi
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
