@@ -192,6 +192,18 @@ case "$SYNC_RESULT" in
     ;;
 esac
 echo "apply-review-findings: sync patch-unchanged: ${SYNC_PATCH_UNCHANGED}"
+
+# fk-j29mzp (review BLOCKING-1): each fenced ```bash block in this file runs
+# as its own independent shell — SYNC_RESULT/SYNC_PATCH_UNCHANGED computed
+# here do NOT survive into the later "Recording the reviewed HEAD SHA" gate's
+# own fence. Persist them to THIS step's own claimed bead ($GC_BEAD_ID, fresh
+# per review-loop iteration under graph.v2, so there is no stale-value
+# carryover risk) and re-read them explicitly down there instead of relying
+# on shell-variable inheritance across separate Bash tool invocations.
+gc bd update "$GC_BEAD_ID" \
+  --set-metadata "gc.apply_review.sync_result=${SYNC_RESULT}" \
+  --set-metadata "gc.apply_review.sync_patch_unchanged=${SYNC_PATCH_UNCHANGED}" \
+  || echo "apply-review-findings: WARNING: could not persist sync_result/sync_patch_unchanged to ${GC_BEAD_ID} — the no-op stamp gate below may misjudge this pass" >&2
 ```
 
 `CV_TOPLEVEL` for this bootstrap call is now resolved from `GC_RIG_ROOT`
@@ -270,6 +282,8 @@ if [ -n "$CV_GUARD" ] && [ -x "$CV_GUARD" ]; then
 fi
 git commit -m "fix: <brief description of the review fix> (review {convoy_id})"
 FIX_COMMIT_SHA="$(git rev-parse HEAD)"
+gc bd update "$GC_BEAD_ID" --set-metadata "gc.apply_review.fix_commit_sha=${FIX_COMMIT_SHA}" \
+  || echo "apply-review-findings: WARNING: could not persist fix_commit_sha to ${GC_BEAD_ID} — the no-op stamp gate below may misjudge this pass" >&2
 ```
 
 Commit ONLY when you actually changed files this pass — never an empty/no-op
@@ -283,6 +297,8 @@ findings to fix:
 
   ```bash
   [ -n "${FIX_COMMIT_SHA:-}" ] || FIX_COMMIT_SHA="$(git rev-parse HEAD)"
+  gc bd update "$GC_BEAD_ID" --set-metadata "gc.apply_review.fix_commit_sha=${FIX_COMMIT_SHA}" \
+    || echo "apply-review-findings: WARNING: could not persist fix_commit_sha to ${GC_BEAD_ID}" >&2
   ```
 
 - `$SYNC_PATCH_UNCHANGED=true` (a clean rebase/recreate replayed the identical
@@ -512,19 +528,52 @@ if [ -n "$WORKTREE" ] && [ -d "$WORKTREE" ]; then
   REVIEWED_HEAD_SHA="$(git -C "$WORKTREE" rev-parse HEAD 2>/dev/null || echo "")"
 fi
 
-# fk-j29mzp (#174 regrade BLOCKING-2): gate the actual stamp in bash on the
-# same in-scope vars "Setting code_review.verdict" above uses to make this
-# same no-op determination ($SYNC_RESULT, $SYNC_PATCH_UNCHANGED,
-# $FIX_COMMIT_SHA) — the prose above ("Only when you are about to set
-# verdict=done") is not enforcement, and a misjudged pass must never reach
-# the gc.build.reviewed_head_sha stamp call.
+# fk-j29mzp (#174 regrade BLOCKING-2, re-fixed per this PR's own review
+# BLOCKING-1): gate the actual stamp in bash on the same no-op determination
+# "Setting code_review.verdict" above uses — the prose above ("Only when you
+# are about to set verdict=done") is not enforcement, and a misjudged pass
+# must never reach the gc.build.reviewed_head_sha stamp call. $FIX_COMMIT_SHA
+# / $SYNC_RESULT / $SYNC_PATCH_UNCHANGED were computed in EARLIER, SEPARATE
+# fenced ```bash blocks — each fenced block in this file runs as its own
+# independent shell (the same reason $ROOT_ID/$WORKTREE are re-derived fresh
+# just above), so none of those three shell variables survive into this
+# fence; reading them directly here would always see them unset and
+# unconditionally take the "genuine no-op" branch, silently reproducing the
+# exact fk-bcyt7v bug this gate exists to close. Re-read them explicitly from
+# the durable state those earlier blocks persisted on THIS step's own claimed
+# bead instead.
+CV_TOPLEVEL="${GC_RIG_ROOT:-}"
+if [ -z "$CV_TOPLEVEL" ] || [ ! -f "${CV_TOPLEVEL}/molds/con-voyage-gascity/pack/assets/scripts/con-voyage-lib.sh" ]; then
+  CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+fi
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
+
+FIX_COMMIT_SHA=""
+SYNC_RESULT="noop"
+SYNC_PATCH_UNCHANGED="false"
+if [ -n "$CV_LIB" ]; then
+  FIX_COMMIT_SHA="$(source "$CV_LIB" && cv_bead_metadata "$GC_BEAD_ID" gc.apply_review.fix_commit_sha)"
+  SYNC_RESULT_READ="$(source "$CV_LIB" && cv_bead_metadata "$GC_BEAD_ID" gc.apply_review.sync_result)"
+  [ -n "$SYNC_RESULT_READ" ] && SYNC_RESULT="$SYNC_RESULT_READ"
+  SYNC_PATCH_UNCHANGED_READ="$(source "$CV_LIB" && cv_bead_metadata "$GC_BEAD_ID" gc.apply_review.sync_patch_unchanged)"
+  [ -n "$SYNC_PATCH_UNCHANGED_READ" ] && SYNC_PATCH_UNCHANGED="$SYNC_PATCH_UNCHANGED_READ"
+else
+  echo "con-voyage apply-review-findings: WARNING: con-voyage-lib.sh not found — cannot re-read fix_commit_sha/sync_result/sync_patch_unchanged from ${GC_BEAD_ID}; failing closed (skipping the reviewed_head_sha stamp)" >&2
+fi
+
 STAMP_NOOP_PASS="false"
-if [ -z "${FIX_COMMIT_SHA:-}" ]; then
+if [ -z "$CV_LIB" ]; then
+  STAMP_NOOP_PASS="false"
+elif [ -z "${FIX_COMMIT_SHA:-}" ]; then
   case "${SYNC_RESULT:-noop}" in
     noop) STAMP_NOOP_PASS="true" ;;
     recreated|rebased)
       [ "${SYNC_PATCH_UNCHANGED:-false}" = "true" ] && STAMP_NOOP_PASS="true"
       ;;
+    *) STAMP_NOOP_PASS="false" ;;
   esac
 fi
 

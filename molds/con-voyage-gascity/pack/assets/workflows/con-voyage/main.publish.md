@@ -425,12 +425,33 @@ if [ -n "${CV_LIB:-}" ]; then
   REVIEWED_HEAD_SHA="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.build.reviewed_head_sha)"
   REVIEWED_HEAD_SHA_ATTEMPTED="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.build.reviewed_head_sha_attempted)"
 fi
+REVIEWED_HEAD_STAMP_FAILED="false"
 if [ -z "$REVIEWED_HEAD_SHA" ]; then
   if [ "$REVIEWED_HEAD_SHA_ATTEMPTED" = "true" ]; then
+    # fk-j29mzp BLOCKING-2 (synthesis review): by this point in the script the
+    # PR is already open and the work bead already flipped to
+    # cv=awaiting_merge — an `exit 1` here, before the finalize record below is
+    # written, would leave both live with no .finalize record anywhere, so
+    # con-voyage-finalize has no way to ever discover and tear down this
+    # workflow root. Give this abort the same explicit failure contract as the
+    # sibling hard-fail in "Verify the review was actually approved" above
+    # (mail the mayor, stamp gc.build.publish_status=failed) instead of a bare
+    # exit, and still fall through to write the finalize record below so the
+    # already-live PR/work bead stay discoverable and recoverable by a human
+    # or the finalize monitor.
     echo "con-voyage publish: FATAL: gc.build.reviewed_head_sha_attempted=true on workflow root ${ROOT_ID} but gc.build.reviewed_head_sha is missing — the stamp write failed on a post-fix root; refusing to silently record publish-time HEAD (${PUBLISHED_HEAD_SHA}) as reviewed (fk-bcyt7v follow-up, fk-j29mzp)" >&2
-    exit 1
+    gc mail send mayor \
+      -s "con-voyage publish: reviewed-head stamp missing for PR ${PR_URL}" \
+      -m "workflow root ${ROOT_ID}: gc.build.reviewed_head_sha_attempted=true but gc.build.reviewed_head_sha is missing. PR ${PR_URL} is already open and work bead ${WORK_BEAD} is already cv=awaiting_merge — this publish step did NOT verify ${PUBLISHED_HEAD_SHA} was actually reviewed before recording it. A human should confirm the pushed commit was reviewed before landing." \
+      2>&1 || echo "note: escalation mail failed too (continuing)" >&2
+    gc bd update "$ROOT_ID" \
+      --set-metadata 'gc.build.publish_status=failed' \
+      --set-metadata 'gc.build.publish_reason=reviewed_head_stamp_missing' \
+      || echo "con-voyage publish: WARNING: could not stamp gc.build.publish_status=failed on workflow root ${ROOT_ID}" >&2
+    REVIEWED_HEAD_STAMP_FAILED="true"
+  else
+    echo "con-voyage publish: WARNING: no gc.build.reviewed_head_sha on workflow root ${ROOT_ID} (legacy pre-fix root, never attempted a stamp) — falling back to current HEAD (${PUBLISHED_HEAD_SHA}) for last_reviewed_head_sha, which may be a later unreviewed commit (fk-bcyt7v)" >&2
   fi
-  echo "con-voyage publish: WARNING: no gc.build.reviewed_head_sha on workflow root ${ROOT_ID} (legacy pre-fix root, never attempted a stamp) — falling back to current HEAD (${PUBLISHED_HEAD_SHA}) for last_reviewed_head_sha, which may be a later unreviewed commit (fk-bcyt7v)" >&2
   REVIEWED_HEAD_SHA="$PUBLISHED_HEAD_SHA"
 fi
 
@@ -449,7 +470,20 @@ fi
   printf 'rereview_root_bead_id=%s\n' ""
 } > "${CV_STATE_DIR}/${finalize_key}.finalize"
 echo "con-voyage publish: armed finalize monitor for ${REPO_FULL}#${PR_NUMBER} -> work bead ${WORK_BEAD}"
+
+if [ "$REVIEWED_HEAD_STAMP_FAILED" = "true" ]; then
+  echo "con-voyage publish: finalize record written despite the reviewed-head stamp failure above — close this step with gc.outcome=fail and gc.failure_class=reviewed_head_stamp_missing instead of the normal success path" >&2
+  exit 1
+fi
 ```
+
+If `$REVIEWED_HEAD_STAMP_FAILED` was `true` above (printed to stderr, mailed to
+the mayor, and `gc.build.publish_status=failed` already stamped on the
+workflow root): close THIS publish bead with `gc.outcome=fail` and
+`gc.failure_class=reviewed_head_stamp_missing` — do NOT close with the normal
+success metadata below. The PR and work bead are already live and the
+finalize record is already armed, so this is a flagged-for-human-review
+failure, not an orphaned workflow root.
 
 If push is false or open_pr is false, record a no-op publish outcome and
 preserve the approved con-voyage review result without mutating remotes. In the
