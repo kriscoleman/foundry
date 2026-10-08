@@ -501,6 +501,33 @@ cv_worktree_sync_lock_dir() {
   printf '%s' "${dir%/}.cvsynclock"
 }
 
+# _cv_worktree_sync_lock_is_dead_or_stale LOCKDIR STALE_SECONDS — true (0)
+# only when LOCKDIR is both older than STALE_SECONDS AND its recorded holder
+# pid is no longer alive (or never recorded). Review fk-hbsmk BLOCKING-2:
+# mtime age alone cannot distinguish a crashed holder from a legitimately
+# long-running one (the `git rebase --onto` step this lock guards has no
+# timeout, unlike the bounded fetch) — a `kill -0` on the stored pid is the
+# actual liveness signal. Caller must already hold the steal mutex before
+# calling this (see cv_worktree_sync_lock_acquire) so the staleness read and
+# the reclaim it gates can never race a second reclaimer's own read.
+_cv_worktree_sync_lock_is_dead_or_stale() {
+  local lockdir="$1" stale="$2"
+  python3 -c "
+import os, sys, time
+try:
+    age = time.time() - os.stat(sys.argv[1]).st_mtime
+except Exception:
+    sys.exit(1)
+sys.exit(0 if age > float(sys.argv[2]) else 1)
+" "$lockdir" "$stale" 2>/dev/null || return 1
+  local holder_pid
+  holder_pid="$(cat "${lockdir}/pid" 2>/dev/null || true)"
+  if [ -n "$holder_pid" ] && kill -0 "$holder_pid" 2>/dev/null; then
+    return 1
+  fi
+  return 0
+}
+
 # cv_worktree_sync_lock_acquire DIR [TIMEOUT_SECONDS] — fk-dy2ygk: mutual
 # exclusion for a shared con-voyage source-anchor worktree. THE BUG this
 # closes: cv_sync_worktree_to_base mutates DIR in place (fetch, then
@@ -512,17 +539,26 @@ cv_worktree_sync_lock_dir() {
 # occurrences, all on the shared rereview-worktree mechanism: "lanes grade
 # stale/phantom HEAD"). Blocking (not failing) on contention here is
 # deliberate: a lane should wait out a sync in progress and then review
-# whatever it leaves behind, not refuse to run — same philosophy as
-# acquire_lock's stale-lock reclaim above, but keyed by worktree path instead
-# of a CV_STATE_DIR dedup_key, since this lock must be reachable without a
-# shared state directory.
+# whatever it leaves behind, not refuse to run.
 #
-# Returns 0 once the lock is held. Returns 1 if TIMEOUT_SECONDS (default
-# CV_WORKTREE_SYNC_LOCK_TIMEOUT_SECONDS, else 120) elapses first — a caller
-# must treat that as a failure to safely proceed, not silently continue
-# unlocked. A lock older than CV_WORKTREE_SYNC_LOCK_STALE_SECONDS (default
-# 600) is presumed abandoned by a crashed holder and reclaimed rather than
-# left to wedge every future sync/lane acquire on this worktree forever.
+# Review fk-hbsmk BLOCKING-2: reclaim of a stale-looking lock is now
+# serialized behind a fixed-path `steal_mutex` (same pattern as
+# acquire_lock's stale-lock reclaim above) so two waiters can never both
+# observe "stale" and both `rm -rf` the same lockdir — only the winner of the
+# steal mutex re-checks staleness (now, fresh) before touching the lockdir.
+# Staleness itself also now requires the recorded holder pid to be dead (see
+# _cv_worktree_sync_lock_is_dead_or_stale), not just an old mtime.
+#
+# Prints a unique ownership token to stdout on success (nothing else) — a
+# caller MUST capture it and pass it to cv_worktree_sync_lock_release so
+# release can refuse to delete a lock a reclaim has since stolen out from
+# under it (review fk-hbsmk BLOCKING-1). Returns 1 (nothing printed) if
+# TIMEOUT_SECONDS (default CV_WORKTREE_SYNC_LOCK_TIMEOUT_SECONDS, else 120)
+# elapses first — a caller must treat that as a failure to safely proceed,
+# not silently continue unlocked. A lock older than
+# CV_WORKTREE_SYNC_LOCK_STALE_SECONDS (default 600) whose holder pid is also
+# dead is presumed abandoned and reclaimed, rather than left to wedge every
+# future sync/lane acquire on this worktree forever.
 cv_worktree_sync_lock_acquire() {
   local dir="$1"
   local timeout="${2:-${CV_WORKTREE_SYNC_LOCK_TIMEOUT_SECONDS:-120}}"
@@ -531,17 +567,20 @@ cv_worktree_sync_lock_acquire() {
   lockdir="$(cv_worktree_sync_lock_dir "$dir")"
   local waited=0
   while ! mkdir "$lockdir" 2>/dev/null; do
-    if python3 -c "
-import os, sys, time
-try:
-    age = time.time() - os.stat(sys.argv[1]).st_mtime
-except Exception:
-    sys.exit(1)
-sys.exit(0 if age > float(sys.argv[2]) else 1)
-" "$lockdir" "$stale" 2>/dev/null; then
-      rm -rf "$lockdir" 2>/dev/null
-      echo "cv-lib: NOTICE: reclaimed a stale worktree sync lock for ${dir} (>${stale}s; prior holder presumed dead)" >&2
-      continue
+    local reclaimed=0
+    local steal_mutex="${lockdir}.stealing"
+    if mkdir "$steal_mutex" 2>/dev/null; then
+      if _cv_worktree_sync_lock_is_dead_or_stale "$lockdir" "$stale"; then
+        rm -rf "$lockdir" 2>/dev/null
+        if mkdir "$lockdir" 2>/dev/null; then
+          echo "cv-lib: NOTICE: reclaimed a stale worktree sync lock for ${dir} (>${stale}s; prior holder presumed dead)" >&2
+          reclaimed=1
+        fi
+      fi
+      rm -rf "$steal_mutex" 2>/dev/null
+    fi
+    if [ "$reclaimed" -eq 1 ]; then
+      break
     fi
     if [ "$waited" -ge "$timeout" ]; then
       echo "cv-lib: ERROR cv_worktree_sync_lock_acquire: timed out after ${timeout}s waiting for the sync lock on ${dir}" >&2
@@ -550,15 +589,37 @@ sys.exit(0 if age > float(sys.argv[2]) else 1)
     sleep 1
     waited=$((waited + 1))
   done
+  local token
+  token="$$-${RANDOM}${RANDOM}-$(date +%s%N 2>/dev/null || date +%s)"
   printf '%s\n' "$$" > "${lockdir}/pid" 2>/dev/null || true
+  printf '%s\n' "$token" > "${lockdir}/owner" 2>/dev/null || true
+  printf '%s\n' "$token"
   return 0
 }
 
-# cv_worktree_sync_lock_release DIR — always safe to call even if the lock was
-# never acquired.
+# cv_worktree_sync_lock_release DIR [TOKEN] — always safe to call even if the
+# lock was never acquired. Review fk-hbsmk BLOCKING-1: when TOKEN is given
+# (the value cv_worktree_sync_lock_acquire printed), release first verifies
+# it still matches the lockdir's recorded owner before deleting anything — a
+# holder whose lock was reclaimed as stale while it still thought it owned it
+# (e.g. it ran past CV_WORKTREE_SYNC_LOCK_STALE_SECONDS) must not blindly
+# `rm -rf` the path and delete a DIFFERENT, live holder's lock out from under
+# it. TOKEN omitted is a deliberately permissive legacy mode for any caller
+# that cannot thread it through; every caller in this pack now passes one.
 cv_worktree_sync_lock_release() {
-  local dir="$1"
-  rm -rf "$(cv_worktree_sync_lock_dir "$dir")" 2>/dev/null || true
+  local dir="$1" token="${2:-}"
+  local lockdir
+  lockdir="$(cv_worktree_sync_lock_dir "$dir")"
+  [ -d "$lockdir" ] || return 0
+  if [ -n "$token" ]; then
+    local stored
+    stored="$(cat "${lockdir}/owner" 2>/dev/null || true)"
+    if [ "$stored" != "$token" ]; then
+      echo "cv-lib: WARNING cv_worktree_sync_lock_release: owner token mismatch for ${dir} — not releasing a lock we no longer hold (reclaimed by another holder)" >&2
+      return 0
+    fi
+  fi
+  rm -rf "$lockdir" 2>/dev/null || true
 }
 
 # cv_sync_worktree_to_base DIR [BRANCH_NAME] [EXPLICIT_BASE] — fk-hbsmk: make
@@ -624,19 +685,23 @@ cv_sync_worktree_to_base() {
   # fk-dy2ygk: hold the SAME lock a review lane's cv-review-lane-worktree.sh
   # `acquire` takes on this exact directory, for the whole fetch/rebase below
   # — never let a lane read this worktree's HEAD mid-mutation (see
-  # cv_worktree_sync_lock_acquire's doc comment). The RETURN trap releases it
-  # on every exit path below (including the early returns already in this
-  # function), so none of the existing return-code semantics change.
-  if ! cv_worktree_sync_lock_acquire "$dir"; then
+  # cv_worktree_sync_lock_acquire's doc comment). Review fk-hbsmk BLOCKING-4:
+  # a RETURN trap is bash's single global trap slot, not a per-call stack — a
+  # future caller that wraps this function inside its own function with its
+  # own RETURN trap would have that trap silently clobbered. Call
+  # cv_worktree_sync_lock_release explicitly on every return path below
+  # instead, passing the ownership token so a reclaim can never be deleted by
+  # a holder who no longer owns it (BLOCKING-1).
+  local sync_lock_token
+  sync_lock_token="$(cv_worktree_sync_lock_acquire "$dir")" || {
     echo "cv-lib: ERROR cv_sync_worktree_to_base: could not acquire the worktree sync lock for ${dir}" >&2
     return 1
-  fi
-  # shellcheck disable=SC2064  # intentional: expand $dir now, not at trap time
-  trap "cv_worktree_sync_lock_release \"${dir}\"" RETURN
+  }
 
   local fetch_timeout="${CV_SYNC_FETCH_TIMEOUT_SECONDS:-60}"
   if ! cv_with_timeout "$fetch_timeout" git -C "$dir" fetch -q origin >&2; then
     echo "cv-lib: ERROR cv_sync_worktree_to_base: git fetch origin failed or timed out (${fetch_timeout}s) in ${dir} — refusing to proceed on an unconfirmed base" >&2
+    cv_worktree_sync_lock_release "$dir" "$sync_lock_token"
     return 1
   fi
 
@@ -656,16 +721,17 @@ cv_sync_worktree_to_base() {
   prep_script="$(cv_pack_script cv-worktree-prep.sh)"
   if [ -z "$prep_script" ] || [ ! -x "$prep_script" ]; then
     echo "cv-lib: ERROR cv_sync_worktree_to_base: cv-worktree-prep.sh not found — cannot sync ${dir}" >&2
+    cv_worktree_sync_lock_release "$dir" "$sync_lock_token"
     return 1
   fi
 
   bash "$prep_script" ensure-branch "$dir" "$branch_name" >&2 \
-    || { echo "cv-lib: ERROR cv_sync_worktree_to_base: ensure-branch failed for ${dir}" >&2; return 1; }
+    || { echo "cv-lib: ERROR cv_sync_worktree_to_base: ensure-branch failed for ${dir}" >&2; cv_worktree_sync_lock_release "$dir" "$sync_lock_token"; return 1; }
 
   local current_branch
   current_branch="$(git -C "$dir" symbolic-ref -q --short HEAD 2>/dev/null || true)"
   [ -n "$current_branch" ] \
-    || { echo "cv-lib: ERROR cv_sync_worktree_to_base: ${dir} is still detached after ensure-branch" >&2; return 1; }
+    || { echo "cv-lib: ERROR cv_sync_worktree_to_base: ${dir} is still detached after ensure-branch" >&2; cv_worktree_sync_lock_release "$dir" "$sync_lock_token"; return 1; }
 
   # fk-wmhr96: EXPLICIT_BASE (a declared stacked base, e.g. from the
   # con-voyage `base_branch` formula var) overrides the origin/HEAD ->
@@ -699,12 +765,14 @@ cv_sync_worktree_to_base() {
   if [ -z "$base_sha" ]; then
     echo "cv-lib: cv_sync_worktree_to_base: no base ref resolved for ${dir} — nothing to sync against" >&2
     printf 'noop\n'
+    cv_worktree_sync_lock_release "$dir" "$sync_lock_token"
     return 0
   fi
 
   if git -C "$dir" merge-base --is-ancestor "$base_sha" HEAD 2>/dev/null; then
     echo "cv-lib: ${dir} already contains ${base_ref} (${base_sha}) — no sync needed" >&2
     printf 'noop\n'
+    cv_worktree_sync_lock_release "$dir" "$sync_lock_token"
     return 0
   fi
 
@@ -717,10 +785,12 @@ cv_sync_worktree_to_base() {
   if [ "$ahead" -eq 0 ]; then
     if ! git -C "$dir" checkout -q -B "$current_branch" "$base_sha" >&2; then
       echo "cv-lib: ERROR cv_sync_worktree_to_base: checkout -B ${current_branch} ${base_ref} failed in ${dir}" >&2
+      cv_worktree_sync_lock_release "$dir" "$sync_lock_token"
       return 1
     fi
     echo "cv-lib: ${dir} had no commits of its own beyond ${base_ref}'s history — recreated ${current_branch} from ${base_ref}" >&2
     printf 'recreated\n'
+    cv_worktree_sync_lock_release "$dir" "$sync_lock_token"
     return 0
   fi
 
@@ -741,10 +811,12 @@ cv_sync_worktree_to_base() {
     git -C "$dir" rebase --abort >/dev/null 2>&1 || true
     echo "cv-lib: ERROR cv_sync_worktree_to_base: rebase of ${dir} onto ${base_ref} failed (conflict) — aborted, tree left clean; resolve manually before continuing" >&2
     echo "cv-lib: SYNC_CONFLICT_PATHS=${conflict_paths}" >&2
+    cv_worktree_sync_lock_release "$dir" "$sync_lock_token"
     return 2
   fi
   echo "cv-lib: ${dir} is now based on ${base_ref}" >&2
   printf 'rebased\n'
+  cv_worktree_sync_lock_release "$dir" "$sync_lock_token"
 }
 
 # cv_sync_patch_unchanged DIR OLD_BASE_SHA OLD_HEAD — fk-u8n34: tells the

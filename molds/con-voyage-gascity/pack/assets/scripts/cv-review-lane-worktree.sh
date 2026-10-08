@@ -106,6 +106,30 @@ sync_lock_dir() {
   printf '%s' "${1%/}.cvsynclock"
 }
 
+# sync_lock_is_dead_or_stale LOCKDIR STALE_SECONDS — review fk-hbsmk
+# BLOCKING-2: true (0) only when LOCKDIR is both older than STALE_SECONDS AND
+# its recorded holder pid is no longer alive (or never recorded). Mirrors
+# con-voyage-lib.sh's _cv_worktree_sync_lock_is_dead_or_stale exactly; see
+# that function's doc comment for why mtime age alone is insufficient. Caller
+# must already hold the steal mutex before calling this.
+sync_lock_is_dead_or_stale() {
+  local lockdir="$1" stale="$2"
+  python3 -c "
+import os, sys, time
+try:
+    age = time.time() - os.stat(sys.argv[1]).st_mtime
+except Exception:
+    sys.exit(1)
+sys.exit(0 if age > float(sys.argv[2]) else 1)
+" "$lockdir" "$stale" 2>/dev/null || return 1
+  local holder_pid
+  holder_pid="$(cat "${lockdir}/pid" 2>/dev/null || true)"
+  if [ -n "$holder_pid" ] && kill -0 "$holder_pid" 2>/dev/null; then
+    return 1
+  fi
+  return 0
+}
+
 # sync_lock_acquire SRC — blocks (bounded, with stale-lock reclaim) until no
 # cv_sync_worktree_to_base call holds the lock on SRC. THE BUG this closes:
 # acquire below reads SRC's HEAD and forks a private lane worktree from it;
@@ -113,9 +137,11 @@ sync_lock_dir() {
 # cv_sync_worktree_to_base and observe a transient or stale HEAD (live
 # evidence 2026-10-04..2026-10-06: review lanes grading phantom/stale code on
 # the shared rereview worktree). Mirrors
-# con-voyage-lib.sh's cv_worktree_sync_lock_acquire exactly; kept duplicated
-# here rather than sourced for the same standalone-script reason as the path
-# convention above.
+# con-voyage-lib.sh's cv_worktree_sync_lock_acquire exactly (including the
+# steal-mutex-serialized, liveness-checked reclaim added for review fk-hbsmk
+# BLOCKING-2, and the ownership token printed to stdout for BLOCKING-1); kept
+# duplicated here rather than sourced for the same standalone-script reason
+# as the path convention above.
 sync_lock_acquire() {
   local dir="$1"
   local timeout="${CV_WORKTREE_SYNC_LOCK_TIMEOUT_SECONDS:-120}"
@@ -124,17 +150,20 @@ sync_lock_acquire() {
   lockdir="$(sync_lock_dir "$dir")"
   local waited=0
   while ! mkdir "$lockdir" 2>/dev/null; do
-    if python3 -c "
-import os, sys, time
-try:
-    age = time.time() - os.stat(sys.argv[1]).st_mtime
-except Exception:
-    sys.exit(1)
-sys.exit(0 if age > float(sys.argv[2]) else 1)
-" "$lockdir" "$stale" 2>/dev/null; then
-      rm -rf "$lockdir" 2>/dev/null
-      echo "cv-review-lane-worktree: NOTICE: reclaimed a stale worktree sync lock for ${dir} (>${stale}s; prior holder presumed dead)" >&2
-      continue
+    local reclaimed=0
+    local steal_mutex="${lockdir}.stealing"
+    if mkdir "$steal_mutex" 2>/dev/null; then
+      if sync_lock_is_dead_or_stale "$lockdir" "$stale"; then
+        rm -rf "$lockdir" 2>/dev/null
+        if mkdir "$lockdir" 2>/dev/null; then
+          echo "cv-review-lane-worktree: NOTICE: reclaimed a stale worktree sync lock for ${dir} (>${stale}s; prior holder presumed dead)" >&2
+          reclaimed=1
+        fi
+      fi
+      rm -rf "$steal_mutex" 2>/dev/null
+    fi
+    if [ "$reclaimed" -eq 1 ]; then
+      break
     fi
     if [ "$waited" -ge "$timeout" ]; then
       echo "cv-review-lane-worktree: ERROR: timed out after ${timeout}s waiting for the sync lock on ${dir}" >&2
@@ -143,12 +172,32 @@ sys.exit(0 if age > float(sys.argv[2]) else 1)
     sleep 1
     waited=$((waited + 1))
   done
+  local token
+  token="$$-${RANDOM}${RANDOM}-$(date +%s%N 2>/dev/null || date +%s)"
   printf '%s\n' "$$" > "${lockdir}/pid" 2>/dev/null || true
+  printf '%s\n' "$token" > "${lockdir}/owner" 2>/dev/null || true
+  printf '%s\n' "$token"
   return 0
 }
 
+# sync_lock_release SRC [TOKEN] — review fk-hbsmk BLOCKING-1: when TOKEN is
+# given (the value sync_lock_acquire printed), refuses to delete the lockdir
+# unless it is still the recorded owner — see
+# con-voyage-lib.sh's cv_worktree_sync_lock_release for the full rationale.
 sync_lock_release() {
-  rm -rf "$(sync_lock_dir "$1")" 2>/dev/null || true
+  local dir="$1" token="${2:-}"
+  local lockdir
+  lockdir="$(sync_lock_dir "$dir")"
+  [ -d "$lockdir" ] || return 0
+  if [ -n "$token" ]; then
+    local stored
+    stored="$(cat "${lockdir}/owner" 2>/dev/null || true)"
+    if [ "$stored" != "$token" ]; then
+      echo "cv-review-lane-worktree: WARNING: owner token mismatch for ${dir} — not releasing a lock we no longer hold (reclaimed by another holder)" >&2
+      return 0
+    fi
+  fi
+  rm -rf "$lockdir" 2>/dev/null || true
 }
 
 cmd_acquire() {
@@ -161,18 +210,30 @@ cmd_acquire() {
   lane_id="$(sanitize_lane_id "$lane_id_raw")"
   lane_dir="$(lane_dir_for "$src" "$lane_id")"
 
-  # fk-dy2ygk: hold the lock across both the HEAD read and the worktree
-  # add/checkout below — never let either observe a concurrent
-  # cv_sync_worktree_to_base mutation of $src mid-flight. An EXIT trap (not
-  # RETURN) is required here: a failure further down calls `die`, which
-  # `exit`s the whole one-shot script process rather than returning from this
-  # function, and a RETURN trap never fires on `exit`.
-  sync_lock_acquire "$src" || die "acquire: could not acquire the worktree sync lock for '${src}'"
-  trap 'sync_lock_release "'"$src"'"' EXIT
+  # fk-dy2ygk: hold the lock only across the HEAD read itself — never let it
+  # observe a concurrent cv_sync_worktree_to_base mutation of $src mid-flight.
+  # Review fk-hbsmk BLOCKING-3: the lock previously stayed held through the
+  # `git worktree add` fork below too, which takes real wall-clock time and
+  # is keyed only on $src — that serialized lane-vs-lane (every lane in this
+  # same review round queuing behind each other for the fork duration),
+  # regressing the parallel-review throughput this script exists to provide.
+  # The worktree is forked from $head_commit, already pinned at read time, so
+  # nothing below needs the lock held. An EXIT trap (not RETURN) is required
+  # here: a failure further down calls `die`, which `exit`s the whole
+  # one-shot script process rather than returning from this function, and a
+  # RETURN trap never fires on `exit` — the trap is cleared immediately after
+  # the deliberate early release below so a later `die` never tries to
+  # release a lock this call no longer holds.
+  local lock_token
+  lock_token="$(sync_lock_acquire "$src")" || die "acquire: could not acquire the worktree sync lock for '${src}'"
+  trap 'sync_lock_release "'"$src"'" "'"$lock_token"'"' EXIT
 
   local head_commit
   head_commit="$(git -C "$src" rev-parse HEAD 2>/dev/null)" \
     || die "acquire: could not resolve HEAD in '${src}'"
+
+  sync_lock_release "$src" "$lock_token"
+  trap - EXIT
 
   if [ -d "$lane_dir" ]; then
     # Capture first, then match — never pipe a live 'git worktree list' into

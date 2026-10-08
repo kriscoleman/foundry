@@ -191,6 +191,155 @@ else
   assert_eq "$new_tip2" "$(git_c "$WT2" rev-parse HEAD)" "HEAD now matches the new origin/main tip"
 fi
 
+# ===========================================================================
+# CASE 3 — review fk-hbsmk BLOCKING-1: a release carrying a STALE token (one
+#   whose lock has since been reclaimed by a different holder) must not
+#   delete that different holder's live lock.
+# ===========================================================================
+start_case "3: release with a mismatched owner token does not delete a live lock held by someone else"
+REPO3_DIR="${SANDBOX}/repo3-plain"
+mkdir -p "$REPO3_DIR"
+git_c "$REPO3_DIR" init -q -b main
+printf 'x\n' > "${REPO3_DIR}/f"
+git_c "$REPO3_DIR" add f
+git_c "$REPO3_DIR" commit -q -m init
+
+stale_token="$(cv_worktree_sync_lock_acquire "$REPO3_DIR")"
+if [ -z "$stale_token" ]; then
+  fail "test setup: cv_worktree_sync_lock_acquire did not print an ownership token"
+else
+  # Simulate a reclaim: release WITHOUT the stale token (legacy/forced path),
+  # then a second holder acquires fresh — this is the new live lock.
+  cv_worktree_sync_lock_release "$REPO3_DIR"
+  live_token="$(cv_worktree_sync_lock_acquire "$REPO3_DIR")"
+  if [ -z "$live_token" ]; then
+    fail "test setup: second acquire did not print an ownership token"
+  else
+    cv_worktree_sync_lock_release "$REPO3_DIR" "$stale_token"
+    if [ -d "$(cv_worktree_sync_lock_dir "$REPO3_DIR")" ]; then
+      pass "release with a stale/mismatched token left the live lock in place"
+    else
+      fail "release with a stale/mismatched token deleted a different holder's live lock"
+    fi
+    cv_worktree_sync_lock_release "$REPO3_DIR" "$live_token"
+    if [ -d "$(cv_worktree_sync_lock_dir "$REPO3_DIR")" ]; then
+      fail "release with the correct current token failed to delete the lock"
+    else
+      pass "release with the correct current token deletes the lock"
+    fi
+  fi
+fi
+
+# ===========================================================================
+# CASE 4 — review fk-hbsmk BLOCKING-2: a lock past the stale-mtime threshold
+#   is reclaimed ONLY when its recorded holder pid is actually dead. A
+#   long-running-but-alive holder (mtime stale, pid alive) must NOT be
+#   reclaimed out from under it.
+# ===========================================================================
+start_case "4: stale-mtime reclaim requires a dead holder pid, not just an old mtime"
+REPO4_DIR="${SANDBOX}/repo4-plain"
+mkdir -p "$REPO4_DIR"
+git_c "$REPO4_DIR" init -q -b main
+printf 'x\n' > "${REPO4_DIR}/f"
+git_c "$REPO4_DIR" add f
+git_c "$REPO4_DIR" commit -q -m init
+
+LOCKDIR4="$(cv_worktree_sync_lock_dir "$REPO4_DIR")"
+
+# 4a: mtime stale, holder pid alive (this test process itself) -> must block.
+mkdir "$LOCKDIR4"
+printf '%s\n' "$$" > "${LOCKDIR4}/pid"
+printf '%s\n' "alive-holder-token" > "${LOCKDIR4}/owner"
+touch -t "$(date -v-3700S +%Y%m%d%H%M.%S 2>/dev/null || date -d '-3700 seconds' +%Y%m%d%H%M.%S)" "$LOCKDIR4" 2>/dev/null
+OUT4A_FILE="${SANDBOX}/acquire4a.out"
+RC4A_FILE="${SANDBOX}/acquire4a.rc"
+(
+  CV_WORKTREE_SYNC_LOCK_STALE_SECONDS=1 cv_worktree_sync_lock_acquire "$REPO4_DIR" 3 > "$OUT4A_FILE" 2>/dev/null
+  echo $? > "$RC4A_FILE"
+) &
+bg4a_pid=$!
+sleep 1
+if kill -0 "$bg4a_pid" 2>/dev/null; then
+  pass "an old-mtime lock with a LIVE holder pid is not reclaimed"
+else
+  fail "an old-mtime lock with a LIVE holder pid was reclaimed anyway (liveness check missing)"
+fi
+rm -rf "$LOCKDIR4" 2>/dev/null
+wait "$bg4a_pid" 2>/dev/null
+
+# 4b: mtime stale, holder pid genuinely dead -> reclaimed.
+mkdir "$LOCKDIR4"
+dead_pid=$(( $$ + 1 ))
+while kill -0 "$dead_pid" 2>/dev/null; do dead_pid=$((dead_pid + 1)); done
+printf '%s\n' "$dead_pid" > "${LOCKDIR4}/pid"
+printf '%s\n' "dead-holder-token" > "${LOCKDIR4}/owner"
+touch -t "$(date -v-3700S +%Y%m%d%H%M.%S 2>/dev/null || date -d '-3700 seconds' +%Y%m%d%H%M.%S)" "$LOCKDIR4" 2>/dev/null
+new_token4b="$(CV_WORKTREE_SYNC_LOCK_STALE_SECONDS=1 cv_worktree_sync_lock_acquire "$REPO4_DIR" 5)"
+if [ -n "$new_token4b" ] && [ "$new_token4b" != "dead-holder-token" ]; then
+  pass "an old-mtime lock with a DEAD holder pid is reclaimed with a fresh token"
+else
+  fail "an old-mtime lock with a dead holder pid was not reclaimed (got token '${new_token4b}')"
+fi
+cv_worktree_sync_lock_release "$REPO4_DIR" "$new_token4b"
+
+# ===========================================================================
+# CASE 5 — review fk-hbsmk BLOCKING-3: two concurrent lane `acquire` calls
+#   against the SAME source with DIFFERENT lane ids must not serialize
+#   against each other — only against an active sync.
+# ===========================================================================
+start_case "5: two concurrent lane acquires on the same source do not serialize against each other"
+UPSTREAM5="${SANDBOX}/repo5-upstream.git"
+git init -q -b main --bare "$UPSTREAM5"
+REPO5="$(mk_repo repo5)"
+git_c "$REPO5" remote add origin "$UPSTREAM5"
+git_c "$REPO5" push -q -u origin main
+SRC5="${SANDBOX}/repo5-shared-worktree"
+git_c "$REPO5" worktree add -q -B con-voyage/repo5 "$SRC5" main
+
+# A slow `git worktree add` substitute: wrap git so the FIRST lane's worktree
+# add blocks until a sentinel file appears, proving (if the second lane
+# finishes first) that the two forks ran concurrently rather than queued.
+SLOWDIR="${SANDBOX}/slowbin5"
+mkdir -p "$SLOWDIR"
+REAL_GIT="$(command -v git)"
+SENTINEL5="${SANDBOX}/lane1-add-started"
+cat > "${SLOWDIR}/git" <<SLOWGIT
+#!/usr/bin/env bash
+if [ "\$1" = "-C" ] && [ "\$3" = "worktree" ] && [ "\$4" = "add" ] && [[ "\$5" == *"--review-lane1" ]]; then
+  touch "${SENTINEL5}"
+  sleep 2
+fi
+exec "${REAL_GIT}" "\$@"
+SLOWGIT
+chmod +x "${SLOWDIR}/git"
+
+OUT5A_FILE="${SANDBOX}/acquire5a.out"
+(
+  PATH="${SLOWDIR}:${PATH}" bash "$LANE_SCRIPT" acquire "$SRC5" lane1 > "$OUT5A_FILE" 2>&1
+) &
+lane1_bg=$!
+
+waited5=0
+while [ ! -f "$SENTINEL5" ] && [ "$waited5" -lt 10 ]; do sleep 0.2; waited5=$((waited5 + 1)); done
+if [ ! -f "$SENTINEL5" ]; then
+  fail "test setup: lane1's worktree add never started"
+else
+  OUT5B_FILE="${SANDBOX}/acquire5b.out"
+  RC5B_FILE="${SANDBOX}/acquire5b.rc"
+  start5b=$(date +%s)
+  bash "$LANE_SCRIPT" acquire "$SRC5" lane2 > "$OUT5B_FILE" 2>&1
+  echo $? > "$RC5B_FILE"
+  elapsed5b=$(( $(date +%s) - start5b ))
+  rc5b="$(cat "$RC5B_FILE" 2>/dev/null || echo "?")"
+  assert_eq "0" "$rc5b" "lane2's acquire succeeds while lane1's worktree add is still in flight"
+  if [ "$elapsed5b" -lt 2 ]; then
+    pass "lane2's acquire completed in ${elapsed5b}s without waiting on lane1's worktree add (not serialized)"
+  else
+    fail "lane2's acquire took ${elapsed5b}s — appears serialized behind lane1's worktree add"
+  fi
+fi
+wait "$lane1_bg" 2>/dev/null
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "ALL CASES PASSED"
