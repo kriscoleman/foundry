@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.16.0](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.15.0...con-voyage-gascity-v0.16.0) (2026-10-08)
+
+
+### Features
+
+* **con-voyage:** base-agnostic CI repair discovery for stacked PRs ([b3fc319](https://github.com/kriscoleman/foundry/commit/b3fc319cdfbd76d39c529f59867e5fb375028c0f))
+* **con-voyage:** orphan-sweep order closes beads under a closed workflow root ([cefc867](https://github.com/kriscoleman/foundry/commit/cefc867ea88d1602530afa9d83838169b21760d7))
+
+
+### Bug Fixes
+
+* bound dedup-lock bd set-state call, widen stale-threshold margin (review fk-k4gebi) ([dc62e02](https://github.com/kriscoleman/foundry/commit/dc62e0241965d0562b3560286a4d1c0afc179131))
+* bound flatten_roster_vars under the dedup lock, distinguish store-query failure from confirmed-0 dependent_count (review fk-2v5tdv) ([5f6264b](https://github.com/kriscoleman/foundry/commit/5f6264b6ab810fbaf6baa5bd0ecdfbccc6056f72))
+* close rereview-watch leak-fix bd close timeouts, dedup lock, test gaps (review fk-k4gebi) ([dc636bb](https://github.com/kriscoleman/foundry/commit/dc636bb38a9f2122d0afced5446d84613eddd71d))
+* **con-voyage-pr-watch:** resolve PART A-native review BLOCKING findings (fk-travno) ([9929670](https://github.com/kriscoleman/foundry/commit/9929670451baee7a83178bcc88e9347e02502035))
+* **con-voyage:** add a real reopen command and LOW-only pause (fk-9iqxnx) ([724d526](https://github.com/kriscoleman/foundry/commit/724d526dc2eab861afc7cfa8bf18524d8bf7a30e))
+* **con-voyage:** bot-ack regex plurals, snake_case reason, escape-hatch/cross-loop/edge test gaps (fk-wpgt9j send-back) ([60e9523](https://github.com/kriscoleman/foundry/commit/60e952394657c057ba5a9c74e6c83fe2b97e60b8))
+* **con-voyage:** bound orphan-sweep candidate enumeration with a timeout ([5ceebcd](https://github.com/kriscoleman/foundry/commit/5ceebcd88945ebb95444339dd7b7529d692752ee))
+* **con-voyage:** give rereview-watch's gc sling its own timeout, fix seed-bead leak ([57cbd7e](https://github.com/kriscoleman/foundry/commit/57cbd7e05156441418f9a68368383f48497a6274))
+* **con-voyage:** pr-watch must not route AI-reviewer bot acks as feedback (fk-wpgt9j) ([6c371e5](https://github.com/kriscoleman/foundry/commit/6c371e528685363c1eca439edfe0bcfced105dd5))
+* **con-voyage:** publish records the reviewed HEAD, not head-at-publish-time ([2468315](https://github.com/kriscoleman/foundry/commit/2468315dfbd1bd3c3106e36d76a25a326753cf6c))
+* **con-voyage:** resolve 9 re-graded review findings on mayor-reopen path (fk-9iqxnx) ([c3af260](https://github.com/kriscoleman/foundry/commit/c3af26083dc4b9b32c8819a23b15f6f0251adf93))
+* **con-voyage:** resolve aggregated review comment body_file paths as absolute ([0b79a00](https://github.com/kriscoleman/foundry/commit/0b79a0022a3b73b0d0f8e927c527b4fe7bbe8330))
+* derive dedup lock stale-threshold from sling hold time, test lock paths (review fk-k4gebi) ([9906a23](https://github.com/kriscoleman/foundry/commit/9906a23eeb7e0b7eeeff2ff2e07c9ed288b54105))
+* drop dead $CV_LIB gate on reviewed-sha stamp (review fk-qj2s9r) ([bcec03b](https://github.com/kriscoleman/foundry/commit/bcec03b599590aeab0dd9b7f40d7dd92071ffeb7))
+* drop vestigial --json from orphan-sweep digest mail call (repair fk-heub9k) ([61f684a](https://github.com/kriscoleman/foundry/commit/61f684a4aa38848d46a182ae8461dad5134fb687))
+* guard empty base_branches array + gate PART A-native discovery behind opt-in (review fk-9expbh) ([0e85b47](https://github.com/kriscoleman/foundry/commit/0e85b471bf980ffc9623aece54c5d8ffb99c85ee))
+* pin CV_LOCK_STALE_SECONDS derivation and fallback guard with a test (review fk-2v5tdv) ([0e527f1](https://github.com/kriscoleman/foundry/commit/0e527f15af33c0d50bc622ecae8b226f7ae64af1))
+* re-derive $WORKTREE for reviewed-sha stamp instead of ambient cwd (review fk-qj2s9r) ([d728c7f](https://github.com/kriscoleman/foundry/commit/d728c7f04b6d3c9e245b3fdf00cff29e5ac6965a))
+* re-derive ROOT_ID/CONVOY_ID in the mayor-reopen pause fence (review fk-tk0dvg) ([3196d51](https://github.com/kriscoleman/foundry/commit/3196d51ba0de707689d023b2ac4a54c9dcf53302))
+* resolve reviewed-sha stamp's cross-block ROOT_ID/WORKTREE loss (review fk-p5ko3r) ([0eb403e](https://github.com/kriscoleman/foundry/commit/0eb403e0b040e85e56fe8bb100ab3fe3f58e9439))
+* scope orphan-sweep hold check to pinned only, fix ralph rank, cache pinned lookup (review fk-gypn9m) ([ab97f55](https://github.com/kriscoleman/foundry/commit/ab97f55ed1d9a9dcf8cd56870e934f602f0cde2f))
+* skip pinned/gate-blocked beads in orphan-sweep, cover failure paths (review fk-gypn9m) ([2ebba13](https://github.com/kriscoleman/foundry/commit/2ebba13dd47db21fcc89b08a3faffc50c6a33230))
+* thread review state into is_bot_ack to stop re-dropping CHANGES_REQUESTED/refusal signals (review fk-0wdxhn) ([e226c8f](https://github.com/kriscoleman/foundry/commit/e226c8fda84efa637fde811f8afe74e601a05753))
+
 ## [0.15.0](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.14.0...con-voyage-gascity-v0.15.0) (2026-10-04)
 
 
