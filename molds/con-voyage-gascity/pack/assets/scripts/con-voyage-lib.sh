@@ -1523,6 +1523,50 @@ for s in sessions:
 " "$ident"
 }
 
+# cv_rig_for_bead_id BEAD_ID — resolve the rig name that owns BEAD_ID, from
+# its id prefix (the part before the first '-'), via `gc rig list --json`.
+# Empty output if the prefix matches no registered rig, or matches the city's
+# own "hq" entry (never a valid --rig target).
+#
+# WHY THIS EXISTS (fk-jekxaw): `gc bd show <id>`/`bd update <id>` auto-route
+# to the right rig store from the id's own prefix, regardless of caller cwd —
+# but that auto-routing keys off a bead-id POSITIONAL ARGUMENT. A query with
+# no bead id (e.g. `bd list --metadata-field ...`) has nothing for it to key
+# off, so it silently falls back to cwd-based single-store discovery instead
+# (confirmed live: cv-reopen-findings.sh's root lookup, run by the mayor from
+# the city root, queried the CITY store for a rig work bead's convoy id and
+# got back [] — the rig's own open workflow root was never even considered).
+# Any caller building such a query needs to resolve `--rig` itself first;
+# this is that resolution, shared rather than hand-rolled per caller.
+cv_rig_for_bead_id() {
+  local bead_id="${1:-}"
+  local prefix="${bead_id%%-*}"
+  [ -n "${prefix:-}" ] && [ "$prefix" != "$bead_id" ] || { printf ''; return 0; }
+  local gc_bin="${GC:-gc}"
+  local json
+  json=$("$gc_bin" --city "${GC_CITY:-.}" rig list --json 2>/dev/null) || json=""
+  [ -n "$json" ] || { printf ''; return 0; }
+  printf '%s' "$json" | python3 -c "
+import sys, json
+prefix = sys.argv[1]
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+rigs = data.get('rigs') if isinstance(data, dict) else data
+if not isinstance(rigs, list):
+    raise SystemExit(0)
+for r in rigs:
+    if not isinstance(r, dict):
+        continue
+    if r.get('hq'):
+        continue
+    if r.get('prefix') == prefix:
+        print(r.get('name') or '')
+        raise SystemExit(0)
+" "$prefix"
+}
+
 # first_alive_session_id_for_route ROUTE — print the `id` of the first live
 # session (state != closed) whose `template` equals ROUTE (the "<rig>/<role>"
 # form recorded as a lane bead's gc.routed_to metadata). Empty output means

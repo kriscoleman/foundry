@@ -153,7 +153,16 @@ for dep in (d.get('dependents') or []):
 ROOT_ID=""
 OPEN_ROOT_CANDIDATES=""
 if [ -n "${CONVOY_ID// /}" ]; then
-  ROOT_JSON="$("$GC" bd list --metadata-field "gc.build.source_anchor_id=${CONVOY_ID}" --json --limit=0 2>/dev/null || printf '[]')"
+  # fk-jekxaw: unlike bd show/update above, this query takes no bead-id
+  # positional for gc's own auto-routing to key off, so it silently defaults
+  # to cwd-based single-store discovery — wrong whenever this script runs
+  # from outside the work bead's own rig (e.g. the mayor, from the city
+  # root). Resolve the rig explicitly from the work bead's own id prefix and
+  # pass --rig so the lookup is correct regardless of cwd.
+  WORK_BEAD_RIG="$(cv_rig_for_bead_id "$WORK_BEAD")"
+  RIG_ARGS=()
+  [ -n "${WORK_BEAD_RIG// /}" ] && RIG_ARGS=(--rig "$WORK_BEAD_RIG")
+  ROOT_JSON="$("$GC" --city "$GC_CITY" "${RIG_ARGS[@]}" bd list --metadata-field "gc.build.source_anchor_id=${CONVOY_ID}" --json --limit=0 2>/dev/null || printf '[]')"
   OPEN_ROOT_CANDIDATES="$(printf '%s' "$ROOT_JSON" | python3 -c "
 import json, sys
 try:

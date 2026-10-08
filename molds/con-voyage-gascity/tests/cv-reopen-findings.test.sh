@@ -39,16 +39,29 @@ cat > "${STUBDIR}/gc" <<'GC_STUB'
 } >> "${STUB_GC_LOG}"
 
 args=("$@")
-# Both `gc --city <dir> <rest...>` and bare `gc <rest...>` forms are used by
-# the script under test (sling calls pass --city; bd/session calls mostly
-# don't except implementor_alive's own `gc --city ... session list`). Strip
-# a leading --city <dir> once so every case below dispatches the same way
-# regardless of which form was used.
-if [ "${args[0]:-}" = "--city" ]; then
-  args=("${args[@]:2}")
-fi
+# Several leading global flags (`--city <dir>`, `--rig <name>`) may prefix
+# the real subcommand depending on the call site. Strip any number of them so
+# every case below dispatches on the actual subcommand regardless of which
+# combination was used.
+while true; do
+  case "${args[0]:-}" in
+    --city|--rig)
+      args=("${args[@]:2}")
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
 
 case "${args[0]:-}" in
+  rig)
+    if [ "${args[1]:-}" = "list" ]; then
+      cat "${STUB_RIGLIST_FILE:-/dev/null}" 2>/dev/null || echo '{"rigs":[]}'
+      exit 0
+    fi
+    exit 0
+    ;;
   bd)
     case "${args[1]:-}" in
       show)
@@ -151,6 +164,7 @@ run_script() {
       STUB_SLING_COUNTER_FILE="$STUB_SLING_COUNTER_FILE" \
       STUB_BDSHOW_DEPS_FILE="${STUB_BDSHOW_DEPS_FILE:-}" \
       STUB_BDLIST_ROOT_FILE="${STUB_BDLIST_ROOT_FILE:-}" \
+      STUB_RIGLIST_FILE="${STUB_RIGLIST_FILE:-$DEFAULT_RIGLIST_FILE}" \
       STUB_SESSION_LIST_FILE="${STUB_SESSION_LIST_FILE:-}" \
       STUB_SLING_FAIL_TARGETS="${STUB_SLING_FAIL_TARGETS:-}" \
       STUB_HEAD_REF="${STUB_HEAD_REF:-}" \
@@ -163,6 +177,17 @@ run_script() {
 
 GC_CITY_DIR="${SANDBOX}/city"
 mkdir -p "$GC_CITY_DIR"
+
+# Default `gc rig list --json` fixture: every work bead used below is
+# "fk-*"-prefixed, owned by rig "foundry-kc" — the same shape `gc rig list
+# --json` returns for real, with an "hq" entry a prefix match must never pick.
+DEFAULT_RIGLIST_FILE="${SANDBOX}/rig-list-default.json"
+cat > "$DEFAULT_RIGLIST_FILE" <<'JSON'
+{"rigs": [
+  {"name": "repl-city", "prefix": "rc", "hq": true},
+  {"name": "foundry-kc", "prefix": "fk", "hq": false}
+]}
+JSON
 
 # ===========================================================================
 # CASE: usage errors
@@ -229,6 +254,49 @@ assert_eq "1" "$(grep -c 'bd update fk-root-open --set-metadata gc.build.mayor_r
 assert_eq "1" "$(grep -cF 'gc.build.mayor_reopen_findings=address the mayor note about X' "$STUB_GC_LOG")" "stamps the finding text on the open root"
 assert_eq "0" "$(grep -c '^sling ' "$STUB_GC_LOG")" "never routes a PR-feedback bead when a workflow root is still open"
 assert_eq "0" "$(wc -l < "$STUB_GH_LOG" | tr -d ' ')" "never calls gh in the PRE-publish path"
+assert_eq "1" "$(grep -c -- "--city ${GC_CITY_DIR} --rig foundry-kc bd list --metadata-field gc.build.source_anchor_id=fk-convoy1 --json --limit=0" "$STUB_GC_LOG")" "fk-jekxaw: routes the root lookup to the work bead's own rig explicitly, not whatever store cwd happens to resolve to"
+
+# ===========================================================================
+# fk-jekxaw: cv-reopen-findings misses rig workflow roots when run from the
+# city root. The root-lookup `bd list --metadata-field` query has no bead-id
+# positional for gc's own auto-routing to key off (unlike bd show/update
+# elsewhere in this script), so it must resolve --rig itself from the work
+# bead's own id prefix via `gc rig list --json` — this must hold regardless
+# of which rig's prefix is involved, and must never resolve the city's own
+# "hq" entry as a --rig target.
+# ===========================================================================
+start_case "PRE-publish: root lookup resolves --rig from a DIFFERENT work bead prefix than the default fixture"
+setup_env otherrig1
+OTHER_RIGLIST_FILE="${SANDBOX}/rig-list-other.json"
+cat > "$OTHER_RIGLIST_FILE" <<'JSON'
+{"rigs": [
+  {"name": "repl-city", "prefix": "rc", "hq": true},
+  {"name": "vandoor", "prefix": "va", "hq": false}
+]}
+JSON
+STUB_RIGLIST_FILE="$OTHER_RIGLIST_FILE"
+STUB_BDSHOW_DEPS_FILE="${SANDBOX}/deps-va-work1.json"
+cat > "$STUB_BDSHOW_DEPS_FILE" <<'JSON'
+{
+  "id": "va-work1",
+  "dependents": [
+    {"id": "va-convoy1", "dependency_type": "tracks", "issue_type": "convoy"}
+  ]
+}
+JSON
+STUB_BDLIST_ROOT_FILE="${SANDBOX}/root-list-open-va.json"
+cat > "$STUB_BDLIST_ROOT_FILE" <<'JSON'
+[
+  {"id": "va-root-open", "status": "in_progress"}
+]
+JSON
+run_script "va-work1" --finding "address the mayor note about X"
+assert_eq "0" "$RC" "exits clean"
+assert_eq "1" "$(grep -c -- "--rig vandoor bd list --metadata-field gc.build.source_anchor_id=va-convoy1" "$STUB_GC_LOG")" "resolves --rig vandoor from the va- prefix, not the hq entry or the default fk- fixture"
+# Restore the fk-work1 fixtures used by every case below.
+STUB_RIGLIST_FILE=""
+STUB_BDSHOW_DEPS_FILE="${SANDBOX}/deps-fk-work1.json"
+STUB_BDLIST_ROOT_FILE="${SANDBOX}/root-list-open.json"
 
 start_case "PRE-publish: multiple --finding values join with newlines"
 setup_env prepublish2
