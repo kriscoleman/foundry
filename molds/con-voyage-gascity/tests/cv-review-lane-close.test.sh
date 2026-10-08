@@ -159,6 +159,31 @@ else
   FAILURES=$((FAILURES+1))
 fi
 
+start_case "fixture 4: zero --set-metadata args under /bin/bash (bash 3.2 empty-array regression, fk-7w9y6 iteration 2 BLOCKING-1)"
+if [ -x /bin/bash ]; then
+  STUB_GC_LOG="${SANDBOX}/gc.log"
+  : > "$STUB_GC_LOG"
+  STUB_BDSHOW_FAIL=0 STUB_BDUPDATE_FAIL=0 STUB_BDCLOSE_FAIL=0 STUB_GC_LOG="$STUB_GC_LOG" GC="${STUBDIR}/gc" PATH="${STUBDIR}:${PATH}" \
+    /bin/bash "$SCRIPT" "fk-test4" "no-op pass, no extra metadata" >/tmp/cv-rlc-out4.$$ 2>&1
+  rc=$?
+  OUT4="$(cat /tmp/cv-rlc-out4.$$)"; rm -f /tmp/cv-rlc-out4.$$
+  if [ "$rc" -eq 0 ] && grep -qE "^bd update fk-test4 --set-metadata gc\.outcome=pass $" "$STUB_GC_LOG"; then
+    echo "  PASS: script closed cleanly under /bin/bash with zero --set-metadata args"
+  else
+    echo "  FAIL: expected a successful bd update/close under /bin/bash with zero extra metadata (rc=${rc})" >&2
+    printf '%s\n' "$OUT4" >&2
+    FAILURES=$((FAILURES+1))
+  fi
+  if grep -q "bd close fk-test4" "$STUB_GC_LOG"; then
+    echo "  PASS: bd close was called"
+  else
+    echo "  FAIL: bd close was never called" >&2
+    FAILURES=$((FAILURES+1))
+  fi
+else
+  echo "  SKIP: /bin/bash not available on this host"
+fi
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "ALL CASES PASSED"
