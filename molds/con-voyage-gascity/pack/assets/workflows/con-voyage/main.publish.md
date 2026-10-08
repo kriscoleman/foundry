@@ -411,16 +411,26 @@ PUBLISHED_HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || echo "")"
 # value IS the reviewed SHA. A commit pushed onto the branch between that
 # approval and this publish run (e.g. a mayor send-back fix, fk-cszzzt) would
 # otherwise get recorded as "reviewed" here, so con-voyage-rereview-watch
-# would never fire on it. An empty value (a pre-fk-bcyt7v root, or the
-# metadata write above failed) is "unknown", not "confirmed equal to HEAD" —
-# fall back to $PUBLISHED_HEAD_SHA so publish still records SOMETHING rather
-# than failing closed, but warn loudly since that reproduces the original bug.
+# would never fire on it. An empty value is ambiguous: a legacy pre-fk-bcyt7v
+# root never wrote either key, but a post-fix root whose stamp write failed
+# also leaves gc.build.reviewed_head_sha empty — and silently falling back on
+# the latter reproduces the exact bug fk-bcyt7v fixed. apply-review-findings
+# now also stamps gc.build.reviewed_head_sha_attempted=true unconditionally on
+# every genuine no-op pass, BEFORE attempting the real stamp, so that marker
+# distinguishes "this root's pack version tried and failed" from "this root
+# never ran that code at all" (#174 regrade follow-up, fk-j29mzp).
 REVIEWED_HEAD_SHA=""
+REVIEWED_HEAD_SHA_ATTEMPTED=""
 if [ -n "${CV_LIB:-}" ]; then
   REVIEWED_HEAD_SHA="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.build.reviewed_head_sha)"
+  REVIEWED_HEAD_SHA_ATTEMPTED="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.build.reviewed_head_sha_attempted)"
 fi
 if [ -z "$REVIEWED_HEAD_SHA" ]; then
-  echo "con-voyage publish: WARNING: no gc.build.reviewed_head_sha on workflow root ${ROOT_ID} — falling back to current HEAD (${PUBLISHED_HEAD_SHA}) for last_reviewed_head_sha, which may be a later unreviewed commit (fk-bcyt7v)" >&2
+  if [ "$REVIEWED_HEAD_SHA_ATTEMPTED" = "true" ]; then
+    echo "con-voyage publish: FATAL: gc.build.reviewed_head_sha_attempted=true on workflow root ${ROOT_ID} but gc.build.reviewed_head_sha is missing — the stamp write failed on a post-fix root; refusing to silently record publish-time HEAD (${PUBLISHED_HEAD_SHA}) as reviewed (fk-bcyt7v follow-up, fk-j29mzp)" >&2
+    exit 1
+  fi
+  echo "con-voyage publish: WARNING: no gc.build.reviewed_head_sha on workflow root ${ROOT_ID} (legacy pre-fix root, never attempted a stamp) — falling back to current HEAD (${PUBLISHED_HEAD_SHA}) for last_reviewed_head_sha, which may be a later unreviewed commit (fk-bcyt7v)" >&2
   REVIEWED_HEAD_SHA="$PUBLISHED_HEAD_SHA"
 fi
 

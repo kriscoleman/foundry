@@ -337,6 +337,35 @@ else
   FAILURES=$((FAILURES+1))
 fi
 
+# ===========================================================================
+# CASE 16 — fk-bcyt7v follow-up (#174 regrade BLOCKING-1): an empty
+#   gc.build.reviewed_head_sha is ambiguous between "legacy pre-fix root"
+#   (never stamped anything, fall back is correct) and "post-fix root whose
+#   stamp write genuinely failed" (falling back silently reproduces the
+#   original fk-bcyt7v bug: publish-time HEAD gets recorded as reviewed).
+#   apply-review-findings now also stamps gc.build.reviewed_head_sha_attempted
+#   unconditionally on every genuine no-op pass, before trying the real
+#   stamp, so a missing reviewed_head_sha with attempted=true is distinguishable
+#   from a legacy root that never set either key.
+# ===========================================================================
+start_case "16: fk-bcyt7v follow-up — also reads gc.build.reviewed_head_sha_attempted off the workflow root"
+assert_contains 'cv_bead_metadata "$ROOT_ID" gc.build.reviewed_head_sha_attempted' "reads the attempted-stamp marker alongside the reviewed SHA"
+
+start_case "16: fk-bcyt7v follow-up — a missing stamp on a post-fix root (attempted=true) is a hard error, not a silent fallback"
+assert_contains 'REVIEWED_HEAD_SHA_ATTEMPTED' "resolves the attempted-stamp marker into its own variable"
+assert_contains '[ "$REVIEWED_HEAD_SHA_ATTEMPTED" = "true" ]' "branches on the attempted-stamp marker before falling back"
+branch_line="$(line_of '[ "$REVIEWED_HEAD_SHA_ATTEMPTED" = "true" ]')"
+exit_line="$(awk -v start="${branch_line:-0}" 'NR > start && /exit 1/ {print NR; exit}' "$PUBLISH_MD")"
+if [ -n "$branch_line" ] && [ -n "$exit_line" ]; then
+  echo "  PASS: an exit 1 (line ${exit_line}) follows the attempted-stamp check (line ${branch_line})"
+else
+  echo "  FAIL: expected an exit 1 after branching on the attempted-stamp marker" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
+start_case "16: fk-bcyt7v follow-up — a legacy root (attempted not true) still falls back and publishes as before"
+assert_contains 'REVIEWED_HEAD_SHA="$PUBLISHED_HEAD_SHA"' "legacy fallback to publish-time HEAD is preserved"
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "ALL CASES PASSED"
