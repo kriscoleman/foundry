@@ -136,6 +136,19 @@ script (non-zero exit) — never treat it as best-effort and close anyway.
 Close with gc.outcome=pass, code_review.synthesis_path=<synthesis path>, and
 code_review.output_path=<synthesis path>.
 
+**`gc.outcome` is always `pass` here — it never changes with the overall verdict above; even when the verdict is `iterate`, `gc.outcome` stays `pass` regardless of that verdict. A synthesis close with `gc.outcome` missing or set to anything else is always wrong.**
+
+Use explicit close metadata — do not rely on remembering this from prose
+alone:
+
+```bash
+bd update "$CLAIMED_BEAD_ID" \
+  --set-metadata 'gc.outcome=pass' \
+  --set-metadata "code_review.synthesis_path=<synthesis path>" \
+  --set-metadata "code_review.output_path=<synthesis path>"
+bd close "$CLAIMED_BEAD_ID" --reason 'Con-voyage review synthesis complete.'
+```
+
 This synthesis is the source content the facilitator later posts to the PR as
 a reviewer-verdict comment. Do not post anything to GitHub from this step
 yourself — but write the synthesis knowing any downstream consumer that posts

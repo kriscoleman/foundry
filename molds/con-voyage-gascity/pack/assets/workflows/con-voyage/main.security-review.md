@@ -29,6 +29,8 @@ Write your findings to the review artifact root. Close with:
 - code_review.security_verdict=approve|iterate
 - code_review.output_path=<security review report path>
 
+**`gc.outcome` is always `pass` here — it never changes with the verdict below; even when the verdict is `iterate`/`changes_required`, `gc.outcome` stays `pass` regardless of that verdict.**
+
 Use explicit close metadata:
 
   bd update "$CLAIMED_BEAD_ID" \

@@ -18,6 +18,8 @@ Severity rubric: a finding is BLOCKING, not LOW, when any of the following holds
 Close with gc.outcome=pass, code_review.acceptance_verdict=approve|iterate, and
 code_review.output_path=<acceptance review report path>.
 
+**`gc.outcome` is always `pass` here — it never changes with the verdict below; even when the verdict is `iterate`/`changes_required`, `gc.outcome` stays `pass` regardless of that verdict.**
+
 Use explicit close metadata:
 
   bd update "$CLAIMED_BEAD_ID" \
