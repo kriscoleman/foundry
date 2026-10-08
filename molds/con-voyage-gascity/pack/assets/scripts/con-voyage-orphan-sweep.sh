@@ -102,9 +102,12 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/con-voyage-lib.sh"
 # ---------------------------------------------------------------------------
 # Discover candidates: every open/in_progress/blocked bead carrying a
 # gc.root_bead_id. A `bd list` failure or empty result degrades to a no-op
-# quiet tick, never a crash.
+# quiet tick, never a crash. Bounded by cv_with_timeout like this script's
+# other two store calls (pinned lookup, digest mail) — a slow store must
+# degrade this tick to "no candidates", not hang the whole order (fk-9iqxnx
+# review LOW-8, re-graded BLOCKING).
 # ---------------------------------------------------------------------------
-CANDIDATES_JSON="$("$GC" --city "$GC_CITY" bd list --status open,in_progress,blocked --has-metadata-key gc.root_bead_id --json --limit 0 2>/dev/null)" || CANDIDATES_JSON=""
+CANDIDATES_JSON="$(cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" "$GC" --city "$GC_CITY" bd list --status open,in_progress,blocked --has-metadata-key gc.root_bead_id --json --limit 0 2>/dev/null)" || CANDIDATES_JSON=""
 
 if [ -z "${CANDIDATES_JSON// /}" ]; then
   echo "con-voyage-orphan-sweep: no candidates (bd list empty or failed)"
