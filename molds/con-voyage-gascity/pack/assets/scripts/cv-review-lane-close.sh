@@ -94,9 +94,11 @@ done
   || die "bead ${BEAD_ID} could not be read — refusing to close"
 
 UPDATE_ARGS=("$BEAD_ID" --set-metadata 'gc.outcome=pass')
-for kv in "${EXTRA_METADATA[@]}"; do
-  UPDATE_ARGS+=(--set-metadata "$kv")
-done
+if [ "${#EXTRA_METADATA[@]}" -gt 0 ]; then
+  for kv in "${EXTRA_METADATA[@]}"; do
+    UPDATE_ARGS+=(--set-metadata "$kv")
+  done
+fi
 
 "$GC" bd update "${UPDATE_ARGS[@]}" \
   || die "bd update failed for ${BEAD_ID} — refusing to close with unapplied metadata"
