@@ -3874,6 +3874,20 @@ else
   fail "thread 1 suppression is durably recorded under CV_STATE_DIR"
 fi
 
+# fk-yztb54 BLOCKING-1 (review fk-dh3mkt): a durable suppression must mark
+# its nid seen, or this monitor (a periodic poller against the same open PR)
+# re-evaluates and re-appends the identical line to SUPPRESSION_LOG on every
+# future poll cycle for the life of the PR. Re-run against the SAME
+# STATE_DIR/stubs (no setup_case_env — that would reset seen-ids) and assert
+# the line count stays 1, not 2.
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_PR11_EMPTY="1" STUB_GQL_THREADS_DOOMER_ACK="1"
+assert_eq "0" "$RC" "thread 1 second poll cycle: script exits 0"
+if [ -f "$SUPPRESSION_LOG" ] && [ "$(grep -c 'id=PRRC_t1_ack' "$SUPPRESSION_LOG")" = "1" ]; then
+  pass "thread 1 suppression is logged at most once across repeated poll cycles"
+else
+  fail "thread 1 suppression is logged at most once across repeated poll cycles"
+fi
+
 # ===========================================================================
 # Summary
 # ===========================================================================
