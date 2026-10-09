@@ -175,6 +175,37 @@ run_script() {
   RC=$?
 }
 
+# Like run_script, but runs from a caller-chosen cwd with a caller-chosen
+# GC_CITY (BLOCKING-1 regression below needs both: cv_pack_root's resolution
+# of cv-pr-comment.sh depends on `git rev-parse --show-toplevel` at call
+# time, not on $GC_CITY_DIR, which this test suite's own checkout always
+# resolves successfully).
+run_script_in() {
+  local run_dir="$1" run_city="$2"
+  shift 2
+  OUT="$(
+    cd "$run_dir" && env \
+      GC="${STUBDIR}/gc" \
+      GH="${STUBDIR}/gh" \
+      GC_CITY="$run_city" \
+      CV_STATE_DIR="${CV_STATE_DIR:-${SANDBOX}/state}" \
+      CV_LOCK_STALE_SECONDS="${STUB_LOCK_STALE_SECONDS:-300}" \
+      PATH="${STUB_PATH:-$PATH}" \
+      STUB_GC_LOG="$STUB_GC_LOG" \
+      STUB_GH_LOG="$STUB_GH_LOG" \
+      STUB_SLING_COUNTER_FILE="$STUB_SLING_COUNTER_FILE" \
+      STUB_BDSHOW_DEPS_FILE="${STUB_BDSHOW_DEPS_FILE:-}" \
+      STUB_BDLIST_ROOT_FILE="${STUB_BDLIST_ROOT_FILE:-}" \
+      STUB_SESSION_LIST_FILE="${STUB_SESSION_LIST_FILE:-}" \
+      STUB_SLING_FAIL_TARGETS="${STUB_SLING_FAIL_TARGETS:-}" \
+      STUB_HEAD_REF="${STUB_HEAD_REF:-}" \
+      STUB_GH_FAIL="${STUB_GH_FAIL:-0}" \
+      STUB_BDUPDATE_FAIL="${STUB_BDUPDATE_FAIL:-0}" \
+      bash "$SCRIPT" "$@" 2>&1
+  )"
+  RC=$?
+}
+
 GC_CITY_DIR="${SANDBOX}/city"
 mkdir -p "$GC_CITY_DIR"
 
@@ -618,6 +649,33 @@ run_script "fk-work2" --finding "mayor says fix the widget"
 BODY="$(cat "${SANDBOX}/sling-body-1.txt")"
 assert_contains "$BODY" "Mayor re-opened findings on PR" "the body's own provenance line calls out the mayor reopen"
 assert_not_contains "$BODY" "New human review feedback" "never mislabels a mayor reopen as human PR review feedback"
+
+# ===========================================================================
+# BLOCKING-1 (con-voyage review fk-kza51h): cv_build_pr_feedback_body got a
+# new failure mode (fails loud, empty stdout, when cv-pr-comment.sh cannot
+# be resolved) that con-voyage-pr-watch.sh:1768 already handles, but this
+# script's own sibling call site did not check — ROUTE_BODY silently became
+# empty and the script slung a title-only, completely empty-bodied bead
+# while still reporting success. Force that failure by running from a bare
+# repo with no pack checkout and a GC_CITY with no packs/con-voyage, so
+# cv_pack_root/cv_pack_script cannot resolve cv-pr-comment.sh, and assert
+# the script now fails loud instead of slinging anything.
+# ===========================================================================
+start_case "POST-publish: cv_build_pr_feedback_body failure (cv-pr-comment.sh unresolvable) fails loud instead of slinging an empty-bodied bead"
+setup_env noscript1
+STUB_BDSHOW_DEPS_FILE="$STUB_BDSHOW_DEPS_FILE_NONE"
+STUB_BDLIST_ROOT_FILE="${SANDBOX}/empty-list.json"
+STUB_SESSION_LIST_FILE="$STUB_SESSION_LIST_ALIVE"
+STUB_HEAD_REF="feature/widget-fix"
+NO_SCRIPT_REPO="${SANDBOX}/no-cv-pr-comment-repo"
+NO_SCRIPT_CITY="${SANDBOX}/no-cv-pr-comment-city"
+mkdir -p "$NO_SCRIPT_REPO" "${NO_SCRIPT_CITY}/packs/con-voyage/assets/scripts"
+git -C "$NO_SCRIPT_REPO" init -q -b main
+cp "${GC_CITY_DIR}/city.toml" "${NO_SCRIPT_CITY}/city.toml" 2>/dev/null || true
+run_script_in "$NO_SCRIPT_REPO" "$NO_SCRIPT_CITY" "fk-work2" --finding "mayor says fix the widget"
+assert_eq "1" "$RC" "exits non-zero instead of reporting success"
+assert_contains "$OUT" "could not build a dispatchable feedback body" "names the failure clearly"
+assert_eq "0" "$(grep -c '^sling ' "$STUB_GC_LOG")" "never slings a bead when the feedback body could not be built"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

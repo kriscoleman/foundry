@@ -273,7 +273,8 @@ ${FINDINGS_TEXT}"
 FINDINGS_HASH="$(printf '%s' "$FINDINGS_TEXT" | (shasum -a 256 2>/dev/null || sha256sum 2>/dev/null) | cut -c1-16)"
 [ -n "$FINDINGS_HASH" ] || FINDINGS_HASH="nohash"
 IDEMPOTENCY_KEY="mayor-reopen-${FS_REPO_FULL//\//_}-${FS_PR_NUMBER}-${FINDINGS_HASH}"
-ROUTE_BODY="$(cv_build_pr_feedback_body "$PR_URL" "$HEAD_REF" "$FEEDBACK_SUMMARY" "$IDEMPOTENCY_KEY" "mayor_reopen")"
+ROUTE_BODY="$(cv_build_pr_feedback_body "$PR_URL" "$HEAD_REF" "$FEEDBACK_SUMMARY" "$IDEMPOTENCY_KEY" "mayor_reopen")" \
+  || die "could not build a dispatchable feedback body for ${FS_REPO_FULL}#${FS_PR_NUMBER} (cv-pr-comment.sh unresolvable or nonce failure) — refusing to route an empty findings bead"
 ROUTE_TITLE="Mayor re-opened findings on ${FS_REPO_FULL}#${FS_PR_NUMBER}: ${HEAD_REF}"
 
 # fk-9iqxnx LOW-2: this route can fire in the same cycle con-voyage-pr-watch.sh
