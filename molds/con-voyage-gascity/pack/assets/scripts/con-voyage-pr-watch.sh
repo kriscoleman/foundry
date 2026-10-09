@@ -1645,8 +1645,11 @@ def log_suppression(item_type, nid, author, reason):
                     "%s SUPPRESS %s#%s %s id=%s author=%s reason=%s\n"
                     % (datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), full_repo, pr_number, item_type, nid, author, reason)
                 )
-        except OSError:
-            pass
+        except OSError as e:
+            sys.stderr.write(
+                "con-voyage-pr-watch: [PART B] WARNING: suppression_log write failed for %s: %s\n"
+                % (suppression_log_path, e)
+            )
 
 found      = []
 new_ids    = set()
