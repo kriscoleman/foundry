@@ -547,6 +547,107 @@ case "$OUT" in
 esac
 
 # ===========================================================================
+# CASE 16 — review fk-hbsmk/fk-9h3nwk BLOCKING-1/2: the literal compound
+#   scenario the fix in cmd_sweep claims to close. The lane bead IS genuinely
+#   in_progress (a live, still-running review), but at the moment `sweep
+#   --force` runs, the status lookup itself fails to resolve (hangs/times
+#   out) rather than timing out from a missing binary. The OLD code collapsed
+#   "lookup attempted and failed" into the same empty-string sentinel as
+#   "confirmed structurally absent", so --force reaped it outright. The fix
+#   must not reap on a single inconclusive lookup — even a second attempt
+#   that also fails must still leave the worktree alone.
+# ===========================================================================
+start_case "16: sweep --force never reaps a lane whose lookup genuinely fails/times out, even though the underlying lane is still in_progress (fk-hbsmk/fk-9h3nwk BLOCKING-1)"
+HANG_GC_DIR3="$(mktemp -d "${TMPDIR:-/tmp}/cv-review-lane-wt-test-hang3.XXXXXX")"
+cat > "${HANG_GC_DIR3}/gc" <<'HANG_GC_STUB3'
+#!/usr/bin/env bash
+if [ "$1" = "bd" ] && [ "$2" = "show" ]; then
+  sleep 3600
+  exit 0
+fi
+exit 1
+HANG_GC_STUB3
+chmod +x "${HANG_GC_DIR3}/gc"
+
+REPO8="$(mk_repo repo8)"
+SRC8="${SANDBOX}/repo8-src"
+git_c "$REPO8" worktree add -q --detach "$SRC8" HEAD
+run_script acquire "$SRC8" "lane-in-progress-but-unresolvable"
+assert_eq "0" "$RC" "acquire for the compound-scenario lane exits 0"
+LANE_COMPOUND="$OUT"
+
+ORIG_PATH="$PATH"
+PATH="${HANG_GC_DIR3}:${ORIG_PATH}"
+export CV_LENS_STORE_TIMEOUT_SECONDS=1
+compound_start=$(date +%s)
+run_script sweep "$SRC8" --force
+compound_elapsed=$(( $(date +%s) - compound_start ))
+unset CV_LENS_STORE_TIMEOUT_SECONDS
+PATH="$ORIG_PATH"
+rm -rf "$HANG_GC_DIR3"
+
+assert_eq "0" "$RC" "sweep --force exits 0 even when the lookup hangs twice"
+if [ "$compound_elapsed" -lt 10 ]; then
+  pass "sweep --force returned promptly (${compound_elapsed}s) despite two failed lookup attempts"
+else
+  fail "sweep --force took ${compound_elapsed}s against a hanging store call"
+fi
+if [ -d "$LANE_COMPOUND" ]; then
+  pass "sweep --force left the genuinely in_progress lane's worktree alone despite an unresolvable lookup — the fk-hbsmk/fk-9h3nwk regression is fixed"
+else
+  fail "sweep --force reaped a lane whose status lookup only failed to resolve — this is the exact live-sibling-reap incident the fix claims to close"
+fi
+
+# ===========================================================================
+# CASE 17 — review fk-hbsmk/fk-9h3nwk BLOCKING-1: the shared sweep budget
+#   being exhausted means NO lookup was ever attempted for a later lane — not
+#   "this lane is unresolvable". --force must never reap on budget
+#   exhaustion alone, even though the OLD code's `state=""` sentinel at the
+#   deadline check made it indistinguishable from a confirmed-absent lookup.
+# ===========================================================================
+start_case "17: sweep --force never reaps a lane purely because the shared sweep budget ran out before its lookup was attempted (fk-hbsmk/fk-9h3nwk BLOCKING-1)"
+HANG_GC_DIR4="$(mktemp -d "${TMPDIR:-/tmp}/cv-review-lane-wt-test-hang4.XXXXXX")"
+cat > "${HANG_GC_DIR4}/gc" <<'HANG_GC_STUB4'
+#!/usr/bin/env bash
+if [ "$1" = "bd" ] && [ "$2" = "show" ]; then
+  sleep 3600
+  exit 0
+fi
+exit 1
+HANG_GC_STUB4
+chmod +x "${HANG_GC_DIR4}/gc"
+
+REPO9="$(mk_repo repo9)"
+SRC9="${SANDBOX}/repo9-src"
+git_c "$REPO9" worktree add -q --detach "$SRC9" HEAD
+run_script acquire "$SRC9" "lane-budget-a"
+assert_eq "0" "$RC" "acquire for budget lane a exits 0"
+LANE_BUDGET_A="$OUT"
+run_script acquire "$SRC9" "lane-budget-b"
+assert_eq "0" "$RC" "acquire for budget lane b exits 0"
+LANE_BUDGET_B="$OUT"
+
+ORIG_PATH="$PATH"
+PATH="${HANG_GC_DIR4}:${ORIG_PATH}"
+export CV_LENS_STORE_TIMEOUT_SECONDS=2
+export CV_LANE_SWEEP_BUDGET_SECONDS=1
+run_script sweep "$SRC9" --force
+unset CV_LENS_STORE_TIMEOUT_SECONDS CV_LANE_SWEEP_BUDGET_SECONDS
+PATH="$ORIG_PATH"
+rm -rf "$HANG_GC_DIR4"
+
+assert_eq "0" "$RC" "sweep --force exits 0 when the shared budget runs out mid-sweep"
+case "$OUT" in
+  *"budget exhausted"*) pass "sweep reported the budget-exhausted skip with its own distinct reason" ;;
+  *) fail "sweep did not report a distinct budget-exhausted reason; output: ${OUT}" ;;
+esac
+if [ -d "$LANE_BUDGET_A" ] && [ -d "$LANE_BUDGET_B" ]; then
+  pass "sweep --force left both budget-exhausted lanes alone instead of reaping them"
+else
+  fail "sweep --force reaped a lane whose lookup was never attempted due to budget exhaustion"
+fi
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 echo
