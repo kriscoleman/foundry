@@ -3610,6 +3610,31 @@ else
 fi
 
 # ===========================================================================
+# CASE 61 — review fk-hbsmk/fk-igqet1 BLOCKING-1: a suppression_log write
+#   failure (unwritable path, full disk, stale symlink, a directory where a
+#   file is expected) must surface a WARNING on stderr, never silently
+#   collapse back to stderr-only behavior with no trace at all. Pre-creating
+#   a DIRECTORY at the exact path log_suppression() tries to open("a") makes
+#   the write raise OSError (IsADirectoryError is a subclass) deterministically
+#   on every platform, without needing chmod 000 (which root/CI can bypass).
+# ===========================================================================
+start_case "61: fk-igqet1 BLOCKING-1 — suppression_log write failure surfaces a WARNING, never silently swallowed"
+setup_case_env "61"
+mkdir -p "${STATE_DIR}/kriscoleman_foundry_11.suppressions.log"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_PR11_ADVERSARY_MARKERS="1"
+assert_eq "0" "$RC" "script exits 0 (a suppression_log write failure does not abort the run)"
+if printf '%s' "$OUT" | grep -qE 'SUPPRESS kriscoleman/foundry#11 comment id=IC_adv_ack_4220824462 .* reason=bot_ack'; then
+  pass "suppression still happens even when the durable record cannot be written"
+else
+  fail "suppression still happens even when the durable record cannot be written"
+fi
+if printf '%s' "$OUT" | grep -qF 'WARNING: suppression_log write failed'; then
+  pass "a WARNING line is emitted when the durable suppression record write fails"
+else
+  fail "a WARNING line is emitted when the durable suppression record write fails"
+fi
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 echo
