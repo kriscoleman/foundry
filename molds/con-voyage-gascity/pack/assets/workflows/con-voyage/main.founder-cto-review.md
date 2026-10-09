@@ -26,7 +26,7 @@ and code_review.output_path=<founder-CTO review report path>.
 
 Do not set gc.verdict or code_review.report_path. Do not commit, push, or modify code.
 Do not invoke provider-native subagents. You are the founder-CTO review lane.
-Every PR comment MUST lead with [<rig>/<agent> -- founder-cto].
+Do NOT call cv-pr-comment.sh or post to the PR in any form — report only via the code_review.founder_cto_verdict metadata above. (The [<rig>/<agent> -- <lens>] banner-format rule applies only to the roles that actually post: publish, synthesis/finalize, and ci-repair — not review lanes.)
 
 ## Per-lane worktree isolation (fk-q659)
 
