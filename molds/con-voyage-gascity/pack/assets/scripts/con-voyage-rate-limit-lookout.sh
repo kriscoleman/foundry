@@ -948,7 +948,7 @@ for i, line in enumerate(tail_lines):
     # fk-xtbtcw (review iteration 5 BLOCKING-1): the match above can span the
     # single join-space into the NEXT line, so a bare glyph line immediately
     # followed by a line that merely STARTS with a limit phrase (a quoted
-    # mail body, a runbook excerpt) still matched `banner_re` even though
+    # mail body, a runbook excerpt) still matched the banner_re pattern even though
     # the real banner never appeared on the glyph line at all. Only accept
     # the match when either (a) it completes entirely within the glyph
     # line's own text (the ordinary same-line case), or (b) the glyph line
