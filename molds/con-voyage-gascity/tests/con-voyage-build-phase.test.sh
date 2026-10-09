@@ -286,6 +286,42 @@ assert_contains "$PREPARE_BUILD_MD" 'gc.build.stale_anchor=' "records gc.build.s
 start_case "lib.sh: exposes cv_anchor_too_stale for the prepare-build staleness guard"
 assert_contains "$LIB" "cv_anchor_too_stale()" "cv_anchor_too_stale is defined"
 
+start_case "prepare-build.md (fk-oq5nt): seeds the build gate check scripts before the build step ever runs, not just at setup-review"
+# fk-oq5nt: build-artifact-valid.sh is a graph.v2 mode=exec gate on the BUILD
+# node itself, resolved relative to the rig root. It used to only get seeded
+# by setup-con-voyage-review.md, which runs AFTER build — so the first
+# con-voyage on any never-seeded rig hit a controller path-resolution error
+# on the build gate and quarantined, even though the implementation passed.
+assert_contains "$PREPARE_BUILD_MD" "cv-ensure-gate-scripts.sh" "calls the shared gate-script seeder"
+assert_contains "$PREPARE_BUILD_MD" "cv_default_rig_root" "resolves the rig root the same way setup-con-voyage-review.md does"
+
+start_case "prepare-build.md (fk-oq5nt): also seeds the build-artifact validator the build step's own local check invokes"
+# main.build.md tells the worker to run build-artifact-valid.sh locally
+# before closing with gc.outcome=pass; that script shells out to
+# validate_build_artifact.py + schemas/build/*.yaml, neither shipped by
+# casting the pack. Seed both dependencies together so a never-seeded rig's
+# first build does not fail on a missing validator either.
+assert_contains "$PREPARE_BUILD_MD" "cv-ensure-build-artifact-validator.sh" "calls the shared build-artifact-validator seeder"
+
+start_case "prepare-build.md (fk-oq5nt): gate-script seeding runs BEFORE the worktree is resolved/created, and fails loud rather than silently continuing"
+gate_seed_line="$(grep -n 'cv-ensure-gate-scripts.sh"' "$PREPARE_BUILD_MD" | head -1 | cut -d: -f1)"
+worktree_heading_line="$(grep -n '^## Resolve, or create, the build worktree' "$PREPARE_BUILD_MD" | head -1 | cut -d: -f1)"
+if [ -n "$gate_seed_line" ] && [ -n "$worktree_heading_line" ] && [ "$gate_seed_line" -lt "$worktree_heading_line" ]; then
+  echo "  PASS: gate-script seeding (line ${gate_seed_line}) runs before worktree resolution (line ${worktree_heading_line})"
+else
+  echo "  FAIL: expected gate-script seeding before '## Resolve, or create, the build worktree' in $PREPARE_BUILD_MD (line ${gate_seed_line:-missing} vs ${worktree_heading_line:-missing})" >&2
+  FAILURES=$((FAILURES+1))
+fi
+assert_contains "$PREPARE_BUILD_MD" "gate check script seeding failed" "fails loud (exit 1) instead of silently proceeding toward a gate that would quarantine"
+
+start_case "prepare-build.md (fk-oq5nt): re-running the seed step on an already-current rig is a no-op (ensure semantics, not blind overwrite)"
+# cv-ensure-gate-scripts.sh / cv-ensure-build-artifact-validator.sh are both
+# idempotent "ensure" scripts on their own (covered by their own unit tests);
+# this just proves prepare-build.md calls the idempotent ensure script, not
+# some other unconditional seed/copy that would leave .prev backups on every
+# run.
+assert_contains "$PREPARE_BUILD_MD" '"$CV_ENSURE_GATE_SCRIPTS" "$RIG_ROOT"' "invokes the ensure script (idempotent by its own contract), not a one-shot copy"
+
 start_case "the two new workflow nodes carry the pack's communal-duty and shell-safety reminders"
 # shellcheck source=../pack/assets/scripts/con-voyage-lib.sh
 source "$LIB"
