@@ -125,6 +125,18 @@ JSON
 JSON
         exit 0
       fi
+      # STUB_GQL_THREADS_ADVERSARY=1 (mayor regrade of fk-igqet1 LOW-2): the
+      # same adversary-review:v2/adversary-feedback-ack:v1 marker pair CASE 57
+      # pins for the issue-comments loop, fed as an INLINE review-thread
+      # comment instead -- proving the marker-first routing in
+      # classify_suppression() is not something only the comments loop
+      # exercises.
+      if [ "${STUB_GQL_THREADS_ADVERSARY:-0}" = "1" ]; then
+        cat <<'JSON'
+{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"comments":{"nodes":[{"id":"PRRC_adv_finding","databaseId":556801,"path":"src/shared.go","line":12,"author":{"login":"doomer-ai[bot]"},"body":"This breaks the retry invariant. <!-- adversary-review:v2 finding=inline-retry-invariant-break rule=conventions.inferred -->"},{"id":"PRRC_adv_ack","databaseId":556802,"path":"","line":null,"author":{"login":"doomer-ai[bot]"},"body":"Thanks, fixed. <!-- adversary-feedback-ack:v1 feedback=inline-ack-1 -->"}]}}]}}}}}
+JSON
+        exit 0
+      fi
       cat <<'JSON'
 {"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"comments":{"nodes":[{"id":"PRRC_test_11","databaseId":556677,"path":"src/retry.go","line":42,"author":{"login":"a-human-reviewer"},"body":"inline: rename this var"}]}}]}}}}}
 JSON
@@ -411,6 +423,19 @@ JSON
 JSON
             exit 0
           fi
+          # STUB_PR11_MARKER_NARROWED=1 (mayor regrade of fk-igqet1 LOW-3):
+          # "please"/"update"/"change" no longer trigger routing alone --
+          # each is common AI-reviewer-bot chatter with no finding attached.
+          # Three replies each carry ONLY one of the three dropped words and
+          # no other marker, so each must now suppress as bot_ack. A fourth
+          # mixes "update" with a real marker (\bshould\b) and must still
+          # route, proving the words were narrowed, not deleted outright.
+          if [ "${STUB_PR11_MARKER_NARROWED:-0}" = "1" ]; then
+            cat <<'JSON'
+{"reviews":[],"comments":[{"id":"IC_narrow_please","author":{"login":"doomer-ai[bot]"},"body":"Please take a look when you have a moment."},{"id":"IC_narrow_update","author":{"login":"doomer-ai[bot]"},"body":"Just an update on where things stand."},{"id":"IC_narrow_change","author":{"login":"doomer-ai[bot]"},"body":"Small change here, nothing major."},{"id":"IC_narrow_update_plus_should","author":{"login":"doomer-ai[bot]"},"body":"There's an update, but you should double check this one."}]}
+JSON
+            exit 0
+          fi
           # STUB_PR11_ADVERSARY_MARKERS=1 (fk-igqet1): the REAL bodies pulled
           # from replicatedhq/vandoor#10620, verbatim (escaped for JSON/heredoc).
           # IC_adv_finding_4219884349 is the comment Doomer posted that pr-watch
@@ -426,6 +451,18 @@ JSON
           if [ "${STUB_PR11_ADVERSARY_MARKERS:-0}" = "1" ]; then
             cat <<'JSON'
 {"reviews":[],"comments":[{"id":"IC_adv_finding_4219884349","author":{"login":"doomer-ai[bot]"},"body":"**If you have the time**\n\nThe resolved-opts guard hard-rejects PUTs from customers still carrying legacy dev-mode/non-dev type state, breaking the preserve invariant for existing data. Low urgency, but worth confirming whether that's intentional or needs a migration path before this ships.\n\n<!-- adversary-review:v2 adversary=registry.doomer.ai%2Flibrary%2Freview%2Fcode%40sha256%3A59b5b3eb200a11cd4db5fb7fcffe2291f85c45bd72d9cf1d1633a4cbd15e6011 package=registry.doomer.ai%2Flibrary%2Freview%2Fcode%40sha256%3A59b5b3eb200a11cd4db5fb7fcffe2291f85c45bd72d9cf1d1633a4cbd15e6011 version=0.0.26 finding=conventions.inferred-2-put-preserve-invariant-breaks-legacy-devmode-customers rule=conventions.inferred head=919f595cc3dbe6b7a787ff69384d31eef2c9dac7 loc=handlers%2Fvendor-api%2Freplv3%2Fcustomers%2Fcustomer_update.go%3A529 -->"},{"id":"IC_adv_ack_4220824462","author":{"login":"doomer-ai[bot]"},"body":"Renamed to TestBindDevModeGuard and kept t.Run sub-scenarios, commit 919f595 pushed.\n\n<!-- adversary-feedback-ack:v1 feedback=978dff18-8bd0-43a6-a399-26197ce6ee1b -->"},{"id":"IC_adv_finding_4219667973","author":{"login":"doomer-ai[bot]"},"body":"**If you have the time**\n\n`TestBind_DevModeGuard` breaks the PascalCase-no-underscores naming rule. Rename to `TestBindDevModeGuard`; use `t.Run` strings for the three scenarios, or make it a table-driven test if you prefer.\n\n<!-- adversary-review:v2 adversary=registry.doomer.ai%2Flibrary%2Freview%2Fcode%40sha256%3A59b5b3eb200a11cd4db5fb7fcffe2291f85c45bd72d9cf1d1633a4cbd15e6011 package=registry.doomer.ai%2Flibrary%2Freview%2Fcode%40sha256%3A59b5b3eb200a11cd4db5fb7fcffe2291f85c45bd72d9cf1d1633a4cbd15e6011 version=0.0.26 finding=conventions.mechanical-underscore-test-name-bind-test rule=conventions.declared head=504230a5ba0d6f7d384f33a68415825aa0561d2a loc=handlers%2Fvendor-api%2Freplv3%2Fcustomers%2Fcustomer_update_bind_test.go%3A38 -->"}]}
+JSON
+            exit 0
+          fi
+          # STUB_PR11_ADVERSARY_REVIEWLOOP=1 (mayor regrade of fk-igqet1
+          # LOW-2): the same adversary-review:v2/adversary-feedback-ack:v1
+          # marker pair CASE 57 pins for the issue-comments loop, fed as PR
+          # REVIEW items instead -- proving marker-first routing in
+          # classify_suppression() is not something only the comments loop
+          # exercises.
+          if [ "${STUB_PR11_ADVERSARY_REVIEWLOOP:-0}" = "1" ]; then
+            cat <<'JSON'
+{"reviews":[{"id":"PRR_adv_finding","author":{"login":"doomer-ai[bot]"},"body":"This breaks backward compatibility for existing callers. <!-- adversary-review:v2 finding=review-backcompat-break rule=conventions.inferred -->","state":"COMMENTED"},{"id":"PRR_adv_ack","author":{"login":"doomer-ai[bot]"},"body":"Thanks, addressed. <!-- adversary-feedback-ack:v1 feedback=review-ack-1 -->","state":"COMMENTED"}],"comments":[]}
 JSON
             exit 0
           fi
@@ -3632,6 +3669,97 @@ if printf '%s' "$OUT" | grep -qF 'WARNING: suppression_log write failed'; then
   pass "a WARNING line is emitted when the durable suppression record write fails"
 else
   fail "a WARNING line is emitted when the durable suppression record write fails"
+fi
+
+# ===========================================================================
+# CASE 62 — mayor regrade of fk-igqet1 LOW-2: CASE 57 only directly exercised
+#   adversary-review:v2/adversary-feedback-ack:v1 marker-first routing
+#   through the issue-comments loop. classify_suppression() is the SAME
+#   function for all three scan loops (reviews, comments, inline
+#   review-thread comments), but marker-first routing was never separately
+#   pinned for the review loop or the inline-thread loop. One real finding
+#   and one ack-only item, fed through each of the two remaining loops.
+# ===========================================================================
+start_case "62: mayor regrade LOW-2 — adversary markers route through the review and inline-thread loops too"
+setup_case_env "62"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_PR11_ADVERSARY_REVIEWLOOP="1" STUB_GQL_THREADS_ADVERSARY="1"
+assert_eq "0" "$RC" "script exits 0"
+if printf '%s' "$OUT" | grep -qE 'SUPPRESS kriscoleman/foundry#11 review id=PRR_adv_finding .* reason=bot_ack'; then
+  fail "review-loop adversary-review:v2 finding is NOT suppressed as bot_ack"
+else
+  pass "review-loop adversary-review:v2 finding is NOT suppressed as bot_ack"
+fi
+if printf '%s' "$OUT" | grep -qF 'SUPPRESS kriscoleman/foundry#11 review id=PRR_adv_ack author=doomer-ai[bot] reason=bot_ack'; then
+  pass "review-loop adversary-feedback-ack:v1 (no finding marker) is suppressed as bot_ack"
+else
+  fail "review-loop adversary-feedback-ack:v1 (no finding marker) is suppressed as bot_ack"
+fi
+if printf '%s' "$OUT" | grep -qE 'SUPPRESS kriscoleman/foundry#11 inline id=PRRC_adv_finding .* reason=bot_ack'; then
+  fail "inline-loop adversary-review:v2 finding is NOT suppressed as bot_ack"
+else
+  pass "inline-loop adversary-review:v2 finding is NOT suppressed as bot_ack"
+fi
+if printf '%s' "$OUT" | grep -qF 'SUPPRESS kriscoleman/foundry#11 inline id=PRRC_adv_ack author=doomer-ai[bot] reason=bot_ack'; then
+  pass "inline-loop adversary-feedback-ack:v1 (no finding marker) is suppressed as bot_ack"
+else
+  fail "inline-loop adversary-feedback-ack:v1 (no finding marker) is suppressed as bot_ack"
+fi
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 1 "exactly one batched sling for #11 (both real findings route together across loops, the acks do not)"
+
+# ===========================================================================
+# CASE 63 — mayor regrade of fk-igqet1 LOW-3: FINDING_MARKER_RE no longer
+#   treats bare "please"/"update"/"change" as a finding marker on its own --
+#   each is common in pure AI-reviewer-bot chatter that carries no finding at
+#   all, and routing on them alone was exactly the PR-noise risk the mayor
+#   flagged. Three AI-reviewer-bot replies, each carrying ONLY one of the
+#   three dropped words and no other marker (no severity word, no code/line
+#   reference), must now be suppressed as bot_ack. A fourth reply mixes
+#   "update" with a real marker (`\bshould\b`) and must still route, proving
+#   the narrowing did not remove the words outright, just their power to
+#   trigger routing alone.
+# ===========================================================================
+start_case "63: mayor regrade LOW-3 — bare please/update/change no longer trigger routing alone"
+setup_case_env "63"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_PR11_MARKER_NARROWED="1"
+assert_eq "0" "$RC" "script exits 0"
+for id in IC_narrow_please IC_narrow_update IC_narrow_change; do
+  if printf '%s' "$OUT" | grep -qF "SUPPRESS kriscoleman/foundry#11 comment id=${id} author=doomer-ai[bot] reason=bot_ack"; then
+    pass "${id} (bare please/update/change, no other marker) is suppressed as bot_ack"
+  else
+    fail "${id} (bare please/update/change, no other marker) is suppressed as bot_ack"
+  fi
+done
+if printf '%s' "$OUT" | grep -qE 'SUPPRESS kriscoleman/foundry#11 comment id=IC_narrow_update_plus_should .* reason=bot_ack'; then
+  fail "IC_narrow_update_plus_should (update + a real marker word) is NOT suppressed as bot_ack"
+else
+  pass "IC_narrow_update_plus_should (update + a real marker word) is NOT suppressed as bot_ack"
+fi
+
+# ===========================================================================
+# CASE 64 — mayor regrade of fk-igqet1 LOW-1: the durable suppression log is
+#   capped, not allowed to grow without bound. Pre-seed it at the cap (via
+#   CV_SUPPRESSION_LOG_MAX_LINES=3 for a small, deterministic test boundary),
+#   then run a cycle that appends new suppressions -- the file must never
+#   exceed the cap and must retain only the MOST RECENT lines.
+# ===========================================================================
+start_case "64: mayor regrade LOW-1 — durable suppression log is capped/rotated"
+setup_case_env "64"
+SUPPRESSION_LOG="${STATE_DIR}/kriscoleman_foundry_11.suppressions.log"
+mkdir -p "${STATE_DIR}"
+printf 'old-line-1\nold-line-2\nold-line-3\n' > "$SUPPRESSION_LOG"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_PR11_ADVERSARY_MARKERS="1" CV_SUPPRESSION_LOG_MAX_LINES="3"
+assert_eq "0" "$RC" "script exits 0"
+LINE_COUNT="$(wc -l < "$SUPPRESSION_LOG" | tr -d ' ')"
+assert_eq "3" "$LINE_COUNT" "suppression log never exceeds the configured cap (3 lines)"
+if grep -qF 'old-line-1' "$SUPPRESSION_LOG"; then
+  fail "oldest pre-existing line is trimmed once the cap is exceeded"
+else
+  pass "oldest pre-existing line is trimmed once the cap is exceeded"
+fi
+if grep -qF 'id=IC_adv_ack_4220824462' "$SUPPRESSION_LOG"; then
+  pass "the newest suppression record is retained after trimming"
+else
+  fail "the newest suppression record is retained after trimming"
 fi
 
 # ===========================================================================
