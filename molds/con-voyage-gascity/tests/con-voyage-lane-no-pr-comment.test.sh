@@ -23,10 +23,18 @@ MOLD_DIR="$(cd "${TEST_DIR}/.." && pwd)"
 WORKFLOWS_DIR="${MOLD_DIR}/pack/assets/workflows/con-voyage"
 PUBLISH_MD="${WORKFLOWS_DIR}/main.publish.md"
 
-# Every review-lane prompt that (before this fix) carried the unscoped
-# banner-format line, discovered by its lens suffix.
+# Every review-lane prompt in design scope for this fix (slice A, per
+# .claude/plans/pr-noise-reduction-design.md: standards-janitor, qa-test,
+# security, code, sre, plus the other roster lenses sharing the same
+# template). Floor lanes acceptance-review.md and simplicity-review.md, and
+# non-lane files like main.setup-con-voyage-review.md and
+# main.test-evidence-review.md, are out of design scope and never carried
+# the banner line, so they are deliberately excluded here (review fk-lp1pj8
+# BLOCKING-2 added main.security-review.md and main.code-review.md, which
+# the original list omitted entirely).
 LANE_FILES=(
   "main.api-platform-review.md"
+  "main.code-review.md"
   "main.compliance-review.md"
   "main.data-db-review.md"
   "main.design-ux-review.md"
@@ -36,6 +44,7 @@ LANE_FILES=(
   "main.marketing-review.md"
   "main.product-owner-review.md"
   "main.qa-test-review.md"
+  "main.security-review.md"
   "main.sre-review.md"
   "main.standards-janitor-review.md"
 )
@@ -77,7 +86,7 @@ assert_not_contains() {
 for f in "${LANE_FILES[@]}"; do
   path="${WORKFLOWS_DIR}/${f}"
   start_case "${f} (AC1): no longer carries the unscoped banner-format permission line"
-  assert_not_contains "$path" "Every PR comment MUST lead with" "unscoped banner-format line removed"
+  assert_not_contains "$path" "MUST lead with" "unscoped banner-format line removed (any phrasing)"
 
   start_case "${f} (AC1): explicitly prohibits calling cv-pr-comment.sh or posting to the PR"
   assert_contains "$path" "Do NOT call cv-pr-comment.sh" "explicit prohibition present"

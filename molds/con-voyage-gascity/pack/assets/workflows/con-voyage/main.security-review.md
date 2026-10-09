@@ -47,8 +47,7 @@ Do not set gc.verdict or code_review.report_path; synthesis owns the final verdi
 Do not commit, push, or modify any code. You are the security review lane.
 Do not invoke provider-native subagents.
 
-Every comment you produce for the PR MUST lead with [<rig>/<agent> -- security]
-so humans can distinguish it from other reviewers and from their own comments.
+Do NOT call cv-pr-comment.sh or post to the PR in any form — report only via the code_review.security_verdict metadata above. (The [<rig>/<agent> -- <lens>] banner-format rule applies only to the roles that actually post: publish, synthesis/finalize, and ci-repair — not review lanes.)
 
 ## Per-lane worktree isolation (fk-q659)
 
