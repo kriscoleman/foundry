@@ -137,6 +137,46 @@ JSON
 JSON
         exit 0
       fi
+      # STUB_GQL_THREADS_DOOMER_ACK=1 (fk-yztb54, design slice E / AC5): four
+      # independent inline review threads pinning the new "don't reply to
+      # Doomer's ack-only comment on a thread we already replied to" rule:
+      #   thread 1 — our own agent reply precedes a pure
+      #     adversary-feedback-ack:v1 comment with no finding/question words
+      #     at all -> must be suppressed as reason=doomer_ack_thread_closed.
+      #   thread 2 — the SAME ack marker but with NO prior agent reply in the
+      #     thread -> the new "already replied" gate must not fire (the item
+      #     may still be suppressed by the pre-existing generic bot_ack
+      #     heuristic, but never under the new reason string).
+      #   thread 3 — ack marker co-occurs with a real
+      #     adversary-review:v2 finding= marker -> finding wins, never
+      #     suppressed under the new reason (prose also carries old-heuristic
+      #     words so it routes regardless of which path runs).
+      #   thread 4 — ack marker on a genuine question, no finding marker ->
+      #     question wins, never suppressed under the new reason (prose also
+      #     carries an old-heuristic word so it routes regardless of path).
+      if [ "${STUB_GQL_THREADS_DOOMER_ACK:-0}" = "1" ]; then
+        cat <<'JSON'
+{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[
+{"comments":{"nodes":[
+  {"id":"PRRC_t1_finding","databaseId":557001,"path":"src/retry.go","line":10,"author":{"login":"doomer-ai[bot]"},"body":"This breaks the retry invariant. <!-- adversary-review:v2 finding=t1-break -->"},
+  {"id":"PRRC_t1_agent","databaseId":557002,"path":"src/retry.go","line":10,"author":{"login":"kriscoleman"},"body":"🤖 **Automated con-voyage agent** (foundry-kc/code-review): Fixed per finding t1-break."},
+  {"id":"PRRC_t1_ack","databaseId":557003,"path":"src/retry.go","line":10,"author":{"login":"doomer-ai[bot]"},"body":"Thanks, fixed. <!-- adversary-feedback-ack:v1 feedback=t1-ack -->"}
+]}},
+{"comments":{"nodes":[
+  {"id":"PRRC_t2_ack","databaseId":557004,"path":"src/other.go","line":5,"author":{"login":"doomer-ai[bot]"},"body":"Thanks for catching that, you should be fine now. <!-- adversary-feedback-ack:v1 feedback=t2-ack -->"}
+]}},
+{"comments":{"nodes":[
+  {"id":"PRRC_t3_agent","databaseId":557005,"path":"src/third.go","line":20,"author":{"login":"kriscoleman"},"body":"🤖 **Automated con-voyage agent** (foundry-kc/code-review): Fixed per finding t3-break."},
+  {"id":"PRRC_t3_mixed","databaseId":557006,"path":"src/third.go","line":20,"author":{"login":"doomer-ai[bot]"},"body":"Looks like this still breaks the retry invariant again -- you should fix it. <!-- adversary-review:v2 finding=t3-break --><!-- adversary-feedback-ack:v1 feedback=t3-ack -->"}
+]}},
+{"comments":{"nodes":[
+  {"id":"PRRC_t4_agent","databaseId":557007,"path":"src/fourth.go","line":30,"author":{"login":"kriscoleman"},"body":"🤖 **Automated con-voyage agent** (foundry-kc/code-review): Fixed per finding t4-break."},
+  {"id":"PRRC_t4_question","databaseId":557008,"path":"src/fourth.go","line":30,"author":{"login":"doomer-ai[bot]"},"body":"Does this still look okay, or should I check again? <!-- adversary-feedback-ack:v1 feedback=t4-ack -->"}
+]}}
+]}}}}}
+JSON
+        exit 0
+      fi
       cat <<'JSON'
 {"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"comments":{"nodes":[{"id":"PRRC_test_11","databaseId":556677,"path":"src/retry.go","line":42,"author":{"login":"a-human-reviewer"},"body":"inline: rename this var"}]}}]}}}}}
 JSON
@@ -463,6 +503,16 @@ JSON
           if [ "${STUB_PR11_ADVERSARY_REVIEWLOOP:-0}" = "1" ]; then
             cat <<'JSON'
 {"reviews":[{"id":"PRR_adv_finding","author":{"login":"doomer-ai[bot]"},"body":"This breaks backward compatibility for existing callers. <!-- adversary-review:v2 finding=review-backcompat-break rule=conventions.inferred -->","state":"COMMENTED"},{"id":"PRR_adv_ack","author":{"login":"doomer-ai[bot]"},"body":"Thanks, addressed. <!-- adversary-feedback-ack:v1 feedback=review-ack-1 -->","state":"COMMENTED"}],"comments":[]}
+JSON
+            exit 0
+          fi
+          # STUB_PR11_EMPTY=1 (fk-yztb54, slice E): no reviews/issue-comments
+          # at all, so a case exercising ONLY the inline reviewThreads path
+          # (via STUB_GQL_THREADS_DOOMER_ACK) is not muddied by the default
+          # fixture's own routed human comment below.
+          if [ "${STUB_PR11_EMPTY:-0}" = "1" ]; then
+            cat <<'JSON'
+{"reviews":[],"comments":[]}
 JSON
             exit 0
           fi
@@ -3760,6 +3810,68 @@ if grep -qF 'id=IC_adv_ack_4220824462' "$SUPPRESSION_LOG"; then
   pass "the newest suppression record is retained after trimming"
 else
   fail "the newest suppression record is retained after trimming"
+fi
+
+# ===========================================================================
+# CASE 65 (fk-yztb54, design doc slice E / AC5): don't reply to Doomer's
+#   ack-only comment on a thread we already replied to.
+#
+#   Four inline review threads (STUB_GQL_THREADS_DOOMER_ACK):
+#     thread 1 — our own agent reply precedes a pure
+#       adversary-feedback-ack:v1 comment (no finding, no question) -> must
+#       be suppressed with the NEW reason=doomer_ack_thread_closed, AND
+#       durably recorded (not just stderr) so an operator can see why later.
+#     thread 2 — same ack marker, but NO prior agent reply in the thread ->
+#       the "already replied" gate must never fire (no
+#       reason=doomer_ack_thread_closed line for this id), regardless of
+#       whatever the pre-existing generic bot_ack heuristic decides to do
+#       with it.
+#     thread 3 — ack marker co-occurs with a real adversary-review:v2
+#       finding= marker -> the finding always wins; this id must route and
+#       must never carry reason=doomer_ack_thread_closed.
+#     thread 4 — ack marker on a genuine question (no finding marker) ->
+#       the question always wins; this id must route and must never carry
+#       reason=doomer_ack_thread_closed.
+# ===========================================================================
+start_case "65: fk-yztb54 — no reply to Doomer's ack-only comment on an already-replied thread"
+setup_case_env "65"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_PR11_EMPTY="1" STUB_GQL_THREADS_DOOMER_ACK="1"
+assert_eq "0" "$RC" "script exits 0"
+
+if printf '%s' "$OUT" | grep -qF 'SUPPRESS kriscoleman/foundry#11 inline id=PRRC_t1_ack author=doomer-ai[bot] reason=doomer_ack_thread_closed'; then
+  pass "thread 1: pure ack after our own reply is suppressed as doomer_ack_thread_closed"
+else
+  fail "thread 1: pure ack after our own reply is suppressed as doomer_ack_thread_closed"
+fi
+
+if printf '%s' "$OUT" | grep -qE 'id=PRRC_t2_ack .*reason=doomer_ack_thread_closed'; then
+  fail "thread 2: ack with no prior agent reply is never classified doomer_ack_thread_closed"
+else
+  pass "thread 2: ack with no prior agent reply is never classified doomer_ack_thread_closed"
+fi
+
+if printf '%s' "$OUT" | grep -qE 'id=PRRC_t3_mixed .*reason=doomer_ack_thread_closed'; then
+  fail "thread 3: a co-occurring finding marker is never overridden by the ack marker"
+else
+  pass "thread 3: a co-occurring finding marker is never overridden by the ack marker"
+fi
+assert_log_count "$GC_LOG" 'still breaks the retry invariant again' 1 "thread 3: the real finding still routes"
+
+if printf '%s' "$OUT" | grep -qE 'id=PRRC_t4_question .*reason=doomer_ack_thread_closed'; then
+  fail "thread 4: a genuine question is never suppressed as doomer_ack_thread_closed"
+else
+  pass "thread 4: a genuine question is never suppressed as doomer_ack_thread_closed"
+fi
+assert_log_count "$GC_LOG" 'Does this still look okay' 1 "thread 4: the question still routes"
+
+# Durable record (bead text: "Record the skip in the durable suppression log
+# so it stays auditable") -- the stderr line alone does not survive past this
+# run; it must also land in a per-PR file under CV_STATE_DIR.
+SUPPRESSION_LOG="${STATE_DIR}/kriscoleman_foundry_11.suppressions.log"
+if [ -f "$SUPPRESSION_LOG" ] && grep -qF 'id=PRRC_t1_ack' "$SUPPRESSION_LOG" && grep -qF 'reason=doomer_ack_thread_closed' "$SUPPRESSION_LOG"; then
+  pass "thread 1 suppression is durably recorded under CV_STATE_DIR"
+else
+  fail "thread 1 suppression is durably recorded under CV_STATE_DIR"
 fi
 
 # ===========================================================================
