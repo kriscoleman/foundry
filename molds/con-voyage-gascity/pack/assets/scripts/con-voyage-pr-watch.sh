@@ -1775,6 +1775,14 @@ for thread in pr_data.get("reviewThreads", []):
             reason = classify_suppression(author, body, "")
         if reason:
             log_suppression("inline", nid, author, reason)
+            if reason == "doomer_ack_thread_closed":
+                # fk-yztb54 BLOCKING-1: this suppression is durably appended
+                # to suppression_log_file above. Without also marking nid
+                # seen here, this monitor (a periodic poller against the same
+                # open PR) re-evaluates and re-appends the identical line on
+                # every future cycle for the life of the PR -- unbounded by
+                # polling frequency, not just by GitHub activity.
+                new_ids.add(nid)
             continue
         if not body.strip():
             continue
