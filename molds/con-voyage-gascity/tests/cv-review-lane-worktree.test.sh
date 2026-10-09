@@ -382,6 +382,70 @@ PATH="$ORIG_PATH"
 if [ -d "$LANE_UNKNOWN" ]; then fail "sweep --force left the unknown-status lane's worktree on disk"; else pass "sweep --force reaps regardless of unresolved status"; fi
 
 # ===========================================================================
+# CASE 13 — fk-o0f68q BLOCKING-1: a hanging `gc bd show` (lock contention,
+#   store outage) must not hang `sweep` forever. `lane_bead_closed`'s
+#   `bead_status` call is wrapped in `cv_with_timeout`; pin that wiring with a
+#   `gc` stub that never returns, under a short
+#   CV_LENS_STORE_TIMEOUT_SECONDS, and assert `sweep` still returns promptly
+#   and treats the unresolved lane as still active (skip, don't reap).
+# ===========================================================================
+start_case "13: sweep bounds a hanging store lookup and skips the lane, rather than hanging forever (fk-o0f68q)"
+HANG_GC_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cv-review-lane-wt-test-hang.XXXXXX")"
+cat > "${HANG_GC_DIR}/gc" <<'HANG_GC_STUB'
+#!/usr/bin/env bash
+if [ "$1" = "bd" ] && [ "$2" = "show" ]; then
+  sleep 3600
+  exit 0
+fi
+exit 1
+HANG_GC_STUB
+chmod +x "${HANG_GC_DIR}/gc"
+
+REPO5="$(mk_repo repo5)"
+SRC5="${SANDBOX}/repo5-src"
+git_c "$REPO5" worktree add -q --detach "$SRC5" HEAD
+run_script acquire "$SRC5" "lane-hanging-store"
+assert_eq "0" "$RC" "acquire for the hanging-store lane exits 0"
+LANE_HANGING="$OUT"
+
+ORIG_PATH="$PATH"
+PATH="${HANG_GC_DIR}:${ORIG_PATH}"
+export CV_LENS_STORE_TIMEOUT_SECONDS=1
+hang_start=$(date +%s)
+run_script sweep "$SRC5"
+hang_elapsed=$(( $(date +%s) - hang_start ))
+unset CV_LENS_STORE_TIMEOUT_SECONDS
+PATH="$ORIG_PATH"
+
+assert_eq "0" "$RC" "sweep exits 0 even when the store lookup hangs"
+if [ "$hang_elapsed" -lt 30 ]; then
+  pass "sweep returned promptly (${hang_elapsed}s), bounded by the timeout, instead of hanging"
+else
+  fail "sweep took ${hang_elapsed}s against a hanging store call — cv_with_timeout wiring is broken"
+fi
+if [ -d "$LANE_HANGING" ]; then pass "sweep left the unresolved (hung-lookup) lane's worktree alone"; else fail "sweep reaped a lane whose status lookup timed out — fail-open, not fail-safe"; fi
+
+# A malformed/empty CV_LENS_STORE_TIMEOUT_SECONDS must fall back to the 30s
+# default rather than disabling the bound outright (`cv_with_timeout` treats
+# an empty/non-numeric value as "no timeout").
+ORIG_PATH="$PATH"
+PATH="${HANG_GC_DIR}:${ORIG_PATH}"
+export CV_LENS_STORE_TIMEOUT_SECONDS="not-a-number"
+coerce_start=$(date +%s)
+run_script sweep "$SRC5"
+coerce_elapsed=$(( $(date +%s) - coerce_start ))
+unset CV_LENS_STORE_TIMEOUT_SECONDS
+PATH="$ORIG_PATH"
+assert_eq "0" "$RC" "sweep exits 0 with a malformed CV_LENS_STORE_TIMEOUT_SECONDS"
+if [ -d "$LANE_HANGING" ]; then pass "sweep still left the lane alone under the coerced default timeout"; else fail "sweep reaped the lane under a malformed timeout value"; fi
+if [ "$coerce_elapsed" -ge 30 ] && [ "$coerce_elapsed" -lt 90 ]; then
+  pass "malformed CV_LENS_STORE_TIMEOUT_SECONDS coerced to the 30s default (${coerce_elapsed}s)"
+else
+  fail "malformed CV_LENS_STORE_TIMEOUT_SECONDS did not coerce to ~30s (took ${coerce_elapsed}s)"
+fi
+rm -rf "$HANG_GC_DIR"
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 echo
