@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.16.3](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.16.2...con-voyage-gascity-v0.16.3) (2026-10-09)
+
+
+### Bug Fixes
+
+* address mayor regrade of LOW-1/2/3 (review fk-igqet1) ([cce412b](https://github.com/kriscoleman/foundry/commit/cce412b66212f284e00e6f3a509850d4862a9a34))
+* anchor rate-limit banner match to glyph-line start (review fk-xtbtcw BLOCKING-1) ([e8c8873](https://github.com/kriscoleman/foundry/commit/e8c8873ccaf2d509c071f74cd201d871594bd311))
+* avoid live backtick command substitution in classify_peek comment (review fk-6slhkq) ([f036954](https://github.com/kriscoleman/foundry/commit/f036954901e6dbaf3676d6b4dcc65d87d59b92f5))
+* bound lane_bead_closed's store lookup with a timeout (review fk-o0f68q) ([96fd8d2](https://github.com/kriscoleman/foundry/commit/96fd8d29745e9ff73780c4a455797460c83278e1))
+* **con-voyage:** anchor rate-limit lookout classification to Claude Code's own banner ([c413d76](https://github.com/kriscoleman/foundry/commit/c413d76d66f5f10f2f1baa326086c27f71cb5a92))
+* **con-voyage:** lock shared worktree against review-lane/sync race (fk-dy2ygk) ([69b8550](https://github.com/kriscoleman/foundry/commit/69b8550f78fc8a30db6f1623d1cb330ee1de3717))
+* **con-voyage:** make review-lane gc.outcome=pass explicit and hardcoded everywhere ([8820b6b](https://github.com/kriscoleman/foundry/commit/8820b6b0a3441e3d8610d0ecfb8582454788f181))
+* **con-voyage:** resolve cv-pr-comment.sh to an absolute path in pr-watch feedback beads ([a2f70e0](https://github.com/kriscoleman/foundry/commit/a2f70e0f632480413352f94c18c5d0b62ac1e3dc))
+* **con-voyage:** route AI-reviewer findings by adversary marker, not prose ([b3912c5](https://github.com/kriscoleman/foundry/commit/b3912c576af1763dffab175a3a5abe049f30a4d6))
+* **con-voyage:** route cv-reopen-findings root lookup to the work bead's rig ([8776621](https://github.com/kriscoleman/foundry/commit/877662163b991b4473940f08dc4b6487705f5dc2))
+* **con-voyage:** sweep must never reap a still-active review lane's worktree ([509ae18](https://github.com/kriscoleman/foundry/commit/509ae18d458db8a5a9cbf5d1b9c4de210e7f1687))
+* drop unused --json from bead-readability check in cv-review-lane-close.sh (repair fk-42cnoy) ([3aaca8a](https://github.com/kriscoleman/foundry/commit/3aaca8a7a321df90623f7d37ecf95bebec32e3b8))
+* enforce gc.outcome=pass deterministically via cv-review-lane-close.sh (review fk-yf1ix5) ([d9635a8](https://github.com/kriscoleman/foundry/commit/d9635a8a0cccacdedc3735f3b89c00dcbe1938a7))
+* fail loud and bound rig lookup in cv-reopen-findings.sh (review fk-ykq66p) ([76a37be](https://github.com/kriscoleman/foundry/commit/76a37bed3e14fc6513cd29a3ae44efe93fafe950))
+* fail loud instead of routing an empty-bodied mayor-reopen bead (review fk-kza51h BLOCKING-1) ([b7b6de6](https://github.com/kriscoleman/foundry/commit/b7b6de631a7f29900d48e248aa085cd899d5d16f))
+* guard empty EXTRA_METADATA expansion under set -u in cv-review-lane-close.sh (review fk-7w9y6) ([c087f75](https://github.com/kriscoleman/foundry/commit/c087f758efed460b840d231ef6bdb3f51657d8e7))
+* harden synthesize-review --force sweep against live-sibling reaps (send-back foundry[#186](https://github.com/kriscoleman/foundry/issues/186)) ([afaf918](https://github.com/kriscoleman/foundry/commit/afaf918d8a8b5773da790d440007f438b617199e))
+* harden worktree sync lock ownership, reclaim, and lane serialization (review fk-hbsmk) ([d1a3e8d](https://github.com/kriscoleman/foundry/commit/d1a3e8d515ac8cc1f0b216c371d07e2896141f57))
+* require banner match to begin within the glyph line itself (review fk-xtbtcw BLOCKING-1, iteration 5) ([32dcc60](https://github.com/kriscoleman/foundry/commit/32dcc602b79138efb22b6a922922c0b9ad4d56ce))
+* require limit-phrase match to start within the glyph-anchored line (review fk-6slhkq) ([fb9bba7](https://github.com/kriscoleman/foundry/commit/fb9bba771db38f7905609620ccecc42c5f4f5d93))
+* require majority-in-line match to accept a straddled limit phrase (review fk-xtbtcw BLOCKING-1) ([010539a](https://github.com/kriscoleman/foundry/commit/010539a4fcb91264fe40eca74fff9183b716fdef))
+* surface suppression_log write failures as a WARNING (review fk-igqet1 BLOCKING-1) ([029960c](https://github.com/kriscoleman/foundry/commit/029960cca4ac9062c090bb15b967b6654935e42a))
+* widen rate-limit banner tail window and join wrapped lines (review fk-xtbtcw) ([867e0a8](https://github.com/kriscoleman/foundry/commit/867e0a89aedaf79ae880ae2c0aaab3beef90f663))
+
 ## [0.16.2](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.16.1...con-voyage-gascity-v0.16.2) (2026-10-08)
 
 
