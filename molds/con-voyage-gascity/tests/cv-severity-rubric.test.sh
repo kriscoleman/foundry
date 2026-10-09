@@ -167,8 +167,14 @@ fi
 start_case "the fragment keeps the pre-existing reporting/identity plumbing"
 assert_contains "$FRAGMENT" "Report a verdict" \
   "fragment keeps the verdict-reporting bullet"
-assert_contains "$FRAGMENT" 'MUST lead with `[<rig>/<agent> — <lens>]`' \
-  "fragment keeps the PR-comment prefix convention"
+
+start_case "the fragment prohibits review lenses from posting to the PR themselves (review fk-lp1pj8 BLOCKING-1)"
+assert_contains "$FRAGMENT" "Do NOT call \`cv-pr-comment.sh\`" \
+  "fragment explicitly prohibits calling cv-pr-comment.sh"
+assert_contains "$FRAGMENT" "report only via your" \
+  "fragment points lenses back to their own verdict metadata as the only report channel"
+assert_not_contains "$FRAGMENT" "MUST lead with \`[<rig>/<agent> — <lens>]\`" \
+  "fragment no longer carries the unscoped banner-format permission line"
 
 start_case "every cv-* lens includes the shared rubric by reference (DRY, not pasted)"
 for lens in "${LENSES[@]}"; do
