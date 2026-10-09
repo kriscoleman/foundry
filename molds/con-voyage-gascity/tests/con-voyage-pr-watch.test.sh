@@ -3936,13 +3936,13 @@ fi
 #   still exits 0 -- a best-effort durability feature must never abort the
 #   whole monitor run.
 # ===========================================================================
-start_case "58: fk-dh3mkt review — suppression-log write failure warns but does not abort"
-setup_case_env "58"
-SUPPRESSION_LOG_58="${STATE_DIR}/kriscoleman_foundry_11.suppressions.log"
-mkdir -p "$SUPPRESSION_LOG_58"
+start_case "66: fk-dh3mkt review — suppression-log write failure warns but does not abort"
+setup_case_env "66"
+SUPPRESSION_LOG_66="${STATE_DIR}/kriscoleman_foundry_11.suppressions.log"
+mkdir -p "$SUPPRESSION_LOG_66"
 run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_PR11_EMPTY="1" STUB_GQL_THREADS_DOOMER_ACK="1"
 assert_eq "0" "$RC" "script exits 0 despite the suppression-log write failure"
-if printf '%s' "$OUT" | grep -qF "WARNING: suppression_log write failed for ${SUPPRESSION_LOG_58}"; then
+if printf '%s' "$OUT" | grep -qF "WARNING: suppression_log write failed for ${SUPPRESSION_LOG_66}"; then
   pass "suppression-log write failure is warned loudly"
 else
   fail "suppression-log write failure is warned loudly"
@@ -3964,8 +3964,8 @@ fi
 #   immediately followed by a closing paren before the HTML marker -> the
 #   question still wins, never classified doomer_ack_thread_closed).
 # ===========================================================================
-start_case "59: fk-dh3mkt review — is_question() ignores a '?' inside a URL query string or code span"
-setup_case_env "59"
+start_case "67: fk-dh3mkt review — is_question() ignores a '?' inside a URL query string or code span"
+setup_case_env "67"
 run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_PR11_EMPTY="1" STUB_GQL_THREADS_DOOMER_ACK_QMARK="1"
 assert_eq "0" "$RC" "script exits 0"
 
@@ -3997,25 +3997,25 @@ assert_log_count "$GC_LOG" 'Should we revisit this' 1 "thread 7: the genuine que
 #   assert the file is trimmed back down to the cap with the old sentinel
 #   gone and the newest write kept.
 # ===========================================================================
-start_case "60: fk-dh3mkt review — suppression-log is capped, not unbounded"
-setup_case_env "60"
-SUPPRESSION_LOG_60="${STATE_DIR}/kriscoleman_foundry_11.suppressions.log"
+start_case "68: fk-dh3mkt review — suppression-log is capped, not unbounded"
+setup_case_env "68"
+SUPPRESSION_LOG_68="${STATE_DIR}/kriscoleman_foundry_11.suppressions.log"
 for i in 1 2 3 4 5; do
-  echo "2020-01-01T00:00:0${i}Z SUPPRESS kriscoleman/foundry#11 inline id=OLD_SENTINEL_${i} author=doomer-ai[bot] reason=doomer_ack_thread_closed" >> "$SUPPRESSION_LOG_60"
+  echo "2020-01-01T00:00:0${i}Z SUPPRESS kriscoleman/foundry#11 inline id=OLD_SENTINEL_${i} author=doomer-ai[bot] reason=doomer_ack_thread_closed" >> "$SUPPRESSION_LOG_68"
 done
 run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_PR11_EMPTY="1" STUB_GQL_THREADS_DOOMER_ACK="1" CV_SUPPRESSION_LOG_MAX_LINES="5"
 assert_eq "0" "$RC" "script exits 0"
-if [ -f "$SUPPRESSION_LOG_60" ] && [ "$(wc -l < "$SUPPRESSION_LOG_60" | tr -d ' ')" = "5" ]; then
+if [ -f "$SUPPRESSION_LOG_68" ] && [ "$(wc -l < "$SUPPRESSION_LOG_68" | tr -d ' ')" = "5" ]; then
   pass "suppression log is trimmed back down to the configured cap"
 else
   fail "suppression log is trimmed back down to the configured cap"
 fi
-if grep -qF 'OLD_SENTINEL_1' "$SUPPRESSION_LOG_60"; then
+if grep -qF 'OLD_SENTINEL_1' "$SUPPRESSION_LOG_68"; then
   fail "oldest line is evicted once the cap is exceeded"
 else
   pass "oldest line is evicted once the cap is exceeded"
 fi
-if grep -qF 'id=PRRC_t1_ack' "$SUPPRESSION_LOG_60"; then
+if grep -qF 'id=PRRC_t1_ack' "$SUPPRESSION_LOG_68"; then
   pass "the newest write survives the trim"
 else
   fail "the newest write survives the trim"

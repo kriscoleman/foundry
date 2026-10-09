@@ -1625,18 +1625,26 @@ def has_adversary_finding_marker(body):
 def has_adversary_ack_marker(body):
     return bool(ADVERSARY_ACK_MARKER_RE.search(body or ""))
 
-# fk-dh3mkt review (mayor reopen, regraded LOW-3): a bare "?" in body" matched
-# a "?" inside a URL query string, a code span, or optional-chaining syntax
-# (`y?.foo`) just as readily as a real question -- none of those should ever
-# win the adversary-ack "genuine question" gate below. A real sentence-ending
-# "?" is followed only by whitespace, a closing quote/paren/bracket, or
-# end-of-string; a "?" embedded in `foo?bar=1` or `` `x?` `` is followed by
-# more non-space token characters instead. Deliberately still conservative
-# toward routing (a "?" this misses as a question falls through to the
-# pre-existing FINDING_MARKER_RE/bot_ack path, which still routes on real
+# fk-dh3mkt review (mayor reopen, regraded LOW-3; widened fk-yztb54 iteration-3
+# BLOCKING-2): a bare "?" in body" matched a "?" inside a URL query string, a
+# code span, or optional-chaining syntax (y?.foo) just as readily as a real
+# question -- none of those should ever win the adversary-ack "genuine
+# question" gate below. A real sentence-ending "?" is followed only by
+# whitespace, a closing quote/paren/bracket, or end-of-string; a "?" embedded
+# in foo?bar=1 or a backtick code span is followed by more non-space token
+# characters instead. The first cut of this lookahead (straight/curly-free,
+# no "<") under-matched two real Doomer comment shapes: a question ending in
+# a closing quote (straight or curly), and a question immediately followed by
+# the HTML ack marker with no separating whitespace. Both are reachable
+# whenever Doomer omits a leading space before the marker or quotes the
+# question it is acknowledging, and both wrongly read as "not a question",
+# letting a genuine question fall into the unconditional ack-marker
+# suppression in classify_suppression() below. Deliberately still conservative toward
+# routing (a "?" this misses as a question falls through to the pre-existing
+# FINDING_MARKER_RE/bot_ack path, which can still route on other real
 # content) -- only the classification of what counts as a "genuine question"
 # gets tighter here.
-QUESTION_MARK_RE = re.compile(r"\?(?=\s|[)\]]|$)")
+QUESTION_MARK_RE = re.compile(r"\?(?=\s|[)\]\x22\x27<]|$)")
 
 def is_question(body):
     return bool(QUESTION_MARK_RE.search(body or ""))
@@ -1660,7 +1668,21 @@ def classify_suppression(author, body, state):
         if has_adversary_finding_marker(body):
             return None
         if has_adversary_ack_marker(body):
-            return "bot_ack"
+            # fk-yztb54 iteration-3 BLOCKING-2 follow-on: an ack marker alone
+            # is not proof the thread needs no human/agent reply -- a real
+            # question riding along with it (Doomer asking "does this look
+            # okay?" while also stamping its own ack) must still route, and
+            # so must ordinary prose that trips the same FINDING_MARKER_RE
+            # heuristic a marker-free bot reply would ("you should be fine
+            # now" alongside the ack marker is still a finding-shaped reply).
+            # Mirrors the "a question or a finding always overrides" rule the
+            # inline-thread doomer_ack_thread_closed gate already applies, but
+            # as a blanket classify_suppression() rule shared by all three
+            # scan loops, not only the inline-thread loop. Falls through to
+            # the same is_bot_approval_noise/is_bot_ack prose checks below
+            # instead of returning "bot_ack" unconditionally.
+            if is_question(body):
+                return None
         if is_bot_approval_noise(body, state):
             return "bot_approval_noise"
         if is_bot_ack(body, state):
