@@ -777,7 +777,7 @@ if grep -q 'git rebase --continue' "$CI_REPAIR_MD"; then
 else
   fail "expected merge_conflict to still auto-resolve (git rebase --continue) — did it regress to surface-only?"
 fi
-if grep -qi 'surface a human-readable summary of the resolution' "$CI_REPAIR_MD"; then
+if grep -qi 'record a human-readable summary of the resolution' "$CI_REPAIR_MD"; then
   pass "merge_conflict path surfaces a human-readable resolution summary"
 else
   fail "expected merge_conflict to surface a human-readable resolution summary (the operator's guardrail)"
