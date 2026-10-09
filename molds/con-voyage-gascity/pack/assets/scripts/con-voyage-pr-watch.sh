@@ -1461,7 +1461,7 @@ print(json.dumps(out))
     # including new ones (for state-file update).
     # shellcheck disable=SC2016
     _PY_SCAN_COMMENTS='
-import sys, json, re
+import sys, json, re, os
 from datetime import datetime, timezone
 
 pr_data    = json.load(sys.stdin)   # PR JSON from stdin
@@ -1550,10 +1550,20 @@ def is_bot_approval_noise(body, state):
 # the finding markers below are present, so a reply that still carries a
 # severity word, a code reference, or requested-change language keeps
 # routing regardless of how it opens.
+# Narrowed (mayor regrade of fk-igqet1 LOW-3): "please", "update", and
+# "change" were dropped from this set. Each is common in pure bot chatter
+# that carries no finding at all ("status update", "no changes needed",
+# "please let us know if you have questions"), so on their own they routed
+# acks/summaries as if they were findings -- the exact PR noise this feature
+# exists to cut. Every remaining word/pattern here is still finding-shaped
+# (a severity term, a code/location reference, or an explicit
+# fix/requested-change phrase), so no currently-pinned real finding (CASE
+# 50-61) stopped matching -- see CASE 62 for the new negative pins proving
+# bare "please"/"update"/"change" chatter no longer routes.
 FINDING_MARKER_RE = re.compile(
     r"critical|blocking|severity|vulnerab|\bbugs?\b|\berrors?\b|"
     r"`[^`]+`|\bline\s+\d+\b|:\d+\b|%3a\d+|"
-    r"\bplease\b|\bshould\b|\bmust\b|\bneed(?:s|ed)?\s+to\b|recommend|\bfix\b|\bchange\b|\bupdate\b|"
+    r"\bshould\b|\bmust\b|\bneed(?:s|ed)?\s+to\b|recommend|\bfix\b|"
     r"\bbreak(?:s|ing)?\b|\bregress(?:ion)?\b|migration path|\bintentional\b|"
     r"worth confirming|before this ships",
     re.IGNORECASE,
@@ -1633,6 +1643,26 @@ def classify_suppression(author, body, state):
 # per-PR state file under CV_STATE_DIR (when a path is supplied) so the drop
 # survives past this run -- an operator can answer "why was this dropped?"
 # after the fact instead of only during a live tail of the monitors own log.
+#
+# CAP (mayor regrade of fk-igqet1 LOW-1): this file is append-only and this
+# monitor runs every few minutes forever, so left unbounded it grows without
+# limit. Trim to the most recent SUPPRESSION_LOG_MAX_LINES lines on every
+# write -- cheap at this cap (a bounded read+rewrite), and keeps the exact
+# same "why was this dropped" answer for anything recent, which is the only
+# thing an operator actually needs. Override via CV_SUPPRESSION_LOG_MAX_LINES
+# for tests that need a small, deterministic cap.
+SUPPRESSION_LOG_MAX_LINES = int(os.environ.get("CV_SUPPRESSION_LOG_MAX_LINES") or "2000")
+
+def _trim_suppression_log(path):
+    try:
+        with open(path, "r") as f:
+            lines = f.readlines()
+        if len(lines) > SUPPRESSION_LOG_MAX_LINES:
+            with open(path, "w") as f:
+                f.writelines(lines[-SUPPRESSION_LOG_MAX_LINES:])
+    except OSError:
+        pass  # best-effort trim; a trim failure must never block suppression itself
+
 def log_suppression(item_type, nid, author, reason):
     sys.stderr.write(
         "con-voyage-pr-watch: [PART B] SUPPRESS %s#%s %s id=%s author=%s reason=%s\n"
@@ -1650,6 +1680,8 @@ def log_suppression(item_type, nid, author, reason):
                 "con-voyage-pr-watch: [PART B] WARNING: suppression_log write failed for %s: %s\n"
                 % (suppression_log_path, e)
             )
+            return
+        _trim_suppression_log(suppression_log_path)
 
 found      = []
 new_ids    = set()
