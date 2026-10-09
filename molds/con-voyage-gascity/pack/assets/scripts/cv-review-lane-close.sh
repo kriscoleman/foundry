@@ -90,7 +90,7 @@ done
 # A genuine lookup failure (bead unknown, gc/bd unreachable, ...) must abort
 # this script rather than proceed to a close that would otherwise succeed
 # against a nonexistent or wrong bead.
-"$GC" bd show "$BEAD_ID" --json >/dev/null 2>&1 \
+"$GC" bd show "$BEAD_ID" >/dev/null 2>&1 \
   || die "bead ${BEAD_ID} could not be read — refusing to close"
 
 UPDATE_ARGS=("$BEAD_ID" --set-metadata 'gc.outcome=pass')
