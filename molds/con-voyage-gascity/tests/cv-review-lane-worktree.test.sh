@@ -313,11 +313,13 @@ assert_eq "0" "$RC" "acquire's reuse-guard survives a SIGPIPE/pipefail race on a
 assert_eq "$LANE_PF" "$OUT" "acquire still returns the correct, already-existing lane worktree path despite the race"
 
 # ===========================================================================
-# CASE 11 — fk-vqzpq9: sweep must never reap a still-active lane's worktree.
-#   Only closed lanes are removed; an open/in_progress lane is skipped and
-#   reported, not torn down. --force bypasses the check entirely (the
-#   explicit post-cycle sweep synthesize-review runs after every lane
-#   reports).
+# CASE 11 — fk-vqzpq9 / fk-ekufmt: sweep must never reap a still-active
+#   lane's worktree. Only closed lanes are removed; an open/in_progress lane
+#   is skipped and reported, not torn down — even with --force. --force only
+#   additionally reaps a lane whose status could NOT be resolved at all (see
+#   CASE 12); a lane bead that genuinely resolves to a non-closed status is a
+#   live sibling and must never be swept, exactly the scenario that reaped a
+#   live lane on fk-ekufmt when a finding regrade reopened it mid-synthesis.
 # ===========================================================================
 start_case "11: sweep skips a still-open/in_progress lane and only reaps closed lanes"
 REPO3="$(mk_repo repo3)"
@@ -346,7 +348,9 @@ case "$OUT" in
   *) fail "sweep did not report skipping the open lane; output: ${OUT}" ;;
 esac
 
-# --force bypasses the liveness check entirely.
+# --force must NOT reap a lane whose status genuinely resolves to
+# open/in_progress (fk-ekufmt: this is exactly the "live sibling reaped by
+# the synthesize-review --force sweep" incident).
 ORIG_PATH="$PATH"
 export STUB_BDSHOW_JSON_lane_open_one='[{"status":"in_progress"}]'
 PATH="${FAKE_GC_DIR}:${ORIG_PATH}"
@@ -354,7 +358,7 @@ run_script sweep "$SRC3" --force
 PATH="$ORIG_PATH"
 unset STUB_BDSHOW_JSON_lane_open_one
 assert_eq "0" "$RC" "sweep --force exits 0"
-if [ -d "$LANE_OPEN" ]; then fail "sweep --force left the open lane's worktree on disk"; else pass "sweep --force reaped the open lane's worktree"; fi
+if [ -d "$LANE_OPEN" ]; then pass "sweep --force left a known-open lane's worktree alone — never reaps a live sibling"; else fail "sweep --force reaped a lane whose bead genuinely resolved to in_progress — this is the fk-ekufmt live-sibling-reaped bug"; fi
 
 # ===========================================================================
 # CASE 12 — an unresolvable lane bead status (no gc on PATH at all) must fail
@@ -383,7 +387,7 @@ if [ -d "$LANE_UNKNOWN" ]; then fail "sweep --force left the unknown-status lane
 
 # ===========================================================================
 # CASE 13 — fk-o0f68q BLOCKING-1: a hanging `gc bd show` (lock contention,
-#   store outage) must not hang `sweep` forever. `lane_bead_closed`'s
+#   store outage) must not hang `sweep` forever. `lane_bead_state`'s
 #   `bead_status` call is wrapped in `cv_with_timeout`; pin that wiring with a
 #   `gc` stub that never returns, under a short
 #   CV_LENS_STORE_TIMEOUT_SECONDS, and assert `sweep` still returns promptly
@@ -444,6 +448,103 @@ else
   fail "malformed CV_LENS_STORE_TIMEOUT_SECONDS did not coerce to ~30s (took ${coerce_elapsed}s)"
 fi
 rm -rf "$HANG_GC_DIR"
+
+# ===========================================================================
+# CASE 14 — fk-o0f68q LOW-5: the store-lookup timeout must be a budget shared
+#   across the whole sweep call, not re-applied per lane. Three lanes all
+#   backed by a hanging `gc`, with a 2s timeout: the OLD per-lane behavior
+#   would take ~3 x 2s = 6s+; the fix must bound the whole sweep to roughly
+#   one timeout, since the budget is exhausted after the first lane and every
+#   later lane is treated as unresolved without paying its own full timeout.
+# ===========================================================================
+start_case "14: sweep bounds its TOTAL store-lookup time across multiple slow lanes to one shared budget, not N x per-lane timeout (fk-o0f68q LOW-5)"
+HANG_GC_DIR2="$(mktemp -d "${TMPDIR:-/tmp}/cv-review-lane-wt-test-hang2.XXXXXX")"
+cat > "${HANG_GC_DIR2}/gc" <<'HANG_GC_STUB2'
+#!/usr/bin/env bash
+if [ "$1" = "bd" ] && [ "$2" = "show" ]; then
+  sleep 3600
+  exit 0
+fi
+exit 1
+HANG_GC_STUB2
+chmod +x "${HANG_GC_DIR2}/gc"
+
+REPO6="$(mk_repo repo6)"
+SRC6="${SANDBOX}/repo6-src"
+git_c "$REPO6" worktree add -q --detach "$SRC6" HEAD
+run_script acquire "$SRC6" "lane-slow-a"
+assert_eq "0" "$RC" "acquire for slow lane a exits 0"
+LANE_SLOW_A="$OUT"
+run_script acquire "$SRC6" "lane-slow-b"
+assert_eq "0" "$RC" "acquire for slow lane b exits 0"
+LANE_SLOW_B="$OUT"
+run_script acquire "$SRC6" "lane-slow-c"
+assert_eq "0" "$RC" "acquire for slow lane c exits 0"
+LANE_SLOW_C="$OUT"
+
+ORIG_PATH="$PATH"
+PATH="${HANG_GC_DIR2}:${ORIG_PATH}"
+export CV_LENS_STORE_TIMEOUT_SECONDS=2
+budget_start=$(date +%s)
+run_script sweep "$SRC6"
+budget_elapsed=$(( $(date +%s) - budget_start ))
+unset CV_LENS_STORE_TIMEOUT_SECONDS
+PATH="$ORIG_PATH"
+
+assert_eq "0" "$RC" "sweep exits 0 across three slow lanes"
+if [ "$budget_elapsed" -lt 5 ]; then
+  pass "sweep over 3 slow lanes took ${budget_elapsed}s, bounded by ONE shared budget, not 3x the per-lane timeout"
+else
+  fail "sweep over 3 slow lanes took ${budget_elapsed}s — the per-lane timeout is being paid separately by each lane instead of a shared budget"
+fi
+if [ -d "$LANE_SLOW_A" ] && [ -d "$LANE_SLOW_B" ] && [ -d "$LANE_SLOW_C" ]; then
+  pass "all three unresolved-status lanes were left alone"
+else
+  fail "sweep reaped an unresolved-status lane without --force"
+fi
+rm -rf "$HANG_GC_DIR2"
+
+# ===========================================================================
+# CASE 15 — review LOW-2: cmd_sweep's canonicalize-failure message must name
+#   the path that actually failed to canonicalize, not a stale `$1` (after
+#   this function's own `shift`, `$1` no longer holds the source path — it
+#   holds whatever optional flag followed it, e.g. "--force", or is empty).
+#   Reproduced by forcing canonicalize_dir's own `cd` to fail on a path that
+#   passed the earlier existence/git-worktree check (the directory vanishes
+#   out from under sweep, same shape as a lane worktree torn down by a
+#   concurrent sweep mid-run), with "--force" trailing it as the real
+#   production call shape — then asserting the error names the source path,
+#   never the literal trailing flag.
+# ===========================================================================
+start_case "15: sweep's canonicalize-failure message names the real failed path, not a stale \$1 (review LOW-2)"
+REPO7="$(mk_repo repo7)"
+VANISHING_SRC="${SANDBOX}/repo7-src"
+git_c "$REPO7" worktree add -q --detach "$VANISHING_SRC" HEAD
+FAKE_GIT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cv-review-lane-wt-test-vanish.XXXXXX")"
+cat > "${FAKE_GIT_DIR}/git" <<VANISH_SHIM
+#!/usr/bin/env bash
+if [ "\$1" = "-C" ] && [ "\$3" = "rev-parse" ] && [ "\$4" = "--is-inside-work-tree" ]; then
+  "${REAL_GIT}" "\$@"
+  rc=\$?
+  rm -rf "${VANISHING_SRC}"
+  exit "\$rc"
+fi
+exec "${REAL_GIT}" "\$@"
+VANISH_SHIM
+chmod +x "${FAKE_GIT_DIR}/git"
+ORIG_PATH="$PATH"
+PATH="${FAKE_GIT_DIR}:${ORIG_PATH}"
+run_script sweep "$VANISHING_SRC" --force
+PATH="$ORIG_PATH"
+rm -rf "$FAKE_GIT_DIR"
+case "$OUT" in
+  *"'${VANISHING_SRC}'"*) pass "canonicalize-failure message names the actual source path" ;;
+  *) fail "canonicalize-failure message did not name the real source path; output: ${OUT}" ;;
+esac
+case "$OUT" in
+  *"'--force'"*) fail "canonicalize-failure message leaked the trailing '--force' flag in place of the source path — stale \$1 bug" ;;
+  *) pass "canonicalize-failure message never substitutes a trailing flag for the real source path" ;;
+esac
 
 # ===========================================================================
 # Summary

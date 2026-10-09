@@ -152,11 +152,14 @@ own private worktree acquired via `cv-review-lane-worktree.sh acquire`, never th
 shared source-anchor work_dir — see the per-lane worktree isolation note in each
 lane's own instructions. After writing the synthesis, sweep this cycle's per-lane
 copies so they do not accumulate across review rounds. Synthesis runs only after
-every lane has already reported and closed, so pass `--force`: sweep's own
-liveness check (fk-vqzpq9 — a lane worktree whose bead is still open/in_progress is
-skipped, never reaped, to stop a lane from tearing down a sibling's still-active
-worktree) would otherwise depend on this step's own `gc bd show` read of each lane
-bead being perfectly up to date:
+every lane has already reported and closed, so pass `--force`: it additionally
+reaps a lane worktree whose bead status could not be resolved at all (this step's
+own `gc bd show` read might not be perfectly up to date), which would otherwise be
+skipped and leak forever. `--force` does NOT bypass sweep's liveness check for a
+lane bead that genuinely resolves to open/in_progress (fk-vqzpq9, hardened further
+by fk-ekufmt): a lane can be reopened mid-cycle — for example by a finding regrade
+racing this very synthesis step — and that worktree is a live sibling, never reaped
+regardless of `--force`:
 
 ```bash
 CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"

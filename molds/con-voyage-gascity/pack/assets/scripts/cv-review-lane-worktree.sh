@@ -40,9 +40,15 @@
 # synthesize-review) ran sweep after closing its own bead and reaped a
 # still-in_progress sibling lane's worktree out from under it.
 #
-# Pass --force to remove every matching lane worktree unconditionally,
-# skipping the liveness check — for synthesize-review's own post-cycle sweep,
-# which runs once all lanes have already reported and closed.
+# Pass --force to also reap a lane worktree whose bead status could not be
+# resolved at all (no gc/lib on PATH, lookup failure, timeout) — for
+# synthesize-review's own post-cycle sweep, which runs once all lanes are
+# expected to have reported and closed, so an unresolvable lookup shouldn't
+# leak the worktree forever. --force never reaps a lane bead that resolves to
+# a genuinely open/in_progress status: a lane can still be live (reopened by a
+# finding regrade racing synthesis, fk-ekufmt) even during this "everyone
+# should be closed" pass, and that must never be torn down regardless of
+# --force.
 #
 # sweep never touches <source-work-dir> itself or any worktree that does not
 # match the convention.
@@ -212,30 +218,33 @@ sync_lock_release() {
   rm -rf "$lockdir" 2>/dev/null || true
 }
 
-# lane_bead_closed <lane-id> — true (exit 0) only when <lane-id>'s own bead
-# resolves to status "closed". Sources con-voyage-lib.sh's `bead_status` (same
-# directory as this script) for the actual `gc bd show` lookup, wrapped in
-# `cv_with_timeout` (review fk-o0f68q BLOCKING-1) so a slow/stuck store call
-# under lock contention or pool load can't hang this function indefinitely —
-# the same bound already applied to other `gc bd show` call sites in
-# con-voyage-lib.sh. Any failure to resolve — lib missing, `gc` missing,
-# lookup error, or a timeout — is NOT closed (exit 1): sweep's caller must
-# treat that as "still active, do not reap".
-lane_bead_closed() {
+# lane_bead_state <lane-id> — prints <lane-id>'s own bead status on stdout:
+# "closed", a known non-closed status such as "open"/"in_progress", or empty
+# when the status could not be resolved at all. Sources con-voyage-lib.sh's
+# `bead_status` (same directory as this script) for the actual `gc bd show`
+# lookup, wrapped in `cv_with_timeout` (review fk-o0f68q BLOCKING-1) so a
+# slow/stuck store call under lock contention or pool load can't hang this
+# function indefinitely — the same bound already applied to other `gc bd
+# show` call sites in con-voyage-lib.sh. Always exits 0; the empty-string case
+# is how the caller distinguishes "truly unresolvable" (lib missing, `gc`
+# missing, lookup error, timeout) from a resolved-but-not-closed status —
+# sweep's caller must only ever treat the latter as un-reapable even with
+# --force (fk-ekufmt: a lane can be genuinely reopened mid-cycle).
+lane_bead_state() {
   local lane_id="$1"
-  [ -n "$lane_id" ] || return 1
+  [ -n "$lane_id" ] || { printf ''; return 0; }
   local script_dir cv_lib
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
   cv_lib="${script_dir}/con-voyage-lib.sh"
-  [ -f "$cv_lib" ] || return 1
+  [ -f "$cv_lib" ] || { printf ''; return 0; }
   local cv_lens_store_timeout="${CV_LENS_STORE_TIMEOUT_SECONDS:-30}"
   case "$cv_lens_store_timeout" in
     *[!0-9]*|'') cv_lens_store_timeout="30" ;;
   esac
   local result status
-  result="$(source "$cv_lib" && cv_with_timeout "$cv_lens_store_timeout" bead_status "$lane_id" id)" || return 1
+  result="$(source "$cv_lib" && cv_with_timeout "$cv_lens_store_timeout" bead_status "$lane_id" id)" || { printf ''; return 0; }
   status="${result%%$'\x1f'*}"
-  [ "$status" = "closed" ]
+  printf '%s' "$status"
 }
 
 cmd_acquire() {
@@ -313,11 +322,24 @@ cmd_sweep() {
     esac
   done
   require_git_worktree "$src" "sweep"
-  src="$(canonicalize_dir "$src")" || die "sweep: could not resolve real path of '${1:-$src}'"
+  local src_orig="$src"
+  src="$(canonicalize_dir "$src")" || die "sweep: could not resolve real path of '${src_orig}'"
 
   local base pattern
   base="$(basename "$src")"
   pattern="${base}${LANE_SUFFIX_MARK}"
+
+  # fk-o0f68q LOW-5: lane_bead_state's per-lookup timeout (CV_LENS_STORE_TIMEOUT_SECONDS,
+  # default 30s) was applied per lane, so a sweep over N slow/stuck lanes could
+  # block for up to N x timeout. Share one deadline across the whole sweep
+  # call instead: once the budget is spent, every remaining lane is treated
+  # as unresolvable (skip, or reap under --force, exactly like any other
+  # unresolvable lookup) rather than paying its own full per-lane timeout.
+  local sweep_budget_seconds="${CV_LANE_SWEEP_BUDGET_SECONDS:-${CV_LENS_STORE_TIMEOUT_SECONDS:-30}}"
+  case "$sweep_budget_seconds" in
+    *[!0-9]*|'') sweep_budget_seconds="30" ;;
+  esac
+  local sweep_deadline=$(( $(date +%s) + sweep_budget_seconds ))
 
   local any=0
   local skipped=0
@@ -329,12 +351,21 @@ cmd_sweep() {
         case "$name" in
           "${pattern}"*)
             local lane_id="${name#"${pattern}"}"
-            if [ "$force" -eq 1 ] || lane_bead_closed "$lane_id"; then
+            local state
+            if [ "$(date +%s)" -ge "$sweep_deadline" ]; then
+              state=""
+            else
+              state="$(lane_bead_state "$lane_id")"
+            fi
+            if [ "$state" = "closed" ] || { [ -z "$state" ] && [ "$force" -eq 1 ]; }; then
               git -C "$src" worktree remove --force "$path" >/dev/null 2>&1 \
                 && { echo "cv-review-lane-worktree: removed ${path}"; any=1; } \
                 || echo "cv-review-lane-worktree: WARNING: could not remove ${path}" >&2
+            elif [ -n "$state" ]; then
+              echo "cv-review-lane-worktree: skip ${path} — lane bead '${lane_id}' is still '${state}' (live sibling, never reaped even with --force)"
+              skipped=1
             else
-              echo "cv-review-lane-worktree: skip ${path} — lane bead '${lane_id}' is still open/in_progress (or its status could not be resolved)"
+              echo "cv-review-lane-worktree: skip ${path} — lane bead '${lane_id}' status could not be resolved"
               skipped=1
             fi
             ;;
