@@ -71,7 +71,7 @@ usage() {
   cat >&2 <<'USAGE'
 Usage:
   cv-review-lane-worktree.sh acquire <source-work-dir> <lane-id>
-  cv-review-lane-worktree.sh sweep <source-work-dir>
+  cv-review-lane-worktree.sh sweep <source-work-dir> [--force]
 USAGE
 }
 
@@ -218,33 +218,52 @@ sync_lock_release() {
   rm -rf "$lockdir" 2>/dev/null || true
 }
 
-# lane_bead_state <lane-id> — prints <lane-id>'s own bead status on stdout:
-# "closed", a known non-closed status such as "open"/"in_progress", or empty
-# when the status could not be resolved at all. Sources con-voyage-lib.sh's
-# `bead_status` (same directory as this script) for the actual `gc bd show`
-# lookup, wrapped in `cv_with_timeout` (review fk-o0f68q BLOCKING-1) so a
-# slow/stuck store call under lock contention or pool load can't hang this
-# function indefinitely — the same bound already applied to other `gc bd
-# show` call sites in con-voyage-lib.sh. Always exits 0; the empty-string case
-# is how the caller distinguishes "truly unresolvable" (lib missing, `gc`
-# missing, lookup error, timeout) from a resolved-but-not-closed status —
-# sweep's caller must only ever treat the latter as un-reapable even with
+# lane_bead_state <lane-id> — prints "<status>\x1f<reason>" on stdout.
+# <status> is "closed", a known non-closed status such as "open"/"in_progress",
+# or empty when the status could not be resolved at all. <reason> is only
+# meaningful when <status> is empty, and distinguishes WHY it could not be
+# resolved (review fk-hbsmk/fk-9h3nwk BLOCKING-1 — these three cases must
+# never be collapsed into one sentinel, they carry different reap-safety):
+#   - "absent"   — structurally confirmed unresolvable: con-voyage-lib.sh or
+#                  the `gc` binary itself is not present at all. There is no
+#                  store to ever consult, so this can never resolve later —
+#                  safe for --force to reap immediately, same as before.
+#   - "failed"   — a lookup was actually attempted against a real store and
+#                  did not return a usable status (timeout, parse error). The
+#                  store exists and might resolve differently on a retry, so
+#                  a single inconclusive result is NOT enough for --force to
+#                  treat this as reapable.
+# Sources con-voyage-lib.sh's `bead_status` (same directory as this script)
+# for the actual `gc bd show` lookup, wrapped in `cv_with_timeout` (review
+# fk-o0f68q BLOCKING-1) so a slow/stuck store call under lock contention or
+# pool load can't hang this function indefinitely. Always exits 0; the caller
+# must only ever treat a resolved non-closed status as un-reapable even with
 # --force (fk-ekufmt: a lane can be genuinely reopened mid-cycle).
 lane_bead_state() {
   local lane_id="$1"
-  [ -n "$lane_id" ] || { printf ''; return 0; }
+  [ -n "$lane_id" ] || { printf '%s\x1f%s' "" "absent"; return 0; }
   local script_dir cv_lib
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
   cv_lib="${script_dir}/con-voyage-lib.sh"
-  [ -f "$cv_lib" ] || { printf ''; return 0; }
+  if [ ! -f "$cv_lib" ] || ! command -v gc >/dev/null 2>&1; then
+    printf '%s\x1f%s' "" "absent"
+    return 0
+  fi
   local cv_lens_store_timeout="${CV_LENS_STORE_TIMEOUT_SECONDS:-30}"
   case "$cv_lens_store_timeout" in
     *[!0-9]*|'') cv_lens_store_timeout="30" ;;
   esac
   local result status
-  result="$(source "$cv_lib" && cv_with_timeout "$cv_lens_store_timeout" bead_status "$lane_id" id)" || { printf ''; return 0; }
+  if ! result="$(source "$cv_lib" && cv_with_timeout "$cv_lens_store_timeout" bead_status "$lane_id" id)"; then
+    printf '%s\x1f%s' "" "failed"
+    return 0
+  fi
   status="${result%%$'\x1f'*}"
-  printf '%s' "$status"
+  if [ -z "$status" ]; then
+    printf '%s\x1f%s' "" "failed"
+    return 0
+  fi
+  printf '%s\x1f%s' "$status" "resolved"
 }
 
 cmd_acquire() {
@@ -333,8 +352,9 @@ cmd_sweep() {
   # default 30s) was applied per lane, so a sweep over N slow/stuck lanes could
   # block for up to N x timeout. Share one deadline across the whole sweep
   # call instead: once the budget is spent, every remaining lane is treated
-  # as unresolvable (skip, or reap under --force, exactly like any other
-  # unresolvable lookup) rather than paying its own full per-lane timeout.
+  # as budget-exhausted (see "budget" reason below — skipped every time, never
+  # reaped even with --force; it is swept again next cycle at no cost) rather
+  # than paying its own full per-lane timeout.
   local sweep_budget_seconds="${CV_LANE_SWEEP_BUDGET_SECONDS:-${CV_LENS_STORE_TIMEOUT_SECONDS:-30}}"
   case "$sweep_budget_seconds" in
     *[!0-9]*|'') sweep_budget_seconds="30" ;;
@@ -351,19 +371,54 @@ cmd_sweep() {
         case "$name" in
           "${pattern}"*)
             local lane_id="${name#"${pattern}"}"
-            local state
+            local state reason lookup
             if [ "$(date +%s)" -ge "$sweep_deadline" ]; then
+              # review fk-hbsmk/fk-9h3nwk BLOCKING-1: budget exhaustion means
+              # NO lookup was ever attempted for this lane — it is not "this
+              # lane's status is unresolvable", it is "we never asked". Never
+              # treat that as reapable, even with --force: a budget-skipped
+              # lane costs nothing to leave for the next sweep cycle, where it
+              # gets a real lookup attempt.
               state=""
+              reason="budget"
             else
-              state="$(lane_bead_state "$lane_id")"
+              lookup="$(lane_bead_state "$lane_id")"
+              state="${lookup%%$'\x1f'*}"
+              reason="${lookup#*$'\x1f'}"
             fi
-            if [ "$state" = "closed" ] || { [ -z "$state" ] && [ "$force" -eq 1 ]; }; then
+            if [ "$state" = "closed" ]; then
               git -C "$src" worktree remove --force "$path" >/dev/null 2>&1 \
-                && { echo "cv-review-lane-worktree: removed ${path}"; any=1; } \
+                && { echo "cv-review-lane-worktree: removed ${path} (lane bead confirmed closed)"; any=1; } \
                 || echo "cv-review-lane-worktree: WARNING: could not remove ${path}" >&2
             elif [ -n "$state" ]; then
               echo "cv-review-lane-worktree: skip ${path} — lane bead '${lane_id}' is still '${state}' (live sibling, never reaped even with --force)"
               skipped=1
+            elif [ "$reason" = "budget" ]; then
+              echo "cv-review-lane-worktree: skip ${path} — lane bead '${lane_id}' status lookup was never attempted (sweep budget exhausted); never reaped even with --force, will retry next sweep"
+              skipped=1
+            elif [ "$reason" = "absent" ] && [ "$force" -eq 1 ]; then
+              git -C "$src" worktree remove --force "$path" >/dev/null 2>&1 \
+                && { echo "cv-review-lane-worktree: removed ${path} (--force: lane bead status structurally unresolvable, no gc/lib on PATH)"; any=1; } \
+                || echo "cv-review-lane-worktree: WARNING: could not remove ${path}" >&2
+            elif [ "$reason" = "failed" ] && [ "$force" -eq 1 ]; then
+              # review fk-hbsmk/fk-9h3nwk BLOCKING-1: a single inconclusive
+              # lookup (timeout, parse hiccup, store contention) is not
+              # evidence the lane is closed — the store exists and may
+              # resolve cleanly on a second, independently-timed attempt.
+              # Only reap if that second attempt ALSO succeeds and confirms
+              # closed; any other outcome (including a second failure) is
+              # left alone, exactly like a genuinely open lane.
+              local lookup2 state2
+              lookup2="$(lane_bead_state "$lane_id")"
+              state2="${lookup2%%$'\x1f'*}"
+              if [ "$state2" = "closed" ]; then
+                git -C "$src" worktree remove --force "$path" >/dev/null 2>&1 \
+                  && { echo "cv-review-lane-worktree: removed ${path} (--force: lane bead confirmed closed on second attempt after an initial lookup failure)"; any=1; } \
+                  || echo "cv-review-lane-worktree: WARNING: could not remove ${path}" >&2
+              else
+                echo "cv-review-lane-worktree: skip ${path} — lane bead '${lane_id}' status lookup failed twice (never reaped on an unresolved result, even with --force)"
+                skipped=1
+              fi
             else
               echo "cv-review-lane-worktree: skip ${path} — lane bead '${lane_id}' status could not be resolved"
               skipped=1
