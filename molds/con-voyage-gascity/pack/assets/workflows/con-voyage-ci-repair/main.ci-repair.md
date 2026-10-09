@@ -549,11 +549,13 @@ After the rebase completes and conflicts are resolved:
    ```bash
    git push --force-with-lease origin {branch}
    ```
-3. **Surface a human-readable summary of the resolution** — which files
-   conflicted and what the resolution did — as BOTH a machine-bannered PR
-   comment (see the MANDATORY identity banner above) and the bead close note
-   in Step 7. This is not optional: it is what lets a human audit an
-   automated conflict resolution before trusting it.
+3. **Record a human-readable summary of the resolution** — which files
+   conflicted and what the resolution did — in the bead close note in Step 7
+   AND the next aggregated review comment (fk-shpd87: this is routine,
+   no-human-decision-needed status, not a fresh top-level PR comment — see
+   "Defer this summary instead of commenting" below). This is not optional:
+   it is what lets a human audit an automated conflict resolution before
+   trusting it.
 4. **NEVER merge, NEVER approve, NEVER submit to the merge queue.** Push to
    the PR branch only — the same bright line as every other path here.
 
@@ -584,13 +586,51 @@ After the merge completes and conflicts are resolved:
    ```bash
    git push origin {branch}
    ```
-3. **Surface a human-readable summary of the resolution** — same requirement
-   as the rebase sub-path above: a machine-bannered PR comment and the bead
-   close note in Step 7.
+3. **Record a human-readable summary of the resolution** — same requirement
+   as the rebase sub-path above: the bead close note in Step 7 AND the next
+   aggregated review comment (see "Defer this summary instead of commenting"
+   below) — never a fresh top-level PR comment.
 4. **Never submit this PR to the merge queue, never approve it, and never
    close it as merged.** Creating a merge commit ON THE BRANCH to reconcile
    with base is not the same as merging the PR itself — the PR always stays
    open for a human to land.
+
+### Defer this summary instead of commenting (fk-shpd87, AC3)
+
+A conflict/merge resolution above has no human decision pending — it is
+exactly the kind of routine, no-action-needed status the PR noise reduction
+design calls out (`.claude/plans/pr-noise-reduction-design.md`, slice B):
+posting it as a fresh top-level comment used to re-trigger a full reviewer
+cycle for nothing actionable (8 such acks on one PR in the design doc's
+inventory). Record the resolution summary into shared per-PR state instead
+— the next aggregated review comment
+(`main.rereview-finalize.md`) reads and clears it, folding it into that
+ONE round's comment rather than posting a new one now. This does NOT apply
+to Step 4d's branch-protection escalation below, which is human-actionable
+and still posts immediately via `cv-pr-comment.sh`, unchanged (AC4).
+
+```bash
+GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
+if [ -n "$CV_LIB" ]; then
+  CV_REPO="{repo}"
+  CV_OWNER="${CV_REPO%%/*}"
+  CV_REPONAME="${CV_REPO##*/}"
+  CV_DEDUP_KEY="cv-finalize-${CV_OWNER}-${CV_REPONAME}-{pr}"
+  (
+    export CV_STATE_DIR
+    source "$CV_LIB"
+    CV_STATE_DIR="${CV_STATE_DIR:-$(cv_default_state_dir)}"
+    cv_defer_status_append "$CV_DEDUP_KEY" "<one-line summary: which files conflicted and what the resolution did>"
+  ) || echo "con-voyage-ci-repair: could not defer the resolution summary (non-fatal — the bead close note in Step 7 still records it)" >&2
+else
+  echo "con-voyage-lib.sh not found — skipping deferred status (non-fatal — the bead close note in Step 7 still records it)" >&2
+fi
+```
 
 Skip Step 6 (its plain-push form doesn't fit either sub-path above) and close
 the bead (Step 7) directly, using the resolution summary as the close note.

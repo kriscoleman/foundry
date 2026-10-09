@@ -65,14 +65,57 @@ fi
 [ -n "${CV_STATE_DIR:-}" ] || CV_STATE_DIR="${GC_CITY:-.}/.gc/cv-pr-watch"
 ```
 
+## Fold in any deferred ci-repair status (fk-shpd87, AC3)
+
+Before building the manifest, read and clear any routine ci-repair status
+deferred since this PR's last aggregated comment (a rebase/merge-conflict
+resolution with no human decision needed — see
+`{target}.ci-repair.md`'s "Defer this summary instead of commenting"). This
+is the one place the design doc's "next comment-aggregate round" lands:
+folding it in here is what lets ci-repair stay silent on the PR for routine
+actions (AC3) without losing the audit trail — it still reaches a human,
+just inside this round's one comment instead of as its own.
+
+```bash
+CV_DEFERRED_STATUS=""
+if [ -n "$CV_LIB" ]; then
+  CV_DEFERRED_STATUS="$(export CV_STATE_DIR; source "$CV_LIB" && cv_defer_status_read_and_clear "$FINALIZE_KEY")"
+fi
+
+# Same absolute-rig-root resolution main.publish.md uses for every lane
+# body_file below (fk-jg0ieq: a relative path resolves against this step's
+# own cwd, not the rig root, and every lane silently renders as "report file
+# unavailable").
+CV_RIG_ROOT="${GC_RIG_ROOT:-}"
+[ -n "$CV_RIG_ROOT" ] || [ -z "$CV_LIB" ] || CV_RIG_ROOT="$(source "$CV_LIB" && cv_default_rig_root)"
+[ -n "$CV_RIG_ROOT" ] || CV_RIG_ROOT="${GC_CITY:-.}"
+CV_BUILD_DIR="${CV_RIG_ROOT}/.gc/build/${ROOT_ID}"
+
+if [ -n "$CV_DEFERRED_STATUS" ]; then
+  printf '%s\n' "$CV_DEFERRED_STATUS" > "${CV_BUILD_DIR}/ci-repair-status.md"
+fi
+```
+
+`$CV_DEFERRED_STATUS` is empty when nothing was deferred (the common case —
+most rounds involve no ci-repair activity at all) — in that case add no
+extra lane to the manifest below. When it is non-empty, the block above
+already wrote it to `${CV_BUILD_DIR}/ci-repair-status.md` (ABSOLUTE path,
+same rule as every other `body_file` below); add ONE extra entry to the
+manifest's
+`lanes[]`: `{"agent": "con-voyage-ci-repair", "lens": "ci-repair-status",
+"verdict": "info", "findings": 0, "body_file":
+"${CV_BUILD_DIR}/ci-repair-status.md"}` — rendered as its own `<details>`
+block by `comment-aggregate`, exactly like any other lane, no schema change
+needed.
+
 ## Post the round's ONE aggregated review comment
 
 Same shape as con-voyage's own publish step (main.publish.md): build a JSON
-manifest from `review-synthesis.md` and each active lane's own
-`.gc/build/${ROOT_ID}/*-review.md`, with `round = $REVIEW_ROUND` (NOT `1` —
-this is a later round, and the marker
-`<!-- con-voyage-review:<root_bead_id> round=<round> -->` must stay unique
-per PR), then post it once:
+manifest from `review-synthesis.md`, each active lane's own
+`.gc/build/${ROOT_ID}/*-review.md`, and the optional deferred-ci-repair-status
+lane above, with `round = $REVIEW_ROUND` (NOT `1` — this is a later round,
+and the marker `<!-- con-voyage-review:<root_bead_id> round=<round> -->`
+must stay unique per PR), then post it once:
 
 ```bash
 if [ -n "$CV_LIB" ]; then
