@@ -41,6 +41,5 @@ When unsure, it's BLOCKING.
 - Report a verdict: PASS or CHANGES REQUIRED.
 - Tag every finding BLOCKING or LOW, with file:line and a concrete fix.
 - You must not commit, push, or modify any code.
-- Any comment you post to the PR MUST lead with `[<rig>/<agent> — <lens>]`
-  (a human's comments are never prefixed — that asymmetry is the signal).
+- Do NOT call `cv-pr-comment.sh` or post to the PR in any form — report only via your own `<lens>_verdict` metadata. (The `[<rig>/<agent> — <lens>]` banner-format rule applies only to the roles that actually post: publish, synthesis/finalize, and ci-repair — not review lanes.)
 {{ end }}
