@@ -391,59 +391,41 @@ the fix.
 
 ## Step 3 — Check out the PR branch
 
-Work in the rig root. This is a shared, long-lived checkout reused across
-repair runs, so before switching to `{branch}` make sure it is not left
-detached or stuck stale from an earlier run (fk-hbsmk — the same class of bug
-as a stale con-voyage build worktree: sync structurally instead of trusting
-whatever state the last repair left behind):
+Never work in the rig root — it is a shared, long-lived checkout other
+workers rely on being on `main`, and checking out `{branch}` there directly
+left it stuck on a PR branch with a stray commit in a live incident
+(fk-bjn2ba: it also blocked the next con-voyage-rereview seed's own
+`git worktree add -B <branch>`, since the branch was already checked out
+elsewhere, and required hand-stashing local `.beads/metadata.json` state
+that was then never unstashed). Attach a dedicated worktree instead, keyed
+to this repair step's own `{convoy_id}` so concurrent repairs never collide:
 
 ```bash
+GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
 CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
 CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
 [ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
 CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
 [ -f "$CV_LIB" ] || CV_LIB=""
-if [ -n "$CV_LIB" ]; then
-  # SRE BLOCKING-1 (fk-wmhr96 review, iteration 2): `{convoy_id}` here is
-  # this ci-repair step's OWN gc-internal work-item bead (see the Claim
-  # section above), never the original con-voyage workflow's root bead —
-  # `{repair_bead}` is minted fresh by con-voyage-pr-watch.sh with no
-  # metadata link back to that root, so there is no reference available to
-  # this step today for a `gc convoy target` lookup. Calling
-  # cv_convoy_target on the wrong id silently resolves to "" on every call
-  # (no target is ever set on this bead), which is indistinguishable from
-  # "correctly found no declared stacked base" — so leave it unresolved
-  # here rather than wire in an id that looks right but names the wrong
-  # bead. cv_sync_worktree_to_base's own origin/HEAD -> origin/main -> main
-  # default-base resolution is what this falls through to.
-  CONVOY_TARGET=""
-  SYNC_RESULT="$(export CV_PACK_ROOT; source "$CV_LIB" && cv_sync_worktree_to_base "$(pwd)" "" "$CONVOY_TARGET")" \
-    || echo "ci-repair: could not sync the rig-root workspace to its current base (non-fatal here — {branch} is about to be checked out explicitly below)" >&2
-  [ -n "${SYNC_RESULT:-}" ] && echo "ci-repair: workspace sync: ${SYNC_RESULT}"
-else
-  echo "con-voyage-lib.sh not found — skipping workspace sync (non-fatal)" >&2
+if [ -z "$CV_LIB" ]; then
+  echo "con-voyage-lib.sh not found — cannot resolve a dedicated worktree, refusing to fall back to the rig root" >&2
+  exit 1
 fi
+RIG_ROOT="$(source "$CV_LIB" && cv_default_rig_root)"
+[ -n "${RIG_ROOT:-}" ] || RIG_ROOT="${GC_CITY:-.}"
+WORKTREE="${RIG_ROOT}/worktrees/ci-repair-{convoy_id}"
+rm -rf "$WORKTREE"
+mkdir -p "$(dirname "$WORKTREE")"
+
+git fetch origin {branch} || { echo "ci-repair: failed to fetch {branch} from origin" >&2; exit 1; }
+git worktree add -q -B "{branch}" "$WORKTREE" "origin/{branch}" \
+  || { echo "ci-repair: failed to attach a worktree for {branch} at ${WORKTREE}" >&2; exit 1; }
+cd "$WORKTREE" || { echo "ci-repair: cd into ${WORKTREE} failed" >&2; exit 1; }
 ```
 
-(NOTE for reviewers: fk-q2pon is concurrently replacing this same
-`command -v || find`-style resolution pattern across this file with a
-`cv_pack_script`/`cv_pack_root` helper in con-voyage-lib.sh. It had not
-landed on origin/main as of this change, so the snippet above uses the same
-absolute pack-path fallback fk-q2pon introduces rather than adding a new
-first-match `find`. Whichever of the two PRs lands second should rebase.
-Also note this call targets the shared rig-root workspace itself, not
-`{branch}` — the PR branch's own base-vs-main handling is a distinct,
-already-deliberate concern owned by Step 4c's `behind_base` strategy below,
-which this does not change.)
-
-A failed sync here is deliberately non-fatal: unlike build.md and
-apply-review-findings.md (which are about to write NEW code from this base),
-Step 3 immediately below re-points the workspace at the exact commit
-`{branch}` needs regardless of whatever state the sync found, so a sync
-failure only means Step 3's own fetch+checkout has to do more work — it is
-not a reason to abandon a repair the operator is waiting on.
-
-Fetch the branch and create a local tracking ref:
+This is a fresh worktree forked straight from `origin/{branch}`, so there is
+nothing stale to sync and nothing in the rig root to disturb — the rig root
+stays on whatever branch every other worker expects it to be on.
 
 <!-- FOLLOW-UP (noted, not fixed — out of scope for fk-4xq): every {branch}
      interpolation in this file (here and in Steps 4/6/7 below) is unquoted in
@@ -452,20 +434,15 @@ Fetch the branch and create a local tracking ref:
      everywhere would be the safer default. Left as-is per fk-4xq's scope
      (BLOCKING-1/2 + LOW-1/2 only) — file separately if this needs hardening. -->
 
+Verify you are on the right branch, in the dedicated worktree, before doing
+anything else:
+
 ```bash
-git fetch origin {branch}
-git checkout {branch}
-# Verify you are on the right branch:
 git branch --show-current
+pwd
 ```
 
-If your worktree already has a local checkout of this branch, pull latest:
-
-```bash
-git pull --rebase origin {branch}
-```
-
-Do NOT create a new branch. Do NOT work on main or any other branch.
+Do NOT create any other branch. Do NOT work on main or any other branch.
 
 ### Artifact hygiene — prep this working copy before editing anything
 
@@ -780,6 +757,27 @@ CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
   && cv_bead_close "{repair_bead}" <landed|no-op|abandoned> "<one-line summary of fix, or the 4d reason>"
 ```
 
+Tear down the dedicated worktree Step 3 attached — the push already landed on
+`origin/{branch}`, so nothing of value is lost, and leaving it in place would
+accumulate a stale `worktrees/ci-repair-*` directory per repair run. This is
+non-fatal: a failed removal is logged, not escalated.
+
+```bash
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
+if [ -n "$CV_LIB" ]; then
+  RIG_ROOT="$(source "$CV_LIB" && cv_default_rig_root)"
+  [ -n "${RIG_ROOT:-}" ] || RIG_ROOT="${GC_CITY:-.}"
+  WORKTREE="${RIG_ROOT}/worktrees/ci-repair-{convoy_id}"
+  cd "$RIG_ROOT" 2>/dev/null
+  git worktree remove --force "$WORKTREE" 2>/dev/null \
+    || echo "ci-repair: could not remove worktree ${WORKTREE} (non-fatal — it will be cleaned up on the next repair run for this convoy)" >&2
+fi
+```
+
 ## Failure / escalation
 
 If you cannot fix the failure (blocked on external service, ambiguous
@@ -798,6 +796,14 @@ CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
 [ -f "$CV_LIB" ] || CV_LIB=""
 [ -n "$CV_LIB" ] && [ -f "$CV_LIB" ] && source "$CV_LIB" \
   && cv_bead_close "{repair_bead}" abandoned "escalated to {escalation_target} — <brief explanation>"
+if [ -n "$CV_LIB" ]; then
+  RIG_ROOT="$(source "$CV_LIB" && cv_default_rig_root)"
+  [ -n "${RIG_ROOT:-}" ] || RIG_ROOT="${GC_CITY:-.}"
+  WORKTREE="${RIG_ROOT}/worktrees/ci-repair-{convoy_id}"
+  cd "$RIG_ROOT" 2>/dev/null
+  git worktree remove --force "$WORKTREE" 2>/dev/null \
+    || echo "ci-repair: could not remove worktree ${WORKTREE} (non-fatal)" >&2
+fi
 gc runtime drain-ack
 exit 1
 ```
