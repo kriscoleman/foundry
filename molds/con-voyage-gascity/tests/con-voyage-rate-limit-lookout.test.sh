@@ -682,6 +682,30 @@ assert_log_lacks "mail send mayor" "a short-phrase majority-straddle on an unrel
 assert_file_contains "${STATE_DIR}/breaker.state" "state=closed" "breaker stays closed when the limit phrase only majority-straddles an unrelated glyph line's tail"
 
 # ===========================================================================
+start_case "review fk-xtbtcw BLOCKING-1 (iteration 5): a bare glyph line immediately followed by a line that merely STARTS with a limit phrase does not false-open the breaker"
+# ===========================================================================
+# The iteration-5 fix (anchored banner_re over the joined window) still let
+# the single join-space absorb into the NEXT line: a glyph-only line (no
+# other text of its own) followed by a line that happens to begin a limit
+# phrase (a quoted mail body, a runbook excerpt) matched banner_re even
+# though the real banner never appeared on the glyph line at all. This is
+# the exact incident this bead exists to prevent.
+reset_world
+write_sessions "$TWO_CLAUDE_SESSIONS"
+write_peek rc-wrk1 <<'EOF'
+✗
+rate limit reached was mentioned in the runbook excerpt quoted above
+EOF
+write_peek rc-inv <<'EOF'
+⏺ Coordinating
+EOF
+out="$(run_lookout 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && pass "exit 0" || fail "exit code $rc (output: $out)"
+assert_log_lacks "handoff --target rc-wrk1" "a bare glyph line + an unrelated next-line limit phrase does not trigger a handoff"
+assert_log_lacks "mail send mayor" "a bare glyph line + an unrelated next-line limit phrase does not open the breaker"
+assert_file_contains "${STATE_DIR}/breaker.state" "state=closed" "breaker stays closed when a bare glyph line is followed by an unrelated line that merely starts a limit phrase"
+
+# ===========================================================================
 start_case "malformed numeric env knobs coerce to defaults instead of breaking"
 # ===========================================================================
 reset_world

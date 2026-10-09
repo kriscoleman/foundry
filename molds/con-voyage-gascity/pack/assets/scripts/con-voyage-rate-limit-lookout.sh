@@ -938,10 +938,25 @@ banner_re = re.compile(
     + '|'.join(banner_suffixes) + r')', re.IGNORECASE)
 limited = False
 for i, line in enumerate(tail_lines):
-    if not glyph_re.match(line):
+    gm = glyph_re.match(line)
+    if not gm:
         continue
     window = ' '.join(tail_lines[i:i + 1 + BANNER_JOIN_LINES])
-    if banner_re.match(window):
+    m = banner_re.match(window)
+    if not m:
+        continue
+    # fk-xtbtcw (review iteration 5 BLOCKING-1): the match above can span the
+    # single join-space into the NEXT line, so a bare glyph line immediately
+    # followed by a line that merely STARTS with a limit phrase (a quoted
+    # mail body, a runbook excerpt) still matched `banner_re` even though
+    # the real banner never appeared on the glyph line at all. Only accept
+    # the match when either (a) it completes entirely within the glyph
+    # line's own text (the ordinary same-line case), or (b) the glyph line
+    # itself carries some non-whitespace text after the glyph (a genuine
+    # pane-width wrap of the real banner, which always continues the phrase
+    # starting on the glyph line itself, never starts it fresh on the next
+    # line).
+    if m.end() <= len(line) or line[gm.end():].strip():
         limited = True
         break
 reset_hint = ''
