@@ -177,6 +177,37 @@ JSON
 JSON
         exit 0
       fi
+      # STUB_GQL_THREADS_DOOMER_ACK_QMARK=1 (fk-dh3mkt review, mayor reopen --
+      # regraded LOW-3): is_question() table-tests for the tightened
+      # sentence-ending heuristic, both directions:
+      #   thread 5 — ack body's only "?" sits in a URL query string
+      #     (?foo=bar) -- over-match direction: must NOT be treated as a
+      #     genuine question, so the thread-close gate still fires.
+      #   thread 6 — ack body's only "?" sits in an inline-code span
+      #     (`foo?bar()`) -- same over-match direction, different source.
+      #   thread 7 — a genuine question immediately followed by a closing
+      #     paren then the HTML marker ("right?) <!--...") -- under-match
+      #     guard: a real question must still win even with trailing
+      #     punctuation between the "?" and the marker.
+      if [ "${STUB_GQL_THREADS_DOOMER_ACK_QMARK:-0}" = "1" ]; then
+        cat <<'JSON'
+{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[
+{"comments":{"nodes":[
+  {"id":"PRRC_t5_agent","databaseId":557009,"path":"src/fifth.go","line":1,"author":{"login":"kriscoleman"},"body":"🤖 **Automated con-voyage agent** (foundry-kc/code-review): Fixed per finding t5-break."},
+  {"id":"PRRC_t5_url_ack","databaseId":557010,"path":"src/fifth.go","line":1,"author":{"login":"doomer-ai[bot]"},"body":"Thanks, see https://example.com/path?foo=bar for context. <!-- adversary-feedback-ack:v1 feedback=t5-ack -->"}
+]}},
+{"comments":{"nodes":[
+  {"id":"PRRC_t6_agent","databaseId":557011,"path":"src/sixth.go","line":1,"author":{"login":"kriscoleman"},"body":"🤖 **Automated con-voyage agent** (foundry-kc/code-review): Fixed per finding t6-break."},
+  {"id":"PRRC_t6_code_ack","databaseId":557012,"path":"src/sixth.go","line":1,"author":{"login":"doomer-ai[bot]"},"body":"Thanks, double-check `foo?bar()` later. <!-- adversary-feedback-ack:v1 feedback=t6-ack -->"}
+]}},
+{"comments":{"nodes":[
+  {"id":"PRRC_t7_agent","databaseId":557013,"path":"src/seventh.go","line":1,"author":{"login":"kriscoleman"},"body":"🤖 **Automated con-voyage agent** (foundry-kc/code-review): Fixed per finding t7-break."},
+  {"id":"PRRC_t7_question","databaseId":557014,"path":"src/seventh.go","line":1,"author":{"login":"doomer-ai[bot]"},"body":"Should we revisit this, or did we get it right?) <!-- adversary-feedback-ack:v1 feedback=t7-ack -->"}
+]}}
+]}}}}}
+JSON
+        exit 0
+      fi
       cat <<'JSON'
 {"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"comments":{"nodes":[{"id":"PRRC_test_11","databaseId":556677,"path":"src/retry.go","line":42,"author":{"login":"a-human-reviewer"},"body":"inline: rename this var"}]}}]}}}}}
 JSON
@@ -3849,6 +3880,13 @@ if printf '%s' "$OUT" | grep -qE 'id=PRRC_t2_ack .*reason=doomer_ack_thread_clos
 else
   pass "thread 2: ack with no prior agent reply is never classified doomer_ack_thread_closed"
 fi
+# fk-dh3mkt review (mayor reopen, regraded LOW-1): the assertions above only
+# prove this item never carries the NEW reason string -- they say nothing
+# about where it actually ends up. "should" in its body trips the pre-existing
+# FINDING_MARKER_RE catch-all (is_bot_ack returns False), so the generic
+# bot_ack heuristic does NOT suppress it either; it must reach routed output
+# end-to-end, mirroring the thread-3/4 assertions below.
+assert_log_count "$GC_LOG" 'Thanks for catching that' 1 "thread 2: ack with no prior agent reply still routes end-to-end"
 
 if printf '%s' "$OUT" | grep -qE 'id=PRRC_t3_mixed .*reason=doomer_ack_thread_closed'; then
   fail "thread 3: a co-occurring finding marker is never overridden by the ack marker"
@@ -3886,6 +3924,101 @@ if [ -f "$SUPPRESSION_LOG" ] && [ "$(grep -c 'id=PRRC_t1_ack' "$SUPPRESSION_LOG"
   pass "thread 1 suppression is logged at most once across repeated poll cycles"
 else
   fail "thread 1 suppression is logged at most once across repeated poll cycles"
+fi
+
+# ===========================================================================
+# CASE 58 (fk-dh3mkt review, mayor reopen — regraded LOW-2): log_suppression's
+#   `except OSError` fallback (durable suppression-log write failure) has no
+#   test. Force the write to fail by pre-creating the target path as a
+#   directory -- open(path, "a") then raises IsADirectoryError, a subclass of
+#   OSError, exactly like a read-only/unwritable CV_STATE_DIR would. Assert
+#   the WARNING line appears on stderr (combined into $OUT) and the script
+#   still exits 0 -- a best-effort durability feature must never abort the
+#   whole monitor run.
+# ===========================================================================
+start_case "58: fk-dh3mkt review — suppression-log write failure warns but does not abort"
+setup_case_env "58"
+SUPPRESSION_LOG_58="${STATE_DIR}/kriscoleman_foundry_11.suppressions.log"
+mkdir -p "$SUPPRESSION_LOG_58"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_PR11_EMPTY="1" STUB_GQL_THREADS_DOOMER_ACK="1"
+assert_eq "0" "$RC" "script exits 0 despite the suppression-log write failure"
+if printf '%s' "$OUT" | grep -qF "WARNING: suppression_log write failed for ${SUPPRESSION_LOG_58}"; then
+  pass "suppression-log write failure is warned loudly"
+else
+  fail "suppression-log write failure is warned loudly"
+fi
+if printf '%s' "$OUT" | grep -qF 'SUPPRESS kriscoleman/foundry#11 inline id=PRRC_t1_ack author=doomer-ai[bot] reason=doomer_ack_thread_closed'; then
+  pass "the thread-close suppression itself still fires despite the durable write failing"
+else
+  fail "the thread-close suppression itself still fires despite the durable write failing"
+fi
+
+# ===========================================================================
+# CASE 59 (fk-dh3mkt review, mayor reopen — regraded LOW-3): is_question()'s
+#   plain '"?" in body' substring test over-matched a "?" sitting in a URL
+#   query string or an inline-code span -- either would have incorrectly
+#   blocked the thread-close gate from firing (treating ordinary punctuation
+#   as a "genuine question"). Table-test both the over-match direction
+#   (threads 5/6: the only "?" is in a URL/code span -> thread-close gate
+#   still fires) and the under-match guard (thread 7: a real question
+#   immediately followed by a closing paren before the HTML marker -> the
+#   question still wins, never classified doomer_ack_thread_closed).
+# ===========================================================================
+start_case "59: fk-dh3mkt review — is_question() ignores a '?' inside a URL query string or code span"
+setup_case_env "59"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_PR11_EMPTY="1" STUB_GQL_THREADS_DOOMER_ACK_QMARK="1"
+assert_eq "0" "$RC" "script exits 0"
+
+if printf '%s' "$OUT" | grep -qF 'SUPPRESS kriscoleman/foundry#11 inline id=PRRC_t5_url_ack author=doomer-ai[bot] reason=doomer_ack_thread_closed'; then
+  pass "thread 5: a '?' inside a URL query string is not mistaken for a genuine question"
+else
+  fail "thread 5: a '?' inside a URL query string is not mistaken for a genuine question"
+fi
+
+if printf '%s' "$OUT" | grep -qF 'SUPPRESS kriscoleman/foundry#11 inline id=PRRC_t6_code_ack author=doomer-ai[bot] reason=doomer_ack_thread_closed'; then
+  pass "thread 6: a '?' inside an inline-code span is not mistaken for a genuine question"
+else
+  fail "thread 6: a '?' inside an inline-code span is not mistaken for a genuine question"
+fi
+
+if printf '%s' "$OUT" | grep -qE 'id=PRRC_t7_question .*reason=doomer_ack_thread_closed'; then
+  fail "thread 7: a genuine question followed by a closing paren still wins over the ack marker"
+else
+  pass "thread 7: a genuine question followed by a closing paren still wins over the ack marker"
+fi
+assert_log_count "$GC_LOG" 'Should we revisit this' 1 "thread 7: the genuine question still routes"
+
+# ===========================================================================
+# CASE 60 (fk-dh3mkt review, mayor reopen — regraded LOW-4): the per-PR
+#   `.suppressions.log` was append-only with no cap -- a PR left open for a
+#   long time would grow it without limit. Pre-seed it past a small test cap
+#   (CV_SUPPRESSION_LOG_MAX_LINES=5) with an old sentinel line, trigger one
+#   more durable write (thread 1's doomer_ack_thread_closed suppression), and
+#   assert the file is trimmed back down to the cap with the old sentinel
+#   gone and the newest write kept.
+# ===========================================================================
+start_case "60: fk-dh3mkt review — suppression-log is capped, not unbounded"
+setup_case_env "60"
+SUPPRESSION_LOG_60="${STATE_DIR}/kriscoleman_foundry_11.suppressions.log"
+for i in 1 2 3 4 5; do
+  echo "2020-01-01T00:00:0${i}Z SUPPRESS kriscoleman/foundry#11 inline id=OLD_SENTINEL_${i} author=doomer-ai[bot] reason=doomer_ack_thread_closed" >> "$SUPPRESSION_LOG_60"
+done
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_PR11_EMPTY="1" STUB_GQL_THREADS_DOOMER_ACK="1" CV_SUPPRESSION_LOG_MAX_LINES="5"
+assert_eq "0" "$RC" "script exits 0"
+if [ -f "$SUPPRESSION_LOG_60" ] && [ "$(wc -l < "$SUPPRESSION_LOG_60" | tr -d ' ')" = "5" ]; then
+  pass "suppression log is trimmed back down to the configured cap"
+else
+  fail "suppression log is trimmed back down to the configured cap"
+fi
+if grep -qF 'OLD_SENTINEL_1' "$SUPPRESSION_LOG_60"; then
+  fail "oldest line is evicted once the cap is exceeded"
+else
+  pass "oldest line is evicted once the cap is exceeded"
+fi
+if grep -qF 'id=PRRC_t1_ack' "$SUPPRESSION_LOG_60"; then
+  pass "the newest write survives the trim"
+else
+  fail "the newest write survives the trim"
 fi
 
 # ===========================================================================
