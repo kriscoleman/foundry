@@ -48,6 +48,58 @@ if [ -z "$CONVOY_ID" ]; then
 fi
 ```
 
+## Seed the build gate's check scripts before build is ever dispatched (fk-oq5nt)
+
+The BUILD node itself carries a graph.v2 `mode = "exec"` gate
+(`build-artifact-valid.sh`), resolved relative to this rig's root — not
+shipped there automatically by casting the pack. Until now only
+`main.setup-con-voyage-review.md` seeded `.gc/scripts/checks/`, but that step
+runs AFTER build. A rig that has never run a con-voyage before hits a
+controller-level path-resolution error on the BUILD gate itself
+(`gc.controller_error = resolving gate condition path: lstat .../.gc/scripts/
+checks: no such file or directory`) and the build node goes
+`gc.control_quarantined` — even when the implementation step that ran would
+have passed. 22 rigs were confirmed unseeded on 2026-10-05 alone. Seed both
+the gate check scripts AND the build-artifact validator dependency
+(`validate_build_artifact.py` + `schemas/build/*.yaml`, which
+`build-artifact-valid.sh` shells out to, and which the build step's own
+"Write the implementation summary artifact" section runs locally before
+closing `gc.outcome=pass`) BEFORE any worktree work begins, mirroring the
+same two seed calls `main.setup-con-voyage-review.md` makes for the
+review-loop/finalize gates:
+
+```bash
+RIG_ROOT="$(source "$CV_LIB" && cv_default_rig_root)"
+[ -n "${RIG_ROOT:-}" ] || RIG_ROOT="${GC_CITY:-.}"
+
+CV_ENSURE_GATE_SCRIPTS="${CV_PACK_ROOT}/assets/scripts/cv-ensure-gate-scripts.sh"
+[ -f "$CV_ENSURE_GATE_SCRIPTS" ] || CV_ENSURE_GATE_SCRIPTS=""
+if [ -z "$CV_ENSURE_GATE_SCRIPTS" ] || [ ! -x "$CV_ENSURE_GATE_SCRIPTS" ]; then
+  echo "cv-ensure-gate-scripts.sh not found under ${GC_CITY:-.} — the con-voyage pack may not be imported correctly on this rig" >&2
+  exit 1
+fi
+"$CV_ENSURE_GATE_SCRIPTS" "$RIG_ROOT" || { echo "gate check script seeding failed — refusing to start a build that would quarantine" >&2; exit 1; }
+
+CV_ENSURE_VALIDATOR="${CV_PACK_ROOT}/assets/scripts/cv-ensure-build-artifact-validator.sh"
+[ -f "$CV_ENSURE_VALIDATOR" ] || CV_ENSURE_VALIDATOR=""
+if [ -z "$CV_ENSURE_VALIDATOR" ] || [ ! -x "$CV_ENSURE_VALIDATOR" ]; then
+  echo "cv-ensure-build-artifact-validator.sh not found under ${GC_CITY:-.} — the con-voyage pack may not be imported correctly on this rig" >&2
+  exit 1
+fi
+"$CV_ENSURE_VALIDATOR" "$RIG_ROOT" || { echo "build-artifact validator seeding failed — refusing to start a build whose own local check would fail confusingly" >&2; exit 1; }
+```
+
+Both scripts are "ensure" seeders: present-and-current is a true no-op (no
+`.prev` backups), so re-running this on an already-seeded rig on every build
+is safe. `main.setup-con-voyage-review.md` still calls both scripts too —
+that call stays, since it also re-confirms currency right before the review
+loop and finalize gate, which run much later and may span a pack upgrade.
+
+If this block fails for any reason, do NOT proceed — mail the mayor with the
+exact output above, then close this prepare-build step with
+`gc.outcome=fail` and `gc.failure_class=gate_scripts_missing` (see the GC
+Role Worker failure contract) rather than `gc.outcome=pass`.
+
 ## Declare a stacked base branch, if one was set at sling time (fk-wmhr96)
 
 `gc sling ... --on con-voyage` always mints its own fresh input convoy, so a
