@@ -1578,19 +1578,23 @@ def is_bot_ack(body, state):
         return False
     return not FINDING_MARKER_RE.search(b)
 
-# ADVERSARY MARKERS (fk-igqet1): Doomer stamps every one of its own comments
-# with a stable, machine-readable HTML-comment marker -- `adversary-review:v2
-# ... finding=<id>` on a real finding, `adversary-feedback-ack:v1` on its own
-# acknowledgement of a human reply with no finding attached. These are ground
-# truth from the producer itself and must be checked BEFORE the prose
-# heuristic below, not as a supplement to it: on 2026-10-08 ~14:00Z Doomer
-# posted a real finding (replicatedhq/vandoor#10620, review comment
-# 4219884349) whose prose happened to avoid every FINDING_MARKER_RE word (no
-# backticks, no should/must/fix/change, the "loc=...%3A529" ref was
-# URL-encoded so the old `:\d+` missed it, and "needs a migration path" did
-# not match `need(s) to`) -- classify_suppression() dropped it as bot_ack with
-# no durable trace. A marker-bearing comment must never depend on prose
-# phrasing to route.
+# ADVERSARY MARKERS (fk-igqet1, extended fk-yztb54 design doc slice E / AC5):
+# Doomer stamps every one of its own comments with a stable, machine-readable
+# HTML-comment marker -- `adversary-review:v2 ... finding=<id>` on a real
+# finding, `adversary-feedback-ack:v1` on its own acknowledgement of a human
+# reply with no finding attached. These are ground truth from the producer
+# itself and must be checked BEFORE the prose heuristic below, not as a
+# supplement to it: on 2026-10-08 ~14:00Z Doomer posted a real finding
+# (replicatedhq/vandoor#10620, review comment 4219884349) whose prose happened
+# to avoid every FINDING_MARKER_RE word (no backticks, no
+# should/must/fix/change, the "loc=...%3A529" ref was URL-encoded so the old
+# `:\d+` missed it, and "needs a migration path" did not match `need(s) to`)
+# -- classify_suppression() dropped it as bot_ack with no durable trace. A
+# marker-bearing comment must never depend on prose phrasing to route. The ack
+# marker is ALSO checked in the inline review-thread loop below, where "a
+# thread we already replied to" is observable (the full thread history is in
+# hand) -- that is the only place a bare ack marker (no finding marker) is
+# itself treated as a suppression reason.
 ADVERSARY_FINDING_MARKER_RE = re.compile(r"adversary-review:v2\b.*?\bfinding=", re.IGNORECASE | re.DOTALL)
 ADVERSARY_ACK_MARKER_RE = re.compile(r"adversary-feedback-ack:v1\b", re.IGNORECASE)
 
@@ -1599,6 +1603,9 @@ def has_adversary_finding_marker(body):
 
 def has_adversary_ack_marker(body):
     return bool(ADVERSARY_ACK_MARKER_RE.search(body or ""))
+
+def is_question(body):
+    return "?" in (body or "")
 
 # ONE shared classifier used by all three scan loops below (reviews, issue
 # comments, inline review-thread comments). fk-9xyo4/PR#160 recurred TWICE
@@ -1643,6 +1650,12 @@ def classify_suppression(author, body, state):
 # per-PR state file under CV_STATE_DIR (when a path is supplied) so the drop
 # survives past this run -- an operator can answer "why was this dropped?"
 # after the fact instead of only during a live tail of the monitors own log.
+# This covers EVERY suppression reason, including the newer
+# doomer_ack_thread_closed case (fk-yztb54) -- durable-only-for-one-reason
+# would silently regress this audit coverage for every other suppression
+# type (review fk-yztb54 BLOCKING-1: a landed sibling, #188/fk-igqet1, made
+# durable-for-all the real design; a thread-local durable-only gate is never
+# layered back in during a rebase reconciliation).
 #
 # CAP (mayor regrade of fk-igqet1 LOW-1): this file is append-only and this
 # monitor runs every few minutes forever, so left unbounded it grows without
@@ -1735,13 +1748,31 @@ for comment in pr_data.get("comments", []):
 
 # --- Inline review-thread comments ---
 for thread in pr_data.get("reviewThreads", []):
+    # fk-yztb54 (design doc slice E / AC5): track, as we walk this thread in
+    # order, whether OUR OWN agent reply already appears in it -- this is the
+    # "a thread we already replied to" condition, only observable here where
+    # the whole threads comment history is in hand (never in the
+    # reviews/issue-comments loops, which see single items with no thread
+    # context at all).
+    agent_replied_in_thread = False
     for comment in thread.get("comments", {}).get("nodes", []):
         nid = str(comment.get("id") or "").strip()
-        if not nid or nid in seen_ids:
-            continue
         author = comment.get("author", {}).get("login", "")
         body   = comment.get("body", "") or ""
-        reason = classify_suppression(author, body, "")
+        if is_agent_comment(body):
+            agent_replied_in_thread = True
+        if not nid or nid in seen_ids:
+            continue
+        if (
+            agent_replied_in_thread
+            and is_ai_reviewer_bot(author)
+            and has_adversary_ack_marker(body)
+            and not has_adversary_finding_marker(body)
+            and not is_question(body)
+        ):
+            reason = "doomer_ack_thread_closed"
+        else:
+            reason = classify_suppression(author, body, "")
         if reason:
             log_suppression("inline", nid, author, reason)
             continue
