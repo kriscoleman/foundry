@@ -120,6 +120,11 @@ add_flag() {
   fi
 }
 
+# fk-i1yas2 BLOCKING-4: a session's flagged-episode marker is staged here and
+# only committed once the digest mail below is confirmed sent, so a failed
+# send doesn't silently retire the still-unreported quiet episode.
+declare -A PENDING_FLAG_WRITES=()
+
 SESSIONS_JSON="$(cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" "$GC" --city "$GC_CITY" session list --json --state active 2>/dev/null)" || SESSIONS_JSON=""
 
 if [ -z "${SESSIONS_JSON// /}" ]; then
@@ -187,8 +192,8 @@ while IFS=$'\x1f' read -r sid template last_active; do
   # sees it, not one more CV_MARSHAL_AGENT_STALL_MINUTES later.
   prev_flagged_for="$(cat "$flagged_for_file" 2>/dev/null || true)"
   if [ "$last_active" != "$prev_flagged_for" ]; then
-    printf '%s' "$last_active" > "$flagged_for_file"
     add_flag "QUIET AGENT: ${sid} (${template}) no activity in ${quiet_minutes}m (last_active=${last_active})"
+    PENDING_FLAG_WRITES["$flagged_for_file"]="$last_active"
   fi
 done <<< "$CANDIDATES_TSV"
 
@@ -206,8 +211,13 @@ mail_out="$(cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" \
 ${FLAGGED_LINES}" \
     2>&1)"
 mail_rc=$?
-if [ "$mail_rc" -ne 0 ]; then
+if [ "$mail_rc" -eq 0 ]; then
+  for pending_file in "${!PENDING_FLAG_WRITES[@]}"; do
+    printf '%s' "${PENDING_FLAG_WRITES[$pending_file]}" > "$pending_file"
+  done
+else
   echo "con-voyage-marshal-agent-sweep: WARNING: digest mail to ${CV_MARSHAL_ESCALATE_TARGET} failed: ${mail_out}" >&2
+  echo "con-voyage-marshal-agent-sweep: WARNING: not advancing persisted state for ${#PENDING_FLAG_WRITES[@]} flagged entr(y/ies) — will re-flag next tick" >&2
 fi
 
 exit 0
