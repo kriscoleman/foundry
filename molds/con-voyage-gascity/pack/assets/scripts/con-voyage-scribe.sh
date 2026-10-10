@@ -1,0 +1,281 @@
+#!/usr/bin/env bash
+# con-voyage-scribe.sh — friction-logging assistant (fk-ohjjjb / fk-g24r /
+# foundry#48, see .claude/plans/con-voyage-assistants.md "Scribe").
+# Lightweight by design: no monitoring loop of its own. Woken by mail from
+# Marshal or the mayor when a friction point is identified, this library
+# automates the manual "file a hardening bead for this" step:
+#   1. Dedup check — skip filing anything that already matches an existing
+#      bead/issue.
+#   2. Routing rule — pack-general friction (a bug/gap in the mold/pack
+#      itself, reusable across any city) -> the pack's own GitHub repo
+#      (CV_SCRIBE_GH_REPO, configured per-install — this script hardcodes no
+#      operator's own fork) as a GitHub issue; city-specific friction (this
+#      rig's own repo/config/process) -> the local city as a bead. Default to
+#      pack-general unless the friction text names a this-city-only concern
+#      (OPERATOR DECISION 2026-10-03, Slack thread 1791062681.636319:
+#      confirmed default).
+#   3. Title/body formatting — a thin deterministic pass turning freeform
+#      friction text into a Conventional-Commit-style title and an
+#      INVEST-shaped body.
+#
+# This file defines functions only — no side effects at source time, same
+# contract as con-voyage-lib.sh. Source it, then call scribe_file_friction.
+#
+# Shares no state with Custodian's own dedup-search helper (fk-x4ohn4) yet —
+# that consolidation is tracked separately; this is Scribe's own first cut.
+#
+# review fk-ert7m1 BLOCKING-4: sourced here (functions only, no side effects
+# at source time — same contract as this file's own header above) solely for
+# cv_with_timeout, matching every other caller in this pack
+# (con-voyage-rig-sync.sh, con-voyage-askuserquestion-watchdog.sh) that bounds
+# external bd/gh/gc calls instead of letting a stuck process hang the caller
+# forever.
+# shellcheck source=con-voyage-lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/con-voyage-lib.sh"
+
+# CV_SCRIBE_STORE_TIMEOUT_SECONDS — bound on every external bd/gh call below,
+# matching this pack's existing per-caller override convention
+# (CV_RIG_SYNC_FETCH_TIMEOUT_SECONDS, CV_ASKQ_STORE_TIMEOUT_SECONDS).
+CV_SCRIBE_STORE_TIMEOUT_SECONDS="${CV_SCRIBE_STORE_TIMEOUT_SECONDS:-30}"
+
+# scribe_route_target TEXT — print "pack" or "city" for where a friction
+# point described by TEXT should be filed. Defaults to "pack" (pack-general)
+# unless TEXT names an explicit this-city-only/city-specific concern, per the
+# confirmed operator default. The keyword match below is deliberately generic
+# (no city's own name is hardcoded here) so the heuristic works unmodified in
+# any city that installs this pack.
+scribe_route_target() {
+  local text="$1"
+  local lower
+  lower="$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]')"
+  case "$lower" in
+    *"this rig"*|*"city rig"*|*"city-specific"*|*"city specific"*|*"this city"*)
+      printf 'city' ;;
+    *)
+      printf 'pack' ;;
+  esac
+}
+
+# scribe_format_title TEXT — print a Conventional-Commit-style title derived
+# from freeform friction TEXT: whitespace/newlines collapsed to single
+# spaces, a type prefix chosen by keyword (fix:/feat:/chore:), trailing
+# periods stripped, and the whole thing capped at 72 characters.
+scribe_format_title() {
+  local text="$1"
+  local collapsed
+  collapsed="$(printf '%s' "$text" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')"
+  collapsed="${collapsed%.}"
+  local lower
+  lower="$(printf '%s' "$collapsed" | tr '[:upper:]' '[:lower:]')"
+  local prefix="chore"
+  case "$lower" in
+    *bug*|*fail*|*broke*|*error*|*crash*|*regress*) prefix="fix" ;;
+    *" add "*|*feature*|*"new "*|*introduce*) prefix="feat" ;;
+  esac
+  local max=72
+  local body_max=$(( max - ${#prefix} - 2 ))
+  if [ "${#collapsed}" -gt "$body_max" ]; then
+    collapsed="${collapsed:0:$((body_max - 1))}…"
+  fi
+  printf '%s: %s' "$prefix" "$collapsed"
+}
+
+# scribe_format_body TEXT — print an INVEST-shaped body wrapping freeform
+# friction TEXT under a "## Problem" section.
+scribe_format_body() {
+  local text="$1"
+  cat <<EOF
+## Problem
+
+${text}
+
+## INVEST
+
+- Independent: scoped to this friction point only.
+- Negotiable: the exact fix approach is left open to the implementor.
+- Valuable: removes a concrete, observed friction point.
+- Estimable: a single, bounded change.
+- Small: addressable in one focused PR.
+- Testable: a regression test should reproduce the friction before the fix.
+EOF
+}
+
+# scribe_dedup_key TEXT — print a stable dedup search fragment derived from
+# the ORIGINAL freeform friction TEXT (review fk-ert7m1 BLOCKING-3): the
+# decorated/truncated Conventional-Commit title scribe_format_title produces
+# (keyword prefix, 72-char cap) is not a stable fragment of the underlying
+# friction, so two reports of the SAME recurring friction worded even
+# slightly differently almost never share a substring of their titles. A
+# plain prefix cut of the normalized raw input is far more likely to survive
+# a reworded re-report, since operators/agents describing the same observed
+# friction tend to open with the same concrete noun phrase.
+scribe_dedup_key() {
+  local text="$1"
+  local collapsed
+  collapsed="$(printf '%s' "$text" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')"
+  # review fk-ert7m1 BLOCKING-1: strip the same trailing period
+  # scribe_format_title strips, so the dedup query and the stored title share
+  # one normalization — otherwise a period-terminated friction's query can
+  # never be a substring of its own (period-stripped) stored title.
+  collapsed="${collapsed%.}"
+  local max=60
+  if [ "${#collapsed}" -gt "$max" ]; then
+    collapsed="${collapsed:0:$max}"
+  fi
+  printf '%s' "$collapsed"
+}
+
+# scribe_dedup_match QUERY [GH_REPO] — search for an existing OPEN bead
+# (bd list --title-contains) and, when GH_REPO is given, an existing OPEN
+# GitHub issue (gh issue list --search) matching QUERY. Prints the first
+# match as "bd:<id>" or "gh:<repo>#<number>", or nothing when neither source
+# has a match. Always returns 0 — a lookup failure (bd/gh not found,
+# malformed JSON) is treated as "no match found", never a hard error, so a
+# transient search failure can never silently block a real dedup but also
+# never crashes the caller; review fk-ert7m1 BLOCKING-1: that failure is no
+# longer silent either — a non-zero bd/gh exit is surfaced as a WARNING to
+# stderr before falling through to "no match found", so an auth/rate-limit/
+# missing-binary failure is visible instead of indistinguishable from a
+# genuine no-match. Review fk-ert7m1 BLOCKING-2: both lookups are scoped to
+# OPEN items only (no `--all` / `--state all`) — matching a CLOSED bead or
+# issue would silently suppress re-filing of a friction that recurred after
+# its original fix, defeating the whole point of surfacing recurring
+# friction.
+scribe_dedup_match() {
+  local query="$1" gh_repo="${2:-}"
+  local bd_bin="${BD:-bd}" gh_bin="${GH:-gh}"
+  [ -n "$query" ] || return 0
+
+  local bd_json bd_rc
+  bd_json="$(cv_with_timeout "$CV_SCRIBE_STORE_TIMEOUT_SECONDS" "$bd_bin" list --title-contains "$query" --json 2>/dev/null)"
+  bd_rc=$?
+  if [ "$bd_rc" -ne 0 ]; then
+    echo "scribe: dedup search failed (bd list exited ${bd_rc}), proceeding without dedup" >&2
+  else
+    local bd_id
+    bd_id="$(printf '%s' "$bd_json" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    data = []
+if isinstance(data, dict):
+    data = data.get('issues') or []
+if not isinstance(data, list):
+    data = []
+for item in data:
+    if isinstance(item, dict) and item.get('id'):
+        print(item['id'])
+        break
+" 2>/dev/null)"
+    if [ -n "$bd_id" ]; then
+      printf 'bd:%s' "$bd_id"
+      return 0
+    fi
+  fi
+
+  if [ -n "$gh_repo" ]; then
+    local gh_json gh_rc
+    gh_json="$(cv_with_timeout "$CV_SCRIBE_STORE_TIMEOUT_SECONDS" "$gh_bin" issue list --repo "$gh_repo" --search "$query" --json number,title 2>/dev/null)"
+    gh_rc=$?
+    if [ "$gh_rc" -ne 0 ]; then
+      echo "scribe: dedup search failed (gh issue list exited ${gh_rc}), proceeding without dedup" >&2
+      return 0
+    fi
+    local gh_number
+    gh_number="$(printf '%s' "$gh_json" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    data = []
+if not isinstance(data, list):
+    data = []
+for item in data:
+    if isinstance(item, dict) and item.get('number'):
+        print(item['number'])
+        break
+" 2>/dev/null)"
+    if [ -n "$gh_number" ]; then
+      printf 'gh:%s#%s' "$gh_repo" "$gh_number"
+      return 0
+    fi
+  fi
+
+  return 0
+}
+
+# scribe_file_friction TEXT [--route pack|city] [--gh-repo REPO] — the
+# end-to-end flow: dedup check, routing decision, title/body formatting, then
+# filing via gh issue create (pack) or bd create (city). Prints
+# "DEDUP:<match>" and does nothing else when a dedup match is found; prints
+# the underlying gh/bd command's own output on an actual filing. --route
+# forces a target instead of the default pack-general-unless-city-specific
+# heuristic; --gh-repo overrides the pack repo (CV_SCRIBE_GH_REPO). Neither
+# has a hardcoded fallback repo/city — this script ships generalized across
+# any city that installs the pack, so a --route pack with no CV_SCRIBE_GH_REPO
+# (and no --gh-repo) configured refuses to file rather than guessing an
+# operator's own fork.
+scribe_file_friction() {
+  local text="" route="auto" gh_repo="${CV_SCRIBE_GH_REPO:-}"
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --route) route="$2"; shift 2 ;;
+      --gh-repo) gh_repo="$2"; shift 2 ;;
+      *) text="$1"; shift ;;
+    esac
+  done
+  case "$route" in
+    pack|city|auto) ;;
+    *)
+      echo "scribe: unrecognized --route value '${route}' (expected pack, city, or auto) — refusing to file" >&2
+      return 1
+      ;;
+  esac
+  [ "$route" = "auto" ] && route="$(scribe_route_target "$text")"
+
+  if [ "$route" = "pack" ] && [ -z "$gh_repo" ]; then
+    echo "scribe: no pack repo configured — set CV_SCRIBE_GH_REPO or pass --gh-repo — refusing to file" >&2
+    return 1
+  fi
+
+  local title
+  title="$(scribe_format_title "$text")"
+
+  local dedup_repo=""
+  [ "$route" = "pack" ] && dedup_repo="$gh_repo"
+  local dedup_key
+  dedup_key="$(scribe_dedup_key "$text")"
+  local existing
+  existing="$(scribe_dedup_match "$dedup_key" "$dedup_repo")"
+  if [ -n "$existing" ]; then
+    printf 'DEDUP:%s\n' "$existing"
+    return 0
+  fi
+
+  local body
+  body="$(scribe_format_body "$text")"
+
+  # fk-ert7m1 BLOCKING-1: capture the filing call's own exit code instead of
+  # letting it fall through as scribe_file_friction's bare tail-call return —
+  # a timeout/transient failure here previously produced empty stdout and
+  # zero stderr, indistinguishable from "nothing to print" or the DEDUP
+  # short-circuit above, so a friction report could vanish with no trace.
+  local filing_rc
+  if [ "$route" = "pack" ]; then
+    local gh_bin="${GH:-gh}"
+    cv_with_timeout "$CV_SCRIBE_STORE_TIMEOUT_SECONDS" "$gh_bin" issue create --repo "$gh_repo" --title "$title" --body "$body"
+    filing_rc=$?
+    if [ "$filing_rc" -ne 0 ]; then
+      echo "scribe: filing failed (gh issue create exited ${filing_rc}) — friction report dropped" >&2
+    fi
+  else
+    local bd_bin="${BD:-bd}"
+    cv_with_timeout "$CV_SCRIBE_STORE_TIMEOUT_SECONDS" "$bd_bin" create --title "$title" --description "$body" --type chore
+    filing_rc=$?
+    if [ "$filing_rc" -ne 0 ]; then
+      echo "scribe: filing failed (bd create exited ${filing_rc}) — friction report dropped" >&2
+    fi
+  fi
+  return "$filing_rc"
+}
