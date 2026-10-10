@@ -78,7 +78,24 @@ an operator's own fixer worktree outside the rig (fk-zhyz68: this killed 3/3
 round-2 rereviews on 2026-10-09). Free the branch first via
 `cv-worktree-prep.sh free-branch`, which detaches that other worktree only
 if it is clean, and fails loud if it is dirty rather than silently
-discarding uncommitted work:
+discarding uncommitted work.
+
+If `$SEED_FAIL` ends up non-empty below, mail the mayor with the exact
+error, close this step AND sweep the whole workflow root (so review lanes
+mint nothing against a seed that never ran — fk-zhyz68: a failed seed
+previously left ~28 descendant beads OPEN for a human to tear down by
+hand), and STOP — do not proceed to stamp the root or close this step as
+pass. This whole flow — attaching the worktree and handling a seed failure
+— runs as ONE shell (fk-9iqxnx: a prose paragraph between two ` ```bash `
+fences has previously made an agent execute them as separate shells, so a
+later fence reading an earlier fence's un-exported local silently read
+empty instead of erroring; merging into a single fence removes that
+cross-fence dependency entirely). The `bd update`/`bd close` of this step's
+own claimed bead run unconditionally on a seed failure — never gated on
+`CV_LIB` resolving — and the workflow-root sweep falls back to a direct
+`bd close` of open/in_progress descendants when `CV_LIB` (and so
+`cv_close_workflow_root`) is unavailable, so a seed failure always leaves
+the bead and its descendants closed regardless of library discoverability:
 
 ```bash
 CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
@@ -108,17 +125,13 @@ if [ -z "$SEED_FAIL" ]; then
   git worktree add -q -B "$BRANCH" "$WORKTREE" "origin/${BRANCH}" \
     || SEED_FAIL="failed to attach a worktree for ${BRANCH} at ${WORKTREE}"
 fi
-```
 
-If `$SEED_FAIL` is non-empty, mail the mayor with the exact error, close
-this step AND sweep the whole workflow root (so review lanes mint nothing
-against a seed that never ran — fk-zhyz68: a failed seed previously left
-~28 descendant beads OPEN for a human to tear down by hand), and STOP — do
-not proceed to stamp the root or close this step as pass:
-
-```bash
 if [ -n "$SEED_FAIL" ]; then
   echo "con-voyage rereview-seed: ${SEED_FAIL}" >&2
+  bd update "$CLAIMED_BEAD_ID" \
+    --set-metadata 'gc.outcome=fail' \
+    --set-metadata 'gc.failure_class=seed_worktree_attach'
+  bd close "$CLAIMED_BEAD_ID" --reason "Re-review seed failed: ${SEED_FAIL}"
   if [ -n "$CV_LIB" ]; then
     MAIL_ERR_FILE="$(mktemp)"
     source "$CV_LIB" && cv_with_timeout 30 gc mail send mayor -s "con-voyage rereview-seed failed: ${ROOT_ID}" -m "con-voyage rereview-seed (${CLAIMED_BEAD_ID}) could not attach a worktree for ${BRANCH}: ${SEED_FAIL}. The re-review workflow has been abandoned — no review lanes will be dispatched." --json >/dev/null 2>"$MAIL_ERR_FILE"
@@ -126,11 +139,27 @@ if [ -n "$SEED_FAIL" ]; then
     MAIL_ERR_TEXT="$(cat "$MAIL_ERR_FILE" 2>/dev/null)"
     rm -f "$MAIL_ERR_FILE"
     [ "$MAIL_RC" -eq 0 ] || echo "con-voyage rereview-seed: mail to mayor on seed failure failed/timed out: ${MAIL_ERR_TEXT} — mayor NOT confirmed notified" >&2
-    bd update "$CLAIMED_BEAD_ID" \
-      --set-metadata 'gc.outcome=fail' \
-      --set-metadata 'gc.failure_class=seed_worktree_attach'
-    bd close "$CLAIMED_BEAD_ID" --reason "Re-review seed failed: ${SEED_FAIL}"
     source "$CV_LIB" && cv_close_workflow_root "$ROOT_ID" "con-voyage rereview-seed failed (${CLAIMED_BEAD_ID}): ${SEED_FAIL}; no review lanes dispatched"
+  else
+    echo "con-voyage rereview-seed: con-voyage-lib.sh not resolved — cannot mail the mayor or run cv_close_workflow_root; falling back to a direct bd close sweep of open workflow-root descendants" >&2
+    DESC_IDS="$(bd list --metadata "gc.root_bead_id=${ROOT_ID}" --status open,in_progress --json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    items = json.load(sys.stdin)
+except Exception:
+    items = []
+for it in items:
+    bid = it.get('id')
+    if bid:
+        print(bid)
+" 2>/dev/null)"
+    if [ -n "$DESC_IDS" ]; then
+      while IFS= read -r DESC_ID; do
+        [ -n "$DESC_ID" ] || continue
+        bd close "$DESC_ID" --reason "con-voyage rereview-seed failed (${CLAIMED_BEAD_ID}): ${SEED_FAIL}; sweeping descendant (con-voyage-lib.sh unresolved, cv_close_workflow_root unavailable)" \
+          || echo "con-voyage rereview-seed: WARNING: could not close descendant ${DESC_ID} during fallback sweep" >&2
+      done <<< "$DESC_IDS"
+    fi
   fi
   exit 0
 fi
