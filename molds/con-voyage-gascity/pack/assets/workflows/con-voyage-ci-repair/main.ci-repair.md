@@ -398,7 +398,12 @@ left it stuck on a PR branch with a stray commit in a live incident
 `git worktree add -B <branch>`, since the branch was already checked out
 elsewhere, and required hand-stashing local `.beads/metadata.json` state
 that was then never unstashed). Attach a dedicated worktree instead, keyed
-to this repair step's own `{convoy_id}` so concurrent repairs never collide:
+to this repair step's own `{repair_bead}` — the human-facing bead id, unique
+per repair and already passed as a `--var` on every dispatch path. `{convoy_id}`
+is NOT usable here: this prompt file is far above the size threshold where
+`gc` substitutes formula variables into the bead body, and separately no
+dispatch path ever passes `convoy_id` as a `--var`, so the token never
+resolves (fk-ne3uz) — a literal, fixed path shared by every repair ever run.
 
 ```bash
 GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
@@ -407,32 +412,100 @@ CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
 [ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
 CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
 [ -f "$CV_LIB" ] || CV_LIB=""
-if [ -z "$CV_LIB" ]; then
-  echo "con-voyage-lib.sh not found — cannot resolve a dedicated worktree, refusing to fall back to the rig root" >&2
+
+# Every Step 3 failure must route through the same close/escalate contract as
+# this file's own Failure/escalation section below — a bare `exit 1` here
+# would strand {repair_bead} with no terminal state (review fk-bjn2ba BLOCKING-3).
+ci_repair_step3_fail() {
+  local msg="$1"
+  echo "ci-repair: ${msg}" >&2
+  if [ -n "$CV_LIB" ]; then
+    source "$CV_LIB" && cv_bead_close "{repair_bead}" abandoned "${msg}"
+  fi
+  gc mail send {escalation_target} \
+    -s "CI repair blocked: {repo}#{pr}" \
+    -m "Repair bead {convoy_id} is stuck in Step 3 (worktree setup). Reason: ${msg}. Branch: {branch}."
+  gc bd close "{convoy_id}" --reason "abandoned: ${msg}"
+  gc runtime drain-ack
   exit 1
+}
+
+if [ -z "$CV_LIB" ]; then
+  ci_repair_step3_fail "con-voyage-lib.sh not found — cannot resolve a dedicated worktree, refusing to fall back to the rig root"
 fi
 RIG_ROOT="$(source "$CV_LIB" && cv_default_rig_root)"
 [ -n "${RIG_ROOT:-}" ] || RIG_ROOT="${GC_CITY:-.}"
-WORKTREE="${RIG_ROOT}/worktrees/ci-repair-{convoy_id}"
-rm -rf "$WORKTREE"
-mkdir -p "$(dirname "$WORKTREE")"
+WORKTREE="${RIG_ROOT}/worktrees/ci-repair-{repair_bead}"
+WORKTREE_REUSED="false"
 
-git fetch origin {branch} || { echo "ci-repair: failed to fetch {branch} from origin" >&2; exit 1; }
-git worktree add -q -B "{branch}" "$WORKTREE" "origin/{branch}" \
-  || { echo "ci-repair: failed to attach a worktree for {branch} at ${WORKTREE}" >&2; exit 1; }
-cd "$WORKTREE" || { echo "ci-repair: cd into ${WORKTREE} failed" >&2; exit 1; }
+git fetch origin "{branch}" || ci_repair_step3_fail "failed to fetch {branch} from origin"
+
+# BLOCKING-2: `git worktree add -B` refuses to attach a branch that's already
+# checked out elsewhere — and the con-voyage source-anchor worktree keeps
+# exactly {branch} checked out for the whole life of the PR. Detect that case
+# and reuse the existing worktree instead of trying (and failing) to attach a
+# second one. Capture the porcelain listing into a var first — never pipe a
+# live `git worktree list` into a reader; a producer still mid-write when the
+# reader is satisfied can get SIGPIPE'd under `set -o pipefail`, turning a
+# correct match into a false refusal (same race documented on
+# cv-review-lane-worktree.sh's `acquire`, fk-iw972).
+wt_list="$(git worktree list --porcelain 2>/dev/null)"
+EXISTING_WORKTREE=""
+cur_path=""
+while IFS= read -r line; do
+  case "$line" in
+    worktree\ *) cur_path="${line#worktree }" ;;
+    branch\ refs/heads/*)
+      if [ "${line#branch refs/heads/}" = "{branch}" ]; then
+        EXISTING_WORKTREE="$cur_path"
+      fi
+      ;;
+    '') cur_path="" ;;
+  esac
+done <<< "$wt_list"
+
+if [ -n "$EXISTING_WORKTREE" ]; then
+  echo "ci-repair: {branch} is already checked out at ${EXISTING_WORKTREE} — reusing it instead of attaching a second worktree"
+  [ -d "$EXISTING_WORKTREE" ] || ci_repair_step3_fail "reported existing worktree ${EXISTING_WORKTREE} for {branch} does not exist on disk"
+  WORKTREE="$EXISTING_WORKTREE"
+  WORKTREE_REUSED="true"
+else
+  rm -rf "$WORKTREE"
+  mkdir -p "$(dirname "$WORKTREE")"
+  git worktree add -q -B "{branch}" "$WORKTREE" "origin/{branch}" \
+    || ci_repair_step3_fail "failed to attach a worktree for {branch} at ${WORKTREE}"
+fi
+cd "$WORKTREE" || ci_repair_step3_fail "cd into ${WORKTREE} failed"
+
+# Stamp the resolved path (and whether it was reused vs. newly created) on
+# {convoy_id} so every later step — each running in its own fresh shell, per
+# this pack's step-isolation (no shell var survives between them) — re-derives
+# the SAME worktree instead of recomputing a path that may now be stale
+# (review fk-bjn2ba BLOCKING-4). Step 7's teardown also reads
+# ci_repair.worktree_reused so it never removes a worktree this step didn't
+# create — doing so would tear down the shared source-anchor checkout out
+# from under the rest of the PR's workflow, reintroducing this bug's own root
+# cause.
+gc bd update "{convoy_id}" \
+  --set-metadata "ci_repair.worktree=${WORKTREE}" \
+  --set-metadata "ci_repair.worktree_reused=${WORKTREE_REUSED}" \
+  || ci_repair_step3_fail "could not stamp ci_repair.worktree on {convoy_id} — refusing to continue with no durable record of the resolved worktree"
 ```
 
-This is a fresh worktree forked straight from `origin/{branch}`, so there is
-nothing stale to sync and nothing in the rig root to disturb — the rig root
-stays on whatever branch every other worker expects it to be on.
+A newly created worktree is forked straight from `origin/{branch}`, so there
+is nothing stale to sync and nothing in the rig root to disturb — the rig
+root stays on whatever branch every other worker expects it to be on. A
+reused worktree is already on `{branch}` by construction — nothing to sync
+there either.
 
-<!-- FOLLOW-UP (noted, not fixed — out of scope for fk-4xq): every {branch}
-     interpolation in this file (here and in Steps 4/6/7 below) is unquoted in
+<!-- FOLLOW-UP (noted, not fixed — out of scope for fk-4xq): every remaining
+     {branch} interpolation in this file (Steps 4/6/7 below) is unquoted in
      its shell command example. GitHub branch names can't contain spaces, but
      can contain other shell-meaningful characters; quoting "{branch}"
-     everywhere would be the safer default. Left as-is per fk-4xq's scope
-     (BLOCKING-1/2 + LOW-1/2 only) — file separately if this needs hardening. -->
+     everywhere would be the safer default. Step 3's own {branch}
+     interpolations are quoted above since this change already touches that
+     block; the rest are left as-is per fk-4xq's scope (BLOCKING-1/2 + LOW-1/2
+     only) — file separately if this needs hardening. -->
 
 Verify you are on the right branch, in the dedicated worktree, before doing
 anything else:
@@ -464,6 +537,59 @@ routine `git add` can never scoop them up. Local only — nothing is ever
 committed upstream because of this step.
 
 ## Step 4 — Fix based on `{failure_kind}`
+
+Before anything else in this step, re-anchor to the worktree Step 3 resolved.
+Step 3's `cd` does not survive into this step's shell — each `## Step` runs
+as its own fresh shell in this pack, and a context reset or stray `cd`
+anywhere in between can silently move cwd without any variable noticing. A
+canonical `worktrees/ci-repair-{repair_bead}` guess is also not reliable on
+its own: Step 3 may have resolved an EXISTING worktree instead (BLOCKING-2),
+so only the `ci_repair.worktree` metadata it stamped on `{convoy_id}` names
+the worktree this repair is actually using. Hard-fail rather than mutate an
+unverified cwd:
+
+```bash
+GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
+
+step4_abort() {
+  local msg="$1"
+  echo "ci-repair Step 4: ${msg}" >&2
+  if [ -n "$CV_LIB" ]; then
+    source "$CV_LIB" && cv_bead_close "{repair_bead}" abandoned "${msg}"
+  fi
+  gc mail send {escalation_target} \
+    -s "CI repair blocked: {repo}#{pr}" \
+    -m "Repair bead {convoy_id} failed to re-anchor in Step 4: ${msg}. Branch: {branch}."
+  gc bd close "{convoy_id}" --reason "abandoned: ${msg}"
+  gc runtime drain-ack
+  exit 1
+}
+
+WORKTREE="$(gc bd show "{convoy_id}" --json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    d = d[0] if isinstance(d, list) else d
+except Exception:
+    d = {}
+print((d.get('metadata') or {}).get('ci_repair.worktree') or '')
+" 2>/dev/null)"
+[ -n "$WORKTREE" ] || step4_abort "no ci_repair.worktree stamped on {convoy_id} — Step 3 never ran or its stamp failed"
+
+cd "$WORKTREE" 2>/dev/null
+[ "$(pwd -P 2>/dev/null)" = "$(cd "$WORKTREE" 2>/dev/null && pwd -P)" ] \
+  || step4_abort "could not re-anchor to the resolved worktree ${WORKTREE}"
+echo "ci-repair Step 4: re-anchored to ${WORKTREE}"
+```
+
+Every mutating command in 4a/4b/4c below, and Step 5/6 after them, runs from
+this verified cwd — never re-trust an ambient `$(pwd)` picked up mid-task
+without re-running this check.
 
 The bead's `{failure_kind}` var already carries PART A's classification —
 one of `checks_failed`, `merge_conflict`, `behind_base`, or `blocked`. Branch
@@ -768,13 +894,33 @@ CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
 [ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
 CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
 [ -f "$CV_LIB" ] || CV_LIB=""
-if [ -n "$CV_LIB" ]; then
+
+# Read back the path Step 3 actually resolved (and whether it reused an
+# existing worktree) rather than recomputing a canonical
+# worktrees/ci-repair-{repair_bead} guess — a reused worktree (BLOCKING-2) is
+# NOT one this step created, and removing it here would tear down whatever
+# other workflow (e.g. the con-voyage source-anchor) still depends on it.
+read -r TEARDOWN_WORKTREE TEARDOWN_REUSED <<< "$(gc bd show "{convoy_id}" --json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    d = d[0] if isinstance(d, list) else d
+except Exception:
+    d = {}
+meta = d.get('metadata') or {}
+print(meta.get('ci_repair.worktree') or '', meta.get('ci_repair.worktree_reused') or 'false')
+" 2>/dev/null)"
+
+if [ "$TEARDOWN_REUSED" = "true" ]; then
+  echo "ci-repair: ${TEARDOWN_WORKTREE} was an existing worktree Step 3 reused, not one it created — leaving it in place"
+elif [ -n "$TEARDOWN_WORKTREE" ] && [ -n "$CV_LIB" ]; then
   RIG_ROOT="$(source "$CV_LIB" && cv_default_rig_root)"
   [ -n "${RIG_ROOT:-}" ] || RIG_ROOT="${GC_CITY:-.}"
-  WORKTREE="${RIG_ROOT}/worktrees/ci-repair-{convoy_id}"
   cd "$RIG_ROOT" 2>/dev/null
-  git worktree remove --force "$WORKTREE" 2>/dev/null \
-    || echo "ci-repair: could not remove worktree ${WORKTREE} (non-fatal — it will be cleaned up on the next repair run for this convoy)" >&2
+  git worktree remove --force "$TEARDOWN_WORKTREE" 2>/dev/null \
+    || echo "ci-repair: could not remove worktree ${TEARDOWN_WORKTREE} (non-fatal — it will be cleaned up on the next repair run for this convoy)" >&2
+else
+  echo "ci-repair: no ci_repair.worktree metadata found on {convoy_id} — skipping teardown (nothing recorded to remove)" >&2
 fi
 ```
 
@@ -796,13 +942,28 @@ CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
 [ -f "$CV_LIB" ] || CV_LIB=""
 [ -n "$CV_LIB" ] && [ -f "$CV_LIB" ] && source "$CV_LIB" \
   && cv_bead_close "{repair_bead}" abandoned "escalated to {escalation_target} — <brief explanation>"
-if [ -n "$CV_LIB" ]; then
+
+# Same read-back-before-removing discipline as Step 7's teardown: never
+# remove a worktree Step 3 reused rather than created (BLOCKING-2).
+read -r TEARDOWN_WORKTREE TEARDOWN_REUSED <<< "$(gc bd show "{convoy_id}" --json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    d = d[0] if isinstance(d, list) else d
+except Exception:
+    d = {}
+meta = d.get('metadata') or {}
+print(meta.get('ci_repair.worktree') or '', meta.get('ci_repair.worktree_reused') or 'false')
+" 2>/dev/null)"
+
+if [ "$TEARDOWN_REUSED" = "true" ]; then
+  echo "ci-repair: ${TEARDOWN_WORKTREE} was an existing worktree Step 3 reused, not one it created — leaving it in place"
+elif [ -n "$TEARDOWN_WORKTREE" ] && [ -n "$CV_LIB" ]; then
   RIG_ROOT="$(source "$CV_LIB" && cv_default_rig_root)"
   [ -n "${RIG_ROOT:-}" ] || RIG_ROOT="${GC_CITY:-.}"
-  WORKTREE="${RIG_ROOT}/worktrees/ci-repair-{convoy_id}"
   cd "$RIG_ROOT" 2>/dev/null
-  git worktree remove --force "$WORKTREE" 2>/dev/null \
-    || echo "ci-repair: could not remove worktree ${WORKTREE} (non-fatal)" >&2
+  git worktree remove --force "$TEARDOWN_WORKTREE" 2>/dev/null \
+    || echo "ci-repair: could not remove worktree ${TEARDOWN_WORKTREE} (non-fatal)" >&2
 fi
 gc runtime drain-ack
 exit 1
