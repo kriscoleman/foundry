@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.16.4](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.16.3...con-voyage-gascity-v0.16.4) (2026-10-10)
+
+
+### Bug Fixes
+
+* address con-voyage review fk-tj3bih BLOCKING-1/2/3 on cv_close_workflow_root's sweep ([0f03f77](https://github.com/kriscoleman/foundry/commit/0f03f77e058b52f28a5e440161820478ac52f008))
+* apply con-voyage review findings (review fk-dh3mkt mayor reopen LOW-1..4) ([2bb1fcf](https://github.com/kriscoleman/foundry/commit/2bb1fcf177e47fb4b573a7ef520adb6a0911e389))
+* bound close_if_open's bd close calls with a timeout (review fk-sku8km BLOCKING-1) ([63623f6](https://github.com/kriscoleman/foundry/commit/63623f66424b781e9942080bd2269289c5f7c1c9))
+* close empty-rig fallback hole in cv_close_workflow_root's descendant sweep (review fk-39mg5k/fk-gvnoof BLOCKING-1/2) ([c149cc2](https://github.com/kriscoleman/foundry/commit/c149cc2cba3e8de8e5870842079723ab865cf5fe))
+* close workflow root in rereview-seed's CV_LIB-unresolved fallback sweep (review fk-pwbxc7 BLOCKING-1) ([6ba19e2](https://github.com/kriscoleman/foundry/commit/6ba19e27b1af8c5005f6db9167540629415a7236))
+* collapse suppression-log cap to one mechanism, cover widened is_question() lookahead (review fk-dh3mkt) ([a399bbb](https://github.com/kriscoleman/foundry/commit/a399bbb7ba7af0ca7331c3cb880386e48ca90a73))
+* **con-voyage:** cv-abandon-workflow.sh teardown misses rig routing, sibling-blocked descendants, and in-flight loop iterations ([367adcc](https://github.com/kriscoleman/foundry/commit/367adccef1b2d183e20bd246f8701557ffee96a6))
+* **con-voyage:** don't reply to Doomer's ack-only comments on a resolved thread ([ebd181b](https://github.com/kriscoleman/foundry/commit/ebd181b5a6b683f246668255037608fc6fb09f14))
+* **con-voyage:** extract rereview-seed's CV_LIB-unresolved fallback into a tested script ([bb9f2cd](https://github.com/kriscoleman/foundry/commit/bb9f2cdf729d736f02028e7a17331ce0c2f3b640))
+* **con-voyage:** free a branch held by another worktree before rereview-seed ([e15fee1](https://github.com/kriscoleman/foundry/commit/e15fee1b1991695c5f062557fae0777f2b7ae762))
+* **con-voyage:** review lanes no longer post to the PR themselves (noise slice A) ([3ec5000](https://github.com/kriscoleman/foundry/commit/3ec5000275ff489f79366c0adbede8aef683a3af))
+* **con-voyage:** seed build gate scripts in prepare-build, before the build gate ever runs ([a6eb095](https://github.com/kriscoleman/foundry/commit/a6eb0953b82fc0cabc702bf0b0f6c024dad6646c))
+* cover remaining QUESTION_MARK_RE alternatives, add curly-quote support (review fk-jkkcdd iteration-6) ([278161f](https://github.com/kriscoleman/foundry/commit/278161fc3666108ce99746fa218982197fe70963))
+* don't re-log a durable doomer-ack suppression on every poll (review fk-dh3mkt BLOCKING-1) ([ee0df2c](https://github.com/kriscoleman/foundry/commit/ee0df2ca0370c3a3a946a91238fa0a58e57ed38b))
+* fail closed on unrecognized control-kind descendants in workflow sweep (review fk-sku8km BLOCKING-1) ([4348248](https://github.com/kriscoleman/foundry/commit/434824834d7be6f20ca3790e81436f7c48dfa09b))
+* fix broken bd list flag and add mayor notify in rereview-seed fallback (review fk-pwbxc7 BLOCKING-1/2) ([432e77a](https://github.com/kriscoleman/foundry/commit/432e77a1550390dc049bda970c18d3ff40281883))
+* free-branch prunes stale worktree records; rereview-seed cleanup is unconditional (review fk-xfewni) ([63b818b](https://github.com/kriscoleman/foundry/commit/63b818b8526c846f20d2953c3622a5e51aa8874f))
+* give fk-dgia1g/fk-tj3bih test suites a resolvable rig stub (review fk-39mg5k/fk-gvnoof BLOCKING-1 follow-up) ([12c6dce](https://github.com/kriscoleman/foundry/commit/12c6dcebd11214396cd0bc27a86032e059e13294))
+* is_question() lookahead covers markdown-emphasis-terminated questions (review fk-jkkcdd iteration-5) ([9e52dec](https://github.com/kriscoleman/foundry/commit/9e52dec4d73be01f4aea863af4e8deb5f0f0632c))
+* re-derive CV_PACK_ROOT/CV_LIB in the gate-seed fence (review fk-iwvv2z) ([ebab263](https://github.com/kriscoleman/foundry/commit/ebab2633743a4955dee14b496a1a895e18204c0f))
+* reconcile pr-watch durable-ack suppression with landed fk-igqet1 sibling (review fk-yztb54 iteration-3) ([9148d8d](https://github.com/kriscoleman/foundry/commit/9148d8dab85673e7f6b8918f873550d9f15accd6))
+* scope review-lane no-PR-comment prohibition to security/code lanes (review fk-0dpgr9) ([f3cd0f0](https://github.com/kriscoleman/foundry/commit/f3cd0f0a91638e9a4140a96af1d90e50e1bd33cd))
+* scope the facilitator fragment's post-to-PR instruction against the shared rubric's lens-only prohibition (review fk-lp1pj8) ([945262b](https://github.com/kriscoleman/foundry/commit/945262b85640240238a0470432618661fc7a1d84))
+* scope the shared severity-rubric PR-comment banner out of review lanes (review fk-lp1pj8) ([b7ac986](https://github.com/kriscoleman/foundry/commit/b7ac986fb561e8989b7cfa8cca23bc10b74ef9a4))
+* split the bash-3.2-gated empty-rig wrong-store-skip assertions into an ungated case (review fk-sku8km BLOCKING-2) ([ee6a6fb](https://github.com/kriscoleman/foundry/commit/ee6a6fbbd621c5de0c91261d64a6720d48e3acff))
+
 ## [0.16.3](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.16.2...con-voyage-gascity-v0.16.3) (2026-10-09)
 
 
