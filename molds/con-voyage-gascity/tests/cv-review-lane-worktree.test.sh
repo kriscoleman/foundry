@@ -648,6 +648,66 @@ else
 fi
 
 # ===========================================================================
+# CASE 18 — review fk-9h3nwk QA/test-engineering BLOCKING-1: the fix's own
+#   headline POSITIVE capability — a first lookup that fails/is inconclusive,
+#   followed by a second, independently-timed retry that DOES resolve
+#   "closed" — must still reap the worktree. Cases 16/17 only cover the
+#   negative paths (both attempts fail, or budget exhausted before any
+#   attempt); none of them exercise the retry actually succeeding. A
+#   regression here (e.g. `state2` compared against the wrong value, or the
+#   retry reusing the first failed result instead of re-invoking
+#   `lane_bead_state`) would silently stop ever reaping a lane that only
+#   resolves on its second lookup, leaking worktrees forever.
+# ===========================================================================
+start_case "18: sweep --force reaps a lane whose FIRST lookup fails but whose retry resolves closed (fk-9h3nwk BLOCKING-1 positive path)"
+RETRY_GC_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cv-review-lane-wt-test-retry.XXXXXX")"
+RETRY_COUNTER="${RETRY_GC_DIR}/count"
+printf '0' > "$RETRY_COUNTER"
+cat > "${RETRY_GC_DIR}/gc" <<RETRY_GC_STUB
+#!/usr/bin/env bash
+if [ "\$1" = "bd" ] && [ "\$2" = "show" ]; then
+  count="\$(cat "${RETRY_COUNTER}")"
+  count=\$((count + 1))
+  printf '%s' "\$count" > "${RETRY_COUNTER}"
+  if [ "\$count" -eq 1 ]; then
+    # first attempt: a real lookup was made but came back unusable.
+    exit 1
+  fi
+  # second (retry) attempt: resolves cleanly to closed.
+  printf '%s' '[{"status":"closed"}]'
+  exit 0
+fi
+exit 1
+RETRY_GC_STUB
+chmod +x "${RETRY_GC_DIR}/gc"
+
+REPO10="$(mk_repo repo10)"
+SRC10="${SANDBOX}/repo10-src"
+git_c "$REPO10" worktree add -q --detach "$SRC10" HEAD
+run_script acquire "$SRC10" "lane-retry-resolves-closed"
+assert_eq "0" "$RC" "acquire for the retry-resolves-closed lane exits 0"
+LANE_RETRY="$OUT"
+
+ORIG_PATH="$PATH"
+PATH="${RETRY_GC_DIR}:${ORIG_PATH}"
+run_script sweep "$SRC10" --force
+PATH="$ORIG_PATH"
+rm -rf "$RETRY_GC_DIR"
+
+assert_eq "0" "$RC" "sweep --force exits 0 when the first lookup fails and the retry resolves closed"
+case "$OUT" in
+  *"confirmed closed on second attempt after an initial lookup failure"*)
+    pass "sweep reported the second-attempt-confirmed-closed reason, not the failed-twice skip branch" ;;
+  *)
+    fail "sweep did not report the second-attempt-confirmed-closed reason; output: ${OUT}" ;;
+esac
+if [ -d "$LANE_RETRY" ]; then
+  fail "sweep --force left the lane worktree on disk even though the retry resolved closed — the fk-9h3nwk positive path is broken"
+else
+  pass "sweep --force reaped the lane worktree once the retry confirmed closed"
+fi
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 echo
