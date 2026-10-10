@@ -313,6 +313,7 @@ else
   FAILURES=$((FAILURES+1))
 fi
 assert_contains "$PREPARE_BUILD_MD" "gate check script seeding failed" "fails loud (exit 1) instead of silently proceeding toward a gate that would quarantine"
+assert_contains "$PREPARE_BUILD_MD" "build-artifact validator seeding failed" "validator seeder also fails loud (exit 1) instead of silently proceeding"
 
 start_case "prepare-build.md (fk-oq5nt): re-running the seed step on an already-current rig is a no-op (ensure semantics, not blind overwrite)"
 # cv-ensure-gate-scripts.sh / cv-ensure-build-artifact-validator.sh are both
@@ -329,6 +330,45 @@ assert_contains "$PREPARE_BUILD_MD" "$CV_COMMUNAL_DUTY_REMINDER" "prepare-build.
 assert_contains "$PREPARE_BUILD_MD" "$CV_SHELL_SAFETY_REMINDER" "prepare-build.md carries the shell-safety reminder"
 assert_contains "$BUILD_MD" "$CV_COMMUNAL_DUTY_REMINDER" "build.md carries the communal-duty reminder"
 assert_contains "$BUILD_MD" "$CV_SHELL_SAFETY_REMINDER" "build.md carries the shell-safety reminder"
+
+start_case "prepare-build.md (review fk-hbsmk BLOCKING-1): gate-seed fence re-derives CV_TOPLEVEL/CV_PACK_ROOT/CV_LIB itself, since each fenced block runs as its own separate shell"
+# Each fenced ```bash block in a con-voyage workflow .md runs as its own
+# separate shell invocation — a bare (non-exported) variable set in one fence
+# does not survive into the next. Extract just the "Seed the build gate's
+# check scripts" fence and execute it alone in a fresh subshell with
+# CV_LIB/CV_PACK_ROOT/GC_CITY explicitly unset, against a scratch rig root
+# that already has current gate scripts seeded. Before the fix this fails
+# ("not found ... may not be imported correctly") because the fence read
+# $CV_LIB/$CV_PACK_ROOT as set by an earlier, separate fence; after the fix it
+# re-derives them itself and exits 0.
+seed_fence="$(awk '/^## Seed the build gate.s check scripts/{found=1} found && /^```bash/{incode=1; next} found && incode && /^```/{exit} found && incode{print}' "$PREPARE_BUILD_MD")"
+if [ -z "$seed_fence" ]; then
+  echo "  FAIL: could not extract the gate-seed fence from $PREPARE_BUILD_MD" >&2
+  FAILURES=$((FAILURES+1))
+else
+  SCRATCH_RIG="$(mktemp -d)"
+  trap 'rm -rf "$SCRATCH_RIG"' EXIT
+  mkdir -p "$SCRATCH_RIG/molds/con-voyage-gascity/pack"
+  cp -R "${MOLD_DIR}/pack" "$SCRATCH_RIG/molds/con-voyage-gascity/"
+  (
+    cd "$SCRATCH_RIG" || exit 2
+    git init -q .
+    "${MOLD_DIR}/pack/assets/scripts/cv-ensure-gate-scripts.sh" "$SCRATCH_RIG" >/dev/null 2>&1
+    "${MOLD_DIR}/pack/assets/scripts/cv-ensure-build-artifact-validator.sh" "$SCRATCH_RIG" >/dev/null 2>&1
+  )
+  EXTRACTED_FENCE="$(mktemp)"
+  printf '%s\n' "$seed_fence" > "$EXTRACTED_FENCE"
+  FENCE_OUTPUT="$(cd "$SCRATCH_RIG" && env -u CV_LIB -u CV_PACK_ROOT -u GC_CITY bash "$EXTRACTED_FENCE" 2>&1)"
+  FENCE_STATUS=$?
+  rm -f "$EXTRACTED_FENCE"
+  if [ "$FENCE_STATUS" -eq 0 ] && ! printf '%s' "$FENCE_OUTPUT" | grep -qE 'not found|may not be imported correctly'; then
+    echo "  PASS: gate-seed fence re-derives its own variables and succeeds standalone"
+  else
+    echo "  FAIL: gate-seed fence failed standalone (exit ${FENCE_STATUS}), output:" >&2
+    echo "$FENCE_OUTPUT" >&2
+    FAILURES=$((FAILURES+1))
+  fi
+fi
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
