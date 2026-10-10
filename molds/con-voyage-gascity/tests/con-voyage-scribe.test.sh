@@ -393,6 +393,80 @@ BD_STUB
 chmod +x "${STUBDIR}/bd"
 
 echo
+echo "=== CASE: filing failure (review fk-ert7m1 BLOCKING-1) — a hung/failing bd create is reported as a WARNING, not silently dropped ==="
+reset_fixtures
+cat > "${STUBDIR}/bd" <<'BD_HANG_CREATE_STUB'
+#!/usr/bin/env bash
+if [ "$1" = "list" ]; then
+  echo "[]"
+  exit 0
+fi
+if [ "$1" = "create" ]; then
+  sleep 20
+  exit 0
+fi
+exit 0
+BD_HANG_CREATE_STUB
+chmod +x "${STUBDIR}/bd"
+SAVED_TIMEOUT="$CV_SCRIBE_STORE_TIMEOUT_SECONDS"
+CV_SCRIBE_STORE_TIMEOUT_SECONDS=1
+t0=$(date +%s)
+FILING_OUT="$(scribe_file_friction "a new friction whose filing call hangs" --route repl_city 2>&1 1>/dev/null)"
+FILING_RC=$?
+t1=$(date +%s)
+CV_SCRIBE_STORE_TIMEOUT_SECONDS="$SAVED_TIMEOUT"
+elapsed=$((t1 - t0))
+if [ "$elapsed" -lt 10 ]; then
+  pass "scribe_file_friction's filing call returned in ${elapsed}s, bounded by CV_SCRIBE_STORE_TIMEOUT_SECONDS=1"
+else
+  fail "scribe_file_friction's filing call took ${elapsed}s — cv_with_timeout did not bound the hung bd create"
+fi
+if printf '%s' "$FILING_OUT" | grep -qF "filing failed"; then
+  pass "a timed-out bd create is surfaced as a WARNING to stderr"
+else
+  fail "a timed-out bd create is surfaced as a WARNING to stderr (got: ${FILING_OUT})"
+fi
+if [ "$FILING_RC" -ne 0 ]; then
+  pass "scribe_file_friction propagates the filing call's non-zero exit code (rc=${FILING_RC})"
+else
+  fail "scribe_file_friction propagates the filing call's non-zero exit code (got rc=0)"
+fi
+# restore the normal (query-filtering) bd stub for any later cases
+cat > "${STUBDIR}/bd" <<'BD_STUB'
+#!/usr/bin/env bash
+{
+  line=""
+  for a in "$@"; do a="${a//$'\n'/ }"; line="${line}${a} "; done
+  printf '%s\n' "$line"
+} >> "${STUB_BD_LOG}"
+
+if [ "$1" = "list" ]; then
+  python3 -c '
+import json, os, sys
+args = sys.argv[1:]
+query = None
+for i, a in enumerate(args):
+    if a == "--title-contains" and i + 1 < len(args):
+        query = args[i + 1]
+with open(os.environ["STUB_BD_LIST_JSON"]) as f:
+    data = json.load(f)
+if query is not None:
+    data = [item for item in data if query in item.get("title", "")]
+print(json.dumps(data))
+' "$@"
+  exit 0
+fi
+
+if [ "$1" = "create" ]; then
+  echo "bd:created-fixture-id"
+  exit 0
+fi
+
+exit 0
+BD_STUB
+chmod +x "${STUBDIR}/bd"
+
+echo
 echo "RESULT: ${PASS} passed, ${FAIL} failed"
 if [ "$FAIL" -eq 0 ]; then
   echo "ALL CASES PASSED"
