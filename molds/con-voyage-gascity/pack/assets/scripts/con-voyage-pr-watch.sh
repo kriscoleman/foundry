@@ -130,7 +130,10 @@
 #                   open for a long time would otherwise grow it forever).
 #                   Once a write pushes the file past this many lines, it is
 #                   trimmed back down to the most recent
-#                   CV_SUPPRESSION_LOG_MAX_LINES lines. Default: 500.
+#                   CV_SUPPRESSION_LOG_MAX_LINES lines. Default: 2000.
+#                   Exported so the Python-side trim (log_suppression, below)
+#                   observes the same value this shell resolved rather than
+#                   re-deriving its own default independently.
 #
 # Exit codes:
 #   0 — completed (some or all monitors may have had no actionable PRs)
@@ -168,7 +171,8 @@ CV_AUTHOR_GATE="${CV_AUTHOR_GATE:-enabled}"
 # code-free rollback until it has production mileage.
 CV_NATIVE_DISCOVERY="${CV_NATIVE_DISCOVERY:-disabled}"
 CV_NATIVE_PRLIST_LIMIT="${CV_NATIVE_PRLIST_LIMIT:-100}"
-CV_SUPPRESSION_LOG_MAX_LINES="${CV_SUPPRESSION_LOG_MAX_LINES:-500}"
+CV_SUPPRESSION_LOG_MAX_LINES="${CV_SUPPRESSION_LOG_MAX_LINES:-2000}"
+export CV_SUPPRESSION_LOG_MAX_LINES
 CV_CONFLICT_STRATEGY="${CV_CONFLICT_STRATEGY:-rebase}"
 CV_LOCK_STALE_SECONDS="${CV_LOCK_STALE_SECONDS:-300}"
 CV_MINT_MAX_ATTEMPTS="${CV_MINT_MAX_ATTEMPTS:-3}"
@@ -215,7 +219,7 @@ esac
 # fail safe (fall back to the documented default) rather than break the
 # suppression-log trim comparison below.
 case "$CV_SUPPRESSION_LOG_MAX_LINES" in
-  *[!0-9]*|'') CV_SUPPRESSION_LOG_MAX_LINES="500" ;;
+  *[!0-9]*|'') CV_SUPPRESSION_LOG_MAX_LINES="2000" ;;
 esac
 
 # ---------------------------------------------------------------------------
@@ -1487,10 +1491,6 @@ agent_re   = re.compile(sys.argv[2])
 full_repo  = sys.argv[3] if len(sys.argv) > 3 else ""
 pr_number  = sys.argv[4] if len(sys.argv) > 4 else ""
 suppression_log_path = sys.argv[5] if len(sys.argv) > 5 else ""
-try:
-    suppression_log_max_lines = int(sys.argv[6]) if len(sys.argv) > 6 else 500
-except ValueError:
-    suppression_log_max_lines = 500
 
 BOT_SUFFIXES = ["[bot]"]
 BOT_LOGINS   = {"github-actions", "dependabot", "renovate", "stale", "codecov", "netlify"}
@@ -1744,20 +1744,6 @@ def log_suppression(item_type, nid, author, reason):
                     "%s SUPPRESS %s#%s %s id=%s author=%s reason=%s\n"
                     % (datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), full_repo, pr_number, item_type, nid, author, reason)
                 )
-            # fk-dh3mkt review (mayor reopen, regraded LOW-4): bound this
-            # append-only file so a PR left open for a long time does not grow
-            # it without limit -- trim down to the most recent
-            # suppression_log_max_lines lines whenever a write pushes it past
-            # the cap. Best-effort: a trim failure is not fatal to the write
-            # that just succeeded above.
-            try:
-                with open(suppression_log_path, "r") as f:
-                    lines = f.readlines()
-                if len(lines) > suppression_log_max_lines:
-                    with open(suppression_log_path, "w") as f:
-                        f.writelines(lines[-suppression_log_max_lines:])
-            except OSError:
-                pass
         except OSError as e:
             sys.stderr.write(
                 "con-voyage-pr-watch: [PART B] WARNING: suppression_log write failed for %s: %s\n"
@@ -1889,7 +1875,7 @@ all_ids = seen_ids | new_ids
 print("SEEN_IDS:" + "\n".join(sorted(all_ids)))
 '
     suppression_log_file="${CV_STATE_DIR}/${state_key}.suppressions.log"
-    new_comments=$(printf '%s' "$pr_comments_json" | python3 -c "$_PY_SCAN_COMMENTS" "$seen_ids_content" "$CV_AGENT_PREFIX_PATTERN" "$full_repo" "$pr_number" "$suppression_log_file" "$CV_SUPPRESSION_LOG_MAX_LINES") || {
+    new_comments=$(printf '%s' "$pr_comments_json" | python3 -c "$_PY_SCAN_COMMENTS" "$seen_ids_content" "$CV_AGENT_PREFIX_PATTERN" "$full_repo" "$pr_number" "$suppression_log_file") || {
       echo "con-voyage-pr-watch: [PART B] WARNING: comment parsing failed for ${full_repo}#${pr_number}" >&2
       continue
     }

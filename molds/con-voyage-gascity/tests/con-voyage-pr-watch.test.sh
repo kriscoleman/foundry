@@ -189,6 +189,13 @@ JSON
       #     paren then the HTML marker ("right?) <!--...") -- under-match
       #     guard: a real question must still win even with trailing
       #     punctuation between the "?" and the marker.
+      #   thread 8 (fk-dh3mkt review, BLOCKING-2: the widened lookahead
+      #     itself had zero coverage for the exact shapes it was meant to
+      #     fix) — a genuine question ending in a closing double quote
+      #     ("right?" <!--...-->) -- must still win over the ack marker.
+      #   thread 9 (fk-dh3mkt review, BLOCKING-2) — a genuine question with
+      #     no whitespace before the HTML marker (right?<!--...-->) -- must
+      #     still win over the ack marker.
       if [ "${STUB_GQL_THREADS_DOOMER_ACK_QMARK:-0}" = "1" ]; then
         cat <<'JSON'
 {"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[
@@ -203,6 +210,14 @@ JSON
 {"comments":{"nodes":[
   {"id":"PRRC_t7_agent","databaseId":557013,"path":"src/seventh.go","line":1,"author":{"login":"kriscoleman"},"body":"🤖 **Automated con-voyage agent** (foundry-kc/code-review): Fixed per finding t7-break."},
   {"id":"PRRC_t7_question","databaseId":557014,"path":"src/seventh.go","line":1,"author":{"login":"doomer-ai[bot]"},"body":"Should we revisit this, or did we get it right?) <!-- adversary-feedback-ack:v1 feedback=t7-ack -->"}
+]}},
+{"comments":{"nodes":[
+  {"id":"PRRC_t8_agent","databaseId":557015,"path":"src/eighth.go","line":1,"author":{"login":"kriscoleman"},"body":"🤖 **Automated con-voyage agent** (foundry-kc/code-review): Fixed per finding t8-break."},
+  {"id":"PRRC_t8_question","databaseId":557016,"path":"src/eighth.go","line":1,"author":{"login":"doomer-ai[bot]"},"body":"Is this really resolved?\" <!-- adversary-feedback-ack:v1 feedback=t8-ack -->"}
+]}},
+{"comments":{"nodes":[
+  {"id":"PRRC_t9_agent","databaseId":557017,"path":"src/ninth.go","line":1,"author":{"login":"kriscoleman"},"body":"🤖 **Automated con-voyage agent** (foundry-kc/code-review): Fixed per finding t9-break."},
+  {"id":"PRRC_t9_question","databaseId":557018,"path":"src/ninth.go","line":1,"author":{"login":"doomer-ai[bot]"},"body":"Does this still look okay?<!-- adversary-feedback-ack:v1 feedback=t9-ack -->"}
 ]}}
 ]}}}}}
 JSON
@@ -3927,7 +3942,7 @@ else
 fi
 
 # ===========================================================================
-# CASE 58 (fk-dh3mkt review, mayor reopen — regraded LOW-2): log_suppression's
+# CASE 66 (fk-dh3mkt review, mayor reopen — regraded LOW-2): log_suppression's
 #   `except OSError` fallback (durable suppression-log write failure) has no
 #   test. Force the write to fail by pre-creating the target path as a
 #   directory -- open(path, "a") then raises IsADirectoryError, a subclass of
@@ -3954,7 +3969,7 @@ else
 fi
 
 # ===========================================================================
-# CASE 59 (fk-dh3mkt review, mayor reopen — regraded LOW-3): is_question()'s
+# CASE 67 (fk-dh3mkt review, mayor reopen — regraded LOW-3): is_question()'s
 #   plain '"?" in body' substring test over-matched a "?" sitting in a URL
 #   query string or an inline-code span -- either would have incorrectly
 #   blocked the thread-close gate from firing (treating ordinary punctuation
@@ -3988,8 +4003,22 @@ else
 fi
 assert_log_count "$GC_LOG" 'Should we revisit this' 1 "thread 7: the genuine question still routes"
 
+if printf '%s' "$OUT" | grep -qE 'id=PRRC_t8_question .*reason=doomer_ack_thread_closed'; then
+  fail "thread 8: a genuine question ending in a closing double quote still wins over the ack marker"
+else
+  pass "thread 8: a genuine question ending in a closing double quote still wins over the ack marker"
+fi
+assert_log_count "$GC_LOG" 'Is this really resolved' 1 "thread 8: the genuine question still routes"
+
+if printf '%s' "$OUT" | grep -qE 'id=PRRC_t9_question .*reason=doomer_ack_thread_closed'; then
+  fail "thread 9: a genuine question with no whitespace before the ack marker still wins over it"
+else
+  pass "thread 9: a genuine question with no whitespace before the ack marker still wins over it"
+fi
+assert_log_count "$GC_LOG" 'Does this still look okay' 1 "thread 9: the genuine question still routes"
+
 # ===========================================================================
-# CASE 60 (fk-dh3mkt review, mayor reopen — regraded LOW-4): the per-PR
+# CASE 68 (fk-dh3mkt review, mayor reopen — regraded LOW-4): the per-PR
 #   `.suppressions.log` was append-only with no cap -- a PR left open for a
 #   long time would grow it without limit. Pre-seed it past a small test cap
 #   (CV_SUPPRESSION_LOG_MAX_LINES=5) with an old sentinel line, trigger one
