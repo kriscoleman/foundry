@@ -72,6 +72,41 @@ else
   fail "cv_default_rig_root not referenced — worktree path may be hardcoded/wrong for this rig"
 fi
 
+start_case "6: worktree path is keyed on {repair_bead}, not the never-substituted {convoy_id} token"
+if grep -q 'worktrees/ci-repair-{repair_bead}' "$CI_REPAIR_MD"; then
+  pass "worktree path is keyed on {repair_bead} (unique per repair, passed as a dispatch --var)"
+else
+  fail "worktree path is not keyed on {repair_bead} — may still use the never-substituted {convoy_id} token"
+fi
+if grep -q 'worktrees/ci-repair-{convoy_id}' "$CI_REPAIR_MD"; then
+  fail "worktree path still contains the literal, never-substituted {convoy_id} token"
+else
+  pass "no lingering worktrees/ci-repair-{convoy_id} literal found"
+fi
+
+start_case "7: Step 3 detects and reuses an existing worktree already on {branch}"
+if grep -q 'git worktree list --porcelain' "$CI_REPAIR_MD"; then
+  pass "Step 3 inspects existing worktrees before attaching a new one"
+else
+  fail "Step 3 does not check for an existing worktree already on {branch} — git worktree add -B will collide with a long-lived source-anchor checkout"
+fi
+
+start_case "8: Step 3 failures route through bead close/escalation, not a bare exit"
+step3_section="$(awk '/^## Step 3/{p=1} /^## Step 4/{p=0} p' "$CI_REPAIR_MD")"
+if printf '%s' "$step3_section" | grep -q 'cv_bead_close "{repair_bead}" abandoned'; then
+  pass "Step 3's failure path closes {repair_bead} as abandoned before exiting"
+else
+  fail "Step 3's failure path does not close {repair_bead} — a Step 3 failure would strand the bead"
+fi
+
+start_case "9: Step 4 re-anchors to the resolved worktree before any mutating command"
+step4_section="$(awk '/^## Step 4/{p=1} /^## Step 7/{p=0} p' "$CI_REPAIR_MD")"
+if printf '%s' "$step4_section" | grep -q 'cd "\$WORKTREE"'; then
+  pass "a cd \"\$WORKTREE\" re-anchor appears between Step 4 and Step 7"
+else
+  fail "no cd \"\$WORKTREE\" (or equivalent re-anchor) found between Step 4 and Step 7 — a stale cwd from Step 3 could silently mutate the wrong checkout"
+fi
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "ALL CASES PASSED"
