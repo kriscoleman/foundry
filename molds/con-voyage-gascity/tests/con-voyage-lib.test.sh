@@ -93,6 +93,13 @@ if [ "${args[$i]:-}" = "bd" ] && [ "${args[$((i+1))]:-}" = "close" ]; then
   if [ "${!var:-0}" = "1" ]; then
     exit 1
   fi
+  # fk-0ks7ui (review fk-sku8km BLOCKING-1): simulates a hung `bd close` call
+  # so a test can assert close_if_open's own cv_with_timeout wrap actually
+  # bounds it, mirroring STUB_BDLIST_SWEEP_HANG_SECONDS below for the sweep's
+  # `bd list` call.
+  if [ -n "${STUB_BDCLOSE_HANG_SECONDS:-}" ]; then
+    sleep "$STUB_BDCLOSE_HANG_SECONDS"
+  fi
   var="STUB_BDCLOSE_ASSIGNEE_MISMATCH_${id//-/_}"
   if [ "${!var:-0}" = "1" ] && [ "$has_force" = "0" ]; then
     echo "Error: cannot close ${id}: assignee is \"someone\", actor is \"mayor\"; reclaim or use --force to override" >&2
@@ -1739,6 +1746,22 @@ else
   FAILURES=$((FAILURES+1))
 fi
 unset STUB_BDLIST_SWEEP_HANG_SECONDS CV_LENS_STORE_TIMEOUT_SECONDS
+
+start_case "close_if_open: the bd close call itself is bounded by a timeout, not left to hang (fk-0ks7ui, review fk-sku8km BLOCKING-1)"
+export STUB_BDCLOSE_HANG_SECONDS=5
+export CV_LENS_STORE_TIMEOUT_SECONDS=1
+: > "$GC_LOG"
+TIMEOUT_START="$(date +%s)"
+close_if_open "rb-open" "test teardown" 2>/dev/null
+TIMEOUT_ELAPSED=$(( $(date +%s) - TIMEOUT_START ))
+assert_eq "124" "$CV_CLOSE_RC" "a timed-out bd close is reported as a close failure (left open for retry), not silently treated as success"
+if [ "$TIMEOUT_ELAPSED" -lt 5 ]; then
+  echo "  PASS: close_if_open returned in ${TIMEOUT_ELAPSED}s, well under the stubbed 5s hang — cv_with_timeout bounded it"
+else
+  echo "  FAIL: close_if_open took ${TIMEOUT_ELAPSED}s — the bd close call was not bounded by a timeout" >&2
+  FAILURES=$((FAILURES+1))
+fi
+unset STUB_BDCLOSE_HANG_SECONDS CV_LENS_STORE_TIMEOUT_SECONDS
 
 # ---------------------------------------------------------------------------
 # cv_branch_slug / cv_work_branch_name / cv_branch_bead_id (fk-6os73y: name

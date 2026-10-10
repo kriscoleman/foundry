@@ -1923,16 +1923,22 @@ close_if_open() {
   fi
   [ -n "$bead_state" ] && [ "$bead_state" != "closed" ] || return 0
   local gc_bin="${GC:-gc}"
+  # fk-0ks7ui (review fk-sku8km BLOCKING-1): bound every `bd close` call the
+  # same way this file already bounds its `bd list` / `rig list` reads
+  # against the identical failure mode (gc/bd store contention) — this is the
+  # manual recovery tool for an already-stuck workflow, so the write path
+  # must not be able to hang any more than the read path can.
+  local cv_close_timeout="${CV_LENS_STORE_TIMEOUT_SECONDS:-30}"
 
   local close_output close_rc
   if [ -n "$force" ]; then
-    if close_output="$("$gc_bin" bd close "$bead_id" --reason "$reason" 2>&1)"; then
+    if close_output="$(cv_with_timeout "$cv_close_timeout" "$gc_bin" bd close "$bead_id" --reason "$reason" 2>&1)"; then
       close_rc=0
     else
       close_rc=$?
       if printf '%s' "$close_output" | grep -q -- 'reclaim or use --force to override' \
          && ! bead_pinned_or_blocked "$bead_id"; then
-        if close_output="$("$gc_bin" bd close "$bead_id" --reason "$reason" --force 2>&1)"; then
+        if close_output="$(cv_with_timeout "$cv_close_timeout" "$gc_bin" bd close "$bead_id" --reason "$reason" --force 2>&1)"; then
           close_rc=0
         else
           close_rc=$?
@@ -1944,7 +1950,7 @@ close_if_open() {
       fi
     fi
   else
-    if close_output="$("$gc_bin" bd close "$bead_id" --reason "$reason" 2>&1)"; then
+    if close_output="$(cv_with_timeout "$cv_close_timeout" "$gc_bin" bd close "$bead_id" --reason "$reason" 2>&1)"; then
       close_rc=0
     else
       close_rc=$?
