@@ -167,6 +167,24 @@ done
 sub="${args[$i]:-}"
 
 case "$sub" in
+  rig)
+    rigsub="${args[$((i+1))]:-}"
+    if [ "$rigsub" = "list" ]; then
+      # fk-39mg5k/fk-gvnoof BLOCKING-1 follow-up: cv_close_workflow_root now
+      # resolves the owning rig via `gc rig list --json` before trusting any
+      # descendant-sweep `bd list` result. This suite's test ids all use the
+      # real "fk" prefix, so stub a resolvable rig matching production,
+      # unless a case explicitly wants to exercise an unresolved rig via
+      # STUB_RIGLIST_JSON.
+      if [ -n "${STUB_RIGLIST_JSON:-}" ]; then
+        printf '%s' "$STUB_RIGLIST_JSON"
+      else
+        printf '%s' '{"rigs":[{"name":"foundry-kc","prefix":"fk"}]}'
+      fi
+      exit 0
+    fi
+    exit 0
+    ;;
   bd)
     bdsub="${args[$((i+1))]:-}"
     if [ "$bdsub" = "show" ]; then
