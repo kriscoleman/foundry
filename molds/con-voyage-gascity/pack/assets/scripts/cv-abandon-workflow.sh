@@ -47,7 +47,12 @@ fi
 
 cv_close_workflow_root "$ROOT_ID" "$REASON"
 rc="$CV_CLOSE_RC"
-if [ "${CV_CLOSE_OPEN_DESCENDANTS:-0}" != "0" ]; then
+if [ "${CV_CLOSE_OPEN_DESCENDANTS:-0}" = "-1" ]; then
+  # fk-tj3bih BLOCKING-2: -1 means the descendant listing itself failed or
+  # timed out — distinct from a genuine 0, never report it as a count.
+  echo "cv-abandon-workflow.sh: could not list descendants of ${ROOT_ID} (bd list failed or timed out) — tree is NOT confirmed fully torn down" >&2
+  [ "$rc" -eq 0 ] && rc=1
+elif [ "${CV_CLOSE_OPEN_DESCENDANTS:-0}" != "0" ]; then
   echo "cv-abandon-workflow.sh: ${CV_CLOSE_OPEN_DESCENDANTS} descendant(s) of ${ROOT_ID} are still open after the sweep gave up — tree is NOT fully torn down" >&2
   [ "$rc" -eq 0 ] && rc=1
 fi

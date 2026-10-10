@@ -154,6 +154,20 @@ if [ "${args[$i]:-}" = "bd" ] && [ "${args[$((i+1))]:-}" = "list" ]; then
       n=$((n+1))
       echo "$n" > "$counter_file"
     fi
+    # fk-tj3bih BLOCKING-2: simulates the sweep's bd list call itself
+    # failing/timing out on pass $n (exit 1, nothing on stdout) — distinct
+    # from STUB_BDLIST_SWEEP_JSON_<n>='[]', which is the call SUCCEEDING with
+    # genuinely zero descendants.
+    var="STUB_BDLIST_SWEEP_FAIL_${n}"
+    if [ "${!var:-0}" = "1" ]; then
+      exit 1
+    fi
+    # fk-tj3bih BLOCKING-3: simulates a hung sweep bd list call so a test can
+    # assert cv_with_timeout actually bounds it instead of letting it run to
+    # completion.
+    if [ -n "${STUB_BDLIST_SWEEP_HANG_SECONDS:-}" ]; then
+      sleep "$STUB_BDLIST_SWEEP_HANG_SECONDS"
+    fi
     var="STUB_BDLIST_SWEEP_JSON_${n}"
     if [ -n "${!var+x}" ]; then
       printf '%s' "${!var}"
@@ -1641,6 +1655,68 @@ cv_close_workflow_root "" "test teardown"
 assert_eq "0" "$CV_CLOSE_RC" "empty root id is a clean no-op"
 assert_eq "0" "$CV_CLOSE_OPEN_DESCENDANTS" "empty root id reports zero open descendants"
 assert_log_count 'bd (close|list)' 0 "empty root id never calls bd list or bd close"
+
+start_case "cv_close_workflow_root: an empty rig_args never aborts under 'set -u' on bash 3.2, the stock macOS /bin/bash (fk-tj3bih BLOCKING-1)"
+if [ -x /bin/bash ] && /bin/bash -c 'case "$BASH_VERSION" in 3.*) exit 0;; *) exit 1;; esac' 2>/dev/null; then
+  export STUB_RIGLIST_JSON='{"rigs":[]}'
+  export STUB_BDSHOW_JSON_fk_root6='{"id":"fk-root6","status":"open","metadata":{},"dependencies":[]}'
+  export STUB_BDLIST_SWEEP_JSON_1='[]'
+  rm -f "$STUB_SWEEP_COUNTER_FILE"
+  BASH32_OUT="$(GC="$GC" GC_CITY="$GC_CITY" STUB_RIGLIST_JSON="$STUB_RIGLIST_JSON" STUB_BDSHOW_JSON_fk_root6="$STUB_BDSHOW_JSON_fk_root6" STUB_BDLIST_SWEEP_JSON_1="$STUB_BDLIST_SWEEP_JSON_1" STUB_SWEEP_COUNTER_FILE="$STUB_SWEEP_COUNTER_FILE" STUB_BDCLOSE_COUNTER_DIR="$STUB_BDCLOSE_COUNTER_DIR" /bin/bash -c "
+    set -uo pipefail
+    source '$LIB'
+    cv_close_workflow_root 'fk-root6' 'test teardown' 2>/dev/null
+    printf 'RC=%s OPEN=%s' \"\$CV_CLOSE_RC\" \"\$CV_CLOSE_OPEN_DESCENDANTS\"
+  " 2>"${SANDBOX}/bash32_stderr.txt")"
+  BASH32_RC=$?
+  assert_eq "0" "$BASH32_RC" "cv_close_workflow_root with cv_rig_for_bead_id returning empty exits 0 under bash 3.2 set -u (no unbound-variable abort)"
+  BASH32_STDERR="$(cat "${SANDBOX}/bash32_stderr.txt")"
+  case "$BASH32_STDERR" in
+    *"unbound variable"*) echo "  FAIL: empty rig_args still aborts under set -u on bash 3.2: ${BASH32_STDERR}" >&2; FAILURES=$((FAILURES+1)) ;;
+    *) ;;
+  esac
+  case "$BASH32_OUT" in
+    "RC=0 OPEN=0") echo "  PASS: sweep completed normally under bash 3.2 with empty rig_args (${BASH32_OUT})" ;;
+    *) echo "  FAIL: unexpected output under bash 3.2: ${BASH32_OUT}" >&2; FAILURES=$((FAILURES+1)) ;;
+  esac
+  unset STUB_RIGLIST_JSON STUB_BDLIST_SWEEP_JSON_1
+  export STUB_RIGLIST_JSON='{"rigs":[{"name":"foundry-kc","prefix":"fk"}]}'
+else
+  echo "  SKIP: /bin/bash is not bash 3.x on this host — cannot exercise the stock-macOS set -u path"
+fi
+
+start_case "cv_close_workflow_root: a failed/timed-out descendant listing is NOT reported as zero open descendants (fk-tj3bih BLOCKING-2)"
+export STUB_BDSHOW_JSON_fk_root7='{"id":"fk-root7","status":"open","metadata":{},"dependencies":[]}'
+export STUB_BDLIST_SWEEP_FAIL_1=1
+rm -f "$STUB_SWEEP_COUNTER_FILE"
+: > "$GC_LOG"
+WARN_FILE="${SANDBOX}/list_fail_warn.txt"
+cv_close_workflow_root "fk-root7" "test teardown" 2> "$WARN_FILE"
+assert_eq "0" "$CV_CLOSE_RC" "the root's own close still succeeds even when the descendant listing fails"
+assert_eq "-1" "$CV_CLOSE_OPEN_DESCENDANTS" "a failed listing reports the -1 'unknown, not confirmed converged' sentinel, never 0"
+case "$(cat "$WARN_FILE")" in
+  *"could not list open descendants"*"treating as not converged"*) echo "  PASS: the listing failure is logged and treated as not converged" ;;
+  *) echo "  FAIL: expected a WARNING naming the listing failure, got: $(cat "$WARN_FILE")" >&2; FAILURES=$((FAILURES+1)) ;;
+esac
+unset STUB_BDLIST_SWEEP_FAIL_1
+
+start_case "cv_close_workflow_root: the descendant-listing call is bounded by a timeout, not left to hang (fk-tj3bih BLOCKING-3)"
+export STUB_BDSHOW_JSON_fk_root8='{"id":"fk-root8","status":"open","metadata":{},"dependencies":[]}'
+export STUB_BDLIST_SWEEP_HANG_SECONDS=5
+export CV_LENS_STORE_TIMEOUT_SECONDS=1
+rm -f "$STUB_SWEEP_COUNTER_FILE"
+: > "$GC_LOG"
+TIMEOUT_START="$(date +%s)"
+cv_close_workflow_root "fk-root8" "test teardown" 2>/dev/null
+TIMEOUT_ELAPSED=$(( $(date +%s) - TIMEOUT_START ))
+assert_eq "-1" "$CV_CLOSE_OPEN_DESCENDANTS" "a timed-out listing call is treated the same as a failed one (not converged)"
+if [ "$TIMEOUT_ELAPSED" -lt 5 ]; then
+  echo "  PASS: the sweep returned in ${TIMEOUT_ELAPSED}s, well under the stubbed 5s hang — cv_with_timeout bounded it"
+else
+  echo "  FAIL: the sweep took ${TIMEOUT_ELAPSED}s — the descendant listing call was not bounded by a timeout" >&2
+  FAILURES=$((FAILURES+1))
+fi
+unset STUB_BDLIST_SWEEP_HANG_SECONDS CV_LENS_STORE_TIMEOUT_SECONDS
 
 # ---------------------------------------------------------------------------
 # cv_branch_slug / cv_work_branch_name / cv_branch_bead_id (fk-6os73y: name

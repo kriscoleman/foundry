@@ -2018,11 +2018,14 @@ close_if_open() {
 # contract; this is unchanged so con-voyage-finalize.sh's existing use is not
 # disturbed by the reordering above. CV_CLOSE_OPEN_DESCENDANTS is a SEPARATE
 # output: the count of descendants still open once the sweep gives up (0 on
-# full convergence) — a lane/step bead another lens may still be mid-task on
-# is left alone by close_if_open's own pin/gate check (same safety net every
-# other FORCE close in this pack relies on) and counted here instead of
-# silently dropped, so a caller like cv-abandon-workflow.sh that must report
-# "anything left open" has a real signal to check.
+# full convergence, -1 when the descendant listing itself failed or timed out
+# before anything could be counted — fk-tj3bih: distinct from a genuine 0 so a
+# failed/timed-out `bd list` can never be mistaken for "nothing left open") —
+# a lane/step bead another lens may still be mid-task on is left alone by
+# close_if_open's own pin/gate check (same safety net every other FORCE close
+# in this pack relies on) and counted here instead of silently dropped, so a
+# caller like cv-abandon-workflow.sh that must report "anything left open"
+# has a real signal to check.
 cv_close_workflow_root() {
   local root_id="$1" reason="$2"
   CV_CLOSE_RC=0
@@ -2046,15 +2049,40 @@ cv_close_workflow_root() {
   close_if_open "$root_id" "$reason" "" "" 1
   local root_close_rc="$CV_CLOSE_RC"
 
-  local pass=0 max_passes=10 prev_remaining=-1 remaining=0
+  # fk-tj3bih BLOCKING-3: bound the sweep's own `bd list` call the same way
+  # cv_rig_for_bead_id already bounds its `gc rig list` call above — this
+  # sweep can run up to max_passes times per invocation, and
+  # cv_close_workflow_root is reached from cv-abandon-workflow.sh, the
+  # mayor's manual teardown for an already-stuck workflow, i.e. exactly when
+  # `gc`/`bd` store contention (confirmed to run 100+s under pool
+  # contention elsewhere in this file) is most likely. A timeout's nonzero
+  # exit collapses into the same "could not list" handling as any other
+  # bd-list failure below (BLOCKING-2).
+  local cv_close_sweep_timeout="${CV_LENS_STORE_TIMEOUT_SECONDS:-30}"
+
+  local pass=0 max_passes=10 prev_remaining=-1 remaining=0 list_failed=0
   while [ "$pass" -lt "$max_passes" ]; do
     pass=$((pass+1))
     local list_json
-    list_json=$("$gc_bin" --city "${GC_CITY:-.}" "${rig_args[@]}" bd list --status open --metadata-field "gc.root_bead_id=${root_id}" --json --limit 0 2>/dev/null) || list_json=""
+    # fk-tj3bih BLOCKING-1: `"${rig_args[@]}"` on an empty array is a fatal
+    # "unbound variable" error under `set -u` on bash 3.2 (stock macOS
+    # /bin/bash) — this is the only such expansion in this file. The
+    # `${arr[@]+"${arr[@]}"}` form expands to nothing when rig_args is empty
+    # instead of tripping `set -u`, and is identical to "${rig_args[@]}" when
+    # it is not.
+    list_json=$(cv_with_timeout "$cv_close_sweep_timeout" "$gc_bin" --city "${GC_CITY:-.}" ${rig_args[@]+"${rig_args[@]}"} bd list --status open --metadata-field "gc.root_bead_id=${root_id}" --json --limit 0 2>/dev/null) || list_json=""
     if [ -z "$list_json" ]; then
-      if [ "$pass" -eq 1 ]; then
-        echo "cv_close_workflow_root: WARNING: could not list open descendants of root ${root_id} (bd list failed); sweeping root bead only" >&2
-      fi
+      # fk-tj3bih BLOCKING-2: a failed/timed-out `bd list` is NOT the same
+      # signal as "listing succeeded, genuinely zero descendants" (handled
+      # below, where list_json is the non-empty string "[]"). Collapsing the
+      # two let this report full teardown while the sweep never actually
+      # looked at what's open, inverting the "exit non-zero if anything is
+      # left open" contract. Fail closed: mark the listing itself as failed
+      # so CV_CLOSE_OPEN_DESCENDANTS is forced to a nonzero/unknown sentinel
+      # below rather than leaving `remaining` at its previous (possibly
+      # still-zero) value.
+      echo "cv_close_workflow_root: WARNING: could not list open descendants of root ${root_id} on pass ${pass} (bd list failed or timed out); treating as not converged" >&2
+      list_failed=1
       break
     fi
     local ids
@@ -2096,6 +2124,18 @@ for _, bead_id in rows:
     fi
     prev_remaining="$remaining"
   done
+  if [ "$list_failed" -eq 1 ] && [ "$remaining" -eq 0 ]; then
+    # fk-tj3bih BLOCKING-2: the listing itself failed before any descendant
+    # could be counted — report "unknown, assume not converged" (-1) rather
+    # than the otherwise-indistinguishable "genuinely zero open" (0). A
+    # failure on a LATER pass that already counted real descendants on an
+    # earlier pass keeps that nonzero count instead of being overwritten.
+    remaining=-1
+  fi
+  # fk-tj3bih LOW-4: this reassignment is a separate statement from the
+  # initial `CV_CLOSE_OPEN_DESCENDANTS=0` above, which shellcheck's SC2034
+  # disable there does not cover.
+  # shellcheck disable=SC2034  # consumed by callers (cv-abandon-workflow.sh, tests), not read in this file
   CV_CLOSE_OPEN_DESCENDANTS="$remaining"
 
   CV_CLOSE_RC="$root_close_rc"
