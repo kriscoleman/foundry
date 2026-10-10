@@ -21,6 +21,20 @@
 #
 # Shares no state with Custodian's own dedup-search helper (fk-x4ohn4) yet —
 # that consolidation is tracked separately; this is Scribe's own first cut.
+#
+# review fk-ert7m1 BLOCKING-4: sourced here (functions only, no side effects
+# at source time — same contract as this file's own header above) solely for
+# cv_with_timeout, matching every other caller in this pack
+# (con-voyage-rig-sync.sh, con-voyage-askuserquestion-watchdog.sh) that bounds
+# external bd/gh/gc calls instead of letting a stuck process hang the caller
+# forever.
+# shellcheck source=con-voyage-lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/con-voyage-lib.sh"
+
+# CV_SCRIBE_STORE_TIMEOUT_SECONDS — bound on every external bd/gh call below,
+# matching this pack's existing per-caller override convention
+# (CV_RIG_SYNC_FETCH_TIMEOUT_SECONDS, CV_ASKQ_STORE_TIMEOUT_SECONDS).
+CV_SCRIBE_STORE_TIMEOUT_SECONDS="${CV_SCRIBE_STORE_TIMEOUT_SECONDS:-30}"
 
 # scribe_route_target TEXT — print "foundry" or "repl_city" for where a
 # friction point described by TEXT should be filed. Defaults to "foundry"
@@ -82,22 +96,55 @@ ${text}
 EOF
 }
 
-# scribe_dedup_match QUERY [GH_REPO] — search for an existing bead
-# (bd list --title-contains) and, when GH_REPO is given, an existing GitHub
-# issue (gh issue list --search) matching QUERY. Prints the first match as
-# "bd:<id>" or "gh:<repo>#<number>", or nothing when neither source has a
-# match. Always returns 0 — a lookup failure (bd/gh not found, malformed
-# JSON) is treated as "no match found", never a hard error, so a transient
-# search failure can never silently block a real dedup but also never
-# crashes the caller.
+# scribe_dedup_key TEXT — print a stable dedup search fragment derived from
+# the ORIGINAL freeform friction TEXT (review fk-ert7m1 BLOCKING-3): the
+# decorated/truncated Conventional-Commit title scribe_format_title produces
+# (keyword prefix, 72-char cap) is not a stable fragment of the underlying
+# friction, so two reports of the SAME recurring friction worded even
+# slightly differently almost never share a substring of their titles. A
+# plain prefix cut of the normalized raw input is far more likely to survive
+# a reworded re-report, since operators/agents describing the same observed
+# friction tend to open with the same concrete noun phrase.
+scribe_dedup_key() {
+  local text="$1"
+  local collapsed
+  collapsed="$(printf '%s' "$text" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')"
+  local max=60
+  if [ "${#collapsed}" -gt "$max" ]; then
+    collapsed="${collapsed:0:$max}"
+  fi
+  printf '%s' "$collapsed"
+}
+
+# scribe_dedup_match QUERY [GH_REPO] — search for an existing OPEN bead
+# (bd list --title-contains) and, when GH_REPO is given, an existing OPEN
+# GitHub issue (gh issue list --search) matching QUERY. Prints the first
+# match as "bd:<id>" or "gh:<repo>#<number>", or nothing when neither source
+# has a match. Always returns 0 — a lookup failure (bd/gh not found,
+# malformed JSON) is treated as "no match found", never a hard error, so a
+# transient search failure can never silently block a real dedup but also
+# never crashes the caller; review fk-ert7m1 BLOCKING-1: that failure is no
+# longer silent either — a non-zero bd/gh exit is surfaced as a WARNING to
+# stderr before falling through to "no match found", so an auth/rate-limit/
+# missing-binary failure is visible instead of indistinguishable from a
+# genuine no-match. Review fk-ert7m1 BLOCKING-2: both lookups are scoped to
+# OPEN items only (no `--all` / `--state all`) — matching a CLOSED bead or
+# issue would silently suppress re-filing of a friction that recurred after
+# its original fix, defeating the whole point of surfacing recurring
+# friction.
 scribe_dedup_match() {
   local query="$1" gh_repo="${2:-}"
   local bd_bin="${BD:-bd}" gh_bin="${GH:-gh}"
   [ -n "$query" ] || return 0
 
-  local bd_json bd_id
-  bd_json="$("$bd_bin" list --title-contains "$query" --all --json 2>/dev/null)"
-  bd_id="$(printf '%s' "$bd_json" | python3 -c "
+  local bd_json bd_rc
+  bd_json="$(cv_with_timeout "$CV_SCRIBE_STORE_TIMEOUT_SECONDS" "$bd_bin" list --title-contains "$query" --json 2>/dev/null)"
+  bd_rc=$?
+  if [ "$bd_rc" -ne 0 ]; then
+    echo "scribe: dedup search failed (bd list exited ${bd_rc}), proceeding without dedup" >&2
+  else
+    local bd_id
+    bd_id="$(printf '%s' "$bd_json" | python3 -c "
 import json, sys
 try:
     data = json.load(sys.stdin)
@@ -112,14 +159,21 @@ for item in data:
         print(item['id'])
         break
 " 2>/dev/null)"
-  if [ -n "$bd_id" ]; then
-    printf 'bd:%s' "$bd_id"
-    return 0
+    if [ -n "$bd_id" ]; then
+      printf 'bd:%s' "$bd_id"
+      return 0
+    fi
   fi
 
   if [ -n "$gh_repo" ]; then
-    local gh_json gh_number
-    gh_json="$("$gh_bin" issue list --repo "$gh_repo" --search "$query" --state all --json number,title 2>/dev/null)"
+    local gh_json gh_rc
+    gh_json="$(cv_with_timeout "$CV_SCRIBE_STORE_TIMEOUT_SECONDS" "$gh_bin" issue list --repo "$gh_repo" --search "$query" --json number,title 2>/dev/null)"
+    gh_rc=$?
+    if [ "$gh_rc" -ne 0 ]; then
+      echo "scribe: dedup search failed (gh issue list exited ${gh_rc}), proceeding without dedup" >&2
+      return 0
+    fi
+    local gh_number
     gh_number="$(printf '%s' "$gh_json" | python3 -c "
 import json, sys
 try:
@@ -166,8 +220,10 @@ scribe_file_friction() {
 
   local dedup_repo=""
   [ "$route" = "foundry" ] && dedup_repo="$gh_repo"
+  local dedup_key
+  dedup_key="$(scribe_dedup_key "$text")"
   local existing
-  existing="$(scribe_dedup_match "$title" "$dedup_repo")"
+  existing="$(scribe_dedup_match "$dedup_key" "$dedup_repo")"
   if [ -n "$existing" ]; then
     printf 'DEDUP:%s\n' "$existing"
     return 0
@@ -178,9 +234,9 @@ scribe_file_friction() {
 
   if [ "$route" = "foundry" ]; then
     local gh_bin="${GH:-gh}"
-    "$gh_bin" issue create --repo "$gh_repo" --title "$title" --body "$body"
+    cv_with_timeout "$CV_SCRIBE_STORE_TIMEOUT_SECONDS" "$gh_bin" issue create --repo "$gh_repo" --title "$title" --body "$body"
   else
     local bd_bin="${BD:-bd}"
-    "$bd_bin" create --title "$title" --description "$body" --type chore
+    cv_with_timeout "$CV_SCRIBE_STORE_TIMEOUT_SECONDS" "$bd_bin" create --title "$title" --description "$body" --type chore
   fi
 }

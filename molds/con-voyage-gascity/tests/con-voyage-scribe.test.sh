@@ -211,6 +211,95 @@ else
 fi
 
 echo
+echo "=== CASE: dedup (review fk-ert7m1 BLOCKING-2) — bd list is scoped to OPEN beads only ==="
+reset_fixtures
+scribe_dedup_match "some friction" >/dev/null
+if grep -q -- '--all' "$STUB_BD_LOG"; then
+  fail "bd list dedup lookup does NOT request --all (would match closed beads)"
+else
+  pass "bd list dedup lookup does NOT request --all (would match closed beads)"
+fi
+
+echo
+echo "=== CASE: dedup (review fk-ert7m1 BLOCKING-2) — gh issue list is scoped to OPEN issues only ==="
+reset_fixtures
+scribe_dedup_match "some friction" "kriscoleman/foundry" >/dev/null
+if grep -q -- '--state all' "$STUB_GH_LOG"; then
+  fail "gh issue list dedup lookup does NOT request --state all (would match closed issues)"
+else
+  pass "gh issue list dedup lookup does NOT request --state all (would match closed issues)"
+fi
+
+echo
+echo "=== CASE: dedup (review fk-ert7m1 BLOCKING-1) — a bd lookup failure warns and falls through, not silent ==="
+reset_fixtures
+cat > "${STUBDIR}/bd" <<'BD_FAIL_STUB'
+#!/usr/bin/env bash
+{
+  line=""
+  for a in "$@"; do a="${a//$'\n'/ }"; line="${line}${a} "; done
+  printf '%s\n' "$line"
+} >> "${STUB_BD_LOG}"
+if [ "$1" = "list" ]; then
+  echo "bd: simulated auth failure" >&2
+  exit 1
+fi
+if [ "$1" = "create" ]; then
+  echo "bd:created-fixture-id"
+  exit 0
+fi
+exit 0
+BD_FAIL_STUB
+chmod +x "${STUBDIR}/bd"
+ERR_OUT="$(scribe_dedup_match "some friction" 2>&1 1>/dev/null)"
+if printf '%s' "$ERR_OUT" | grep -qF "dedup search failed"; then
+  pass "a bd lookup failure is surfaced as a WARNING to stderr"
+else
+  fail "a bd lookup failure is surfaced as a WARNING to stderr (got: ${ERR_OUT})"
+fi
+RC_MATCH="$(scribe_dedup_match "some friction")"
+RC=$?
+assert_eq "0" "$RC" "scribe_dedup_match still returns 0 despite the bd lookup failure (never hard-blocks filing)"
+assert_eq "" "$RC_MATCH" "a failed bd lookup falls through to 'no match found', not a false match"
+# restore the normal bd stub for subsequent cases
+cat > "${STUBDIR}/bd" <<'BD_STUB'
+#!/usr/bin/env bash
+{
+  line=""
+  for a in "$@"; do a="${a//$'\n'/ }"; line="${line}${a} "; done
+  printf '%s\n' "$line"
+} >> "${STUB_BD_LOG}"
+
+if [ "$1" = "list" ]; then
+  cat "${STUB_BD_LIST_JSON}"
+  exit 0
+fi
+
+if [ "$1" = "create" ]; then
+  echo "bd:created-fixture-id"
+  exit 0
+fi
+
+exit 0
+BD_STUB
+chmod +x "${STUBDIR}/bd"
+
+echo
+echo "=== CASE: dedup (review fk-ert7m1 BLOCKING-3) — the dedup key is a stable fragment of the raw input, not the decorated title ==="
+reset_fixtures
+scribe_file_friction "duplicate suppression-log trim mechanism keeps firing twice on every write" --route repl_city >/dev/null
+if grep -qF 'duplicate suppression-log trim mechanism' "$STUB_BD_LOG"; then
+  pass "dedup search sends a fragment of the raw friction text, not the keyword-prefixed/truncated title"
+else
+  fail "dedup search sends a fragment of the raw friction text, not the keyword-prefixed/truncated title (log: $(cat "$STUB_BD_LOG"))"
+fi
+if grep -qF 'fix: duplicate' "$STUB_BD_LOG"; then
+  fail "dedup search did NOT send the decorated title verbatim"
+else
+  pass "dedup search did NOT send the decorated title verbatim"
+fi
+
+echo
 echo "RESULT: ${PASS} passed, ${FAIL} failed"
 if [ "$FAIL" -eq 0 ]; then
   echo "ALL CASES PASSED"
