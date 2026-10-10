@@ -245,7 +245,7 @@ lane_bead_state() {
   local script_dir cv_lib
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
   cv_lib="${script_dir}/con-voyage-lib.sh"
-  if [ ! -f "$cv_lib" ] || ! command -v gc >/dev/null 2>&1; then
+  if [ ! -f "$cv_lib" ] || ! command -v "${GC:-gc}" >/dev/null 2>&1; then
     printf '%s\x1f%s' "" "absent"
     return 0
   fi
