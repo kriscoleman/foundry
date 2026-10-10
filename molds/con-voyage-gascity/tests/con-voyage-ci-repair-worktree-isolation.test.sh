@@ -59,10 +59,14 @@ else
 fi
 
 start_case "4: Step 7 tears the dedicated worktree down on close"
-if grep -q 'git worktree remove' "$CI_REPAIR_MD"; then
-  pass "a 'git worktree remove' cleanup step is present"
+# review fk-80xk9s BLOCKING-3: the literal 'git worktree remove' call moved
+# into con-voyage-lib.sh's shared cv_ci_repair_remove_worktree_if_owned —
+# Step 7 now delegates to it instead of carrying its own inline removal.
+if grep -q 'git worktree remove' "$CI_REPAIR_MD" \
+  || grep -q 'cv_ci_repair_remove_worktree_if_owned "Step 7"' "$CI_REPAIR_MD"; then
+  pass "a worktree cleanup step is present (inline or via the shared lib helper)"
 else
-  fail "no 'git worktree remove' cleanup found — the dedicated worktree would accumulate under worktrees/"
+  fail "no worktree cleanup found — the dedicated worktree would accumulate under worktrees/"
 fi
 
 start_case "5: worktree path is resolved from the rig root, not hardcoded"
@@ -106,27 +110,88 @@ else
 fi
 
 start_case "8: Step 3 failures route through bead close/escalation, not a bare exit"
-if printf '%s' "$step3_section" | grep -q 'cv_bead_close "{repair_bead}" abandoned'; then
-  pass "Step 3's failure path closes {repair_bead} as abandoned before exiting"
+# review fk-80xk9s BLOCKING-3: the literal cv_bead_close call moved into
+# con-voyage-lib.sh's shared cv_ci_repair_abort — ci_repair_step3_fail now
+# delegates to it (passing {repair_bead}) instead of calling cv_bead_close
+# inline.
+if printf '%s' "$step3_section" | grep -q 'cv_bead_close "{repair_bead}" abandoned' \
+  || printf '%s' "$step3_section" | grep -q 'cv_ci_repair_abort "Step 3'; then
+  pass "Step 3's failure path closes {repair_bead} as abandoned before exiting (inline or via the shared lib helper)"
 else
   fail "Step 3's failure path does not close {repair_bead} — a Step 3 failure would strand the bead"
 fi
 
 start_case "8b: ci_repair_step3_fail and step4_abort both tear down a worktree they created, never one they reused (review fk-hbsmk BLOCKING-4)"
+# review fk-80xk9s BLOCKING-3: the inline WORKTREE_REUSED-guarded
+# `git worktree remove --force` was extracted into con-voyage-lib.sh's shared
+# cv_ci_repair_abort / cv_ci_repair_remove_worktree_if_owned (verified against
+# the actual guard logic in con-voyage-lib.test.sh) — this case now asserts
+# each abort function delegates to it with its own WORKTREE/WORKTREE_REUSED,
+# rather than re-asserting the guard text inline here.
 step3_fail_body="$(printf '%s' "$step3_section" | awk '/^ci_repair_step3_fail\(\) \{/{p=1} p{print} p&&/^}/{exit}')"
-if printf '%s' "$step3_fail_body" | grep -q 'WORKTREE_REUSED:-false.*!= "true"' \
-  && printf '%s' "$step3_fail_body" | grep -q 'git worktree remove --force "\$WORKTREE"'; then
-  pass "ci_repair_step3_fail tears down only a non-reused worktree via a WORKTREE_REUSED-guarded git worktree remove --force"
+if printf '%s' "$step3_fail_body" | grep -q 'cv_ci_repair_abort "Step 3' \
+  && printf '%s' "$step3_fail_body" | grep -q '"\${WORKTREE:-}" "\${WORKTREE_REUSED:-false}"'; then
+  pass "ci_repair_step3_fail delegates to the shared cv_ci_repair_abort with its own WORKTREE/WORKTREE_REUSED"
 else
-  fail "ci_repair_step3_fail does not have a WORKTREE_REUSED-guarded git worktree remove --force \$WORKTREE — a Step 3 failure after worktree creation would leak it"
+  fail "ci_repair_step3_fail does not delegate to cv_ci_repair_abort with WORKTREE/WORKTREE_REUSED — a Step 3 failure after worktree creation could leak it"
 fi
 step4_section_for_abort="$(awk '/^## Step 4/{p=1} /^## Step 7/{p=0} p' "$CI_REPAIR_MD")"
 step4_abort_body="$(printf '%s' "$step4_section_for_abort" | awk '/^step4_abort\(\) \{/{p=1} p{print} p&&/^}/{exit}')"
-if printf '%s' "$step4_abort_body" | grep -q 'WORKTREE_REUSED:-false.*!= "true"' \
-  && printf '%s' "$step4_abort_body" | grep -q 'git worktree remove --force "\$WORKTREE"'; then
-  pass "step4_abort tears down only a non-reused worktree via a WORKTREE_REUSED-guarded git worktree remove --force"
+if printf '%s' "$step4_abort_body" | grep -q 'cv_ci_repair_abort "Step 4' \
+  && printf '%s' "$step4_abort_body" | grep -q '"\${WORKTREE:-}" "\${WORKTREE_REUSED:-false}"'; then
+  pass "step4_abort delegates to the shared cv_ci_repair_abort with its own WORKTREE/WORKTREE_REUSED"
 else
-  fail "step4_abort does not have a WORKTREE_REUSED-guarded git worktree remove --force \$WORKTREE — a Step 4 abort after Step 3 created a worktree would leak it"
+  fail "step4_abort does not delegate to cv_ci_repair_abort with WORKTREE/WORKTREE_REUSED — a Step 4 abort after Step 3 created a worktree could leak it"
+fi
+
+start_case "8c: step5_abort and step6_abort also delegate to the shared cv_ci_repair_abort (review fk-80xk9s BLOCKING-1/3)"
+step5_section_for_abort="$(awk '/^## Step 5/{p=1} /^## Step 6/{p=0} p' "$CI_REPAIR_MD")"
+step5_abort_body="$(printf '%s' "$step5_section_for_abort" | awk '/^step5_abort\(\) \{/{p=1} p{print} p&&/^}/{exit}')"
+if printf '%s' "$step5_abort_body" | grep -q 'cv_ci_repair_abort "Step 5' \
+  && printf '%s' "$step5_abort_body" | grep -q '"\${WORKTREE:-}" "\${WORKTREE_REUSED:-false}"'; then
+  pass "step5_abort delegates to the shared cv_ci_repair_abort with its own WORKTREE/WORKTREE_REUSED"
+else
+  fail "step5_abort does not delegate to cv_ci_repair_abort with WORKTREE/WORKTREE_REUSED — a Step 5 abort after Step 3 created a worktree could leak it"
+fi
+step6_section_for_abort="$(awk '/^## Step 6/{p=1} /^## Step 7/{p=0} p' "$CI_REPAIR_MD")"
+step6_abort_body="$(printf '%s' "$step6_section_for_abort" | awk '/^step6_abort\(\) \{/{p=1} p{print} p&&/^}/{exit}')"
+if printf '%s' "$step6_abort_body" | grep -q 'cv_ci_repair_abort "Step 6' \
+  && printf '%s' "$step6_abort_body" | grep -q '"\${WORKTREE:-}" "\${WORKTREE_REUSED:-false}"'; then
+  pass "step6_abort delegates to the shared cv_ci_repair_abort with its own WORKTREE/WORKTREE_REUSED"
+else
+  fail "step6_abort does not delegate to cv_ci_repair_abort with WORKTREE/WORKTREE_REUSED — a Step 6 abort after Step 3 created a worktree could leak it"
+fi
+
+start_case "8d: Step 7 teardown and Failure/escalation both delegate to the shared helpers too (review fk-80xk9s BLOCKING-1/3)"
+step7_section="$(awk '/^## Step 7/{p=1} /^## Failure/{p=0} p' "$CI_REPAIR_MD")"
+if printf '%s' "$step7_section" | grep -q 'cv_ci_repair_resolve_worktree "\$REPAIR_BEAD_ID"' \
+  && printf '%s' "$step7_section" | grep -q 'cv_ci_repair_remove_worktree_if_owned "Step 7"'; then
+  pass "Step 7's teardown delegates to the shared resolve/remove-if-owned helpers"
+else
+  fail "Step 7's teardown does not delegate to the shared resolve/remove-if-owned helpers — regression risk for the reused-worktree guard"
+fi
+escalation_section="$(awk '/^## Failure/{p=1} /^Do not spin indefinitely/{p=0} p' "$CI_REPAIR_MD")"
+if printf '%s' "$escalation_section" | grep -q 'cv_ci_repair_resolve_worktree "\$REPAIR_BEAD_ID"' \
+  && printf '%s' "$escalation_section" | grep -q 'cv_ci_repair_abort "Failure/escalation"'; then
+  pass "Failure/escalation delegates to the shared resolve/abort helpers"
+else
+  fail "Failure/escalation does not delegate to the shared resolve/abort helpers — regression risk for the reused-worktree guard"
+fi
+
+start_case "8e: the reused-worktree guard logic itself exists exactly once, in con-voyage-lib.sh, not duplicated across call sites (review fk-80xk9s BLOCKING-3)"
+CV_LIB_FILE="${MOLD_DIR}/pack/assets/scripts/con-voyage-lib.sh"
+if [ -f "$CV_LIB_FILE" ] && grep -q '^cv_ci_repair_remove_worktree_if_owned()' "$CV_LIB_FILE" \
+  && grep -q '^cv_ci_repair_resolve_worktree()' "$CV_LIB_FILE" \
+  && grep -q '^cv_ci_repair_abort()' "$CV_LIB_FILE"; then
+  pass "con-voyage-lib.sh defines cv_ci_repair_resolve_worktree, cv_ci_repair_remove_worktree_if_owned, and cv_ci_repair_abort"
+else
+  fail "con-voyage-lib.sh is missing one or more of the shared ci-repair worktree helpers expected after the BLOCKING-3 extraction"
+fi
+inline_removal_hits="$(grep -c 'git worktree remove --force' "$CI_REPAIR_MD")"
+if [ "$inline_removal_hits" -le 1 ]; then
+  pass "main.ci-repair.md has at most one remaining inline 'git worktree remove --force' (the rest now route through the shared lib helpers)"
+else
+  fail "main.ci-repair.md still has ${inline_removal_hits} inline 'git worktree remove --force' call sites — the BLOCKING-3 extraction did not fully land"
 fi
 
 start_case "9: Step 4 re-anchors to the resolved worktree before any mutating command"
@@ -189,6 +254,22 @@ if printf '%s' "$step6_section" | grep -q 'cd "\$WORKTREE"' \
   pass "Step 6 re-reads ci_repair.worktree keyed on {repair_bead} and re-anchors with its own cd \"\$WORKTREE\" before git add/commit/push"
 else
   fail "Step 6 has no cwd re-anchor of its own — a fresh shell starting Step 6 at a stale cwd (e.g. the rig root) would git push origin {branch} from the wrong checkout, reproducing the original fk-bjn2ba incident"
+fi
+
+start_case "13: Step 3's worktree-reuse fallback prunes stale/missing worktree registrations before recreating (review fk-80xk9s BLOCKING-2)"
+step3_else_arm="$(printf '%s' "$step3_section" | awk '/^else$/{p=1} p{print} p&&/^fi$/{exit}')"
+if printf '%s' "$step3_else_arm" | grep -q 'git worktree prune'; then
+  pass "Step 3's else arm runs 'git worktree prune' before recreating the worktree"
+else
+  fail "Step 3's else arm does not run 'git worktree prune' — a worktree left in detached HEAD by a crashed rebase (Step 4b/4c's default strategy) would permanently strand every retry of the same repair bead with a 'missing but already registered worktree' error"
+fi
+if printf '%s' "$step3_else_arm" | grep -qE 'git worktree prune.*\n.*rm -rf "\$WORKTREE"' \
+  || { pruneline="$(printf '%s' "$step3_else_arm" | grep -n 'git worktree prune' | head -1 | cut -d: -f1)"; \
+       rmline="$(printf '%s' "$step3_else_arm" | grep -n 'rm -rf "\$WORKTREE"' | head -1 | cut -d: -f1)"; \
+       [ -n "$pruneline" ] && [ -n "$rmline" ] && [ "$pruneline" -lt "$rmline" ]; }; then
+  pass "'git worktree prune' runs before the 'rm -rf \"\$WORKTREE\"' fallback, not after"
+else
+  fail "'git worktree prune' does not precede 'rm -rf \"\$WORKTREE\"' — pruning after rm -rf cannot clear the stale registration before the next 'git worktree add'"
 fi
 
 echo
