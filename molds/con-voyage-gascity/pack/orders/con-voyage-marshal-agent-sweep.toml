@@ -1,0 +1,28 @@
+# con-voyage-marshal-agent-sweep — Marshal's deterministic agent-liveness
+# tier (fk-12m3 / foundry#47, fk-d0ioj2). Ports the "no step change in N
+# minutes" half of the mayor's ad hoc watch-stall.sh into a city-wide,
+# unconditional, single-shot cooldown order that watches every active
+# implementation/review agent session directly via its own last-active
+# timestamp, rather than one con-voyage run's step beads.
+#
+# NOT a duplicate of con-voyage-askuserquestion-watchdog (fk-o9ntx): that
+# order catches a session visibly blocked on an interactive prompt right
+# now. This order catches the opposite and harder-to-notice case — an agent
+# session that has gone quiet (no activity at all) with NO prompt visible,
+# which askq-watchdog's own peek-and-classify would never flag. A session
+# currently showing an interactive-prompt stall is explicitly excluded here
+# so the two orders never double-report the same session.
+#
+# Disabled by default — gated by [con_voyage.assistants].marshal
+# (cv_assistant_enabled, fk-apujks).
+
+[order]
+description = "City-wide implementation/review agent liveness check: flag a session quiet for CV_MARSHAL_AGENT_STALL_MINUTES with no interactive prompt visible, gated by the marshal assistant flag"
+trigger = "cooldown"
+interval = "5m"
+exec = "$PACK_DIR/assets/scripts/con-voyage-marshal-agent-sweep.sh"
+timeout = "3m"
+
+[order.env]
+CV_MARSHAL_AGENT_STALL_MINUTES = "30"
+CV_MARSHAL_ESCALATE_TARGET = "mayor"
