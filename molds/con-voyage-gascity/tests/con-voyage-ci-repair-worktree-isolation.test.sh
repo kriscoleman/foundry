@@ -107,6 +107,42 @@ else
   fail "no cd \"\$WORKTREE\" (or equivalent re-anchor) found between Step 4 and Step 7 — a stale cwd from Step 3 could silently mutate the wrong checkout"
 fi
 
+start_case "10: ci_repair.worktree* stamp/read calls never key on the dead {convoy_id} token (review fk-hbsmk BLOCKING-1)"
+# {convoy_id} is a gc-internal graph.v2 token never passed as a --var by
+# either dispatch path, and this file is far above gc's inline-substitution
+# size threshold, so a literal "{convoy_id}" as the bead-id argument to
+# `gc bd update`/`gc bd show` is a permanent no-op that aborts every
+# ci-repair run at the first stamp/read. Assert none of the four call sites
+# that stamp or read the ci_repair.worktree* handoff key on {convoy_id}.
+if grep -En '(gc bd (update|show)) "\{convoy_id\}"' "$CI_REPAIR_MD" | grep -q .; then
+  ci_repair_worktree_convoy_hits="$(grep -n 'ci_repair\.worktree' "$CI_REPAIR_MD" | wc -l | tr -d ' ')"
+  bad_hit=0
+  while IFS=: read -r lineno _; do
+    # Look at a small window after each dead-token call site for a
+    # ci_repair.worktree* key — that's the regression this case guards.
+    window="$(sed -n "${lineno},$((lineno+4))p" "$CI_REPAIR_MD")"
+    if printf '%s' "$window" | grep -q 'ci_repair\.worktree'; then
+      bad_hit=1
+    fi
+  done < <(grep -En '(gc bd (update|show)) "\{convoy_id\}"' "$CI_REPAIR_MD")
+  if [ "$bad_hit" -eq 1 ]; then
+    fail "a gc bd update/show call keyed on the dead {convoy_id} token touches ci_repair.worktree* metadata — this will abort every ci-repair run"
+  else
+    pass "no ci_repair.worktree* call sites key on the dead {convoy_id} token (unrelated pre-existing {convoy_id} uses elsewhere are out of this case's scope)"
+  fi
+else
+  pass "no gc bd update/show call keys on the literal {convoy_id} token at all"
+fi
+
+start_case "11: ci_repair.worktree* stamp/read calls are keyed on {repair_bead} instead"
+if grep -c 'gc bd update "\$REPAIR_BEAD_ID"' "$CI_REPAIR_MD" >/dev/null 2>&1 \
+  && grep -q 'ci_repair\.worktree=' "$CI_REPAIR_MD" \
+  && grep -q 'REPAIR_BEAD_ID="{repair_bead}"' "$CI_REPAIR_MD"; then
+  pass "ci_repair.worktree* stamp/read call sites resolve the bead id from {repair_bead}"
+else
+  fail "ci_repair.worktree* stamp/read call sites do not appear to be keyed on {repair_bead}"
+fi
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "ALL CASES PASSED"
