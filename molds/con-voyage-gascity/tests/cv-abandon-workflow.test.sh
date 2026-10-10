@@ -108,6 +108,24 @@ else
 fi
 unset STUB_BDCLOSE_FAIL_fk_abfail
 
+start_case "cv-abandon-workflow.sh (fk-dgia1g acceptance): root closes fine, but a descendant never closes -> still exits non-zero, nothing is silently reported as a success"
+export STUB_BDSHOW_JSON_fk_abstuck='{"id":"fk-abstuck","status":"open","metadata":{},"dependencies":[]}'
+export STUB_BDPINNED_JSON='[{"id":"fk-abstucklane"}]'
+export STUB_BDCLOSE_FAIL_fk_abstucklane=1
+: > "$GC_LOG"
+out="$(GC="${STUBDIR}/gc" STUB_GC_LOG="$GC_LOG" "$SCRIPT" "fk-abstuck" 2>&1)"
+rc=$?
+if [ "$rc" -ne 0 ]; then
+  pass "a root that closes cleanly but leaves a descendant open still exits non-zero (rc=${rc})"
+else
+  fail "expected a non-zero exit when a descendant is left open, even though the root itself closed"
+fi
+case "$out" in
+  *"descendant(s) of fk-abstuck are still open"*) pass "stderr names the still-open descendant count" ;;
+  *) fail "expected stderr to report the still-open descendant(s); got: ${out}" ;;
+esac
+unset STUB_BDPINNED_JSON STUB_BDCLOSE_FAIL_fk_abstucklane
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "ALL CASES PASSED"

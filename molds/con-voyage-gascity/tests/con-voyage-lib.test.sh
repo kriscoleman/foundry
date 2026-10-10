@@ -108,13 +108,60 @@ if [ "${args[$i]:-}" = "bd" ] && [ "${args[$((i+1))]:-}" = "close" ]; then
     echo "Error: cannot close ${id}: unsatisfied gate blocks closure" >&2
     exit 1
   fi
+  # fk-dgia1g: STUB_BDCLOSE_FAIL_FIRST_N_<id>=N simulates a descendant
+  # blocked by a SIBLING this same sweep hasn't closed yet — the first N
+  # close attempts for this id fail, the (N+1)th succeeds, so
+  # cv_close_workflow_root's multi-pass sweep has something real to
+  # converge on (unlike STUB_BDCLOSE_FAIL_<id>, which fails every attempt
+  # forever). Requires STUB_BDCLOSE_COUNTER_DIR for the per-id attempt count.
+  var="STUB_BDCLOSE_FAIL_FIRST_N_${id//-/_}"
+  fail_first_n="${!var:-0}"
+  if [ "$fail_first_n" -gt 0 ] 2>/dev/null; then
+    attempt=1
+    if [ -n "${STUB_BDCLOSE_COUNTER_DIR:-}" ]; then
+      mkdir -p "$STUB_BDCLOSE_COUNTER_DIR"
+      counter_file="${STUB_BDCLOSE_COUNTER_DIR}/${id}"
+      attempt=0
+      [ -f "$counter_file" ] && attempt="$(cat "$counter_file")"
+      attempt=$((attempt+1))
+      echo "$attempt" > "$counter_file"
+    fi
+    if [ "$attempt" -le "$fail_first_n" ]; then
+      echo "Error: cannot close ${id}: blocked by another issue in this tree" >&2
+      exit 1
+    fi
+  fi
   exit 0
 fi
 if [ "${args[$i]:-}" = "bd" ] && [ "${args[$((i+1))]:-}" = "blocked" ]; then
   printf '%s' "${STUB_BDBLOCKED_JSON:-[]}"
   exit 0
 fi
+if [ "${args[$i]:-}" = "rig" ] && [ "${args[$((i+1))]:-}" = "list" ]; then
+  printf '%s' "${STUB_RIGLIST_JSON:-{\"rigs\":[]\}}"
+  exit 0
+fi
 if [ "${args[$i]:-}" = "bd" ] && [ "${args[$((i+1))]:-}" = "list" ]; then
+  is_sweep=0
+  for a in "${args[@]:$((i+2))}"; do
+    [ "$a" = "--metadata-field" ] && is_sweep=1
+  done
+  if [ "$is_sweep" = "1" ]; then
+    counter_file="${STUB_SWEEP_COUNTER_FILE:-/dev/null}"
+    n=0
+    if [ "$counter_file" != "/dev/null" ]; then
+      [ -f "$counter_file" ] && n="$(cat "$counter_file")"
+      n=$((n+1))
+      echo "$n" > "$counter_file"
+    fi
+    var="STUB_BDLIST_SWEEP_JSON_${n}"
+    if [ -n "${!var+x}" ]; then
+      printf '%s' "${!var}"
+    else
+      printf '%s' "${STUB_BDLIST_SWEEP_JSON_LAST:-[]}"
+    fi
+    exit 0
+  fi
   printf '%s' "${STUB_BDPINNED_JSON:-[]}"
   exit 0
 fi
@@ -156,6 +203,24 @@ mkdir -p "$CV_STATE_DIR"
 GC_LOG="${SANDBOX}/gc.log"
 : > "$GC_LOG"
 export STUB_GC_LOG="$GC_LOG"
+
+# Default rig registry for cv_rig_for_bead_id (fk-dgia1g): every bead id this
+# suite uses is fk-*, resolving to a single "foundry-kc" rig, so cases that
+# don't care about rig resolution get it for free without per-case setup.
+export STUB_RIGLIST_JSON='{"rigs":[{"name":"foundry-kc","prefix":"fk"}]}'
+
+# Per-pass descendant-listing counter for cv_close_workflow_root's sweep
+# (fk-dgia1g): each "bd list --metadata-field ..." call increments this file
+# and the stub serves STUB_BDLIST_SWEEP_JSON_<n> for that pass, falling back
+# to STUB_BDLIST_SWEEP_JSON_LAST (default "[]", i.e. "nothing left open") once
+# a case stops defining later-pass vars — a static single-pass case only ever
+# needs to set _1. Reset (rm -f) at the top of every case that exercises the
+# sweep so pass numbering starts fresh.
+export STUB_SWEEP_COUNTER_FILE="${SANDBOX}/sweep_count"
+
+# Per-id close-attempt counter directory for STUB_BDCLOSE_FAIL_FIRST_N_<id>
+# (fk-dgia1g) — see the stub's "bd close" handler above.
+export STUB_BDCLOSE_COUNTER_DIR="${SANDBOX}/close_counts"
 
 # shellcheck source=../pack/assets/scripts/con-voyage-lib.sh
 source "$LIB"
@@ -1463,64 +1528,118 @@ assert_eq "0" "$rc" "no arithmetic error aborts the function before the command 
 assert_eq "" "$out" "no stderr from a bad octal-literal arithmetic expansion ('08: value too great for base')"
 
 # ---------------------------------------------------------------------------
-# cv_close_workflow_root (fk-jg6rm): direct unit coverage. This is the
-# teardown primitive every "root closed -> abandon, mint nothing" guard this
-# fix adds to the build/setup-review/review-loop/synthesize/apply-findings
-# workflow steps calls, and is now also exposed to the mayor as a standalone
-# CLI (cv-abandon-workflow.sh). close_if_open already has its own direct
-# coverage above (force-close refusal shapes); these cases cover the
-# descendant-sweep-then-root orchestration cv_close_workflow_root adds on top.
-# The stub's "bd list" handler returns STUB_BDPINNED_JSON regardless of
-# subcommand args, so it stands in for the
-# "bd list --status open --metadata-field gc.root_bead_id=<root>" sweep call.
+# cv_close_workflow_root (fk-jg6rm, reworked for fk-dgia1g): direct unit
+# coverage. This is the teardown primitive every "root closed -> abandon,
+# mint nothing" guard this fix adds to the build/setup-review/review-loop/
+# synthesize/apply-findings workflow steps calls, and is now also exposed to
+# the mayor as a standalone CLI (cv-abandon-workflow.sh). close_if_open
+# already has its own direct coverage above (force-close refusal shapes);
+# these cases cover the root-first, multi-pass, rig-routed descendant-sweep
+# orchestration cv_close_workflow_root adds on top. The stub's "bd list"
+# handler serves the metadata-field sweep query from
+# STUB_BDLIST_SWEEP_JSON_<pass-number> (via STUB_SWEEP_COUNTER_FILE, reset
+# per case below), distinct from STUB_BDPINNED_JSON (the unrelated "bd list
+# --pinned" call bead_pinned_or_blocked makes).
 # ---------------------------------------------------------------------------
-start_case "cv_close_workflow_root: sweeps open descendants, then closes the root last"
+start_case "cv_close_workflow_root: closes the root FIRST, then sweeps open descendants (fk-dgia1g: a loop-control bead closing before its root could re-mint mid-sweep)"
 export STUB_BDSHOW_JSON_fk_root1='{"id":"fk-root1","status":"open","metadata":{},"dependencies":[]}'
-export STUB_BDPINNED_JSON='[{"id":"fk-lane1"},{"id":"fk-lane2"}]'
+export STUB_BDLIST_SWEEP_JSON_1='[{"id":"fk-lane1","metadata":{}},{"id":"fk-lane2","metadata":{}}]'
+rm -f "$STUB_SWEEP_COUNTER_FILE"
 : > "$GC_LOG"
 cv_close_workflow_root "fk-root1" "test teardown"
 assert_eq "0" "$CV_CLOSE_RC" "root bead closes cleanly -> CV_CLOSE_RC=0"
+assert_eq "0" "$CV_CLOSE_OPEN_DESCENDANTS" "sweep converges to zero open descendants"
 assert_log_count 'bd close fk-lane1 ' 1 "descendant fk-lane1 was closed"
 assert_log_count 'bd close fk-lane2 ' 1 "descendant fk-lane2 was closed"
 assert_log_count 'bd close fk-root1 ' 1 "root fk-root1 was closed"
-descendant_line="$(grep -nE 'bd close fk-lane[12] ' "$GC_LOG" | tail -1 | cut -d: -f1)"
 root_line="$(grep -nE 'bd close fk-root1 ' "$GC_LOG" | head -1 | cut -d: -f1)"
-if [ -n "$descendant_line" ] && [ -n "$root_line" ] && [ "$descendant_line" -lt "$root_line" ]; then
-  echo "  PASS: descendants close before the root bead itself"
+descendant_line="$(grep -nE 'bd close fk-lane[12] ' "$GC_LOG" | head -1 | cut -d: -f1)"
+if [ -n "$root_line" ] && [ -n "$descendant_line" ] && [ "$root_line" -lt "$descendant_line" ]; then
+  echo "  PASS: the root closes before any descendant, arming every step's \"root already closed\" guard before the sweep can trigger a re-mint"
 else
-  echo "  FAIL: expected every descendant close to precede the root's own close (descendant=${descendant_line:-<missing>}, root=${root_line:-<missing>})" >&2
+  echo "  FAIL: expected the root's own close to precede every descendant close (root=${root_line:-<missing>}, descendant=${descendant_line:-<missing>})" >&2
   FAILURES=$((FAILURES+1))
 fi
-unset STUB_BDPINNED_JSON
+unset STUB_BDLIST_SWEEP_JSON_1
+
+start_case "cv_close_workflow_root: resolves --rig from the root id's own prefix for the descendant-listing query (fk-dgia1g case 1: a city-root cwd silently queried the wrong store)"
+export STUB_BDSHOW_JSON_fk_root1b='{"id":"fk-root1b","status":"open","metadata":{},"dependencies":[]}'
+export STUB_BDLIST_SWEEP_JSON_1='[]'
+rm -f "$STUB_SWEEP_COUNTER_FILE"
+: > "$GC_LOG"
+cv_close_workflow_root "fk-root1b" "test teardown"
+assert_log_count '\-\-rig foundry-kc bd list' 1 "the descendant sweep's bd list call carries --rig, resolved from the fk- prefix, not left to cwd-based auto-discovery"
+unset STUB_BDLIST_SWEEP_JSON_1
+
+start_case "cv_close_workflow_root: a descendant blocked by a sibling on pass 1 closes on pass 2 once that sibling is gone (fk-dgia1g case 2: one-shot sweep order isn't dependency order)"
+export STUB_BDSHOW_JSON_fk_root4='{"id":"fk-root4","status":"open","metadata":{},"dependencies":[]}'
+export STUB_BDCLOSE_FAIL_FIRST_N_fk_blocked=1
+export STUB_BDLIST_SWEEP_JSON_1='[{"id":"fk-blocked","metadata":{}},{"id":"fk-blocker","metadata":{}}]'
+export STUB_BDLIST_SWEEP_JSON_2='[{"id":"fk-blocked","metadata":{}}]'
+rm -f "$STUB_SWEEP_COUNTER_FILE"
+rm -rf "$STUB_BDCLOSE_COUNTER_DIR"
+: > "$GC_LOG"
+cv_close_workflow_root "fk-root4" "test teardown"
+assert_eq "0" "$CV_CLOSE_OPEN_DESCENDANTS" "the previously-blocked descendant is closed by the second pass, not permanently stuck"
+assert_log_count 'bd close fk-blocked ' 2 "fk-blocked: pass 1 fails (blocked by sibling), pass 2 retries and succeeds"
+assert_log_count 'bd close fk-blocker ' 1 "fk-blocker closed on the first pass"
+unset STUB_BDLIST_SWEEP_JSON_1 STUB_BDLIST_SWEEP_JSON_2 STUB_BDCLOSE_FAIL_FIRST_N_fk_blocked
+
+start_case "cv_close_workflow_root: within a pass, control-kind beads (gc.kind=workflow/scope/check/...) close before plain lane beads (fk-dgia1g case 3: loop-control-bead-first ordering)"
+export STUB_BDSHOW_JSON_fk_root5='{"id":"fk-root5","status":"open","metadata":{},"dependencies":[]}'
+export STUB_BDLIST_SWEEP_JSON_1='[{"id":"fk-lane-a","metadata":{}},{"id":"fk-loopctl","metadata":{"gc.kind":"check"}},{"id":"fk-lane-b","metadata":{}}]'
+rm -f "$STUB_SWEEP_COUNTER_FILE"
+: > "$GC_LOG"
+cv_close_workflow_root "fk-root5" "test teardown"
+ctl_line="$(grep -nE 'bd close fk-loopctl ' "$GC_LOG" | head -1 | cut -d: -f1)"
+lane_line="$(grep -nE 'bd close fk-lane-[ab] ' "$GC_LOG" | head -1 | cut -d: -f1)"
+if [ -n "$ctl_line" ] && [ -n "$lane_line" ] && [ "$ctl_line" -lt "$lane_line" ]; then
+  echo "  PASS: the control-kind descendant (fk-loopctl, gc.kind=check) closes before any plain lane descendant in the same pass"
+else
+  echo "  FAIL: expected the control-kind descendant to close first (control=${ctl_line:-<missing>}, lane=${lane_line:-<missing>})" >&2
+  FAILURES=$((FAILURES+1))
+fi
+unset STUB_BDLIST_SWEEP_JSON_1
 
 start_case "cv_close_workflow_root: root already closed -> idempotent no-op on the root, descendants still swept"
 export STUB_BDSHOW_JSON_fk_root2='{"id":"fk-root2","status":"closed","metadata":{},"dependencies":[]}'
-export STUB_BDPINNED_JSON='[{"id":"fk-lane3"}]'
+export STUB_BDLIST_SWEEP_JSON_1='[{"id":"fk-lane3","metadata":{}}]'
+rm -f "$STUB_SWEEP_COUNTER_FILE"
 : > "$GC_LOG"
 cv_close_workflow_root "fk-root2" "test teardown"
 assert_eq "0" "$CV_CLOSE_RC" "an already-closed root is a no-op, not a failure"
 assert_log_count 'bd close fk-lane3 ' 1 "a still-open descendant is still swept even when the root is already closed"
 assert_log_count 'bd close fk-root2 ' 0 "an already-closed root is never re-closed"
-unset STUB_BDPINNED_JSON
+unset STUB_BDLIST_SWEEP_JSON_1
 
-start_case "cv_close_workflow_root: a descendant close failure is logged but never blocks the root's own close (best-effort sweep)"
+start_case "cv_close_workflow_root: a descendant stuck open across every pass is logged and counted, but never blocks the root's own close (best-effort sweep)"
 export STUB_BDSHOW_JSON_fk_root3='{"id":"fk-root3","status":"open","metadata":{},"dependencies":[]}'
-export STUB_BDPINNED_JSON='[{"id":"fk-stuck"}]'
+export STUB_BDLIST_SWEEP_JSON_LAST='[{"id":"fk-stuck","metadata":{}}]'
 export STUB_BDCLOSE_FAIL_fk_stuck=1
+rm -f "$STUB_SWEEP_COUNTER_FILE"
 : > "$GC_LOG"
-root_close_warn="$(cv_close_workflow_root "fk-root3" "test teardown" 2>&1 >/dev/null)"
+# fk-dgia1g: run in the current shell, not a `$(...)` subshell — the function
+# sets CV_CLOSE_RC/CV_CLOSE_OPEN_DESCENDANTS as globals, and a subshell would
+# assign those only in its own, discarded environment, silently stranding the
+# parent's copies at whatever a prior case left them.
+WARN_FILE="${SANDBOX}/stuck_warn.txt"
+cv_close_workflow_root "fk-root3" "test teardown" 2> "$WARN_FILE"
+root_close_warn="$(cat "$WARN_FILE")"
 assert_eq "0" "$CV_CLOSE_RC" "CV_CLOSE_RC reflects only the root bead's own close outcome, not the descendant sweep"
+assert_eq "1" "$CV_CLOSE_OPEN_DESCENDANTS" "the stuck descendant is counted as still open once the sweep gives up"
 case "$root_close_warn" in
   *"could not close descendant fk-stuck"*) echo "  PASS: a stuck descendant's close failure is logged" ;;
   *) echo "  FAIL: expected a WARNING naming the stuck descendant, got: ${root_close_warn}" >&2; FAILURES=$((FAILURES+1)) ;;
 esac
 assert_log_count 'bd close fk-root3 ' 1 "the root is still closed despite a descendant sweep failure"
-unset STUB_BDPINNED_JSON STUB_BDCLOSE_FAIL_fk_stuck
+unset STUB_BDLIST_SWEEP_JSON_LAST STUB_BDCLOSE_FAIL_fk_stuck
 
 start_case "cv_close_workflow_root: empty root id -> no-op, no bd calls"
+rm -f "$STUB_SWEEP_COUNTER_FILE"
 : > "$GC_LOG"
 cv_close_workflow_root "" "test teardown"
 assert_eq "0" "$CV_CLOSE_RC" "empty root id is a clean no-op"
+assert_eq "0" "$CV_CLOSE_OPEN_DESCENDANTS" "empty root id reports zero open descendants"
 assert_log_count 'bd (close|list)' 0 "empty root id never calls bd list or bd close"
 
 # ---------------------------------------------------------------------------
