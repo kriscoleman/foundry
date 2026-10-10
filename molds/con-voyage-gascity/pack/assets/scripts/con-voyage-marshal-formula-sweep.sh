@@ -208,7 +208,19 @@ print((d.get('metadata') or {}).get('gc.build.source_anchor_work_dir') or '')
 " 2>/dev/null)"
   [ -n "$WT" ] && [ -d "$WT" ] || continue
 
-  cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" git -C "$WT" fetch origin --quiet >/dev/null 2>&1
+  # fk-d0ioj2 review fk-9oigyg LOW-4 (regraded BLOCKING, low-batch regrade
+  # 2026-10-10): this fetch's exit code used to be discarded outright. A
+  # transient fetch failure right when a root's anchor first drifts would
+  # compute AHEAD off stale local refs; if that happened to read as "0
+  # ahead," the root got marked `.anchor_done` — a one-shot, never-rechecked
+  # marker per this check's own design — and this root's anchor would never
+  # be looked at again. Skip this tick's AHEAD computation on a failed fetch
+  # instead, leaving `.anchor_done` unset so the next sweep retries against
+  # fresh refs.
+  if ! cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" git -C "$WT" fetch origin --quiet >/dev/null 2>&1; then
+    echo "con-voyage-marshal-formula-sweep: ANCHOR ${root} fetch failed, retrying next sweep" >&2
+    continue
+  fi
 
   AHEAD="$(git -C "$WT" rev-list --count origin/main..HEAD 2>/dev/null || echo 0)"
   case "$AHEAD" in *[!0-9]*|'') AHEAD=0 ;; esac
