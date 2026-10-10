@@ -1622,6 +1622,22 @@ else
 fi
 unset STUB_BDLIST_SWEEP_JSON_1
 
+start_case "cv_close_workflow_root: a gc.kind=ralph descendant (graph.v2's loop-controller kind) closes before plain lane beads in the same pass (review fk-sku8km BLOCKING-1: CONTROL_KINDS previously omitted ralph)"
+export STUB_BDSHOW_JSON_fk_root5b='{"id":"fk-root5b","status":"open","metadata":{},"dependencies":[]}'
+export STUB_BDLIST_SWEEP_JSON_1='[{"id":"fk-lane-c","metadata":{}},{"id":"fk-ralphctl","metadata":{"gc.kind":"ralph"}},{"id":"fk-lane-d","metadata":{}}]'
+rm -f "$STUB_SWEEP_COUNTER_FILE"
+: > "$GC_LOG"
+cv_close_workflow_root "fk-root5b" "test teardown"
+ralph_line="$(grep -nE 'bd close fk-ralphctl ' "$GC_LOG" | head -1 | cut -d: -f1)"
+lane_line="$(grep -nE 'bd close fk-lane-[cd] ' "$GC_LOG" | head -1 | cut -d: -f1)"
+if [ -n "$ralph_line" ] && [ -n "$lane_line" ] && [ "$ralph_line" -lt "$lane_line" ]; then
+  echo "  PASS: the gc.kind=ralph descendant (fk-ralphctl) closes before any plain lane descendant in the same pass"
+else
+  echo "  FAIL: expected the ralph descendant to close first (ralph=${ralph_line:-<missing>}, lane=${lane_line:-<missing>})" >&2
+  FAILURES=$((FAILURES+1))
+fi
+unset STUB_BDLIST_SWEEP_JSON_1
+
 start_case "cv_close_workflow_root: root already closed -> idempotent no-op on the root, descendants still swept"
 export STUB_BDSHOW_JSON_fk_root2='{"id":"fk-root2","status":"closed","metadata":{},"dependencies":[]}'
 export STUB_BDLIST_SWEEP_JSON_1='[{"id":"fk-lane3","metadata":{}}]'
