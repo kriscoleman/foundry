@@ -47,6 +47,18 @@ while :; do
     *) break ;;
   esac
 done
+if [ "${args[$i]:-}" = "rig" ] && [ "${args[$((i+1))]:-}" = "list" ]; then
+  # fk-39mg5k/fk-gvnoof BLOCKING-1 follow-up: cv_close_workflow_root now
+  # resolves the owning rig via `gc rig list --json` before trusting any
+  # descendant-sweep `bd list` result (an unresolved rig means the sweep
+  # would query the wrong store and is treated as not-converged). This
+  # suite's test ids all use the real "fk" prefix, so stub a resolvable rig
+  # the same shape the real `gc rig list --json` returns, matching
+  # production rather than exercising the (separately tested, in
+  # con-voyage-lib.test.sh) unresolved-rig fail-closed path.
+  printf '%s' '{"rigs":[{"name":"foundry-kc","prefix":"fk"}]}'
+  exit 0
+fi
 if [ "${args[$i]:-}" = "bd" ] && [ "${args[$((i+1))]:-}" = "show" ]; then
   id="${args[$((i+2))]:-}"
   var="STUB_BDSHOW_JSON_${id//-/_}"
