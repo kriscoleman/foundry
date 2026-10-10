@@ -77,8 +77,44 @@ actions (AC3) without losing the audit trail — it still reaches a human,
 just inside this round's one comment instead of as its own.
 
 ```bash
-CV_DEFERRED_STATUS=""
+# review fk-drbqfj BLOCKING-1 (simplicity, iteration 4): each fenced ```bash```
+# block in a con-voyage step .md executes as its own independent shell — a
+# variable assigned in an earlier fence (CV_LIB/FINALIZE_KEY/ROOT_ID from
+# "Resolve this run's inputs" above) does NOT survive into this one. Re-derive
+# every one of them here rather than reusing names from the earlier fence,
+# the same remedy already applied elsewhere in this pack
+# (main.apply-review-findings.md).
+GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
+ROOT_ID="${GC_ROOT_BEAD_ID:-}"
+if [ -z "$ROOT_ID" ]; then
+  ROOT_ID="$(gc bd show "$GC_BEAD_ID" --json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    d = d[0] if isinstance(d, list) else d
+except Exception:
+    d = {}
+print((d.get('metadata') or {}).get('gc.root_bead_id') or '')
+" 2>/dev/null)"
+fi
+[ -n "$ROOT_ID" ] || ROOT_ID="$GC_BEAD_ID"
+
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
+
+FINALIZE_KEY=""
+CV_STATE_DIR=""
 if [ -n "$CV_LIB" ]; then
+  FINALIZE_KEY="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.var.finalize_key)"
+  CV_STATE_DIR="$(source "$CV_LIB" && cv_default_state_dir)"
+fi
+[ -n "${CV_STATE_DIR:-}" ] || CV_STATE_DIR="${GC_CITY:-.}/.gc/cv-pr-watch"
+
+CV_DEFERRED_STATUS=""
+if [ -n "$CV_LIB" ] && [ -n "$FINALIZE_KEY" ]; then
   CV_DEFERRED_STATUS="$(export CV_STATE_DIR; source "$CV_LIB" && cv_defer_status_read_and_clear "$FINALIZE_KEY")"
 fi
 
