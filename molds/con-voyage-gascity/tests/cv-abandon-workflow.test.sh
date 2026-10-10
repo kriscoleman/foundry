@@ -64,6 +64,12 @@ if [ "${args[$i]:-}" = "bd" ] && [ "${args[$((i+1))]:-}" = "blocked" ]; then
   exit 0
 fi
 if [ "${args[$i]:-}" = "bd" ] && [ "${args[$((i+1))]:-}" = "list" ]; then
+  # fk-tj3bih BLOCKING-2: simulates the descendant-listing call itself
+  # failing (exit 1, nothing on stdout) rather than succeeding with a
+  # genuinely empty/non-empty result.
+  if [ "${STUB_BDLIST_FAIL:-0}" = "1" ]; then
+    exit 1
+  fi
   printf '%s' "${STUB_BDPINNED_JSON:-[]}"
   exit 0
 fi
@@ -125,6 +131,23 @@ case "$out" in
   *) fail "expected stderr to report the still-open descendant(s); got: ${out}" ;;
 esac
 unset STUB_BDPINNED_JSON STUB_BDCLOSE_FAIL_fk_abstucklane
+
+start_case "cv-abandon-workflow.sh (fk-tj3bih BLOCKING-2): a failed descendant listing is never reported as 'fully torn down'"
+export STUB_BDSHOW_JSON_fk_ablistfail='{"id":"fk-ablistfail","status":"open","metadata":{},"dependencies":[]}'
+export STUB_BDLIST_FAIL=1
+: > "$GC_LOG"
+out="$(GC="${STUBDIR}/gc" STUB_GC_LOG="$GC_LOG" "$SCRIPT" "fk-ablistfail" 2>&1)"
+rc=$?
+if [ "$rc" -ne 0 ]; then
+  pass "a failed descendant listing surfaces as a non-zero exit, not a silent 'fully torn down'"
+else
+  fail "expected a non-zero exit when the descendant listing itself fails"
+fi
+case "$out" in
+  *"could not list descendants"*"NOT confirmed fully torn down"*) pass "stderr reports the listing failure distinctly from a real open-descendant count" ;;
+  *) fail "expected stderr to report the listing failure distinctly; got: ${out}" ;;
+esac
+unset STUB_BDLIST_FAIL
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
