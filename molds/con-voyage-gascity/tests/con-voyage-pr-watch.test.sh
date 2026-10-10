@@ -200,6 +200,14 @@ JSON
       #     question immediately closed by markdown emphasis before the HTML
       #     marker (okay?** <!--...-->) -- must still win over the ack
       #     marker.
+      #   thread 11 (fk-dh3mkt review iteration-6, BLOCKING-2) — a genuine
+      #     question ending in a Unicode curly/smart closing quote
+      #     (okay?” <!--...-->) -- must still win over the ack marker.
+      #   threads 12-19 (fk-dh3mkt review iteration-6, BLOCKING-1) — a genuine
+      #     question immediately closed by each of the eight remaining
+      #     untested lookahead alternatives from the iteration-5 widening
+      #     (`.`, `,`, `;`, `:`, `!`, `_`, `~`, and a backtick) -- each must
+      #     still win over the ack marker.
       if [ "${STUB_GQL_THREADS_DOOMER_ACK_QMARK:-0}" = "1" ]; then
         cat <<'JSON'
 {"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[
@@ -226,6 +234,42 @@ JSON
 {"comments":{"nodes":[
   {"id":"PRRC_t10_agent","databaseId":557019,"path":"src/tenth.go","line":1,"author":{"login":"kriscoleman"},"body":"🤖 **Automated con-voyage agent** (foundry-kc/code-review): Fixed per finding t10-break."},
   {"id":"PRRC_t10_question","databaseId":557020,"path":"src/tenth.go","line":1,"author":{"login":"doomer-ai[bot]"},"body":"Does this still hold up to scrutiny?** <!-- adversary-feedback-ack:v1 feedback=t10-ack -->"}
+]}},
+{"comments":{"nodes":[
+  {"id":"PRRC_t11_agent","databaseId":557021,"path":"src/eleventh.go","line":1,"author":{"login":"kriscoleman"},"body":"🤖 **Automated con-voyage agent** (foundry-kc/code-review): Fixed per finding t11-break."},
+  {"id":"PRRC_t11_question","databaseId":557022,"path":"src/eleventh.go","line":1,"author":{"login":"doomer-ai[bot]"},"body":"Is this really fine?” <!-- adversary-feedback-ack:v1 feedback=t11-ack -->"}
+]}},
+{"comments":{"nodes":[
+  {"id":"PRRC_t12_agent","databaseId":557023,"path":"src/twelfth.go","line":1,"author":{"login":"kriscoleman"},"body":"🤖 **Automated con-voyage agent** (foundry-kc/code-review): Fixed per finding t12-break."},
+  {"id":"PRRC_t12_question","databaseId":557024,"path":"src/twelfth.go","line":1,"author":{"login":"doomer-ai[bot]"},"body":"Does this check out?. <!-- adversary-feedback-ack:v1 feedback=t12-ack -->"}
+]}},
+{"comments":{"nodes":[
+  {"id":"PRRC_t13_agent","databaseId":557025,"path":"src/thirteenth.go","line":1,"author":{"login":"kriscoleman"},"body":"🤖 **Automated con-voyage agent** (foundry-kc/code-review): Fixed per finding t13-break."},
+  {"id":"PRRC_t13_question","databaseId":557026,"path":"src/thirteenth.go","line":1,"author":{"login":"doomer-ai[bot]"},"body":"Does this check out?, <!-- adversary-feedback-ack:v1 feedback=t13-ack -->"}
+]}},
+{"comments":{"nodes":[
+  {"id":"PRRC_t14_agent","databaseId":557027,"path":"src/fourteenth.go","line":1,"author":{"login":"kriscoleman"},"body":"🤖 **Automated con-voyage agent** (foundry-kc/code-review): Fixed per finding t14-break."},
+  {"id":"PRRC_t14_question","databaseId":557028,"path":"src/fourteenth.go","line":1,"author":{"login":"doomer-ai[bot]"},"body":"Does this check out?; <!-- adversary-feedback-ack:v1 feedback=t14-ack -->"}
+]}},
+{"comments":{"nodes":[
+  {"id":"PRRC_t15_agent","databaseId":557029,"path":"src/fifteenth.go","line":1,"author":{"login":"kriscoleman"},"body":"🤖 **Automated con-voyage agent** (foundry-kc/code-review): Fixed per finding t15-break."},
+  {"id":"PRRC_t15_question","databaseId":557030,"path":"src/fifteenth.go","line":1,"author":{"login":"doomer-ai[bot]"},"body":"Does this check out?: <!-- adversary-feedback-ack:v1 feedback=t15-ack -->"}
+]}},
+{"comments":{"nodes":[
+  {"id":"PRRC_t16_agent","databaseId":557031,"path":"src/sixteenth.go","line":1,"author":{"login":"kriscoleman"},"body":"🤖 **Automated con-voyage agent** (foundry-kc/code-review): Fixed per finding t16-break."},
+  {"id":"PRRC_t16_question","databaseId":557032,"path":"src/sixteenth.go","line":1,"author":{"login":"doomer-ai[bot]"},"body":"Does this check out?! <!-- adversary-feedback-ack:v1 feedback=t16-ack -->"}
+]}},
+{"comments":{"nodes":[
+  {"id":"PRRC_t17_agent","databaseId":557033,"path":"src/seventeenth.go","line":1,"author":{"login":"kriscoleman"},"body":"🤖 **Automated con-voyage agent** (foundry-kc/code-review): Fixed per finding t17-break."},
+  {"id":"PRRC_t17_question","databaseId":557034,"path":"src/seventeenth.go","line":1,"author":{"login":"doomer-ai[bot]"},"body":"Does this check out?_ <!-- adversary-feedback-ack:v1 feedback=t17-ack -->"}
+]}},
+{"comments":{"nodes":[
+  {"id":"PRRC_t18_agent","databaseId":557035,"path":"src/eighteenth.go","line":1,"author":{"login":"kriscoleman"},"body":"🤖 **Automated con-voyage agent** (foundry-kc/code-review): Fixed per finding t18-break."},
+  {"id":"PRRC_t18_question","databaseId":557036,"path":"src/eighteenth.go","line":1,"author":{"login":"doomer-ai[bot]"},"body":"Does this check out?~ <!-- adversary-feedback-ack:v1 feedback=t18-ack -->"}
+]}},
+{"comments":{"nodes":[
+  {"id":"PRRC_t19_agent","databaseId":557037,"path":"src/nineteenth.go","line":1,"author":{"login":"kriscoleman"},"body":"🤖 **Automated con-voyage agent** (foundry-kc/code-review): Fixed per finding t19-break."},
+  {"id":"PRRC_t19_question","databaseId":557038,"path":"src/nineteenth.go","line":1,"author":{"login":"doomer-ai[bot]"},"body":"Does this check out?` <!-- adversary-feedback-ack:v1 feedback=t19-ack -->"}
 ]}}
 ]}}}}}
 JSON
@@ -4031,6 +4075,77 @@ else
   pass "thread 10: a genuine question closed by markdown emphasis before the ack marker still wins over it"
 fi
 assert_log_count "$GC_LOG" 'Does this still hold up to scrutiny' 1 "thread 10: the genuine question still routes"
+
+if printf '%s' "$OUT" | grep -qE 'id=PRRC_t11_question .*reason=doomer_ack_thread_closed'; then
+  fail "thread 11: a genuine question ending in a Unicode curly closing quote still wins over the ack marker"
+else
+  pass "thread 11: a genuine question ending in a Unicode curly closing quote still wins over the ack marker"
+fi
+assert_log_count "$GC_LOG" 'Is this really fine' 1 "thread 11: the genuine question still routes"
+
+if printf '%s' "$OUT" | grep -qE 'id=PRRC_t12_question .*reason=doomer_ack_thread_closed'; then
+  fail "thread 12: a genuine question immediately closed by '.' before the ack marker still wins over it"
+else
+  pass "thread 12: a genuine question immediately closed by '.' before the ack marker still wins over it"
+fi
+# fk-dh3mkt review iteration-6 BLOCKING-1 follow-up: this single run routes
+# 13 genuine-question threads (t7-t19) through ONE batched `gc sling`
+# message, which only prints the first 5 comment bodies verbatim and
+# summarizes the rest as "... and N more comment(s)" -- so a body-substring
+# count assertion here would false-fail on the truncated ones even though
+# they routed correctly. The idempotency key on that same sling call lists
+# every routed node id regardless of truncation, so assert against that
+# instead of the (intentionally capped) human-readable body text.
+assert_log_count "$GC_LOG" 'nodeids-.*PRRC_t12_question' 1 "thread 12: routed (present in the sling idempotency key)"
+assert_log_count "$GC_LOG" 'nodeids-.*PRRC_t13_question' 1 "thread 13: routed (present in the sling idempotency key)"
+assert_log_count "$GC_LOG" 'nodeids-.*PRRC_t14_question' 1 "thread 14: routed (present in the sling idempotency key)"
+assert_log_count "$GC_LOG" 'nodeids-.*PRRC_t15_question' 1 "thread 15: routed (present in the sling idempotency key)"
+assert_log_count "$GC_LOG" 'nodeids-.*PRRC_t16_question' 1 "thread 16: routed (present in the sling idempotency key)"
+assert_log_count "$GC_LOG" 'nodeids-.*PRRC_t17_question' 1 "thread 17: routed (present in the sling idempotency key)"
+assert_log_count "$GC_LOG" 'nodeids-.*PRRC_t18_question' 1 "thread 18: routed (present in the sling idempotency key)"
+assert_log_count "$GC_LOG" 'nodeids-.*PRRC_t19_question' 1 "thread 19: routed (present in the sling idempotency key)"
+
+if printf '%s' "$OUT" | grep -qE 'id=PRRC_t13_question .*reason=doomer_ack_thread_closed'; then
+  fail "thread 13: a genuine question immediately closed by ',' before the ack marker still wins over it"
+else
+  pass "thread 13: a genuine question immediately closed by ',' before the ack marker still wins over it"
+fi
+
+if printf '%s' "$OUT" | grep -qE 'id=PRRC_t14_question .*reason=doomer_ack_thread_closed'; then
+  fail "thread 14: a genuine question immediately closed by ';' before the ack marker still wins over it"
+else
+  pass "thread 14: a genuine question immediately closed by ';' before the ack marker still wins over it"
+fi
+
+if printf '%s' "$OUT" | grep -qE 'id=PRRC_t15_question .*reason=doomer_ack_thread_closed'; then
+  fail "thread 15: a genuine question immediately closed by ':' before the ack marker still wins over it"
+else
+  pass "thread 15: a genuine question immediately closed by ':' before the ack marker still wins over it"
+fi
+
+if printf '%s' "$OUT" | grep -qE 'id=PRRC_t16_question .*reason=doomer_ack_thread_closed'; then
+  fail "thread 16: a genuine question immediately closed by '!' before the ack marker still wins over it"
+else
+  pass "thread 16: a genuine question immediately closed by '!' before the ack marker still wins over it"
+fi
+
+if printf '%s' "$OUT" | grep -qE 'id=PRRC_t17_question .*reason=doomer_ack_thread_closed'; then
+  fail "thread 17: a genuine question immediately closed by '_' before the ack marker still wins over it"
+else
+  pass "thread 17: a genuine question immediately closed by '_' before the ack marker still wins over it"
+fi
+
+if printf '%s' "$OUT" | grep -qE 'id=PRRC_t18_question .*reason=doomer_ack_thread_closed'; then
+  fail "thread 18: a genuine question immediately closed by '~' before the ack marker still wins over it"
+else
+  pass "thread 18: a genuine question immediately closed by '~' before the ack marker still wins over it"
+fi
+
+if printf '%s' "$OUT" | grep -qE 'id=PRRC_t19_question .*reason=doomer_ack_thread_closed'; then
+  fail "thread 19: a genuine question immediately closed by a backtick before the ack marker still wins over it"
+else
+  pass "thread 19: a genuine question immediately closed by a backtick before the ack marker still wins over it"
+fi
 
 # ===========================================================================
 # CASE 68 (fk-dh3mkt review, mayor reopen — regraded LOW-4): the per-PR

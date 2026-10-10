@@ -1626,18 +1626,19 @@ def has_adversary_ack_marker(body):
     return bool(ADVERSARY_ACK_MARKER_RE.search(body or ""))
 
 # fk-dh3mkt review (mayor reopen, regraded LOW-3; widened fk-yztb54 iteration-3
-# BLOCKING-2; widened again iteration-5 BLOCKING-1): a bare "?" in body"
-# matched a "?" inside a URL query string, a code span, or optional-chaining
-# syntax (y?.foo) just as readily as a real question -- none of those should
-# ever win the adversary-ack "genuine question" gate below. A real
-# sentence-ending "?" is followed only by whitespace, a closing
-# quote/paren/bracket, ordinary terminal/markdown punctuation, or
-# end-of-string; a "?" embedded in foo?bar=1 or a backtick code span is
-# followed by more non-space token characters instead. Earlier cuts of this
-# lookahead under-matched real Doomer comment shapes: a question ending in a
-# closing quote (straight or curly), a question immediately followed by the
-# HTML ack marker with no separating whitespace, and -- since Doomer comments
-# are markdown -- a question immediately closed by emphasis markup
+# BLOCKING-2; widened again iteration-5 BLOCKING-1; widened again iteration-6
+# BLOCKING-2): a bare "?" in body" matched a "?" inside a URL query string, a
+# code span, or optional-chaining syntax (y?.foo) just as readily as a real
+# question -- none of those should ever win the adversary-ack "genuine
+# question" gate below. A real sentence-ending "?" is followed only by
+# whitespace, a closing quote/paren/bracket, ordinary terminal/markdown
+# punctuation, or end-of-string; a "?" embedded in foo?bar=1 or a backtick
+# code span is followed by more non-space token characters instead. Earlier
+# cuts of this lookahead under-matched real Doomer comment shapes: a question
+# ending in a closing quote (straight or curly -- "\x22"/"\x27" or
+# "“”‘’"), a question immediately followed by the HTML ack
+# marker with no separating whitespace, and -- since Doomer comments are
+# markdown -- a question immediately closed by emphasis markup
 # (`**`/`*`/`_`/`~`) or ordinary terminal punctuation (`.`, `,`, `;`, `:`,
 # `!`) or a backtick, e.g. "Does this still look okay?** <!--
 # adversary-feedback-ack:v1 --\>". All of these wrongly read as "not a
@@ -1649,7 +1650,9 @@ def has_adversary_ack_marker(body):
 # toward routing (a "?" this misses as a question falls through to the
 # pre-existing FINDING_MARKER_RE/bot_ack path when one exists) -- only the
 # classification of what counts as a "genuine question" gets tighter here.
-QUESTION_MARK_RE = re.compile(r"\?(?=\s|[)\]\x22\x27<.,;:!*_~\x60]|$)")
+QUESTION_MARK_RE = re.compile(
+    r"\?(?=\s|[)\]\x22\x27<.,;:!*_~\x60“”‘’]|$)"
+)
 
 def is_question(body):
     return bool(QUESTION_MARK_RE.search(body or ""))
