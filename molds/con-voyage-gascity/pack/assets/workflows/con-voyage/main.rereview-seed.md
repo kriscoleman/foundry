@@ -141,8 +141,40 @@ if [ -n "$SEED_FAIL" ]; then
     [ "$MAIL_RC" -eq 0 ] || echo "con-voyage rereview-seed: mail to mayor on seed failure failed/timed out: ${MAIL_ERR_TEXT} — mayor NOT confirmed notified" >&2
     source "$CV_LIB" && cv_close_workflow_root "$ROOT_ID" "con-voyage rereview-seed failed (${CLAIMED_BEAD_ID}): ${SEED_FAIL}; no review lanes dispatched"
   else
-    echo "con-voyage rereview-seed: con-voyage-lib.sh not resolved — cannot mail the mayor or run cv_close_workflow_root; falling back to a direct bd close sweep of open workflow-root descendants" >&2
-    DESC_IDS="$(bd list --metadata "gc.root_bead_id=${ROOT_ID}" --status open,in_progress --json 2>/dev/null | python3 -c "
+    echo "con-voyage rereview-seed: con-voyage-lib.sh not resolved — cannot mail the mayor or run cv_close_workflow_root; falling back to a direct bd close sweep of open workflow-root descendants, with a best-effort direct mayor mail alongside it" >&2
+
+    # cv_with_timeout itself lives in con-voyage-lib.sh, which just failed to
+    # resolve on this path — reimplement the same portable background+kill
+    # bound inline rather than calling into code we established is
+    # unavailable, so this fallback's own `bd`/`gc` calls can't hang forever
+    # either (the primary path's calls above are all cv_with_timeout-bounded;
+    # this path had none).
+    _cv_fallback_with_timeout() {
+      local secs="$1"; shift
+      "$@" &
+      local pid=$!
+      local waited=0
+      while kill -0 "$pid" 2>/dev/null; do
+        if [ "$waited" -ge "$secs" ]; then
+          kill "$pid" 2>/dev/null
+          wait "$pid" 2>/dev/null
+          return 124
+        fi
+        sleep 1
+        waited=$((waited + 1))
+      done
+      wait "$pid"
+    }
+
+    MAIL_ERR_FILE="$(mktemp)"
+    _cv_fallback_with_timeout 30 gc mail send mayor -s "con-voyage rereview-seed failed: ${ROOT_ID}" -m "con-voyage rereview-seed (${CLAIMED_BEAD_ID}) could not attach a worktree for ${BRANCH}: ${SEED_FAIL}. con-voyage-lib.sh was unresolved on this path, so cv_close_workflow_root was unavailable — falling back to a direct descendant sweep instead." --json >/dev/null 2>"$MAIL_ERR_FILE"
+    MAIL_RC=$?
+    MAIL_ERR_TEXT="$(cat "$MAIL_ERR_FILE" 2>/dev/null)"
+    rm -f "$MAIL_ERR_FILE"
+    [ "$MAIL_RC" -eq 0 ] || echo "con-voyage rereview-seed: mail to mayor on seed failure (fallback path) failed/timed out: ${MAIL_ERR_TEXT} — mayor NOT confirmed notified" >&2
+
+    BD_LIST_ERR_FILE="$(mktemp)"
+    DESC_IDS="$(_cv_fallback_with_timeout 30 bd list --metadata-field "gc.root_bead_id=${ROOT_ID}" --status open,in_progress --json 2>"$BD_LIST_ERR_FILE" | python3 -c "
 import json, sys
 try:
     items = json.load(sys.stdin)
@@ -152,11 +184,14 @@ for it in items:
     bid = it.get('id')
     if bid:
         print(bid)
-" 2>/dev/null)"
+")"
+    BD_LIST_ERR_TEXT="$(cat "$BD_LIST_ERR_FILE" 2>/dev/null)"
+    rm -f "$BD_LIST_ERR_FILE"
+    [ -z "$BD_LIST_ERR_TEXT" ] || echo "con-voyage rereview-seed: bd list during fallback sweep reported: ${BD_LIST_ERR_TEXT}" >&2
     if [ -n "$DESC_IDS" ]; then
       while IFS= read -r DESC_ID; do
         [ -n "$DESC_ID" ] || continue
-        bd close "$DESC_ID" --reason "con-voyage rereview-seed failed (${CLAIMED_BEAD_ID}): ${SEED_FAIL}; sweeping descendant (con-voyage-lib.sh unresolved, cv_close_workflow_root unavailable)" \
+        _cv_fallback_with_timeout 30 bd close "$DESC_ID" --reason "con-voyage rereview-seed failed (${CLAIMED_BEAD_ID}): ${SEED_FAIL}; sweeping descendant (con-voyage-lib.sh unresolved, cv_close_workflow_root unavailable)" \
           || echo "con-voyage rereview-seed: WARNING: could not close descendant ${DESC_ID} during fallback sweep" >&2
       done <<< "$DESC_IDS"
     fi
