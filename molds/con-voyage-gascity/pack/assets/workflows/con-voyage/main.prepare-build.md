@@ -69,6 +69,16 @@ same two seed calls `main.setup-con-voyage-review.md` makes for the
 review-loop/finalize gates:
 
 ```bash
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
+if [ -z "$CV_LIB" ]; then
+  echo "con-voyage-lib.sh not found — the con-voyage pack may not be imported correctly on this rig" >&2
+  exit 1
+fi
+
 RIG_ROOT="$(source "$CV_LIB" && cv_default_rig_root)"
 [ -n "${RIG_ROOT:-}" ] || RIG_ROOT="${GC_CITY:-.}"
 
