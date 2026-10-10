@@ -166,6 +166,49 @@ assert_not_contains "$LAST_LOG" "mail send" "no repeat mail for the same unresol
 unset STUB_SESSIONS_JSON STUB_PEEK_rc_impl1
 
 # ---------------------------------------------------------------------------
+# fk-i1yas2 BLOCKING-2: the full recover -> re-flag cycle, not just the first
+# flag and the same-episode dedup, is the entire design rationale for this
+# order's per-session flag file (see header comment) — exercise all three
+# ticks so a regression that leaves a stale flagged_for file after recovery
+# (silently suppressing every future alert for that session) fails CI.
+start_case "QUIET AGENT full cycle: flagged -> recovered -> quiet again -> flagged a second time"
+rm -rf "${SANDBOX}/state"
+
+export STUB_SESSIONS_JSON='{"sessions":[{"id":"rc-cycle1","template":"foundry-kc/gc.implementation-worker","last_active":"'"$(old_ts 45)"'"}]}'
+export STUB_PEEK_rc_cycle1="working normally"
+run_script
+assert_eq "0" "$LAST_RC" "tick 1 exits 0"
+assert_contains "$LAST_LOG" "mail send mayor" "tick 1: first quiet episode is flagged"
+
+export STUB_SESSIONS_JSON='{"sessions":[{"id":"rc-cycle1","template":"foundry-kc/gc.implementation-worker","last_active":"'"$(recent_ts)"'"}]}'
+run_script
+assert_eq "0" "$LAST_RC" "tick 2 exits 0"
+assert_not_contains "$LAST_LOG" "mail send" "tick 2: recovery (recent last_active) clears the flag, sends no mail"
+
+export STUB_SESSIONS_JSON='{"sessions":[{"id":"rc-cycle1","template":"foundry-kc/gc.implementation-worker","last_active":"'"$(old_ts 50)"'"}]}'
+run_script
+assert_eq "0" "$LAST_RC" "tick 3 exits 0"
+assert_contains "$LAST_LOG" "mail send mayor" "tick 3: a second, distinct quiet episode is flagged again after recovery"
+unset STUB_SESSIONS_JSON STUB_PEEK_rc_cycle1
+
+# ---------------------------------------------------------------------------
+# fk-i1yas2 BLOCKING-4: a failed digest-mail send must not retire the flag
+# file for the quiet episode it was reporting, or the next tick sees
+# last_active unchanged and silently drops the signal forever.
+start_case "a failed digest mail does not retire the quiet-agent flag"
+rm -rf "${SANDBOX}/state"
+export STUB_SESSIONS_JSON='{"sessions":[{"id":"rc-failmail1","template":"foundry-kc/gc.implementation-worker","last_active":"'"$(old_ts 45)"'"}]}'
+export STUB_PEEK_rc_failmail1="working normally"
+export STUB_MAIL_SEND_FAIL=1
+run_script
+assert_eq "0" "$LAST_RC" "tick 1 (mail fails) still exits 0"
+unset STUB_MAIL_SEND_FAIL
+
+run_script
+assert_contains "$LAST_LOG" "mail send mayor" "tick 2: the still-unreported quiet episode is re-flagged after the earlier mail failure"
+unset STUB_SESSIONS_JSON STUB_PEEK_rc_failmail1
+
+# ---------------------------------------------------------------------------
 start_case "a recently-active review session is not flagged"
 export STUB_SESSIONS_JSON='{"sessions":[{"id":"rc-rev1","template":"vandoor/con-voyage.cv-security-reviewer","last_active":"'"$(recent_ts)"'"}]}'
 export STUB_PEEK_rc_rev1="working normally"

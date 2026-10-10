@@ -158,6 +158,44 @@ assert_contains "$LAST_LOG" "mail send mayor" "a digest mail was sent"
 unset STUB_BDLIST_JSON STUB_BDSHOW_JSON_fk_rootopen
 
 # ---------------------------------------------------------------------------
+# fk-i1yas2 BLOCKING-1: the dedup key must use a stable class token, not one
+# with the volatile ${age} embedded — otherwise a bead that stays in the same
+# STUCK-READY class forever gets re-mailed on every tick as age keeps growing.
+start_case "STUCK-READY: an unchanged-class bead is NOT re-flagged as age keeps growing"
+export STUB_BDLIST_JSON='[{"id":"fk-ready2","status":"open","updated_at":"'"$(old_ts 25)"'","metadata":{"gc.root_bead_id":"fk-rootopen1b"}}]'
+export STUB_BDSHOW_JSON_fk_rootopen1b='{"id":"fk-rootopen1b","status":"in_progress"}'
+run_script
+assert_eq "0" "$LAST_RC" "tick 1 exits 0"
+assert_contains "$LAST_LOG" "mail send mayor" "tick 1: first sighting of STUCK-READY is flagged"
+
+export STUB_BDLIST_JSON='[{"id":"fk-ready2","status":"open","updated_at":"'"$(old_ts 30)"'","metadata":{"gc.root_bead_id":"fk-rootopen1b"}}]'
+run_script
+assert_eq "0" "$LAST_RC" "tick 2 exits 0"
+assert_not_contains "$LAST_LOG" "mail send" "tick 2: same still-stuck bead, just older, sends no mail"
+
+export STUB_BDLIST_JSON='[{"id":"fk-ready2","status":"open","updated_at":"'"$(old_ts 35)"'","metadata":{"gc.root_bead_id":"fk-rootopen1b"}}]'
+run_script
+assert_eq "0" "$LAST_RC" "tick 3 exits 0"
+assert_not_contains "$LAST_LOG" "mail send" "tick 3: still unchanged class, still no mail"
+unset STUB_BDLIST_JSON STUB_BDSHOW_JSON_fk_rootopen1b
+
+# ---------------------------------------------------------------------------
+# fk-i1yas2 BLOCKING-4: a failed digest-mail send must not retire the
+# persisted state for the flagged bead it was reporting, or the next tick
+# sees an unchanged `cur` and silently drops the signal forever.
+start_case "a failed digest mail does not retire a flagged bead's state"
+export STUB_BDLIST_JSON='[{"id":"fk-failmail1","status":"open","updated_at":"'"$(old_ts 25)"'","metadata":{"gc.root_bead_id":"fk-rootfailmail"}}]'
+export STUB_BDSHOW_JSON_fk_rootfailmail='{"id":"fk-rootfailmail","status":"in_progress"}'
+export STUB_MAIL_SEND_FAIL=1
+run_script
+assert_eq "0" "$LAST_RC" "tick 1 (mail fails) still exits 0"
+unset STUB_MAIL_SEND_FAIL
+
+run_script
+assert_contains "$LAST_LOG" "mail send mayor" "tick 2: the still-unreported condition is re-flagged after the earlier mail failure"
+unset STUB_BDLIST_JSON STUB_BDSHOW_JSON_fk_rootfailmail
+
+# ---------------------------------------------------------------------------
 start_case "STRANDED-TEARDOWN: a stale open teardown bead is flagged"
 export STUB_BDLIST_JSON='[{"id":"fk-td1","status":"open","updated_at":"'"$(old_ts 20)"'","metadata":{"gc.root_bead_id":"fk-rootopen2","gc.scope_role":"teardown"}}]'
 export STUB_BDSHOW_JSON_fk_rootopen2='{"id":"fk-rootopen2","status":"in_progress"}'

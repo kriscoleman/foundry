@@ -201,6 +201,67 @@ assert_eq "0" "$LAST_RC" "exits 0"
 assert_not_contains "$LAST_LOG" "mail send" "second tick sends no mail for an already-checked anchor"
 unset STUB_ROOTS_JSON STUB_STEPS_JSON STUB_BDSHOW_JSON_fk_root3
 
+# ---------------------------------------------------------------------------
+# fk-i1yas2 BLOCKING-3: the BIG-DELETION path depends on parsing
+# `git diff --shortstat` pluralization ("1 deletion(-)" vs "2 deletions(-)")
+# — only the detached-HEAD path had coverage before this. Reuse the same
+# bare-remote/clone harness with a non-detached branch and a deletion larger
+# than a low CV_MARSHAL_ANCHOR_BIG_DELETION_LINES threshold.
+start_case "ANCHOR: a non-detached branch with a big deletion is flagged BIG-DELETION"
+GIT_WT_DEL="${SANDBOX}/anchor-wt-del"
+GIT_REMOTE_DEL="${SANDBOX}/anchor-remote-del.git"
+git init --bare -q "$GIT_REMOTE_DEL"
+git clone -q "$GIT_REMOTE_DEL" "$GIT_WT_DEL"
+git -C "$GIT_WT_DEL" config user.email "test@example.com"
+git -C "$GIT_WT_DEL" config user.name "Test"
+printf 'line1\nline2\nline3\nline4\nline5\nline6\n' > "$GIT_WT_DEL/file.txt"
+git -C "$GIT_WT_DEL" add file.txt
+git -C "$GIT_WT_DEL" commit -q -m "initial"
+git -C "$GIT_WT_DEL" push -q origin HEAD:main
+git -C "$GIT_WT_DEL" checkout -q -b feature-branch
+: > "$GIT_WT_DEL/file.txt"
+git -C "$GIT_WT_DEL" commit -q -am "delete everything"
+
+export STUB_ROOTS_JSON='[{"id":"fk-root-del"}]'
+export STUB_STEPS_JSON='[]'
+export STUB_BDSHOW_JSON_fk_root_del='{"id":"fk-root-del","metadata":{"gc.build.source_anchor_work_dir":"'"$GIT_WT_DEL"'"}}'
+rm -rf "${SANDBOX}/state"
+BIG_DEL_LOG="${SANDBOX}/bigdel-stdout.log"
+(
+  export PATH="${STUBDIR}:${PATH}"
+  export STUB_GC_LOG="${SANDBOX}/gc.log"
+  export GC_RIG_ROOT="$RIG_ROOT"
+  export CV_STATE_DIR="${SANDBOX}/state"
+  export CV_LENS_STORE_TIMEOUT_SECONDS=5
+  export CV_MARSHAL_ANCHOR_BIG_DELETION_LINES=5
+  rm -f "${SANDBOX}/gc.log"
+  bash "$SCRIPT"
+) > "$BIG_DEL_LOG" 2>&1
+LAST_RC=$?
+LAST_LOG="$(cat "${SANDBOX}/gc.log" 2>/dev/null || true)
+$(cat "$BIG_DEL_LOG" 2>/dev/null || true)"
+assert_eq "0" "$LAST_RC" "exits 0"
+assert_contains "$LAST_LOG" "mail send mayor" "a digest mail was sent for the big-deletion anchor"
+assert_contains "$LAST_LOG" "BIG-DELETION" "the digest mail call records a BIG-DELETION flag"
+unset STUB_ROOTS_JSON STUB_STEPS_JSON STUB_BDSHOW_JSON_fk_root_del
+
+# ---------------------------------------------------------------------------
+# fk-i1yas2 BLOCKING-4: a failed digest-mail send must not retire the
+# step-state or anchor-done markers for the conditions it was reporting.
+start_case "a failed digest mail does not retire step/anchor state"
+export STUB_ROOTS_JSON='[{"id":"fk-root-failmail"}]'
+export STUB_STEPS_JSON='[{"id":"fk-step-failmail","status":"open","assignee":"","metadata":{"gc.root_bead_id":"fk-root-failmail","gc.outcome":"fail","gc.failure_class":"boom"},"title":"Some step"}]'
+export STUB_BDSHOW_JSON_fk_root_failmail='{"id":"fk-root-failmail","metadata":{}}'
+export STUB_MAIL_SEND_FAIL=1
+rm -rf "${SANDBOX}/state"
+run_script
+assert_eq "0" "$LAST_RC" "tick 1 (mail fails) still exits 0"
+unset STUB_MAIL_SEND_FAIL
+
+run_script
+assert_contains "$LAST_LOG" "mail send mayor" "tick 2: the still-unreported step escalation is re-flagged after the earlier mail failure"
+unset STUB_ROOTS_JSON STUB_STEPS_JSON STUB_BDSHOW_JSON_fk_root_failmail
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "ALL CASES PASSED"

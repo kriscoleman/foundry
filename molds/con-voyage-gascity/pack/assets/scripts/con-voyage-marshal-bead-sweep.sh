@@ -155,6 +155,13 @@ add_flag() {
   fi
 }
 
+# fk-i1yas2 BLOCKING-4: state for a flagged/escalation bead is not persisted
+# here — only staged — so a digest mail send failure below leaves `cur ==
+# prev` for next tick and the still-unresolved condition is re-flagged
+# instead of silently dropped. Committed to disk only after the mail send is
+# confirmed (or there was nothing to mail).
+declare -A PENDING_STATE_WRITES=()
+
 if [ -z "${CANDIDATES_JSON// /}" ]; then
   echo "con-voyage-marshal-bead-sweep: no candidates (bd list empty or failed)"
 else
@@ -202,45 +209,61 @@ for item in data:
     fi
     root_status="${ROOT_STATUS[$root_id]}"
 
+    # classification carries the human-facing age for the flag line;
+    # classification_class is the stable token used in the dedup key below
+    # (fk-i1yas2 BLOCKING-1: embedding the volatile ${age} in the dedup key
+    # itself made `cur` differ every tick for a bead that never changes
+    # class, re-mailing the same unresolved condition forever).
     classification=""
+    classification_class=""
     if [ "$root_status" = "closed" ]; then
       classification="ORPHAN"
+      classification_class="ORPHAN"
     elif [ "$scope_role" = "teardown" ] && [ "$status" = "open" ]; then
       age="$(minutes_since_iso8601 "$updated_at")"
       if [ -n "$age" ] && [ "$age" -ge "$CV_MARSHAL_TEARDOWN_STALE_MINUTES" ]; then
         classification="STRANDED-TEARDOWN(${age}m)"
+        classification_class="STRANDED-TEARDOWN"
       fi
     elif [ "$status" = "open" ] && [ "$root_status" != "closed" ]; then
       age="$(minutes_since_iso8601 "$updated_at")"
       if [ -n "$age" ] && [ "$age" -ge "$CV_MARSHAL_READY_STALE_MINUTES" ]; then
         classification="STUCK-READY(${age}m)"
+        classification_class="STUCK-READY"
       fi
     fi
 
-    cur="${status} root=${root_id} outcome=${outcome}${failure_class:+ fail=${failure_class}}${classification:+ class=${classification}}"
+    cur="${status} root=${root_id} outcome=${outcome}${failure_class:+ fail=${failure_class}}${classification_class:+ class=${classification_class}}"
     prev="$(cat "${CV_STATE_DIR}/${bead_id}" 2>/dev/null || true)"
     if [ "$cur" != "$prev" ]; then
-      printf '%s' "$cur" > "${CV_STATE_DIR}/${bead_id}"
       if [ -n "$classification" ]; then
         add_flag "${classification}: ${bead_id} (root ${root_id}) ${status} outcome=${outcome}${failure_class:+ fail=${failure_class}}"
+        PENDING_STATE_WRITES["$bead_id"]="$cur"
       elif mayor_is_bead_escalation "$status" "$outcome" "$failure_class"; then
         add_flag "ESCALATION: ${bead_id} (root ${root_id}): ${prev:-<new>} -> ${cur}"
+        PENDING_STATE_WRITES["$bead_id"]="$cur"
       else
+        printf '%s' "$cur" > "${CV_STATE_DIR}/${bead_id}"
         echo "con-voyage-marshal-bead-sweep: ${bead_id}: ${prev:-<new>} -> ${cur}"
       fi
     fi
   done <<< "$CANDIDATES_TSV"
 fi
 
-# Mayor mail count, ported from watch-beads.sh.
+# Mayor mail count, ported from watch-beads.sh. A rising count is itself a
+# flagged condition, so its _mail baseline advance is staged exactly like a
+# bead's state (fk-i1yas2 BLOCKING-4) — only committed once the digest mail
+# below is confirmed sent.
 UNREAD="$(cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" "$GC" --city "$GC_CITY" mail count 2>/dev/null | grep -oE '[0-9]+ unread' | grep -oE '[0-9]+' || true)"
 if [ -n "$UNREAD" ]; then
   PREV_UNREAD="$(cat "${CV_STATE_DIR}/_mail" 2>/dev/null || echo 0)"
   case "$PREV_UNREAD" in *[!0-9]*|'') PREV_UNREAD=0 ;; esac
   if [ "$UNREAD" -gt "$PREV_UNREAD" ]; then
     add_flag "mayor mail: ${UNREAD} unread"
+    PENDING_STATE_WRITES["_mail"]="$UNREAD"
+  else
+    printf '%s' "$UNREAD" > "${CV_STATE_DIR}/_mail"
   fi
-  printf '%s' "$UNREAD" > "${CV_STATE_DIR}/_mail"
 fi
 
 if [ -z "$FLAGGED_LINES" ]; then
@@ -257,8 +280,13 @@ mail_out="$(cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" \
 ${FLAGGED_LINES}" \
     2>&1)"
 mail_rc=$?
-if [ "$mail_rc" -ne 0 ]; then
+if [ "$mail_rc" -eq 0 ]; then
+  for pending_key in "${!PENDING_STATE_WRITES[@]}"; do
+    printf '%s' "${PENDING_STATE_WRITES[$pending_key]}" > "${CV_STATE_DIR}/${pending_key}"
+  done
+else
   echo "con-voyage-marshal-bead-sweep: WARNING: digest mail to ${CV_MARSHAL_ESCALATE_TARGET} failed: ${mail_out}" >&2
+  echo "con-voyage-marshal-bead-sweep: WARNING: not advancing persisted state for ${#PENDING_STATE_WRITES[@]} flagged entr(y/ies) — will re-flag next tick" >&2
 fi
 
 exit 0

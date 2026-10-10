@@ -109,6 +109,13 @@ add_flag() {
   fi
 }
 
+# fk-i1yas2 BLOCKING-4: a flagged step's persisted state, and a flagged
+# anchor's one-shot "done" marker, are staged here and only committed once
+# the digest mail below is confirmed sent — a failed send must not silently
+# retire the still-unreported condition.
+declare -A PENDING_STATE_WRITES=()
+declare -A PENDING_ANCHOR_DONE=()
+
 ROOTS_JSON="$(cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" "$GC" --city "$GC_CITY" bd list --status open,in_progress --metadata-field "gc.kind=workflow" --json --limit 0 2>/dev/null)" || ROOTS_JSON=""
 
 if [ -z "${ROOTS_JSON// /}" ]; then
@@ -173,10 +180,11 @@ for item in data:
       cur="${status} ${who} outcome=${outcome}${failure_class:+ fail=${failure_class}}"
       prev="$(cat "${ROOT_STATE_DIR}/${step_id}" 2>/dev/null || true)"
       if [ "$cur" != "$prev" ]; then
-        printf '%s' "$cur" > "${ROOT_STATE_DIR}/${step_id}"
         if mayor_is_bead_escalation "$status" "$outcome" "$failure_class"; then
           add_flag "RUN ${root} ${step_id} [${title}]: ${prev:-<new>} -> ${cur}"
+          PENDING_STATE_WRITES["${ROOT_STATE_DIR}/${step_id}"]="$cur"
         else
+          printf '%s' "$cur" > "${ROOT_STATE_DIR}/${step_id}"
           echo "con-voyage-marshal-formula-sweep: ${root} ${step_id} [${title}]: ${prev:-<new>} -> ${cur}"
         fi
       fi
@@ -217,10 +225,11 @@ print((d.get('metadata') or {}).get('gc.build.source_anchor_work_dir') or '')
 
   if [ -n "$FLAG" ]; then
     add_flag "ANCHOR ${root} ${FLAG}branch=${BRANCH} ahead=${AHEAD} (${STAT}) wt=$(basename "$WT")"
+    PENDING_ANCHOR_DONE["${ROOT_STATE_DIR}/.anchor_done"]=1
   else
     echo "con-voyage-marshal-formula-sweep: ANCHOR ${root} clean branch=${BRANCH} ahead=${AHEAD} (${STAT})"
+    touch "${ROOT_STATE_DIR}/.anchor_done"
   fi
-  touch "${ROOT_STATE_DIR}/.anchor_done"
 done <<< "$ROOT_IDS"
 
 if [ -z "$FLAGGED_LINES" ]; then
@@ -237,8 +246,16 @@ mail_out="$(cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" \
 ${FLAGGED_LINES}" \
     2>&1)"
 mail_rc=$?
-if [ "$mail_rc" -ne 0 ]; then
+if [ "$mail_rc" -eq 0 ]; then
+  for pending_key in "${!PENDING_STATE_WRITES[@]}"; do
+    printf '%s' "${PENDING_STATE_WRITES[$pending_key]}" > "$pending_key"
+  done
+  for pending_anchor in "${!PENDING_ANCHOR_DONE[@]}"; do
+    touch "$pending_anchor"
+  done
+else
   echo "con-voyage-marshal-formula-sweep: WARNING: digest mail to ${CV_MARSHAL_ESCALATE_TARGET} failed: ${mail_out}" >&2
+  echo "con-voyage-marshal-formula-sweep: WARNING: not advancing persisted state for ${#PENDING_STATE_WRITES[@]} step(s) and ${#PENDING_ANCHOR_DONE[@]} anchor check(s) — will re-flag next tick" >&2
 fi
 
 exit 0
