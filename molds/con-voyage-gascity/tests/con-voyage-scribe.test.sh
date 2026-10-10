@@ -47,7 +47,19 @@ cat > "${STUBDIR}/bd" <<'BD_STUB'
 } >> "${STUB_BD_LOG}"
 
 if [ "$1" = "list" ]; then
-  cat "${STUB_BD_LIST_JSON}"
+  python3 -c '
+import json, os, sys
+args = sys.argv[1:]
+query = None
+for i, a in enumerate(args):
+    if a == "--title-contains" and i + 1 < len(args):
+        query = args[i + 1]
+with open(os.environ["STUB_BD_LIST_JSON"]) as f:
+    data = json.load(f)
+if query is not None:
+    data = [item for item in data if query in item.get("title", "")]
+print(json.dumps(data))
+' "$@"
   exit 0
 fi
 
@@ -160,7 +172,7 @@ echo
 echo "=== CASE: dedup — a friction matching an existing bead is not re-filed ==="
 reset_fixtures
 cat > "$STUB_BD_LIST_JSON" <<'JSON'
-[{"id": "fk-existing1", "title": "fix: duplicate suppression-log trim mechanism"}]
+[{"id": "fk-existing1", "title": "fix: duplicate suppression-log trim mechanism keeps firing twice"}]
 JSON
 OUT="$(scribe_file_friction "duplicate suppression-log trim mechanism keeps firing twice" --route repl_city)"
 assert_eq "DEDUP:bd:fk-existing1" "$OUT" "dedup match on bd prevents re-filing"
@@ -261,7 +273,7 @@ RC_MATCH="$(scribe_dedup_match "some friction")"
 RC=$?
 assert_eq "0" "$RC" "scribe_dedup_match still returns 0 despite the bd lookup failure (never hard-blocks filing)"
 assert_eq "" "$RC_MATCH" "a failed bd lookup falls through to 'no match found', not a false match"
-# restore the normal bd stub for subsequent cases
+# restore the normal (query-filtering) bd stub for subsequent cases
 cat > "${STUBDIR}/bd" <<'BD_STUB'
 #!/usr/bin/env bash
 {
@@ -271,7 +283,19 @@ cat > "${STUBDIR}/bd" <<'BD_STUB'
 } >> "${STUB_BD_LOG}"
 
 if [ "$1" = "list" ]; then
-  cat "${STUB_BD_LIST_JSON}"
+  python3 -c '
+import json, os, sys
+args = sys.argv[1:]
+query = None
+for i, a in enumerate(args):
+    if a == "--title-contains" and i + 1 < len(args):
+        query = args[i + 1]
+with open(os.environ["STUB_BD_LIST_JSON"]) as f:
+    data = json.load(f)
+if query is not None:
+    data = [item for item in data if query in item.get("title", "")]
+print(json.dumps(data))
+' "$@"
   exit 0
 fi
 
@@ -298,6 +322,75 @@ if grep -qF 'fix: duplicate' "$STUB_BD_LOG"; then
 else
   pass "dedup search did NOT send the decorated title verbatim"
 fi
+
+echo
+echo "=== CASE: dedup (review fk-ert7m1 BLOCKING-1) — a short period-terminated friction still dedups against its own period-stripped stored title ==="
+reset_fixtures
+cat > "$STUB_BD_LIST_JSON" <<'JSON'
+[{"id": "fk-shortdot", "title": "fix: Build fails"}]
+JSON
+OUT="$(scribe_file_friction "Build fails." --route repl_city)"
+assert_eq "DEDUP:bd:fk-shortdot" "$OUT" "a period-terminated short friction dedups against its own period-stripped stored title (query-filtering stub would have caught the pre-fix trailing-period mismatch)"
+
+echo
+echo "=== CASE: timeout (review fk-ert7m1 BLOCKING-2) — a hung bd lookup is bounded by CV_SCRIBE_STORE_TIMEOUT_SECONDS, not left to hang ==="
+reset_fixtures
+cat > "${STUBDIR}/bd" <<'BD_HANG_STUB'
+#!/usr/bin/env bash
+if [ "$1" = "list" ]; then
+  sleep 20
+  exit 0
+fi
+exit 0
+BD_HANG_STUB
+chmod +x "${STUBDIR}/bd"
+SAVED_TIMEOUT="$CV_SCRIBE_STORE_TIMEOUT_SECONDS"
+CV_SCRIBE_STORE_TIMEOUT_SECONDS=1
+t0=$(date +%s)
+OUT="$(scribe_dedup_match "some friction" 2>/dev/null)"
+t1=$(date +%s)
+CV_SCRIBE_STORE_TIMEOUT_SECONDS="$SAVED_TIMEOUT"
+elapsed=$((t1 - t0))
+assert_eq "" "$OUT" "a timed-out bd lookup falls through to 'no match found', not a hang or a crash"
+if [ "$elapsed" -lt 10 ]; then
+  pass "scribe_dedup_match returned in ${elapsed}s, bounded by CV_SCRIBE_STORE_TIMEOUT_SECONDS=1, not the stub's full 20s sleep"
+else
+  fail "scribe_dedup_match took ${elapsed}s — cv_with_timeout did not bound the hung bd call"
+fi
+# restore the normal (query-filtering) bd stub for any later cases
+cat > "${STUBDIR}/bd" <<'BD_STUB'
+#!/usr/bin/env bash
+{
+  line=""
+  for a in "$@"; do a="${a//$'\n'/ }"; line="${line}${a} "; done
+  printf '%s\n' "$line"
+} >> "${STUB_BD_LOG}"
+
+if [ "$1" = "list" ]; then
+  python3 -c '
+import json, os, sys
+args = sys.argv[1:]
+query = None
+for i, a in enumerate(args):
+    if a == "--title-contains" and i + 1 < len(args):
+        query = args[i + 1]
+with open(os.environ["STUB_BD_LIST_JSON"]) as f:
+    data = json.load(f)
+if query is not None:
+    data = [item for item in data if query in item.get("title", "")]
+print(json.dumps(data))
+' "$@"
+  exit 0
+fi
+
+if [ "$1" = "create" ]; then
+  echo "bd:created-fixture-id"
+  exit 0
+fi
+
+exit 0
+BD_STUB
+chmod +x "${STUBDIR}/bd"
 
 echo
 echo "RESULT: ${PASS} passed, ${FAIL} failed"
