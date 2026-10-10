@@ -1656,13 +1656,22 @@ assert_eq "0" "$CV_CLOSE_RC" "empty root id is a clean no-op"
 assert_eq "0" "$CV_CLOSE_OPEN_DESCENDANTS" "empty root id reports zero open descendants"
 assert_log_count 'bd (close|list)' 0 "empty root id never calls bd list or bd close"
 
-start_case "cv_close_workflow_root: an empty rig_args never aborts under 'set -u' on bash 3.2, the stock macOS /bin/bash (fk-tj3bih BLOCKING-1)"
+start_case "cv_close_workflow_root: an empty rig_args never aborts under 'set -u' on bash 3.2, the stock macOS /bin/bash, and fails closed rather than trusting a wrong-store query (fk-tj3bih BLOCKING-1, fk-39mg5k/fk-gvnoof BLOCKING-1 follow-up)"
 if [ -x /bin/bash ] && /bin/bash -c 'case "$BASH_VERSION" in 3.*) exit 0;; *) exit 1;; esac' 2>/dev/null; then
   export STUB_RIGLIST_JSON='{"rigs":[]}'
   export STUB_BDSHOW_JSON_fk_root6='{"id":"fk-root6","status":"open","metadata":{},"dependencies":[]}'
-  export STUB_BDLIST_SWEEP_JSON_1='[]'
+  # fk-39mg5k/fk-gvnoof BLOCKING-1: an unresolved rig must never trust ANY
+  # `bd list` result — a `--city`-only query against a rig-owned root can
+  # return a successful empty "[]" from the WRONG store (this pack's own
+  # fk-7v3r contract), which would falsely read as "genuinely zero
+  # descendants". Stubbing a non-empty sweep result here and asserting it is
+  # never consulted (no `bd list` call logged at all) proves the fix skips
+  # the query outright rather than merely getting lucky on an empty stub.
+  export STUB_BDLIST_SWEEP_JSON_1='[{"id":"fk-should-not-be-seen","metadata":{}}]'
   rm -f "$STUB_SWEEP_COUNTER_FILE"
-  BASH32_OUT="$(GC="$GC" GC_CITY="$GC_CITY" STUB_RIGLIST_JSON="$STUB_RIGLIST_JSON" STUB_BDSHOW_JSON_fk_root6="$STUB_BDSHOW_JSON_fk_root6" STUB_BDLIST_SWEEP_JSON_1="$STUB_BDLIST_SWEEP_JSON_1" STUB_SWEEP_COUNTER_FILE="$STUB_SWEEP_COUNTER_FILE" STUB_BDCLOSE_COUNTER_DIR="$STUB_BDCLOSE_COUNTER_DIR" /bin/bash -c "
+  BASH32_GC_LOG="${SANDBOX}/bash32_gc_log.txt"
+  : > "$BASH32_GC_LOG"
+  BASH32_OUT="$(GC="$GC" GC_CITY="$GC_CITY" STUB_GC_LOG="$BASH32_GC_LOG" STUB_RIGLIST_JSON="$STUB_RIGLIST_JSON" STUB_BDSHOW_JSON_fk_root6="$STUB_BDSHOW_JSON_fk_root6" STUB_BDLIST_SWEEP_JSON_1="$STUB_BDLIST_SWEEP_JSON_1" STUB_SWEEP_COUNTER_FILE="$STUB_SWEEP_COUNTER_FILE" STUB_BDCLOSE_COUNTER_DIR="$STUB_BDCLOSE_COUNTER_DIR" /bin/bash -c "
     set -uo pipefail
     source '$LIB'
     cv_close_workflow_root 'fk-root6' 'test teardown' 2>/dev/null
@@ -1676,8 +1685,12 @@ if [ -x /bin/bash ] && /bin/bash -c 'case "$BASH_VERSION" in 3.*) exit 0;; *) ex
     *) ;;
   esac
   case "$BASH32_OUT" in
-    "RC=0 OPEN=0") echo "  PASS: sweep completed normally under bash 3.2 with empty rig_args (${BASH32_OUT})" ;;
+    "RC=0 OPEN=-1") echo "  PASS: an unresolved rig fails closed (-1, not confirmed converged) under bash 3.2 without aborting (${BASH32_OUT})" ;;
     *) echo "  FAIL: unexpected output under bash 3.2: ${BASH32_OUT}" >&2; FAILURES=$((FAILURES+1)) ;;
+  esac
+  case "$(cat "$BASH32_GC_LOG" 2>/dev/null)" in
+    *"bd list"*) echo "  FAIL: an unresolved rig must never query bd list at all (would hit the wrong store), but one was called" >&2; FAILURES=$((FAILURES+1)) ;;
+    *) echo "  PASS: an unresolved rig skips the descendant query entirely rather than trusting a wrong-store result" ;;
   esac
   unset STUB_RIGLIST_JSON STUB_BDLIST_SWEEP_JSON_1
   export STUB_RIGLIST_JSON='{"rigs":[{"name":"foundry-kc","prefix":"fk"}]}'

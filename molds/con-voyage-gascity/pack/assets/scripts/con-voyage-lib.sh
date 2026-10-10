@@ -2037,10 +2037,21 @@ cv_close_workflow_root() {
   local rig
   rig="$(cv_rig_for_bead_id "$root_id")"
   local rig_args=()
+  local rig_unresolved=0
   if [ -n "${rig// /}" ]; then
     rig_args=(--rig "$rig")
   else
-    echo "cv_close_workflow_root: WARNING: could not resolve the rig owning root ${root_id} (cv_rig_for_bead_id returned empty); the descendant sweep falls back to cwd-based store discovery and may miss beads if this cwd is not already inside that rig" >&2
+    rig_unresolved=1
+    # fk-39mg5k/fk-gvnoof BLOCKING-1: an unresolved rig means any `bd list`
+    # below would run `--city` alone against a rig-owned root, which (per
+    # this pack's own fk-7v3r contract) routes to the CITY store and returns
+    # a successful empty "[]" rather than a failure — that false-success
+    # would fall through to "genuinely zero descendants" below and report
+    # full teardown while real descendants stay open elsewhere (the exact
+    # fk-dgia1g case-1 bug). Skip the query entirely and fail closed the same
+    # way a hard listing failure does (list_failed=1 below) rather than
+    # trusting a result we know queries the wrong store.
+    echo "cv_close_workflow_root: WARNING: could not resolve the rig owning root ${root_id} (cv_rig_for_bead_id returned empty); the descendant sweep cannot trust a --city-only query against the wrong store, treating as not converged" >&2
   fi
 
   # Close the root FIRST (see header comment) — CV_CLOSE_RC from here on is
@@ -2061,7 +2072,10 @@ cv_close_workflow_root() {
   local cv_close_sweep_timeout="${CV_LENS_STORE_TIMEOUT_SECONDS:-30}"
 
   local pass=0 max_passes=10 prev_remaining=-1 remaining=0 list_failed=0
-  while [ "$pass" -lt "$max_passes" ]; do
+  if [ "$rig_unresolved" -eq 1 ]; then
+    list_failed=1
+  fi
+  while [ "$rig_unresolved" -eq 0 ] && [ "$pass" -lt "$max_passes" ]; do
     pass=$((pass+1))
     local list_json
     # fk-tj3bih BLOCKING-1: `"${rig_args[@]}"` on an empty array is a fatal
