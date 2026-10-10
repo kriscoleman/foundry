@@ -237,11 +237,26 @@ scribe_file_friction() {
   local body
   body="$(scribe_format_body "$text")"
 
+  # fk-ert7m1 BLOCKING-1: capture the filing call's own exit code instead of
+  # letting it fall through as scribe_file_friction's bare tail-call return —
+  # a timeout/transient failure here previously produced empty stdout and
+  # zero stderr, indistinguishable from "nothing to print" or the DEDUP
+  # short-circuit above, so a friction report could vanish with no trace.
+  local filing_rc
   if [ "$route" = "foundry" ]; then
     local gh_bin="${GH:-gh}"
     cv_with_timeout "$CV_SCRIBE_STORE_TIMEOUT_SECONDS" "$gh_bin" issue create --repo "$gh_repo" --title "$title" --body "$body"
+    filing_rc=$?
+    if [ "$filing_rc" -ne 0 ]; then
+      echo "scribe: filing failed (gh issue create exited ${filing_rc}) — friction report dropped" >&2
+    fi
   else
     local bd_bin="${BD:-bd}"
     cv_with_timeout "$CV_SCRIBE_STORE_TIMEOUT_SECONDS" "$bd_bin" create --title "$title" --description "$body" --type chore
+    filing_rc=$?
+    if [ "$filing_rc" -ne 0 ]; then
+      echo "scribe: filing failed (bd create exited ${filing_rc}) — friction report dropped" >&2
+    fi
   fi
+  return "$filing_rc"
 }
