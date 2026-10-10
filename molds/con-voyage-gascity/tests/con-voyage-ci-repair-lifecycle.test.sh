@@ -186,28 +186,21 @@ fi
 # a "blocked-escalation" terminal outcome never orphans either one.
 # ===========================================================================
 start_case "7: Failure/escalation path closes BOTH the convoy and the repair bead"
+# review fk-80xk9s BLOCKING-3: Failure/escalation no longer closes either bead
+# via its own inline `gc bd close "{convoy_id}"` / `cv_bead_close
+# "{repair_bead}"` calls — both now happen inside the shared
+# cv_ci_repair_abort helper (con-voyage-lib.sh) it delegates to. The ordering
+# guarantee this case cares about (mail fires before either bead closes) is
+# now enforced once, inside cv_ci_repair_abort itself, and verified directly
+# against that function in con-voyage-lib.test.sh rather than by scanning
+# this prompt file's text for a literal call order.
 failure_line=$(grep -n '^## Failure / escalation' "$CI_REPAIR_MD" | head -1 | cut -d: -f1)
 if [ -n "$failure_line" ]; then
   failure_body="$(sed -n "${failure_line},\$p" "$CI_REPAIR_MD")"
-  if printf '%s' "$failure_body" | grep -q 'gc bd close "{convoy_id}"'; then
-    pass "Failure/escalation now closes {convoy_id}"
+  if printf '%s' "$failure_body" | grep -q 'cv_ci_repair_abort "Failure/escalation"'; then
+    pass "Failure/escalation delegates to the shared cv_ci_repair_abort, which closes both {convoy_id} and {repair_bead}"
   else
-    fail "Failure/escalation still never closes {convoy_id}"
-  fi
-  if printf '%s' "$failure_body" | grep -q 'cv_bead_close "{repair_bead}" abandoned'; then
-    pass "Failure/escalation closes {repair_bead} with outcome=abandoned"
-  else
-    fail "Failure/escalation does not close {repair_bead} with outcome=abandoned"
-  fi
-  # The escalation mail must still fire BEFORE the beads are closed (a closed
-  # bead's mail thread is still readable, but the mail describes an in-flight
-  # problem — sending it after close reads as stale/contradictory).
-  mail_line=$(printf '%s\n' "$failure_body" | grep -n 'gc mail send' | head -1 | cut -d: -f1)
-  close_line=$(printf '%s\n' "$failure_body" | grep -n 'cv_bead_close "{repair_bead}"' | head -1 | cut -d: -f1)
-  if [ -n "$mail_line" ] && [ -n "$close_line" ] && [ "$mail_line" -lt "$close_line" ]; then
-    pass "escalation mail is sent before the repair bead is closed"
-  else
-    fail "escalation mail does not precede the repair-bead close (mail_line=${mail_line:-?}, close_line=${close_line:-?})"
+    fail "Failure/escalation does not delegate to cv_ci_repair_abort — verify it still closes both beads some other way"
   fi
 else
   fail "cannot find '## Failure / escalation' heading"

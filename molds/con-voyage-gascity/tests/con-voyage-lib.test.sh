@@ -632,6 +632,76 @@ cv_bead_close "rb-unknown" "abandoned" "dropped" 2>/dev/null || rc=$?
 assert_eq "0" "$rc" "unknown-bead call still returns 0 (never aborts the step)"
 
 # ---------------------------------------------------------------------------
+# cv_ci_repair_resolve_worktree / cv_ci_repair_remove_worktree_if_owned /
+# cv_ci_repair_abort (review fk-80xk9s BLOCKING-3): extracted from the
+# near-identical read-back/remove-if-owned/close-mail-close-drain-ack blocks
+# that main.ci-repair.md had copy-pasted at six call sites.
+# ---------------------------------------------------------------------------
+start_case "cv_ci_repair_resolve_worktree: reads back worktree + reused from the bead's metadata"
+export STUB_BDSHOW_JSON_rb_wt1='{"id":"rb-wt1","metadata":{"ci_repair.worktree":"/tmp/wt1","ci_repair.worktree_reused":"true"}}'
+out="$(cv_ci_repair_resolve_worktree "rb-wt1")"
+assert_eq "/tmp/wt1 true" "$out" "prints 'WORKTREE REUSED' space-separated"
+unset STUB_BDSHOW_JSON_rb_wt1
+
+start_case "cv_ci_repair_resolve_worktree: no stamp yet -> empty worktree, reused defaults to false"
+export STUB_BDSHOW_JSON_rb_wt2='{"id":"rb-wt2","metadata":{}}'
+out="$(cv_ci_repair_resolve_worktree "rb-wt2")"
+assert_eq " false" "$out" "empty worktree, reused='false' when nothing stamped"
+unset STUB_BDSHOW_JSON_rb_wt2
+
+start_case "cv_ci_repair_resolve_worktree: empty bead id -> empty worktree, reused false (fail-safe, no bd call)"
+: > "$GC_LOG"
+out="$(cv_ci_repair_resolve_worktree "")"
+assert_eq " false" "$out" "empty bead id yields empty worktree, reused='false'"
+assert_log_count 'bd show' 0 "empty bead id never calls bd show"
+
+start_case "cv_ci_repair_remove_worktree_if_owned: reused worktree is left in place, not removed"
+: > "$GC_LOG"
+out="$(cv_ci_repair_remove_worktree_if_owned "Step 7" "${SANDBOX}/some-reused-wt" "true" 2>&1)"
+assert_log_count 'worktree remove' 0 "a reused worktree is never passed to git worktree remove"
+case "$out" in
+  *"was an existing worktree Step 3 reused"*"leaving it in place"*) : ;;
+  *) fail "expected a 'leaving it in place' message for a reused worktree, got: ${out}" ;;
+esac
+
+start_case "cv_ci_repair_remove_worktree_if_owned: non-reused, nonexistent path -> no-op (nothing to remove)"
+: > "$GC_LOG"
+cv_ci_repair_remove_worktree_if_owned "Step 7" "${SANDBOX}/does-not-exist-wt" "false" >/dev/null 2>&1
+assert_log_count 'worktree remove' 0 "a worktree that was never on disk is never passed to git worktree remove"
+
+start_case "cv_ci_repair_remove_worktree_if_owned: non-reused, empty worktree -> no-op"
+: > "$GC_LOG"
+rc=0
+cv_ci_repair_remove_worktree_if_owned "Step 7" "" "false" >/dev/null 2>&1 || rc=$?
+assert_eq "0" "$rc" "an empty worktree path never aborts the caller"
+assert_log_count 'worktree remove' 0 "an empty worktree path is never passed to git worktree remove"
+
+start_case "cv_ci_repair_abort: resolves via explicit WORKTREE/REUSED, closes repair+convoy beads, mails escalation, drain-acks"
+: > "$GC_LOG"
+cv_ci_repair_abort "Step 4" "" "false" "rb-open" "boom" "human" "owner/repo" "42" "cv-convoy1" "feature-branch" >/dev/null 2>&1
+assert_log_count 'bd close rb-open --reason abandoned: boom' 1 "closes the repair bead abandoned with the given message"
+assert_log_count 'mail send human -s CI repair blocked: owner/repo#42' 1 "mails the escalation target with repo/pr in the subject"
+assert_log_count 'bd close cv-convoy1 --reason abandoned: boom' 1 "closes the convoy bead too"
+assert_log_count 'runtime drain-ack' 1 "drain-acks after escalating"
+
+start_case "cv_ci_repair_abort: returns 0 so the caller is responsible for exit 1 (library functions never exit the caller)"
+rc=0
+cv_ci_repair_abort "Step 4" "" "false" "rb-unknown" "boom" "human" "owner/repo" "42" "cv-convoy2" "feature-branch" >/dev/null 2>&1 || rc=$?
+assert_eq "0" "$rc" "cv_ci_repair_abort returns 0 even against an unknown repair bead"
+
+start_case "cv_ci_repair_abort: escalation mail fires before the repair bead is closed (Failure/escalation's own pre-extraction ordering, preserved)"
+: > "$GC_LOG"
+cv_ci_repair_abort "Failure/escalation" "" "false" "rb-open" "boom" "human" "owner/repo" "42" "cv-convoy3" "feature-branch" >/dev/null 2>&1
+mail_line="$(grep -n '^mail send human' "$GC_LOG" | head -1 | cut -d: -f1)"
+close_line="$(grep -n '^bd close rb-open' "$GC_LOG" | head -1 | cut -d: -f1)"
+if [ -n "$mail_line" ] && [ -n "$close_line" ] && [ "$mail_line" -lt "$close_line" ]; then
+  pass="true"
+else
+  pass="false"
+fi
+assert_eq "true" "$pass" "mail send (line ${mail_line:-?}) precedes the repair-bead close (line ${close_line:-?}) — a mail describing an in-flight problem must not read as stale/contradictory after the bead it describes is already closed"
+
+# ---------------------------------------------------------------------------
 # cv_bead_claim_non_routable / CV_WORK_BEAD_OWNER (fk-9f2n — the WORK_BEAD
 # claim re-hand loop): setup-con-voyage-review's WORK_BEAD lifecycle block
 # used to run `bd update $WORK_BEAD --claim`, which assigns the work bead to

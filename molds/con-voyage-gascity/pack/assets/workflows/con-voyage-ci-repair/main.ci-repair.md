@@ -391,81 +391,192 @@ the fix.
 
 ## Step 3 — Check out the PR branch
 
-Work in the rig root. This is a shared, long-lived checkout reused across
-repair runs, so before switching to `{branch}` make sure it is not left
-detached or stuck stale from an earlier run (fk-hbsmk — the same class of bug
-as a stale con-voyage build worktree: sync structurally instead of trusting
-whatever state the last repair left behind):
+Never work in the rig root — it is a shared, long-lived checkout other
+workers rely on being on `main`, and checking out `{branch}` there directly
+left it stuck on a PR branch with a stray commit in a live incident
+(fk-bjn2ba: it also blocked the next con-voyage-rereview seed's own
+`git worktree add -B <branch>`, since the branch was already checked out
+elsewhere, and required hand-stashing local `.beads/metadata.json` state
+that was then never unstashed). Attach a dedicated worktree instead, keyed
+to this repair step's own `{repair_bead}` — the human-facing bead id, unique
+per repair and already passed as a `--var` on every dispatch path. `{convoy_id}`
+is NOT usable here: this prompt file is far above the size threshold where
+`gc` substitutes formula variables into the bead body, and separately no
+dispatch path ever passes `convoy_id` as a `--var`, so the token never
+resolves (fk-ne3uz) — a literal, fixed path shared by every repair ever run.
 
 ```bash
+GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
 CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
 CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
 [ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
 CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
 [ -f "$CV_LIB" ] || CV_LIB=""
-if [ -n "$CV_LIB" ]; then
-  # SRE BLOCKING-1 (fk-wmhr96 review, iteration 2): `{convoy_id}` here is
-  # this ci-repair step's OWN gc-internal work-item bead (see the Claim
-  # section above), never the original con-voyage workflow's root bead —
-  # `{repair_bead}` is minted fresh by con-voyage-pr-watch.sh with no
-  # metadata link back to that root, so there is no reference available to
-  # this step today for a `gc convoy target` lookup. Calling
-  # cv_convoy_target on the wrong id silently resolves to "" on every call
-  # (no target is ever set on this bead), which is indistinguishable from
-  # "correctly found no declared stacked base" — so leave it unresolved
-  # here rather than wire in an id that looks right but names the wrong
-  # bead. cv_sync_worktree_to_base's own origin/HEAD -> origin/main -> main
-  # default-base resolution is what this falls through to.
-  CONVOY_TARGET=""
-  SYNC_RESULT="$(export CV_PACK_ROOT; source "$CV_LIB" && cv_sync_worktree_to_base "$(pwd)" "" "$CONVOY_TARGET")" \
-    || echo "ci-repair: could not sync the rig-root workspace to its current base (non-fatal here — {branch} is about to be checked out explicitly below)" >&2
-  [ -n "${SYNC_RESULT:-}" ] && echo "ci-repair: workspace sync: ${SYNC_RESULT}"
-else
-  echo "con-voyage-lib.sh not found — skipping workspace sync (non-fatal)" >&2
+
+# Every Step 3 failure must route through the same close/escalate contract as
+# this file's own Failure/escalation section below — a bare `exit 1` here
+# would strand {repair_bead} with no terminal state (review fk-bjn2ba BLOCKING-3).
+#
+# review fk-80xk9s BLOCKING-3: delegates to con-voyage-lib.sh's shared
+# cv_ci_repair_abort instead of its own copy of the
+# removal/close/mail/close/drain-ack sequence (now also used by
+# step4_abort/step5_abort/step6_abort/Failure-escalation below). This
+# function passes its OWN already-known $WORKTREE/$WORKTREE_REUSED rather
+# than letting the shared helper re-read them from {repair_bead} — this can
+# fire BEFORE Step 3's own ci_repair.worktree stamp succeeds (e.g. the stamp
+# call itself failing right after `git worktree add`, review fk-hbsmk
+# BLOCKING-4), when there is nothing yet to read back but the shell already
+# knows the just-created path.
+ci_repair_step3_fail() {
+  local msg="$1"
+  if [ -n "$CV_LIB" ]; then
+    source "$CV_LIB" && cv_ci_repair_abort "Step 3 (worktree setup)" "${WORKTREE:-}" "${WORKTREE_REUSED:-false}" \
+      "{repair_bead}" "${msg}" "{escalation_target}" "{repo}" "{pr}" "{convoy_id}" "{branch}"
+  else
+    echo "ci-repair: ${msg}" >&2
+    echo "ci-repair: con-voyage-lib.sh not found — cannot run the shared abort/escalate helper" >&2
+    gc mail send {escalation_target} \
+      -s "CI repair blocked: {repo}#{pr}" \
+      -m "Repair bead {convoy_id} is stuck in Step 3 (worktree setup). Reason: ${msg}. Branch: {branch}."
+    gc bd close "{convoy_id}" --reason "abandoned: ${msg}"
+    gc runtime drain-ack
+  fi
+  exit 1
+}
+
+if [ -z "$CV_LIB" ]; then
+  ci_repair_step3_fail "con-voyage-lib.sh not found — cannot resolve a dedicated worktree, refusing to fall back to the rig root"
 fi
+RIG_ROOT="$(source "$CV_LIB" && cv_default_rig_root)"
+[ -n "${RIG_ROOT:-}" ] || RIG_ROOT="${GC_CITY:-.}"
+WORKTREE="${RIG_ROOT}/worktrees/ci-repair-{repair_bead}"
+WORKTREE_REUSED="false"
+
+git fetch origin "{branch}" || ci_repair_step3_fail "failed to fetch {branch} from origin"
+
+# BLOCKING-2: `git worktree add -B` refuses to attach a branch that's already
+# checked out elsewhere — and the con-voyage source-anchor worktree keeps
+# exactly {branch} checked out for the whole life of the PR. Detect that case
+# and reuse the existing worktree instead of trying (and failing) to attach a
+# second one. Capture the porcelain listing into a var first — never pipe a
+# live `git worktree list` into a reader; a producer still mid-write when the
+# reader is satisfied can get SIGPIPE'd under `set -o pipefail`, turning a
+# correct match into a false refusal (same race documented on
+# cv-review-lane-worktree.sh's `acquire`, fk-iw972).
+wt_list="$(git worktree list --porcelain 2>/dev/null)"
+EXISTING_WORKTREE=""
+cur_path=""
+while IFS= read -r line; do
+  case "$line" in
+    worktree\ *) cur_path="${line#worktree }" ;;
+    branch\ refs/heads/*)
+      if [ "${line#branch refs/heads/}" = "{branch}" ]; then
+        EXISTING_WORKTREE="$cur_path"
+      fi
+      ;;
+    '') cur_path="" ;;
+  esac
+done <<< "$wt_list"
+
+# BLOCKING-3 (review fk-hbsmk): the match above is otherwise over-broad — it
+# accepts ANY worktree with {branch} checked out, with no scope to a
+# ci-repair-owned path. Two live failure modes if left unguarded: (1) the rig
+# root itself ending up on {branch} (the exact state the live incident this
+# file's BLOCKING-2 fix addresses) gets reused and then force-pushed into by
+# Steps 4-6, reintroducing the "never work on a branch in the rig root"
+# invariant this file exists to enforce; (2) the shared con-voyage
+# source-anchor worktree every review lane snapshots from (fk-q659) gets
+# reused instead, so a ci-repair commit/force-push there races every lane's
+# concurrent read of the same `.git` — the exact cross-worktree race the
+# per-lane isolation fix eliminated, reintroduced here from the ci-repair
+# side. Default-deny: only ever reuse a worktree that is itself a dedicated,
+# previously-created `ci-repair-*` checkout (e.g. a retried repair that
+# crashed before Step 7's teardown ran) — anything else is refused rather
+# than silently taken over.
+if [ -n "$EXISTING_WORKTREE" ]; then
+  case "$EXISTING_WORKTREE" in
+    "${RIG_ROOT}/worktrees/ci-repair-"*)
+      echo "ci-repair: {branch} is already checked out at ${EXISTING_WORKTREE} (a prior ci-repair worktree) — reusing it instead of attaching a second worktree"
+      [ -d "$EXISTING_WORKTREE" ] || ci_repair_step3_fail "reported existing worktree ${EXISTING_WORKTREE} for {branch} does not exist on disk"
+      WORKTREE="$EXISTING_WORKTREE"
+      WORKTREE_REUSED="true"
+      ;;
+    *)
+      ci_repair_step3_fail "{branch} is already checked out at ${EXISTING_WORKTREE}, which is NOT a dedicated ci-repair worktree (it may be the rig root or the shared con-voyage source-anchor checkout) — refusing to reuse it or force-push into a checkout another workflow depends on; resolve manually"
+      ;;
+  esac
+else
+  # review fk-80xk9s BLOCKING-2: the branch-match scan above only matches a
+  # `branch refs/heads/{branch}` porcelain line — it never matches a worktree
+  # left in DETACHED HEAD, which is exactly the state Step 4b/4c's own
+  # default `rebase` conflict strategy leaves $WORKTREE in for as long as a
+  # conflict is unresolved. If the repair process is killed/crashes while
+  # stopped on a rebase conflict, the next attempt of this SAME
+  # {repair_bead} finds no branch match, falls through here, `rm -rf`s the
+  # directory without ever deregistering it from git, and the `git worktree
+  # add` below then fails with "missing but already registered worktree" —
+  # a one-way dead repair bead, forever. `git worktree prune` first clears
+  # any such missing-but-registered entry this workflow owns before we
+  # recreate it.
+  git worktree prune 2>/dev/null
+  rm -rf "$WORKTREE"
+  mkdir -p "$(dirname "$WORKTREE")"
+  git worktree add -q -B "{branch}" "$WORKTREE" "origin/{branch}" \
+    || ci_repair_step3_fail "failed to attach a worktree for {branch} at ${WORKTREE} (if this persists, a stale worktree registration may need 'git worktree prune' run manually)"
+fi
+cd "$WORKTREE" || ci_repair_step3_fail "cd into ${WORKTREE} failed"
+
+# Stamp the resolved path (and whether it was reused vs. newly created) on
+# {repair_bead} so every later step — each running in its own fresh shell, per
+# this pack's step-isolation (no shell var survives between them) — re-derives
+# the SAME worktree instead of recomputing a path that may now be stale
+# (review fk-bjn2ba BLOCKING-4). Step 7's teardown also reads
+# ci_repair.worktree_reused so it never removes a worktree this step didn't
+# create — doing so would tear down the shared source-anchor checkout out
+# from under the rest of the PR's workflow, reintroducing this bug's own root
+# cause.
+#
+# This stamp/read handoff is deliberately keyed on {repair_bead}, NOT
+# {convoy_id} (review fk-hbsmk BLOCKING-1): {convoy_id} is a gc-internal
+# graph.v2 token that is never passed as an explicit --var by either dispatch
+# path (con-voyage-pr-watch.sh, con-voyage-repair-watchdog.sh both pass
+# repair_bead), and this file is well above gc's inline-substitution size
+# threshold, so a bare {convoy_id} token here is permanently unresolved —
+# every `gc bd update`/`gc bd show` call against it would fail and abort the
+# repair. {repair_bead} is the one token in this handoff guaranteed to
+# resolve to a real bead id.
+REPAIR_BEAD_ID="{repair_bead}"
+[ -n "${REPAIR_BEAD_ID// /}" ] || ci_repair_step3_fail "repair_bead var is empty — cannot stamp a durable worktree record (the stale, never-substituted {convoy_id} token must not be used as a fallback)"
+gc bd update "$REPAIR_BEAD_ID" \
+  --set-metadata "ci_repair.worktree=${WORKTREE}" \
+  --set-metadata "ci_repair.worktree_reused=${WORKTREE_REUSED}" \
+  || ci_repair_step3_fail "could not stamp ci_repair.worktree on ${REPAIR_BEAD_ID} — refusing to continue with no durable record of the resolved worktree"
 ```
 
-(NOTE for reviewers: fk-q2pon is concurrently replacing this same
-`command -v || find`-style resolution pattern across this file with a
-`cv_pack_script`/`cv_pack_root` helper in con-voyage-lib.sh. It had not
-landed on origin/main as of this change, so the snippet above uses the same
-absolute pack-path fallback fk-q2pon introduces rather than adding a new
-first-match `find`. Whichever of the two PRs lands second should rebase.
-Also note this call targets the shared rig-root workspace itself, not
-`{branch}` — the PR branch's own base-vs-main handling is a distinct,
-already-deliberate concern owned by Step 4c's `behind_base` strategy below,
-which this does not change.)
+A newly created worktree is forked straight from `origin/{branch}`, so there
+is nothing stale to sync and nothing in the rig root to disturb — the rig
+root stays on whatever branch every other worker expects it to be on. A
+reused worktree is already on `{branch}` by construction — nothing to sync
+there either.
 
-A failed sync here is deliberately non-fatal: unlike build.md and
-apply-review-findings.md (which are about to write NEW code from this base),
-Step 3 immediately below re-points the workspace at the exact commit
-`{branch}` needs regardless of whatever state the sync found, so a sync
-failure only means Step 3's own fetch+checkout has to do more work — it is
-not a reason to abandon a repair the operator is waiting on.
-
-Fetch the branch and create a local tracking ref:
-
-<!-- FOLLOW-UP (noted, not fixed — out of scope for fk-4xq): every {branch}
-     interpolation in this file (here and in Steps 4/6/7 below) is unquoted in
+<!-- FOLLOW-UP (noted, not fixed — out of scope for fk-4xq): every remaining
+     {branch} interpolation in this file (Steps 4/6/7 below) is unquoted in
      its shell command example. GitHub branch names can't contain spaces, but
      can contain other shell-meaningful characters; quoting "{branch}"
-     everywhere would be the safer default. Left as-is per fk-4xq's scope
-     (BLOCKING-1/2 + LOW-1/2 only) — file separately if this needs hardening. -->
+     everywhere would be the safer default. Step 3's own {branch}
+     interpolations are quoted above since this change already touches that
+     block; the rest are left as-is per fk-4xq's scope (BLOCKING-1/2 + LOW-1/2
+     only) — file separately if this needs hardening. -->
+
+Verify you are on the right branch, in the dedicated worktree, before doing
+anything else:
 
 ```bash
-git fetch origin {branch}
-git checkout {branch}
-# Verify you are on the right branch:
 git branch --show-current
+pwd
 ```
 
-If your worktree already has a local checkout of this branch, pull latest:
-
-```bash
-git pull --rebase origin {branch}
-```
-
-Do NOT create a new branch. Do NOT work on main or any other branch.
+Do NOT create any other branch. Do NOT work on main or any other branch.
 
 ### Artifact hygiene — prep this working copy before editing anything
 
@@ -487,6 +598,63 @@ routine `git add` can never scoop them up. Local only — nothing is ever
 committed upstream because of this step.
 
 ## Step 4 — Fix based on `{failure_kind}`
+
+Before anything else in this step, re-anchor to the worktree Step 3 resolved.
+Step 3's `cd` does not survive into this step's shell — each `## Step` runs
+as its own fresh shell in this pack, and a context reset or stray `cd`
+anywhere in between can silently move cwd without any variable noticing. A
+canonical `worktrees/ci-repair-{repair_bead}` guess is also not reliable on
+its own: Step 3 may have resolved an EXISTING worktree instead (BLOCKING-2),
+so only the `ci_repair.worktree` metadata it stamped on `{repair_bead}` names
+the worktree this repair is actually using. Hard-fail rather than mutate an
+unverified cwd:
+
+```bash
+GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
+
+# review fk-80xk9s BLOCKING-3: delegates to con-voyage-lib.sh's shared
+# cv_ci_repair_abort (see ci_repair_step3_fail above for why WORKTREE/
+# WORKTREE_REUSED are passed through rather than re-read inside it) instead
+# of its own copy of the removal/close/mail/close/drain-ack sequence.
+step4_abort() {
+  local msg="$1"
+  if [ -n "$CV_LIB" ]; then
+    source "$CV_LIB" && cv_ci_repair_abort "Step 4" "${WORKTREE:-}" "${WORKTREE_REUSED:-false}" \
+      "{repair_bead}" "${msg}" "{escalation_target}" "{repo}" "{pr}" "{convoy_id}" "{branch}"
+  else
+    echo "ci-repair Step 4: ${msg}" >&2
+    echo "ci-repair Step 4: con-voyage-lib.sh not found — cannot run the shared abort/escalate helper" >&2
+    gc mail send {escalation_target} \
+      -s "CI repair blocked: {repo}#{pr}" \
+      -m "Repair bead {convoy_id} failed to re-anchor in Step 4: ${msg}. Branch: {branch}."
+    gc bd close "{convoy_id}" --reason "abandoned: ${msg}"
+    gc runtime drain-ack
+  fi
+  exit 1
+}
+
+REPAIR_BEAD_ID="{repair_bead}"
+[ -n "${REPAIR_BEAD_ID// /}" ] || step4_abort "repair_bead var is empty — cannot resolve the ci_repair.worktree stamp Step 3 recorded"
+# review fk-80xk9s BLOCKING-3: shared read-back helper (con-voyage-lib.sh)
+# instead of a copy-pasted `gc bd show | python3` heredoc.
+read -r WORKTREE WORKTREE_REUSED <<< "$([ -n "${CV_LIB:-}" ] && (source "$CV_LIB" && cv_ci_repair_resolve_worktree "$REPAIR_BEAD_ID"))"
+[ -n "$WORKTREE" ] || step4_abort "no ci_repair.worktree stamped on ${REPAIR_BEAD_ID} — Step 3 never ran or its stamp failed"
+
+cd "$WORKTREE" 2>/dev/null
+[ "$(pwd -P 2>/dev/null)" = "$(cd "$WORKTREE" 2>/dev/null && pwd -P)" ] \
+  || step4_abort "could not re-anchor to the resolved worktree ${WORKTREE}"
+echo "ci-repair Step 4: re-anchored to ${WORKTREE}"
+```
+
+Every mutating command in 4a/4b/4c below runs from this verified cwd — never
+re-trust an ambient `$(pwd)` picked up mid-task without re-running this check.
+Step 5 and Step 6 are their own fresh shells and do not inherit it; each
+re-anchors independently with its own copy of this same check.
 
 The bead's `{failure_kind}` var already carries PART A's classification —
 one of `checks_failed`, `merge_conflict`, `behind_base`, or `blocked`. Branch
@@ -685,6 +853,52 @@ Only the reclassified-as-4a sub-path continues through Steps 5-6 normally.
 Applies to the `checks_failed` (4a) path. (`merge_conflict` and `behind_base`
 already ran their own verify-before-push above.)
 
+Before running anything, re-anchor to the worktree Step 3 resolved, the same
+way Step 4 does — this is its own fresh shell too, and Step 4's cwd does not
+survive into it:
+
+```bash
+GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
+
+# review fk-80xk9s BLOCKING-3: delegates to con-voyage-lib.sh's shared
+# cv_ci_repair_abort (see ci_repair_step3_fail above for why WORKTREE/
+# WORKTREE_REUSED are passed through rather than re-read inside it) instead
+# of its own copy of the removal/close/mail/close/drain-ack sequence.
+step5_abort() {
+  local msg="$1"
+  if [ -n "$CV_LIB" ]; then
+    source "$CV_LIB" && cv_ci_repair_abort "Step 5" "${WORKTREE:-}" "${WORKTREE_REUSED:-false}" \
+      "{repair_bead}" "${msg}" "{escalation_target}" "{repo}" "{pr}" "{convoy_id}" "{branch}"
+  else
+    echo "ci-repair Step 5: ${msg}" >&2
+    echo "ci-repair Step 5: con-voyage-lib.sh not found — cannot run the shared abort/escalate helper" >&2
+    gc mail send {escalation_target} \
+      -s "CI repair blocked: {repo}#{pr}" \
+      -m "Repair bead {convoy_id} failed to re-anchor in Step 5: ${msg}. Branch: {branch}."
+    gc bd close "{convoy_id}" --reason "abandoned: ${msg}"
+    gc runtime drain-ack
+  fi
+  exit 1
+}
+
+REPAIR_BEAD_ID="{repair_bead}"
+[ -n "${REPAIR_BEAD_ID// /}" ] || step5_abort "repair_bead var is empty — cannot resolve the ci_repair.worktree stamp Step 3 recorded"
+# review fk-80xk9s BLOCKING-3: shared read-back helper (con-voyage-lib.sh)
+# instead of a copy-pasted `gc bd show | python3` heredoc.
+read -r WORKTREE WORKTREE_REUSED <<< "$([ -n "${CV_LIB:-}" ] && (source "$CV_LIB" && cv_ci_repair_resolve_worktree "$REPAIR_BEAD_ID"))"
+[ -n "$WORKTREE" ] || step5_abort "no ci_repair.worktree stamped on ${REPAIR_BEAD_ID} — Step 3 never ran or its stamp failed"
+
+cd "$WORKTREE" 2>/dev/null
+[ "$(pwd -P 2>/dev/null)" = "$(cd "$WORKTREE" 2>/dev/null && pwd -P)" ] \
+  || step5_abort "could not re-anchor to the resolved worktree ${WORKTREE}"
+echo "ci-repair Step 5: re-anchored to ${WORKTREE}"
+```
+
 Run the full test suite and linter:
 
 ```bash
@@ -709,6 +923,52 @@ Do not push if any test or lint check fails.
 Applies to the `checks_failed` (4a) path only. `merge_conflict` and
 `behind_base` push directly from Step 4 — a rebase has no new work-in-progress
 change to stage as a fresh commit — and go straight to Step 7.
+
+Before anything else, re-anchor to the worktree Step 3 resolved, the same way
+Step 4 and Step 5 do — this step's `git add`/`git commit`/`git push` must never
+run against a stale ambient cwd:
+
+```bash
+GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
+
+# review fk-80xk9s BLOCKING-3: delegates to con-voyage-lib.sh's shared
+# cv_ci_repair_abort (see ci_repair_step3_fail above for why WORKTREE/
+# WORKTREE_REUSED are passed through rather than re-read inside it) instead
+# of its own copy of the removal/close/mail/close/drain-ack sequence.
+step6_abort() {
+  local msg="$1"
+  if [ -n "$CV_LIB" ]; then
+    source "$CV_LIB" && cv_ci_repair_abort "Step 6" "${WORKTREE:-}" "${WORKTREE_REUSED:-false}" \
+      "{repair_bead}" "${msg}" "{escalation_target}" "{repo}" "{pr}" "{convoy_id}" "{branch}"
+  else
+    echo "ci-repair Step 6: ${msg}" >&2
+    echo "ci-repair Step 6: con-voyage-lib.sh not found — cannot run the shared abort/escalate helper" >&2
+    gc mail send {escalation_target} \
+      -s "CI repair blocked: {repo}#{pr}" \
+      -m "Repair bead {convoy_id} failed to re-anchor in Step 6: ${msg}. Branch: {branch}."
+    gc bd close "{convoy_id}" --reason "abandoned: ${msg}"
+    gc runtime drain-ack
+  fi
+  exit 1
+}
+
+REPAIR_BEAD_ID="{repair_bead}"
+[ -n "${REPAIR_BEAD_ID// /}" ] || step6_abort "repair_bead var is empty — cannot resolve the ci_repair.worktree stamp Step 3 recorded"
+# review fk-80xk9s BLOCKING-3: shared read-back helper (con-voyage-lib.sh)
+# instead of a copy-pasted `gc bd show | python3` heredoc.
+read -r WORKTREE WORKTREE_REUSED <<< "$([ -n "${CV_LIB:-}" ] && (source "$CV_LIB" && cv_ci_repair_resolve_worktree "$REPAIR_BEAD_ID"))"
+[ -n "$WORKTREE" ] || step6_abort "no ci_repair.worktree stamped on ${REPAIR_BEAD_ID} — Step 3 never ran or its stamp failed"
+
+cd "$WORKTREE" 2>/dev/null
+[ "$(pwd -P 2>/dev/null)" = "$(cd "$WORKTREE" 2>/dev/null && pwd -P)" ] \
+  || step6_abort "could not re-anchor to the resolved worktree ${WORKTREE}"
+echo "ci-repair Step 6: re-anchored to ${WORKTREE}"
+```
 
 Commit only the changes that fix the CI failure. Commit ONLY when there is a
 real code fix — never an empty/no-op commit and never a commit whose sole
@@ -780,25 +1040,82 @@ CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
   && cv_bead_close "{repair_bead}" <landed|no-op|abandoned> "<one-line summary of fix, or the 4d reason>"
 ```
 
+Tear down the dedicated worktree Step 3 attached — the push already landed on
+`origin/{branch}`, so nothing of value is lost, and leaving it in place would
+accumulate a stale `worktrees/ci-repair-*` directory per repair run. This is
+non-fatal: a failed removal is logged, not escalated.
+
+```bash
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
+
+# Read back the path Step 3 actually resolved (and whether it reused an
+# existing worktree) rather than recomputing a canonical
+# worktrees/ci-repair-{repair_bead} guess — a reused worktree (BLOCKING-2) is
+# NOT one this step created, and removing it here would tear down whatever
+# other workflow (e.g. the con-voyage source-anchor) still depends on it.
+# Keyed on {repair_bead}, not the never-substituted {convoy_id} token (review
+# fk-hbsmk BLOCKING-1) — same reasoning as Step 3's stamp above.
+#
+# review fk-80xk9s BLOCKING-3: shared cv_ci_repair_resolve_worktree /
+# cv_ci_repair_remove_worktree_if_owned helpers (con-voyage-lib.sh) instead of
+# a copy-pasted read-back-then-remove-if-owned block — this is the same logic
+# the Failure/escalation section below also needs.
+REPAIR_BEAD_ID="{repair_bead}"
+TEARDOWN_WORKTREE=""
+TEARDOWN_REUSED="false"
+if [ -n "${REPAIR_BEAD_ID// /}" ] && [ -n "$CV_LIB" ]; then
+  read -r TEARDOWN_WORKTREE TEARDOWN_REUSED <<< "$(source "$CV_LIB" && cv_ci_repair_resolve_worktree "$REPAIR_BEAD_ID")"
+fi
+
+if [ -z "$TEARDOWN_WORKTREE" ]; then
+  echo "ci-repair: no ci_repair.worktree metadata found on ${REPAIR_BEAD_ID:-<empty repair_bead>} — skipping teardown (nothing recorded to remove)" >&2
+elif [ -n "$CV_LIB" ]; then
+  source "$CV_LIB" && cv_ci_repair_remove_worktree_if_owned "Step 7" "$TEARDOWN_WORKTREE" "$TEARDOWN_REUSED"
+fi
+```
+
 ## Failure / escalation
 
 If you cannot fix the failure (blocked on external service, ambiguous
 requirements, or the fix requires a human decision):
 
 ```bash
-gc mail send {escalation_target} \
-  -s "CI repair blocked: {repo}#{pr}" \
-  -m "Repair bead {convoy_id} is stuck. Reason: <brief explanation>. Branch: {branch}."
-gc bd close "{convoy_id}" --reason "abandoned: escalated to {escalation_target} — <brief explanation>"
 GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
 CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
 CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
 [ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
 CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
 [ -f "$CV_LIB" ] || CV_LIB=""
-[ -n "$CV_LIB" ] && [ -f "$CV_LIB" ] && source "$CV_LIB" \
-  && cv_bead_close "{repair_bead}" abandoned "escalated to {escalation_target} — <brief explanation>"
-gc runtime drain-ack
+
+# review fk-80xk9s BLOCKING-3: delegates to the same shared
+# cv_ci_repair_resolve_worktree / cv_ci_repair_abort helpers
+# (con-voyage-lib.sh) as step4_abort/step5_abort/step6_abort above, instead
+# of its own copy of the read-back-then-remove-if-owned and
+# close/mail/close/drain-ack sequences. Keyed on {repair_bead}, not the
+# never-substituted {convoy_id} token (review fk-hbsmk BLOCKING-1).
+REPAIR_BEAD_ID="{repair_bead}"
+TEARDOWN_WORKTREE=""
+TEARDOWN_REUSED="false"
+if [ -n "${REPAIR_BEAD_ID// /}" ] && [ -n "$CV_LIB" ]; then
+  read -r TEARDOWN_WORKTREE TEARDOWN_REUSED <<< "$(source "$CV_LIB" && cv_ci_repair_resolve_worktree "$REPAIR_BEAD_ID")"
+fi
+
+if [ -n "$CV_LIB" ]; then
+  source "$CV_LIB" && cv_ci_repair_abort "Failure/escalation" "$TEARDOWN_WORKTREE" "$TEARDOWN_REUSED" \
+    "$REPAIR_BEAD_ID" "escalated to {escalation_target} — <brief explanation>" \
+    "{escalation_target}" "{repo}" "{pr}" "{convoy_id}" "{branch}"
+else
+  echo "ci-repair: con-voyage-lib.sh not found — cannot run the shared abort/escalate helper" >&2
+  gc mail send {escalation_target} \
+    -s "CI repair blocked: {repo}#{pr}" \
+    -m "Repair bead {convoy_id} is stuck. Reason: <brief explanation>. Branch: {branch}."
+  gc bd close "{convoy_id}" --reason "abandoned: escalated to {escalation_target} — <brief explanation>"
+  gc runtime drain-ack
+fi
 exit 1
 ```
 
