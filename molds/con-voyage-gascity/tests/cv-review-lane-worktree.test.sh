@@ -708,6 +708,55 @@ else
 fi
 
 # ===========================================================================
+# CASE 19 — review fk-kdglpn BLOCKING-1: lane_bead_state's "absent" guard
+#   hardcoded the literal binary name `gc` (`command -v gc`), but the lookup
+#   it gates (`bead_status` in con-voyage-lib.sh) resolves the binary via
+#   `${GC:-gc}`, same as every other gc-invocation in this pack. A caller
+#   that points $GC at a non-PATH, non-"gc"-named store binary (a normal,
+#   documented override) must still have lane_bead_state resolve through it
+#   instead of falling through to "absent" and letting --force reap a lane
+#   whose status was never actually checked.
+# ===========================================================================
+start_case "19: lane_bead_state honors \$GC override pointing at a non-'gc'-named store binary, instead of falling through to absent (fk-kdglpn BLOCKING-1)"
+CUSTOM_GC_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cv-review-lane-wt-test-customgc.XXXXXX")"
+CUSTOM_GC_BIN="${CUSTOM_GC_DIR}/gc-custom-store"
+cat > "$CUSTOM_GC_BIN" <<'CUSTOM_GC_STUB'
+#!/usr/bin/env bash
+if [ "$1" = "bd" ] && [ "$2" = "show" ]; then
+  printf '%s' '[{"status":"in_progress"}]'
+  exit 0
+fi
+exit 1
+CUSTOM_GC_STUB
+chmod +x "$CUSTOM_GC_BIN"
+
+REPO11="$(mk_repo repo11)"
+SRC11="${SANDBOX}/repo11-src"
+git_c "$REPO11" worktree add -q --detach "$SRC11" HEAD
+run_script acquire "$SRC11" "lane-custom-gc-override"
+assert_eq "0" "$RC" "acquire for the custom-\$GC-override lane exits 0"
+LANE_CUSTOM_GC="$OUT"
+
+ORIG_PATH="$PATH"
+PATH="$NO_GC_PATH"
+export GC="$CUSTOM_GC_BIN"
+run_script sweep "$SRC11" --force
+unset GC
+PATH="$ORIG_PATH"
+rm -rf "$CUSTOM_GC_DIR"
+
+assert_eq "0" "$RC" "sweep --force exits 0 when \$GC points at a non-PATH, non-'gc'-named store binary"
+case "$OUT" in
+  *absent*) fail "sweep treated a resolvable \$GC-override store as 'absent' instead of consulting it; output: ${OUT}" ;;
+  *) pass "sweep did not fall through to the 'absent' sentinel for a resolvable \$GC override" ;;
+esac
+if [ -d "$LANE_CUSTOM_GC" ]; then
+  pass "sweep --force left the lane alone once \$GC resolved it as still in_progress — fk-kdglpn BLOCKING-1 is fixed"
+else
+  fail "sweep --force reaped a lane that \$GC's own store reported as in_progress — the gc-only 'command -v gc' gate masked a resolvable override"
+fi
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 echo
