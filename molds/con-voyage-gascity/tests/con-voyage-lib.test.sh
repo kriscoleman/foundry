@@ -1656,17 +1656,30 @@ assert_eq "0" "$CV_CLOSE_RC" "empty root id is a clean no-op"
 assert_eq "0" "$CV_CLOSE_OPEN_DESCENDANTS" "empty root id reports zero open descendants"
 assert_log_count 'bd (close|list)' 0 "empty root id never calls bd list or bd close"
 
-start_case "cv_close_workflow_root: an empty rig_args never aborts under 'set -u' on bash 3.2, the stock macOS /bin/bash, and fails closed rather than trusting a wrong-store query (fk-tj3bih BLOCKING-1, fk-39mg5k/fk-gvnoof BLOCKING-1 follow-up)"
+start_case "cv_close_workflow_root: an unresolved rig skips the descendant query entirely and fails closed rather than trusting a wrong-store result (fk-39mg5k/fk-gvnoof BLOCKING-1 follow-up; split out from the bash-3.2-gated case below so it actually runs on real CI's bash 5, per review fk-c42prb BLOCKING-2)"
+export STUB_RIGLIST_JSON='{"rigs":[]}'
+export STUB_BDSHOW_JSON_fk_root9='{"id":"fk-root9","status":"open","metadata":{},"dependencies":[]}'
+# fk-39mg5k/fk-gvnoof BLOCKING-1: an unresolved rig must never trust ANY
+# `bd list` result — a `--city`-only query against a rig-owned root can
+# return a successful empty "[]" from the WRONG store (this pack's own
+# fk-7v3r contract), which would falsely read as "genuinely zero
+# descendants". Stubbing a non-empty sweep result here and asserting it is
+# never consulted (no `bd list` call logged at all) proves the fix skips
+# the query outright rather than merely getting lucky on an empty stub.
+export STUB_BDLIST_SWEEP_JSON_1='[{"id":"fk-should-not-be-seen","metadata":{}}]'
+rm -f "$STUB_SWEEP_COUNTER_FILE"
+: > "$GC_LOG"
+cv_close_workflow_root "fk-root9" "test teardown" 2>/dev/null
+assert_eq "0" "$CV_CLOSE_RC" "an unresolved rig still lets the root's own close succeed"
+assert_eq "-1" "$CV_CLOSE_OPEN_DESCENDANTS" "an unresolved rig fails closed (-1, not confirmed converged), never trusting a wrong-store query"
+assert_log_count 'bd list' 0 "an unresolved rig must never query bd list at all (would hit the wrong store)"
+unset STUB_RIGLIST_JSON STUB_BDLIST_SWEEP_JSON_1
+export STUB_RIGLIST_JSON='{"rigs":[{"name":"foundry-kc","prefix":"fk"}]}'
+
+start_case "cv_close_workflow_root: an empty rig_args never aborts under 'set -u' on bash 3.2, the stock macOS /bin/bash (fk-tj3bih BLOCKING-1; the wrong-store-skip assertions this case used to carry now live in the ungated case above, per review fk-c42prb BLOCKING-2)"
 if [ -x /bin/bash ] && /bin/bash -c 'case "$BASH_VERSION" in 3.*) exit 0;; *) exit 1;; esac' 2>/dev/null; then
   export STUB_RIGLIST_JSON='{"rigs":[]}'
   export STUB_BDSHOW_JSON_fk_root6='{"id":"fk-root6","status":"open","metadata":{},"dependencies":[]}'
-  # fk-39mg5k/fk-gvnoof BLOCKING-1: an unresolved rig must never trust ANY
-  # `bd list` result — a `--city`-only query against a rig-owned root can
-  # return a successful empty "[]" from the WRONG store (this pack's own
-  # fk-7v3r contract), which would falsely read as "genuinely zero
-  # descendants". Stubbing a non-empty sweep result here and asserting it is
-  # never consulted (no `bd list` call logged at all) proves the fix skips
-  # the query outright rather than merely getting lucky on an empty stub.
   export STUB_BDLIST_SWEEP_JSON_1='[{"id":"fk-should-not-be-seen","metadata":{}}]'
   rm -f "$STUB_SWEEP_COUNTER_FILE"
   BASH32_GC_LOG="${SANDBOX}/bash32_gc_log.txt"
@@ -1687,10 +1700,6 @@ if [ -x /bin/bash ] && /bin/bash -c 'case "$BASH_VERSION" in 3.*) exit 0;; *) ex
   case "$BASH32_OUT" in
     "RC=0 OPEN=-1") echo "  PASS: an unresolved rig fails closed (-1, not confirmed converged) under bash 3.2 without aborting (${BASH32_OUT})" ;;
     *) echo "  FAIL: unexpected output under bash 3.2: ${BASH32_OUT}" >&2; FAILURES=$((FAILURES+1)) ;;
-  esac
-  case "$(cat "$BASH32_GC_LOG" 2>/dev/null)" in
-    *"bd list"*) echo "  FAIL: an unresolved rig must never query bd list at all (would hit the wrong store), but one was called" >&2; FAILURES=$((FAILURES+1)) ;;
-    *) echo "  PASS: an unresolved rig skips the descendant query entirely rather than trusting a wrong-store result" ;;
   esac
   unset STUB_RIGLIST_JSON STUB_BDLIST_SWEEP_JSON_1
   export STUB_RIGLIST_JSON='{"rigs":[{"name":"foundry-kc","prefix":"fk"}]}'
