@@ -912,15 +912,8 @@ else
   fail "expected GC_RIG_ROOT resolution to precede the worktree-toplevel fallback (a worktree whose own mold predates cv_sync_worktree_to_base must not be the only source tried)"
 fi
 
-start_case "ci-repair.md: syncs the shared workspace before checking out the PR branch"
-assert_md_contains "$CI_REPAIR_MD" 'cv_sync_worktree_to_base' "ci-repair.md calls cv_sync_worktree_to_base"
-sync_line_repair="$(md_line_of "$CI_REPAIR_MD" 'cv_sync_worktree_to_base')"
-checkout_line_repair="$(md_line_of "$CI_REPAIR_MD" 'git checkout {branch}')"
-if [ -n "$sync_line_repair" ] && [ -n "$checkout_line_repair" ] && [ "$sync_line_repair" -lt "$checkout_line_repair" ]; then
-  pass "sync call (line ${sync_line_repair}) precedes checking out {branch} (line ${checkout_line_repair})"
-else
-  fail "expected the sync call to precede the PR-branch checkout"
-fi
+start_case "ci-repair.md: attaches a dedicated worktree forked fresh from origin/{branch} instead of syncing a shared checkout"
+assert_md_contains "$CI_REPAIR_MD" 'git worktree add -q -B "{branch}" "$WORKTREE" "origin/{branch}"' "ci-repair.md attaches a dedicated worktree via git worktree add forked from origin/{branch}"
 
 # ===========================================================================
 # review fk-wmhr96 BLOCKING-1/2: every code-writing step's sync call must
@@ -938,20 +931,17 @@ start_case "apply-review-findings.md: threads cv_convoy_target as the explicit 3
 assert_md_contains "$APPLY_MD" 'cv_convoy_target "$CONVOY_ID"' "apply-review-findings.md resolves CONVOY_TARGET via cv_convoy_target"
 assert_md_contains "$APPLY_MD" 'cv_sync_worktree_to_base "$WORKTREE" "$WORK_BRANCH_NAME" "$CONVOY_TARGET"' "apply-review-findings.md passes \$CONVOY_TARGET as the explicit 3rd arg"
 
-# fk-qolcm3 BLOCKING-1 (iteration 2): `{convoy_id}` in ci-repair.md is this
-# step's OWN gc-internal work-item bead, never the original con-voyage
-# workflow's root bead — `cv_convoy_target "{convoy_id}"` silently resolved
-# the WRONG bead's (always-unset) target, which is indistinguishable from
-# correctly finding no declared stacked base. No reference to the real
-# workflow root is available to this step today, so it must leave
-# CONVOY_TARGET unresolved explicitly rather than wire in an id that looks
-# right but names the wrong bead.
-start_case "ci-repair.md: does not resolve CONVOY_TARGET via cv_convoy_target against its own step bead (fk-qolcm3 BLOCKING-1)"
+# fk-qolcm3 / fk-wmhr96 no longer apply to ci-repair.md: the worktree-attach
+# rewrite (dd518ca, "ci-repair attaches a dedicated worktree instead of
+# checking out in the rig root") replaced the shared-workspace
+# cv_sync_worktree_to_base call this section used to require with a dedicated
+# `git worktree add -B {branch} ... origin/{branch}` that always forks fresh
+# from origin — there is no CONVOY_TARGET/cv_convoy_target call left to thread
+# a declared stacked base through (see the assertion above and
+# main.ci-repair.md's own "nothing stale to sync" note right after its Step 3
+# block).
+start_case "ci-repair.md: does not resolve a stacked base via cv_convoy_target against its own step bead"
 assert_md_not_contains "$CI_REPAIR_MD" 'cv_convoy_target "{convoy_id}"' "ci-repair.md must not call cv_convoy_target against its own gc-internal step bead"
-
-start_case "ci-repair.md: threads the explicitly-empty CONVOY_TARGET as the 3rd arg to cv_sync_worktree_to_base (fk-wmhr96 BLOCKING-2, fk-qolcm3 BLOCKING-1)"
-assert_md_contains "$CI_REPAIR_MD" 'CONVOY_TARGET=""' "ci-repair.md sets CONVOY_TARGET explicitly empty (no real workflow-root reference available)"
-assert_md_contains "$CI_REPAIR_MD" 'cv_sync_worktree_to_base "$(pwd)" "" "$CONVOY_TARGET"' "ci-repair.md passes \$CONVOY_TARGET as the explicit 3rd arg"
 
 # ===========================================================================
 # review fk-hbsmk BLOCKING-1: both implementor-routed steps (build.md and
