@@ -547,6 +547,216 @@ case "$OUT" in
 esac
 
 # ===========================================================================
+# CASE 16 — review fk-hbsmk/fk-9h3nwk BLOCKING-1/2: the literal compound
+#   scenario the fix in cmd_sweep claims to close. The lane bead IS genuinely
+#   in_progress (a live, still-running review), but at the moment `sweep
+#   --force` runs, the status lookup itself fails to resolve (hangs/times
+#   out) rather than timing out from a missing binary. The OLD code collapsed
+#   "lookup attempted and failed" into the same empty-string sentinel as
+#   "confirmed structurally absent", so --force reaped it outright. The fix
+#   must not reap on a single inconclusive lookup — even a second attempt
+#   that also fails must still leave the worktree alone.
+# ===========================================================================
+start_case "16: sweep --force never reaps a lane whose lookup genuinely fails/times out, even though the underlying lane is still in_progress (fk-hbsmk/fk-9h3nwk BLOCKING-1)"
+HANG_GC_DIR3="$(mktemp -d "${TMPDIR:-/tmp}/cv-review-lane-wt-test-hang3.XXXXXX")"
+cat > "${HANG_GC_DIR3}/gc" <<'HANG_GC_STUB3'
+#!/usr/bin/env bash
+if [ "$1" = "bd" ] && [ "$2" = "show" ]; then
+  sleep 3600
+  exit 0
+fi
+exit 1
+HANG_GC_STUB3
+chmod +x "${HANG_GC_DIR3}/gc"
+
+REPO8="$(mk_repo repo8)"
+SRC8="${SANDBOX}/repo8-src"
+git_c "$REPO8" worktree add -q --detach "$SRC8" HEAD
+run_script acquire "$SRC8" "lane-in-progress-but-unresolvable"
+assert_eq "0" "$RC" "acquire for the compound-scenario lane exits 0"
+LANE_COMPOUND="$OUT"
+
+ORIG_PATH="$PATH"
+PATH="${HANG_GC_DIR3}:${ORIG_PATH}"
+export CV_LENS_STORE_TIMEOUT_SECONDS=1
+compound_start=$(date +%s)
+run_script sweep "$SRC8" --force
+compound_elapsed=$(( $(date +%s) - compound_start ))
+unset CV_LENS_STORE_TIMEOUT_SECONDS
+PATH="$ORIG_PATH"
+rm -rf "$HANG_GC_DIR3"
+
+assert_eq "0" "$RC" "sweep --force exits 0 even when the lookup hangs twice"
+if [ "$compound_elapsed" -lt 10 ]; then
+  pass "sweep --force returned promptly (${compound_elapsed}s) despite two failed lookup attempts"
+else
+  fail "sweep --force took ${compound_elapsed}s against a hanging store call"
+fi
+if [ -d "$LANE_COMPOUND" ]; then
+  pass "sweep --force left the genuinely in_progress lane's worktree alone despite an unresolvable lookup — the fk-hbsmk/fk-9h3nwk regression is fixed"
+else
+  fail "sweep --force reaped a lane whose status lookup only failed to resolve — this is the exact live-sibling-reap incident the fix claims to close"
+fi
+
+# ===========================================================================
+# CASE 17 — review fk-hbsmk/fk-9h3nwk BLOCKING-1: the shared sweep budget
+#   being exhausted means NO lookup was ever attempted for a later lane — not
+#   "this lane is unresolvable". --force must never reap on budget
+#   exhaustion alone, even though the OLD code's `state=""` sentinel at the
+#   deadline check made it indistinguishable from a confirmed-absent lookup.
+# ===========================================================================
+start_case "17: sweep --force never reaps a lane purely because the shared sweep budget ran out before its lookup was attempted (fk-hbsmk/fk-9h3nwk BLOCKING-1)"
+HANG_GC_DIR4="$(mktemp -d "${TMPDIR:-/tmp}/cv-review-lane-wt-test-hang4.XXXXXX")"
+cat > "${HANG_GC_DIR4}/gc" <<'HANG_GC_STUB4'
+#!/usr/bin/env bash
+if [ "$1" = "bd" ] && [ "$2" = "show" ]; then
+  sleep 3600
+  exit 0
+fi
+exit 1
+HANG_GC_STUB4
+chmod +x "${HANG_GC_DIR4}/gc"
+
+REPO9="$(mk_repo repo9)"
+SRC9="${SANDBOX}/repo9-src"
+git_c "$REPO9" worktree add -q --detach "$SRC9" HEAD
+run_script acquire "$SRC9" "lane-budget-a"
+assert_eq "0" "$RC" "acquire for budget lane a exits 0"
+LANE_BUDGET_A="$OUT"
+run_script acquire "$SRC9" "lane-budget-b"
+assert_eq "0" "$RC" "acquire for budget lane b exits 0"
+LANE_BUDGET_B="$OUT"
+
+ORIG_PATH="$PATH"
+PATH="${HANG_GC_DIR4}:${ORIG_PATH}"
+export CV_LENS_STORE_TIMEOUT_SECONDS=2
+export CV_LANE_SWEEP_BUDGET_SECONDS=1
+run_script sweep "$SRC9" --force
+unset CV_LENS_STORE_TIMEOUT_SECONDS CV_LANE_SWEEP_BUDGET_SECONDS
+PATH="$ORIG_PATH"
+rm -rf "$HANG_GC_DIR4"
+
+assert_eq "0" "$RC" "sweep --force exits 0 when the shared budget runs out mid-sweep"
+case "$OUT" in
+  *"budget exhausted"*) pass "sweep reported the budget-exhausted skip with its own distinct reason" ;;
+  *) fail "sweep did not report a distinct budget-exhausted reason; output: ${OUT}" ;;
+esac
+if [ -d "$LANE_BUDGET_A" ] && [ -d "$LANE_BUDGET_B" ]; then
+  pass "sweep --force left both budget-exhausted lanes alone instead of reaping them"
+else
+  fail "sweep --force reaped a lane whose lookup was never attempted due to budget exhaustion"
+fi
+
+# ===========================================================================
+# CASE 18 — review fk-9h3nwk QA/test-engineering BLOCKING-1: the fix's own
+#   headline POSITIVE capability — a first lookup that fails/is inconclusive,
+#   followed by a second, independently-timed retry that DOES resolve
+#   "closed" — must still reap the worktree. Cases 16/17 only cover the
+#   negative paths (both attempts fail, or budget exhausted before any
+#   attempt); none of them exercise the retry actually succeeding. A
+#   regression here (e.g. `state2` compared against the wrong value, or the
+#   retry reusing the first failed result instead of re-invoking
+#   `lane_bead_state`) would silently stop ever reaping a lane that only
+#   resolves on its second lookup, leaking worktrees forever.
+# ===========================================================================
+start_case "18: sweep --force reaps a lane whose FIRST lookup fails but whose retry resolves closed (fk-9h3nwk BLOCKING-1 positive path)"
+RETRY_GC_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cv-review-lane-wt-test-retry.XXXXXX")"
+RETRY_COUNTER="${RETRY_GC_DIR}/count"
+printf '0' > "$RETRY_COUNTER"
+cat > "${RETRY_GC_DIR}/gc" <<RETRY_GC_STUB
+#!/usr/bin/env bash
+if [ "\$1" = "bd" ] && [ "\$2" = "show" ]; then
+  count="\$(cat "${RETRY_COUNTER}")"
+  count=\$((count + 1))
+  printf '%s' "\$count" > "${RETRY_COUNTER}"
+  if [ "\$count" -eq 1 ]; then
+    # first attempt: a real lookup was made but came back unusable.
+    exit 1
+  fi
+  # second (retry) attempt: resolves cleanly to closed.
+  printf '%s' '[{"status":"closed"}]'
+  exit 0
+fi
+exit 1
+RETRY_GC_STUB
+chmod +x "${RETRY_GC_DIR}/gc"
+
+REPO10="$(mk_repo repo10)"
+SRC10="${SANDBOX}/repo10-src"
+git_c "$REPO10" worktree add -q --detach "$SRC10" HEAD
+run_script acquire "$SRC10" "lane-retry-resolves-closed"
+assert_eq "0" "$RC" "acquire for the retry-resolves-closed lane exits 0"
+LANE_RETRY="$OUT"
+
+ORIG_PATH="$PATH"
+PATH="${RETRY_GC_DIR}:${ORIG_PATH}"
+run_script sweep "$SRC10" --force
+PATH="$ORIG_PATH"
+rm -rf "$RETRY_GC_DIR"
+
+assert_eq "0" "$RC" "sweep --force exits 0 when the first lookup fails and the retry resolves closed"
+case "$OUT" in
+  *"confirmed closed on second attempt after an initial lookup failure"*)
+    pass "sweep reported the second-attempt-confirmed-closed reason, not the failed-twice skip branch" ;;
+  *)
+    fail "sweep did not report the second-attempt-confirmed-closed reason; output: ${OUT}" ;;
+esac
+if [ -d "$LANE_RETRY" ]; then
+  fail "sweep --force left the lane worktree on disk even though the retry resolved closed — the fk-9h3nwk positive path is broken"
+else
+  pass "sweep --force reaped the lane worktree once the retry confirmed closed"
+fi
+
+# ===========================================================================
+# CASE 19 — review fk-kdglpn BLOCKING-1: lane_bead_state's "absent" guard
+#   hardcoded the literal binary name `gc` (`command -v gc`), but the lookup
+#   it gates (`bead_status` in con-voyage-lib.sh) resolves the binary via
+#   `${GC:-gc}`, same as every other gc-invocation in this pack. A caller
+#   that points $GC at a non-PATH, non-"gc"-named store binary (a normal,
+#   documented override) must still have lane_bead_state resolve through it
+#   instead of falling through to "absent" and letting --force reap a lane
+#   whose status was never actually checked.
+# ===========================================================================
+start_case "19: lane_bead_state honors \$GC override pointing at a non-'gc'-named store binary, instead of falling through to absent (fk-kdglpn BLOCKING-1)"
+CUSTOM_GC_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cv-review-lane-wt-test-customgc.XXXXXX")"
+CUSTOM_GC_BIN="${CUSTOM_GC_DIR}/gc-custom-store"
+cat > "$CUSTOM_GC_BIN" <<'CUSTOM_GC_STUB'
+#!/usr/bin/env bash
+if [ "$1" = "bd" ] && [ "$2" = "show" ]; then
+  printf '%s' '[{"status":"in_progress"}]'
+  exit 0
+fi
+exit 1
+CUSTOM_GC_STUB
+chmod +x "$CUSTOM_GC_BIN"
+
+REPO11="$(mk_repo repo11)"
+SRC11="${SANDBOX}/repo11-src"
+git_c "$REPO11" worktree add -q --detach "$SRC11" HEAD
+run_script acquire "$SRC11" "lane-custom-gc-override"
+assert_eq "0" "$RC" "acquire for the custom-\$GC-override lane exits 0"
+LANE_CUSTOM_GC="$OUT"
+
+ORIG_PATH="$PATH"
+PATH="$NO_GC_PATH"
+export GC="$CUSTOM_GC_BIN"
+run_script sweep "$SRC11" --force
+unset GC
+PATH="$ORIG_PATH"
+rm -rf "$CUSTOM_GC_DIR"
+
+assert_eq "0" "$RC" "sweep --force exits 0 when \$GC points at a non-PATH, non-'gc'-named store binary"
+case "$OUT" in
+  *absent*) fail "sweep treated a resolvable \$GC-override store as 'absent' instead of consulting it; output: ${OUT}" ;;
+  *) pass "sweep did not fall through to the 'absent' sentinel for a resolvable \$GC override" ;;
+esac
+if [ -d "$LANE_CUSTOM_GC" ]; then
+  pass "sweep --force left the lane alone once \$GC resolved it as still in_progress — fk-kdglpn BLOCKING-1 is fixed"
+else
+  fail "sweep --force reaped a lane that \$GC's own store reported as in_progress — the gc-only 'command -v gc' gate masked a resolvable override"
+fi
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 echo
