@@ -91,12 +91,42 @@ else
   fail "Step 3 does not check for an existing worktree already on {branch} — git worktree add -B will collide with a long-lived source-anchor checkout"
 fi
 
-start_case "8: Step 3 failures route through bead close/escalation, not a bare exit"
+start_case "7b: Step 3's reuse match is default-deny, scoped to a dedicated ci-repair-* checkout (review fk-hbsmk BLOCKING-3, fk-9iqxnx BLOCKING-2)"
 step3_section="$(awk '/^## Step 3/{p=1} /^## Step 4/{p=0} p' "$CI_REPAIR_MD")"
+if printf '%s' "$step3_section" | grep -qF '"${RIG_ROOT}/worktrees/ci-repair-"*'; then
+  pass "the accepted reuse pattern is scoped to \${RIG_ROOT}/worktrees/ci-repair-*, not any existing checkout"
+else
+  fail "Step 3's reuse match does not scope to \${RIG_ROOT}/worktrees/ci-repair-* — this would pass identically against the pre-fix, unscoped version"
+fi
+reuse_case_block="$(printf '%s' "$step3_section" | awk '/case "\$EXISTING_WORKTREE" in/{p=1} /esac/{print; p=0; next} p')"
+if printf '%s' "$reuse_case_block" | grep -qF '*)' && printf '%s' "$reuse_case_block" | grep -A2 '^\s*\*)' | grep -q 'ci_repair_step3_fail'; then
+  pass "the reuse case statement's default arm calls ci_repair_step3_fail, not a silent fallthrough"
+else
+  fail "the reuse case statement's default arm does not call ci_repair_step3_fail — an unrecognized existing checkout could be silently taken over"
+fi
+
+start_case "8: Step 3 failures route through bead close/escalation, not a bare exit"
 if printf '%s' "$step3_section" | grep -q 'cv_bead_close "{repair_bead}" abandoned'; then
   pass "Step 3's failure path closes {repair_bead} as abandoned before exiting"
 else
   fail "Step 3's failure path does not close {repair_bead} — a Step 3 failure would strand the bead"
+fi
+
+start_case "8b: ci_repair_step3_fail and step4_abort both tear down a worktree they created, never one they reused (review fk-hbsmk BLOCKING-4)"
+step3_fail_body="$(printf '%s' "$step3_section" | awk '/^ci_repair_step3_fail\(\) \{/{p=1} p{print} p&&/^}/{exit}')"
+if printf '%s' "$step3_fail_body" | grep -q 'WORKTREE_REUSED:-false.*!= "true"' \
+  && printf '%s' "$step3_fail_body" | grep -q 'git worktree remove --force "\$WORKTREE"'; then
+  pass "ci_repair_step3_fail tears down only a non-reused worktree via a WORKTREE_REUSED-guarded git worktree remove --force"
+else
+  fail "ci_repair_step3_fail does not have a WORKTREE_REUSED-guarded git worktree remove --force \$WORKTREE — a Step 3 failure after worktree creation would leak it"
+fi
+step4_section_for_abort="$(awk '/^## Step 4/{p=1} /^## Step 7/{p=0} p' "$CI_REPAIR_MD")"
+step4_abort_body="$(printf '%s' "$step4_section_for_abort" | awk '/^step4_abort\(\) \{/{p=1} p{print} p&&/^}/{exit}')"
+if printf '%s' "$step4_abort_body" | grep -q 'WORKTREE_REUSED:-false.*!= "true"' \
+  && printf '%s' "$step4_abort_body" | grep -q 'git worktree remove --force "\$WORKTREE"'; then
+  pass "step4_abort tears down only a non-reused worktree via a WORKTREE_REUSED-guarded git worktree remove --force"
+else
+  fail "step4_abort does not have a WORKTREE_REUSED-guarded git worktree remove --force \$WORKTREE — a Step 4 abort after Step 3 created a worktree would leak it"
 fi
 
 start_case "9: Step 4 re-anchors to the resolved worktree before any mutating command"
@@ -141,6 +171,24 @@ if grep -c 'gc bd update "\$REPAIR_BEAD_ID"' "$CI_REPAIR_MD" >/dev/null 2>&1 \
   pass "ci_repair.worktree* stamp/read call sites resolve the bead id from {repair_bead}"
 else
   fail "ci_repair.worktree* stamp/read call sites do not appear to be keyed on {repair_bead}"
+fi
+
+start_case "12: Step 5 re-anchors to the resolved worktree on its own, independent of Step 4 (review fk-hbsmk BLOCKING-1, QA iteration 4)"
+step5_section="$(awk '/^## Step 5/{p=1} /^## Step 6/{p=0} p' "$CI_REPAIR_MD")"
+if printf '%s' "$step5_section" | grep -q 'cd "\$WORKTREE"' \
+  && printf '%s' "$step5_section" | grep -q 'REPAIR_BEAD_ID="{repair_bead}"'; then
+  pass "Step 5 re-reads ci_repair.worktree keyed on {repair_bead} and re-anchors with its own cd \"\$WORKTREE\""
+else
+  fail "Step 5 has no cwd re-anchor of its own — a fresh shell starting Step 5 at a stale cwd (e.g. the rig root) would run tests/lint against the wrong checkout"
+fi
+
+start_case "12b: Step 6 re-anchors to the resolved worktree on its own before commit/push (review fk-hbsmk BLOCKING-1, QA iteration 4)"
+step6_section="$(awk '/^## Step 6/{p=1} /^## Step 7/{p=0} p' "$CI_REPAIR_MD")"
+if printf '%s' "$step6_section" | grep -q 'cd "\$WORKTREE"' \
+  && printf '%s' "$step6_section" | grep -q 'REPAIR_BEAD_ID="{repair_bead}"'; then
+  pass "Step 6 re-reads ci_repair.worktree keyed on {repair_bead} and re-anchors with its own cd \"\$WORKTREE\" before git add/commit/push"
+else
+  fail "Step 6 has no cwd re-anchor of its own — a fresh shell starting Step 6 at a stale cwd (e.g. the rig root) would git push origin {branch} from the wrong checkout, reproducing the original fk-bjn2ba incident"
 fi
 
 echo

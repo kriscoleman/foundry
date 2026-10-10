@@ -650,9 +650,10 @@ cd "$WORKTREE" 2>/dev/null
 echo "ci-repair Step 4: re-anchored to ${WORKTREE}"
 ```
 
-Every mutating command in 4a/4b/4c below, and Step 5/6 after them, runs from
-this verified cwd — never re-trust an ambient `$(pwd)` picked up mid-task
-without re-running this check.
+Every mutating command in 4a/4b/4c below runs from this verified cwd — never
+re-trust an ambient `$(pwd)` picked up mid-task without re-running this check.
+Step 5 and Step 6 are their own fresh shells and do not inherit it; each
+re-anchors independently with its own copy of this same check.
 
 The bead's `{failure_kind}` var already carries PART A's classification —
 one of `checks_failed`, `merge_conflict`, `behind_base`, or `blocked`. Branch
@@ -851,6 +852,59 @@ Only the reclassified-as-4a sub-path continues through Steps 5-6 normally.
 Applies to the `checks_failed` (4a) path. (`merge_conflict` and `behind_base`
 already ran their own verify-before-push above.)
 
+Before running anything, re-anchor to the worktree Step 3 resolved, the same
+way Step 4 does — this is its own fresh shell too, and Step 4's cwd does not
+survive into it:
+
+```bash
+GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
+
+step5_abort() {
+  local msg="$1"
+  echo "ci-repair Step 5: ${msg}" >&2
+  if [ "${WORKTREE_REUSED:-false}" != "true" ] && [ -n "${WORKTREE:-}" ] && [ -d "${WORKTREE:-}" ]; then
+    local rig_root="${RIG_ROOT:-}"
+    [ -n "$rig_root" ] || rig_root="$([ -n "${CV_LIB:-}" ] && (source "$CV_LIB" && cv_default_rig_root) 2>/dev/null)"
+    [ -n "$rig_root" ] || rig_root="${GC_CITY:-.}"
+    ( cd "$rig_root" 2>/dev/null && git worktree remove --force "$WORKTREE" 2>/dev/null ) \
+      || echo "ci-repair Step 5: could not remove worktree ${WORKTREE} after abort (non-fatal — it will be cleaned up on the next repair run for this convoy)" >&2
+  fi
+  if [ -n "$CV_LIB" ]; then
+    source "$CV_LIB" && cv_bead_close "{repair_bead}" abandoned "${msg}"
+  fi
+  gc mail send {escalation_target} \
+    -s "CI repair blocked: {repo}#{pr}" \
+    -m "Repair bead {convoy_id} failed to re-anchor in Step 5: ${msg}. Branch: {branch}."
+  gc bd close "{convoy_id}" --reason "abandoned: ${msg}"
+  gc runtime drain-ack
+  exit 1
+}
+
+REPAIR_BEAD_ID="{repair_bead}"
+[ -n "${REPAIR_BEAD_ID// /}" ] || step5_abort "repair_bead var is empty — cannot resolve the ci_repair.worktree stamp Step 3 recorded"
+read -r WORKTREE WORKTREE_REUSED <<< "$(gc bd show "$REPAIR_BEAD_ID" --json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    d = d[0] if isinstance(d, list) else d
+except Exception:
+    d = {}
+meta = d.get('metadata') or {}
+print(meta.get('ci_repair.worktree') or '', meta.get('ci_repair.worktree_reused') or 'false')
+" 2>/dev/null)"
+[ -n "$WORKTREE" ] || step5_abort "no ci_repair.worktree stamped on ${REPAIR_BEAD_ID} — Step 3 never ran or its stamp failed"
+
+cd "$WORKTREE" 2>/dev/null
+[ "$(pwd -P 2>/dev/null)" = "$(cd "$WORKTREE" 2>/dev/null && pwd -P)" ] \
+  || step5_abort "could not re-anchor to the resolved worktree ${WORKTREE}"
+echo "ci-repair Step 5: re-anchored to ${WORKTREE}"
+```
+
 Run the full test suite and linter:
 
 ```bash
@@ -875,6 +929,59 @@ Do not push if any test or lint check fails.
 Applies to the `checks_failed` (4a) path only. `merge_conflict` and
 `behind_base` push directly from Step 4 — a rebase has no new work-in-progress
 change to stage as a fresh commit — and go straight to Step 7.
+
+Before anything else, re-anchor to the worktree Step 3 resolved, the same way
+Step 4 and Step 5 do — this step's `git add`/`git commit`/`git push` must never
+run against a stale ambient cwd:
+
+```bash
+GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
+
+step6_abort() {
+  local msg="$1"
+  echo "ci-repair Step 6: ${msg}" >&2
+  if [ "${WORKTREE_REUSED:-false}" != "true" ] && [ -n "${WORKTREE:-}" ] && [ -d "${WORKTREE:-}" ]; then
+    local rig_root="${RIG_ROOT:-}"
+    [ -n "$rig_root" ] || rig_root="$([ -n "${CV_LIB:-}" ] && (source "$CV_LIB" && cv_default_rig_root) 2>/dev/null)"
+    [ -n "$rig_root" ] || rig_root="${GC_CITY:-.}"
+    ( cd "$rig_root" 2>/dev/null && git worktree remove --force "$WORKTREE" 2>/dev/null ) \
+      || echo "ci-repair Step 6: could not remove worktree ${WORKTREE} after abort (non-fatal — it will be cleaned up on the next repair run for this convoy)" >&2
+  fi
+  if [ -n "$CV_LIB" ]; then
+    source "$CV_LIB" && cv_bead_close "{repair_bead}" abandoned "${msg}"
+  fi
+  gc mail send {escalation_target} \
+    -s "CI repair blocked: {repo}#{pr}" \
+    -m "Repair bead {convoy_id} failed to re-anchor in Step 6: ${msg}. Branch: {branch}."
+  gc bd close "{convoy_id}" --reason "abandoned: ${msg}"
+  gc runtime drain-ack
+  exit 1
+}
+
+REPAIR_BEAD_ID="{repair_bead}"
+[ -n "${REPAIR_BEAD_ID// /}" ] || step6_abort "repair_bead var is empty — cannot resolve the ci_repair.worktree stamp Step 3 recorded"
+read -r WORKTREE WORKTREE_REUSED <<< "$(gc bd show "$REPAIR_BEAD_ID" --json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    d = d[0] if isinstance(d, list) else d
+except Exception:
+    d = {}
+meta = d.get('metadata') or {}
+print(meta.get('ci_repair.worktree') or '', meta.get('ci_repair.worktree_reused') or 'false')
+" 2>/dev/null)"
+[ -n "$WORKTREE" ] || step6_abort "no ci_repair.worktree stamped on ${REPAIR_BEAD_ID} — Step 3 never ran or its stamp failed"
+
+cd "$WORKTREE" 2>/dev/null
+[ "$(pwd -P 2>/dev/null)" = "$(cd "$WORKTREE" 2>/dev/null && pwd -P)" ] \
+  || step6_abort "could not re-anchor to the resolved worktree ${WORKTREE}"
+echo "ci-repair Step 6: re-anchored to ${WORKTREE}"
+```
 
 Commit only the changes that fix the CI failure. Commit ONLY when there is a
 real code fix — never an empty/no-op commit and never a commit whose sole
