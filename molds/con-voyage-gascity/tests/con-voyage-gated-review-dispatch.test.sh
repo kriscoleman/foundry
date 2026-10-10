@@ -166,6 +166,12 @@ assert_contains "$REREVIEW_SEED_MD" "con-voyage-lib.sh not resolved — cannot m
 assert_order "$REREVIEW_SEED_MD" 'bd close "$CLAIMED_BEAD_ID" --reason "Re-review seed failed: ${SEED_FAIL}"' 'cv_with_timeout 30 gc mail send mayor -s "con-voyage rereview-seed failed' \
   "the step bead's own close runs ahead of (outside) the CV_LIB-gated mail/sweep branch"
 
+start_case "rereview-seed.md: the CV_LIB-unresolved fallback closes the workflow ROOT itself, not just its descendants (review fk-pwbxc7 BLOCKING-1)"
+assert_contains "$REREVIEW_SEED_MD" 'bd close "$ROOT_ID" --reason "con-voyage rereview-seed failed (${CLAIMED_BEAD_ID}): ${SEED_FAIL}; closing workflow root (con-voyage-lib.sh unresolved, cv_close_workflow_root unavailable)"' \
+  "the fallback branch closes the root bead, mirroring cv_close_workflow_root's own contract instead of leaving the gc.kind=workflow latch open"
+assert_order "$REREVIEW_SEED_MD" 'con-voyage rereview-seed: WARNING: could not close descendant ${DESC_ID} during fallback sweep' 'bd close "$ROOT_ID" --reason "con-voyage rereview-seed failed (${CLAIMED_BEAD_ID}): ${SEED_FAIL}; closing workflow root' \
+  "the root is closed only after the descendant sweep loop, matching cv_close_workflow_root's own 'close the root LAST' ordering"
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "ALL CASES PASSED"
