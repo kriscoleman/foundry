@@ -161,16 +161,36 @@ assert_contains "$REREVIEW_SEED_MD" 'bd close "$CLAIMED_BEAD_ID" --reason "Re-re
   "the step bead is closed on SEED_FAIL"
 assert_contains "$REREVIEW_SEED_MD" "cv_close_workflow_root \"\$ROOT_ID\"" \
   "a SEED_FAIL sweeps the whole workflow tree via cv_close_workflow_root when CV_LIB resolves"
-assert_contains "$REREVIEW_SEED_MD" "con-voyage-lib.sh not resolved — cannot mail the mayor or run cv_close_workflow_root; falling back to a direct bd close sweep" \
-  "an unresolved CV_LIB falls back to a direct bd close sweep of descendants instead of silently doing nothing"
+FALLBACK_SCRIPT_PRECHECK="${MOLD_DIR}/pack/assets/scripts/cv-rereview-seed-fallback.sh"
+if [ -f "$FALLBACK_SCRIPT_PRECHECK" ]; then
+  assert_contains "$FALLBACK_SCRIPT_PRECHECK" "con-voyage-lib.sh was unresolved — falling back to a direct bd close sweep" \
+    "an unresolved CV_LIB falls back (via the standalone script) to a direct bd close sweep of descendants instead of silently doing nothing"
+else
+  fail "cv-rereview-seed-fallback.sh not found at ${FALLBACK_SCRIPT_PRECHECK}"
+fi
 assert_order "$REREVIEW_SEED_MD" 'bd close "$CLAIMED_BEAD_ID" --reason "Re-review seed failed: ${SEED_FAIL}"' 'cv_with_timeout 30 gc mail send mayor -s "con-voyage rereview-seed failed' \
   "the step bead's own close runs ahead of (outside) the CV_LIB-gated mail/sweep branch"
 
-start_case "rereview-seed.md: the CV_LIB-unresolved fallback closes the workflow ROOT itself, not just its descendants (review fk-pwbxc7 BLOCKING-1)"
-assert_contains "$REREVIEW_SEED_MD" 'bd close "$ROOT_ID" --reason "con-voyage rereview-seed failed (${CLAIMED_BEAD_ID}): ${SEED_FAIL}; closing workflow root (con-voyage-lib.sh unresolved, cv_close_workflow_root unavailable)"' \
-  "the fallback branch closes the root bead, mirroring cv_close_workflow_root's own contract instead of leaving the gc.kind=workflow latch open"
-assert_order "$REREVIEW_SEED_MD" 'con-voyage rereview-seed: WARNING: could not close descendant ${DESC_ID} during fallback sweep' 'bd close "$ROOT_ID" --reason "con-voyage rereview-seed failed (${CLAIMED_BEAD_ID}): ${SEED_FAIL}; closing workflow root' \
+start_case "rereview-seed.md: the CV_LIB-unresolved fallback delegates to a standalone, independently-tested script (review fk-xfewni BLOCKING LOW-6/LOW-7)"
+assert_contains "$REREVIEW_SEED_MD" 'CV_FALLBACK="${CV_PACK_ROOT}/assets/scripts/cv-rereview-seed-fallback.sh"' \
+  "resolves the fallback script by direct sibling path, same convention as CV_GUARD"
+assert_contains "$REREVIEW_SEED_MD" '"$CV_FALLBACK" "$ROOT_ID" "$CLAIMED_BEAD_ID" "$BRANCH" "$SEED_FAIL"' \
+  "invokes the fallback script with root id, claimed bead id, branch, and the seed failure reason"
+assert_contains "$REREVIEW_SEED_MD" 'cannot mail the mayor or sweep the workflow root' \
+  "a missing/non-executable fallback script is surfaced on stderr instead of silently doing nothing"
+
+FALLBACK_SCRIPT="${MOLD_DIR}/pack/assets/scripts/cv-rereview-seed-fallback.sh"
+if [ ! -f "$FALLBACK_SCRIPT" ]; then
+  echo "FATAL: cv-rereview-seed-fallback.sh not found at ${FALLBACK_SCRIPT}" >&2
+  exit 2
+fi
+assert_contains "$FALLBACK_SCRIPT" 'bd close "$ROOT_ID" --reason "con-voyage rereview-seed failed (${CLAIMED_BEAD_ID}): ${SEED_FAIL}; closing workflow root (con-voyage-lib.sh unresolved, cv_close_workflow_root unavailable)"' \
+  "the fallback script closes the root bead, mirroring cv_close_workflow_root's own contract instead of leaving the gc.kind=workflow latch open"
+assert_order "$FALLBACK_SCRIPT" 'WARNING: could not close descendant' 'bd close "$ROOT_ID" --reason "con-voyage rereview-seed failed (${CLAIMED_BEAD_ID}): ${SEED_FAIL}; closing workflow root' \
   "the root is closed only after the descendant sweep loop, matching cv_close_workflow_root's own 'close the root LAST' ordering"
+# Real executable+stub-bd/gc coverage of this script's actual call sequence
+# lives in tests/cv-rereview-seed-fallback.test.sh (review fk-xfewni
+# BLOCKING LOW-6) — these asserts only prove the .md wires it correctly.
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
