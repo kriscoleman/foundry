@@ -4181,6 +4181,43 @@ else
 fi
 
 # ===========================================================================
+# CASE 69 (fk-g0mhdz regrade of fk-dh3mkt LOW-2 -> BLOCKING): every other case
+#   that exercises the suppression-log trim sets CV_SUPPRESSION_LOG_MAX_LINES
+#   explicitly to a small test boundary, so nothing proves the DEFAULT (2000,
+#   when the var is left unset) actually engages. This is the same
+#   finding-class as the already-fixed fk-igqet1 BLOCKING-1 (unbounded /
+#   negative-slice-zero default-parsing trap): if a future change silently
+#   broke the default fallback (e.g. reintroduced a zero/negative value), no
+#   test in this suite would catch it. Pre-seed the log past 2000 lines with
+#   CV_SUPPRESSION_LOG_MAX_LINES left UNSET, trigger one more durable write,
+#   and assert the file is trimmed back down to exactly 2000 lines with the
+#   oldest entries evicted and the newest write kept.
+# ===========================================================================
+start_case "69: fk-g0mhdz regrade — suppression-log trims to the documented default (2000) when CV_SUPPRESSION_LOG_MAX_LINES is unset"
+setup_case_env "69"
+SUPPRESSION_LOG_69="${STATE_DIR}/kriscoleman_foundry_11.suppressions.log"
+for i in $(seq 1 2001); do
+  echo "2020-01-01T00:00:00Z SUPPRESS kriscoleman/foundry#11 inline id=OLD_SENTINEL_${i} author=doomer-ai[bot] reason=doomer_ack_thread_closed" >> "$SUPPRESSION_LOG_69"
+done
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_PR11_EMPTY="1" STUB_GQL_THREADS_DOOMER_ACK="1"
+assert_eq "0" "$RC" "script exits 0"
+if [ -f "$SUPPRESSION_LOG_69" ] && [ "$(wc -l < "$SUPPRESSION_LOG_69" | tr -d ' ')" = "2000" ]; then
+  pass "suppression log is trimmed back down to the default cap (2000) with no override set"
+else
+  fail "suppression log is trimmed back down to the default cap (2000) with no override set"
+fi
+if grep -qF 'OLD_SENTINEL_1 ' "$SUPPRESSION_LOG_69" || grep -qF 'OLD_SENTINEL_2 ' "$SUPPRESSION_LOG_69"; then
+  fail "oldest lines are evicted once the default cap is exceeded"
+else
+  pass "oldest lines are evicted once the default cap is exceeded"
+fi
+if grep -qF 'id=PRRC_t1_ack' "$SUPPRESSION_LOG_69"; then
+  pass "the newest write survives the default-cap trim"
+else
+  fail "the newest write survives the default-cap trim"
+fi
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 echo
