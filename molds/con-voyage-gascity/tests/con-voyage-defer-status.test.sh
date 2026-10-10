@@ -162,6 +162,91 @@ assert_eq "" "$read_out" "read_and_clear returns nothing when it cannot acquire 
 unset -f acquire_lock release_lock
 source "$LIB"  # restore the real implementations for any later case
 
+# ===========================================================================
+# CASE 7 — append's bounded retry actually recovers: a lock held by a
+# short-lived holder that releases before the retry budget is exhausted must
+# not be treated as a permanent failure (review fk-drbqfj iteration-2
+# BLOCKING-1, qa-test fk-jhzihj: CASE 6 above only proves the two extremes,
+# "never fails" and "fails forever" — nothing exercised the actual reason
+# this is a bounded retry loop and not a bare acquire-or-fail, which is
+# "fails N times, then succeeds on attempt N+1", the exact shape ci-repair
+# and rereview-finalize are expected to hit routinely per the function's own
+# comment). acquire_lock is overridden with a counter: the first two calls
+# report "held elsewhere" the same way CASE 6's permanent stub does, then the
+# override delegates to the real acquire_lock so the 3rd call genuinely
+# acquires the lock. This pins both the outcome (eventual success, correct
+# content) and the exact retry count, so an off-by-one on the attempt
+# counter or a loop that only checks once would fail this case even though
+# it would pass CASE 6's two extremes.
+# ===========================================================================
+start_case "7: append succeeds after transient lock contention (fails N times, then acquires on retry)"
+CV_STATE_DIR="$(fresh_state_dir)"
+APPEND_LOCK_KEY="cv-finalize-acme-retry-append"
+
+eval "$(declare -f acquire_lock | sed '1s/acquire_lock/__real_acquire_lock/')"
+ACQUIRE_LOCK_CALLS=0
+ACQUIRE_LOCK_FAIL_UNTIL=2
+acquire_lock() {
+  ACQUIRE_LOCK_CALLS=$((ACQUIRE_LOCK_CALLS + 1))
+  if [ "$ACQUIRE_LOCK_CALLS" -le "$ACQUIRE_LOCK_FAIL_UNTIL" ]; then
+    return 1
+  fi
+  __real_acquire_lock "$@"
+}
+
+append_rc=0
+cv_defer_status_append "$APPEND_LOCK_KEY" "status recorded once the transient lock holder released" || append_rc=$?
+assert_eq "0" "$append_rc" "append ultimately succeeds once the transient lock releases"
+assert_eq "3" "$ACQUIRE_LOCK_CALLS" "append retried acquire_lock exactly until the 3rd (succeeding) attempt"
+
+appended_contents="$(cat "${CV_STATE_DIR}/${APPEND_LOCK_KEY}.pending-status" 2>/dev/null)"
+case "$appended_contents" in
+  *"status recorded once the transient lock holder released"*) pass "the appended text is present once the retry succeeds" ;;
+  *) fail "appended text missing after the retry succeeds (got: ${appended_contents})" ;;
+esac
+
+unset -f acquire_lock __real_acquire_lock
+source "$LIB"  # restore the real implementations for any later case
+
+# ===========================================================================
+# CASE 8 — read_and_clear's bounded retry actually recovers, same scenario
+# as CASE 7 but for the read/clear side (review fk-drbqfj iteration-2
+# BLOCKING-1).
+# ===========================================================================
+start_case "8: read_and_clear succeeds after transient lock contention (fails N times, then acquires on retry)"
+CV_STATE_DIR="$(fresh_state_dir)"
+READ_LOCK_KEY="cv-finalize-acme-retry-read"
+PRE_FILE="${CV_STATE_DIR}/${READ_LOCK_KEY}.pending-status"
+printf -- '- status pending before the transient lock holder released\n' > "$PRE_FILE"
+
+eval "$(declare -f acquire_lock | sed '1s/acquire_lock/__real_acquire_lock/')"
+ACQUIRE_LOCK_CALLS=0
+ACQUIRE_LOCK_FAIL_UNTIL=2
+acquire_lock() {
+  ACQUIRE_LOCK_CALLS=$((ACQUIRE_LOCK_CALLS + 1))
+  if [ "$ACQUIRE_LOCK_CALLS" -le "$ACQUIRE_LOCK_FAIL_UNTIL" ]; then
+    return 1
+  fi
+  __real_acquire_lock "$@"
+}
+
+CASE8_OUT_FILE="${SANDBOX}/case8-read-out-$$"
+# Redirect stdout to a file rather than capturing via $(...): a command
+# substitution subshell would increment ACQUIRE_LOCK_CALLS in a forked
+# process, silently discarding the count once the subshell exits.
+cv_defer_status_read_and_clear "$READ_LOCK_KEY" > "$CASE8_OUT_FILE"
+read_out="$(cat "$CASE8_OUT_FILE")"
+case "$read_out" in
+  *"status pending before the transient lock holder released"*) pass "read_and_clear returns the pending text once the retry succeeds" ;;
+  *) fail "read_and_clear did not return the pending text after the retry succeeds (got: ${read_out})" ;;
+esac
+assert_eq "3" "$ACQUIRE_LOCK_CALLS" "read_and_clear retried acquire_lock exactly until the 3rd (succeeding) attempt"
+[ -f "$PRE_FILE" ] && fail "pending-status file still exists after read_and_clear succeeds" \
+  || pass "read_and_clear deletes the pending-status file once the retry succeeds"
+
+unset -f acquire_lock __real_acquire_lock
+source "$LIB"  # restore the real implementations for any later case
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "ALL CASES PASSED"
