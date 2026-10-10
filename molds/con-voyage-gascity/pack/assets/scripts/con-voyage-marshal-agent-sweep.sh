@@ -95,21 +95,10 @@ fi
 CV_STATE_DIR="${CV_STATE_DIR:-$(cv_default_rig_root)/.gc/con-voyage-marshal-agent-sweep}"
 mkdir -p "$CV_STATE_DIR"
 
-minutes_since_iso8601() {
-  local ts="$1"
-  [ -n "$ts" ] || return 0
-  python3 -c "
-import sys, datetime
-ts = sys.argv[1]
-try:
-    t = datetime.datetime.fromisoformat(ts.replace('Z', '+00:00'))
-except Exception:
-    sys.exit(0)
-now = datetime.datetime.now(datetime.timezone.utc)
-delta = (now - t).total_seconds() / 60.0
-print(int(delta))
-" "$ts" 2>/dev/null
-}
+# fk-9oigyg review LOW-2: bounded, best-effort cleanup of per-session flag
+# files whose session has long since disappeared. Never load-bearing.
+CV_MARSHAL_STATE_TTL_DAYS="${CV_MARSHAL_STATE_TTL_DAYS:-30}"
+cv_marshal_prune_state_dir "$CV_STATE_DIR" "$CV_MARSHAL_STATE_TTL_DAYS"
 
 FLAGGED_LINES=""
 add_flag() {
@@ -173,10 +162,14 @@ while IFS=$'\x1f' read -r sid template last_active; do
     continue
   fi
 
-  quiet_minutes="$(minutes_since_iso8601 "$last_active")"
+  quiet_minutes="$(cv_minutes_since_iso8601 "$last_active")"
   [ -n "$quiet_minutes" ] || continue
 
-  flagged_for_file="${CV_STATE_DIR}/${sid}.flagged_for"
+  # fk-9oigyg review LOW-1: sanitize before using the session id as a path
+  # component, so a session id containing a path separator can never resolve
+  # a flag-file read/write outside CV_STATE_DIR.
+  sid_safe="$(cv_path_safe_component "$sid")"
+  flagged_for_file="${CV_STATE_DIR}/${sid_safe}.flagged_for"
   if [ "$quiet_minutes" -lt "$CV_MARSHAL_AGENT_STALL_MINUTES" ]; then
     # Recently active: clear any flag tied to a now-stale last_active so a
     # LATER, distinct quiet episode (session goes quiet again after this)
@@ -203,21 +196,15 @@ if [ -z "$FLAGGED_LINES" ]; then
 fi
 
 FLAGGED_COUNT="$(printf '%s\n' "$FLAGGED_LINES" | grep -c .)"
-mail_out="$(cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" \
-  "$GC" --city "$GC_CITY" mail send "$CV_MARSHAL_ESCALATE_TARGET" \
-    -s "MARSHAL AGENT SWEEP: ${FLAGGED_COUNT} quiet agent(s)" \
-    -m "con-voyage-marshal-agent-sweep flagged ${FLAGGED_COUNT} quiet agent session(s) this tick (no activity, no interactive prompt visible):
+if cv_marshal_send_digest "$CV_LENS_STORE_TIMEOUT_SECONDS" "$CV_MARSHAL_ESCALATE_TARGET" \
+    "MARSHAL AGENT SWEEP: ${FLAGGED_COUNT} quiet agent(s)" \
+    "con-voyage-marshal-agent-sweep flagged ${FLAGGED_COUNT} quiet agent session(s) this tick (no activity, no interactive prompt visible):
 
 ${FLAGGED_LINES}" \
-    2>&1)"
-mail_rc=$?
-if [ "$mail_rc" -eq 0 ]; then
+    "con-voyage-marshal-agent-sweep" "${#PENDING_FLAG_WRITES[@]} flagged entr(y/ies)"; then
   for pending_file in "${!PENDING_FLAG_WRITES[@]}"; do
     printf '%s' "${PENDING_FLAG_WRITES[$pending_file]}" > "$pending_file"
   done
-else
-  echo "con-voyage-marshal-agent-sweep: WARNING: digest mail to ${CV_MARSHAL_ESCALATE_TARGET} failed: ${mail_out}" >&2
-  echo "con-voyage-marshal-agent-sweep: WARNING: not advancing persisted state for ${#PENDING_FLAG_WRITES[@]} flagged entr(y/ies) — will re-flag next tick" >&2
 fi
 
 exit 0

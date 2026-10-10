@@ -247,8 +247,13 @@ export STUB_BDCLOSE_COUNTER_DIR="${SANDBOX}/close_counts"
 source "$LIB"
 
 FAILURES=0
+pass() { echo "  PASS: $1"; }
+fail() { echo "  FAIL: $1" >&2; FAILURES=$((FAILURES+1)); }
 assert_eq() {
-  if [ "$1" = "$2" ]; then echo "  PASS: $3 (=$1)"; else echo "  FAIL: $3 (expected '$1', got '$2')" >&2; FAILURES=$((FAILURES+1)); fi
+  if [ "$1" = "$2" ]; then pass "$3 (=$1)"; else fail "$3 (expected '$1', got '$2')"; fi
+}
+assert_contains() {
+  if printf '%s' "$1" | grep -qF -- "$2"; then pass "$3"; else fail "$3 (not found in output)"; fi
 }
 start_case() { echo; echo "=== CASE: $1 ==="; }
 
@@ -2243,6 +2248,130 @@ assert_eq "$(printf '\x1f')0" "$(classify 'not json at all')" "malformed input n
 
 start_case "cv_classify_pr_signals: StatusContext shape (state, not conclusion) failing -> checks_failed"
 assert_eq "checks_failed$(printf '\x1f')1" "$(classify '{"statusCheckRollup":[{"state":"FAILURE"}],"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","reviewDecision":""}')" "a legacy StatusContext failing state is also recognized"
+
+# ---------------------------------------------------------------------------
+# cv_minutes_since_iso8601 (fk-9oigyg review LOW-5: was duplicated verbatim
+# in con-voyage-marshal-bead-sweep.sh and con-voyage-marshal-agent-sweep.sh)
+# ---------------------------------------------------------------------------
+start_case "cv_minutes_since_iso8601: a timestamp 90 minutes ago resolves to ~90"
+past_ts="$(python3 -c "
+import datetime
+print((datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=90)).isoformat().replace('+00:00', 'Z'))
+")"
+assert_eq "90" "$(cv_minutes_since_iso8601 "$past_ts")" "90-minute-old timestamp resolves to 90 (+/- rounding)"
+
+start_case "cv_minutes_since_iso8601: empty timestamp resolves empty, not an error"
+assert_eq "" "$(cv_minutes_since_iso8601 "")" "empty input prints nothing"
+
+start_case "cv_minutes_since_iso8601: unparseable timestamp resolves empty (fail safe, never a false stale age)"
+assert_eq "" "$(cv_minutes_since_iso8601 "not-a-timestamp")" "unparseable input prints nothing"
+
+# ---------------------------------------------------------------------------
+# cv_mayor_is_bead_escalation (fk-9oigyg review LOW-6: was duplicated verbatim
+# in con-voyage-marshal-bead-sweep.sh and con-voyage-marshal-formula-sweep.sh)
+# ---------------------------------------------------------------------------
+start_case "cv_mayor_is_bead_escalation: a failing outcome is an escalation"
+if cv_mayor_is_bead_escalation "open" "fail" ""; then pass "outcome=fail is an escalation"; else fail "outcome=fail should be an escalation"; fi
+
+start_case "cv_mayor_is_bead_escalation: a non-empty failure_class is an escalation"
+if cv_mayor_is_bead_escalation "open" "" "boom"; then pass "a failure_class is an escalation"; else fail "a failure_class should be an escalation"; fi
+
+start_case "cv_mayor_is_bead_escalation: routine open/in_progress/closed with no outcome/failure_class is NOT an escalation"
+if cv_mayor_is_bead_escalation "open" "" ""; then fail "plain open status should not be an escalation"; else pass "plain open status is routine"; fi
+if cv_mayor_is_bead_escalation "closed" "pass" ""; then fail "closed/pass should not be an escalation"; else pass "closed/pass is routine"; fi
+
+start_case "cv_mayor_is_bead_escalation: an unrecognized status is an escalation (fail loud on the unexpected)"
+if cv_mayor_is_bead_escalation "blocked" "" ""; then pass "an unrecognized status is an escalation"; else fail "an unrecognized status should be an escalation"; fi
+
+# ---------------------------------------------------------------------------
+# cv_path_safe_component (fk-9oigyg review LOW-1: bead/step/session ids are
+# interpolated into state-file paths; this guards against an id containing a
+# path separator or traversal sequence resolving outside the intended
+# directory).
+# ---------------------------------------------------------------------------
+start_case "cv_path_safe_component: an ordinary id passes through unchanged"
+assert_eq "fk-abc123" "$(cv_path_safe_component "fk-abc123")" "a normal bead id is unchanged"
+
+start_case "cv_path_safe_component: a path separator is replaced"
+assert_eq ".._etc_passwd" "$(cv_path_safe_component "../etc/passwd")" "slashes and traversal segments are neutralized to underscores"
+
+start_case "cv_path_safe_component: an absolute path is neutralized"
+assert_eq "_etc_passwd" "$(cv_path_safe_component "/etc/passwd")" "a leading slash is neutralized"
+
+start_case "cv_path_safe_component: empty input resolves empty"
+assert_eq "" "$(cv_path_safe_component "")" "empty input prints nothing"
+
+start_case "cv_path_safe_component: a bare '..' (every char individually allowed) is still neutralized, not passed through as a traversal component"
+assert_eq "__" "$(cv_path_safe_component "..")" "a bare '..' component is neutralized rather than left as a parent-dir traversal"
+
+start_case "cv_path_safe_component: a bare '.' is still neutralized"
+assert_eq "_" "$(cv_path_safe_component ".")" "a bare '.' component is neutralized rather than left as a self-dir reference"
+
+# ---------------------------------------------------------------------------
+# cv_marshal_send_digest (fk-9oigyg review LOW-7: the "bail if nothing
+# flagged / send one digest mail / warn on failure" tail block was repeated
+# verbatim across all three marshal sweep scripts with only labels varying).
+# ---------------------------------------------------------------------------
+MARSHAL_DIGEST_STUBDIR="$(mktemp -d "${TMPDIR:-/tmp}/cv-lib-digest-stub.XXXXXX")"
+cat > "${MARSHAL_DIGEST_STUBDIR}/gc" <<'DIGEST_STUB'
+#!/usr/bin/env bash
+if [ "${STUB_MAIL_SEND_FAIL:-0}" = "1" ]; then
+  echo "stub mail send failure" >&2
+  exit 1
+fi
+exit 0
+DIGEST_STUB
+chmod +x "${MARSHAL_DIGEST_STUBDIR}/gc"
+
+start_case "cv_marshal_send_digest: a successful send returns 0 and prints nothing to stderr"
+digest_err="$( (
+  export PATH="${MARSHAL_DIGEST_STUBDIR}:${PATH}"
+  export GC="gc"
+  export GC_CITY="."
+  cv_marshal_send_digest 5 mayor "SUBJECT" "BODY" "test-script" "1 entry"
+) 2>&1 1>/dev/null )"
+digest_rc=$?
+assert_eq "0" "$digest_rc" "returns 0 on a successful mail send"
+assert_eq "" "$digest_err" "no WARNING on a successful send"
+
+start_case "cv_marshal_send_digest: a failed send returns non-zero and logs a WARNING naming the script and pending count"
+digest_err="$( (
+  export PATH="${MARSHAL_DIGEST_STUBDIR}:${PATH}"
+  export GC="gc"
+  export GC_CITY="."
+  export STUB_MAIL_SEND_FAIL=1
+  cv_marshal_send_digest 5 mayor "SUBJECT" "BODY" "test-script" "1 entry"
+) 2>&1 1>/dev/null )"
+digest_rc=$?
+if [ "$digest_rc" -eq 0 ]; then fail "should return non-zero when mail send fails"; else pass "returns non-zero when mail send fails"; fi
+assert_contains "$digest_err" "test-script: WARNING: digest mail to mayor failed" "warns which script and target failed"
+assert_contains "$digest_err" "1 entry" "warning names the caller-supplied pending-state description"
+rm -rf "$MARSHAL_DIGEST_STUBDIR"
+
+# ---------------------------------------------------------------------------
+# cv_marshal_prune_state_dir (fk-9oigyg review LOW-2: per-bead/step/session
+# state files in CV_STATE_DIR are never garbage-collected; a bounded,
+# age-based prune keeps the directory from growing unbounded over a
+# long-lived city without needing to know which ids are still live).
+# ---------------------------------------------------------------------------
+PRUNE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cv-lib-prune-test.XXXXXX")"
+touch "${PRUNE_DIR}/fresh-file"
+touch -t 202001010000 "${PRUNE_DIR}/ancient-file"
+mkdir -p "${PRUNE_DIR}/root-subdir"
+touch "${PRUNE_DIR}/root-subdir/fresh-nested"
+touch -t 202001010000 "${PRUNE_DIR}/root-subdir/ancient-nested"
+
+start_case "cv_marshal_prune_state_dir: removes only files older than the TTL, recursively, leaves the tree in place"
+cv_marshal_prune_state_dir "$PRUNE_DIR" 30
+assert_eq "0" "$([ -f "${PRUNE_DIR}/fresh-file" ] && echo 0 || echo 1)" "a fresh top-level file survives the prune"
+assert_eq "1" "$([ -f "${PRUNE_DIR}/ancient-file" ] && echo 0 || echo 1)" "an ancient top-level file is pruned"
+assert_eq "0" "$([ -f "${PRUNE_DIR}/root-subdir/fresh-nested" ] && echo 0 || echo 1)" "a fresh nested file survives the prune"
+assert_eq "1" "$([ -f "${PRUNE_DIR}/root-subdir/ancient-nested" ] && echo 0 || echo 1)" "an ancient nested file is pruned"
+assert_eq "0" "$([ -d "${PRUNE_DIR}/root-subdir" ] && echo 0 || echo 1)" "the subdirectory itself is left in place"
+
+start_case "cv_marshal_prune_state_dir: a missing directory is a no-op, never an error"
+if cv_marshal_prune_state_dir "${PRUNE_DIR}/does-not-exist" 30; then pass "missing dir is a no-op that still returns 0"; else fail "missing dir should not error"; fi
+rm -rf "$PRUNE_DIR"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

@@ -109,40 +109,11 @@ fi
 CV_STATE_DIR="${CV_STATE_DIR:-$(cv_default_rig_root)/.gc/con-voyage-marshal-bead-sweep}"
 mkdir -p "$CV_STATE_DIR"
 
-# ---------------------------------------------------------------------------
-# mayor_is_bead_escalation STATUS OUTCOME FAILURE_CLASS — ported verbatim
-# from scripts/mayor/lib/events.sh: true if a bead's current state is a
-# failure/escalation rather than routine progress.
-# ---------------------------------------------------------------------------
-mayor_is_bead_escalation() {
-  local status="$1" outcome="$2" failure_class="$3"
-  case "$outcome" in *fail*) return 0 ;; esac
-  [ -n "$failure_class" ] && return 0
-  case "$status" in
-    open|in_progress|closed) return 1 ;;
-    *) return 0 ;;
-  esac
-}
-
-# minutes_since_iso8601 TIMESTAMP — whole minutes between TIMESTAMP (an
-# RFC3339 string as bd emits) and now; empty TIMESTAMP or a parse failure
-# prints nothing so callers treat it as "unknown age", never a stale-age
-# false positive.
-minutes_since_iso8601() {
-  local ts="$1"
-  [ -n "$ts" ] || return 0
-  python3 -c "
-import sys, datetime
-ts = sys.argv[1]
-try:
-    t = datetime.datetime.fromisoformat(ts.replace('Z', '+00:00'))
-except Exception:
-    sys.exit(0)
-now = datetime.datetime.now(datetime.timezone.utc)
-delta = (now - t).total_seconds() / 60.0
-print(int(delta))
-" "$ts" 2>/dev/null
-}
+# fk-9oigyg review LOW-2: bounded, best-effort cleanup of per-bead state files
+# whose bead/root has long since disappeared. Never load-bearing — a failure
+# or no-op here must never affect this tick's own classification.
+CV_MARSHAL_STATE_TTL_DAYS="${CV_MARSHAL_STATE_TTL_DAYS:-30}"
+cv_marshal_prune_state_dir "$CV_STATE_DIR" "$CV_MARSHAL_STATE_TTL_DAYS"
 
 CANDIDATES_JSON="$(cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" "$GC" --city "$GC_CITY" bd list --status open,in_progress --has-metadata-key gc.root_bead_id --json --limit 0 2>/dev/null)" || CANDIDATES_JSON=""
 
@@ -220,30 +191,34 @@ for item in data:
       classification="ORPHAN"
       classification_class="ORPHAN"
     elif [ "$scope_role" = "teardown" ] && [ "$status" = "open" ]; then
-      age="$(minutes_since_iso8601 "$updated_at")"
+      age="$(cv_minutes_since_iso8601 "$updated_at")"
       if [ -n "$age" ] && [ "$age" -ge "$CV_MARSHAL_TEARDOWN_STALE_MINUTES" ]; then
         classification="STRANDED-TEARDOWN(${age}m)"
         classification_class="STRANDED-TEARDOWN"
       fi
     elif [ "$status" = "open" ] && [ "$root_status" != "closed" ]; then
-      age="$(minutes_since_iso8601 "$updated_at")"
+      age="$(cv_minutes_since_iso8601 "$updated_at")"
       if [ -n "$age" ] && [ "$age" -ge "$CV_MARSHAL_READY_STALE_MINUTES" ]; then
         classification="STUCK-READY(${age}m)"
         classification_class="STUCK-READY"
       fi
     fi
 
+    # fk-9oigyg review LOW-1: sanitize before using the id as a path
+    # component, so a bead id containing a path separator can never resolve
+    # a state-file read/write outside CV_STATE_DIR.
+    bead_id_safe="$(cv_path_safe_component "$bead_id")"
     cur="${status} root=${root_id} outcome=${outcome}${failure_class:+ fail=${failure_class}}${classification_class:+ class=${classification_class}}"
-    prev="$(cat "${CV_STATE_DIR}/${bead_id}" 2>/dev/null || true)"
+    prev="$(cat "${CV_STATE_DIR}/${bead_id_safe}" 2>/dev/null || true)"
     if [ "$cur" != "$prev" ]; then
       if [ -n "$classification" ]; then
         add_flag "${classification}: ${bead_id} (root ${root_id}) ${status} outcome=${outcome}${failure_class:+ fail=${failure_class}}"
-        PENDING_STATE_WRITES["$bead_id"]="$cur"
-      elif mayor_is_bead_escalation "$status" "$outcome" "$failure_class"; then
+        PENDING_STATE_WRITES["$bead_id_safe"]="$cur"
+      elif cv_mayor_is_bead_escalation "$status" "$outcome" "$failure_class"; then
         add_flag "ESCALATION: ${bead_id} (root ${root_id}): ${prev:-<new>} -> ${cur}"
-        PENDING_STATE_WRITES["$bead_id"]="$cur"
+        PENDING_STATE_WRITES["$bead_id_safe"]="$cur"
       else
-        printf '%s' "$cur" > "${CV_STATE_DIR}/${bead_id}"
+        printf '%s' "$cur" > "${CV_STATE_DIR}/${bead_id_safe}"
         echo "con-voyage-marshal-bead-sweep: ${bead_id}: ${prev:-<new>} -> ${cur}"
       fi
     fi
@@ -272,21 +247,15 @@ if [ -z "$FLAGGED_LINES" ]; then
 fi
 
 FLAGGED_COUNT="$(printf '%s\n' "$FLAGGED_LINES" | grep -c .)"
-mail_out="$(cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" \
-  "$GC" --city "$GC_CITY" mail send "$CV_MARSHAL_ESCALATE_TARGET" \
-    -s "MARSHAL BEAD SWEEP: ${FLAGGED_COUNT} flagged condition(s)" \
-    -m "con-voyage-marshal-bead-sweep flagged ${FLAGGED_COUNT} condition(s) this tick:
+if cv_marshal_send_digest "$CV_LENS_STORE_TIMEOUT_SECONDS" "$CV_MARSHAL_ESCALATE_TARGET" \
+    "MARSHAL BEAD SWEEP: ${FLAGGED_COUNT} flagged condition(s)" \
+    "con-voyage-marshal-bead-sweep flagged ${FLAGGED_COUNT} condition(s) this tick:
 
 ${FLAGGED_LINES}" \
-    2>&1)"
-mail_rc=$?
-if [ "$mail_rc" -eq 0 ]; then
+    "con-voyage-marshal-bead-sweep" "${#PENDING_STATE_WRITES[@]} flagged entr(y/ies)"; then
   for pending_key in "${!PENDING_STATE_WRITES[@]}"; do
     printf '%s' "${PENDING_STATE_WRITES[$pending_key]}" > "${CV_STATE_DIR}/${pending_key}"
   done
-else
-  echo "con-voyage-marshal-bead-sweep: WARNING: digest mail to ${CV_MARSHAL_ESCALATE_TARGET} failed: ${mail_out}" >&2
-  echo "con-voyage-marshal-bead-sweep: WARNING: not advancing persisted state for ${#PENDING_STATE_WRITES[@]} flagged entr(y/ies) — will re-flag next tick" >&2
 fi
 
 exit 0

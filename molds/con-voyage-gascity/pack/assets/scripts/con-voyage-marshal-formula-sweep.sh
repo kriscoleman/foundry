@@ -90,15 +90,10 @@ fi
 CV_STATE_DIR="${CV_STATE_DIR:-$(cv_default_rig_root)/.gc/con-voyage-marshal-formula-sweep}"
 mkdir -p "$CV_STATE_DIR"
 
-mayor_is_bead_escalation() {
-  local status="$1" outcome="$2" failure_class="$3"
-  case "$outcome" in *fail*) return 0 ;; esac
-  [ -n "$failure_class" ] && return 0
-  case "$status" in
-    open|in_progress|closed) return 1 ;;
-    *) return 0 ;;
-  esac
-}
+# fk-9oigyg review LOW-2: bounded, best-effort cleanup of per-root state
+# directories whose root has long since disappeared. Never load-bearing.
+CV_MARSHAL_STATE_TTL_DAYS="${CV_MARSHAL_STATE_TTL_DAYS:-30}"
+cv_marshal_prune_state_dir "$CV_STATE_DIR" "$CV_MARSHAL_STATE_TTL_DAYS"
 
 FLAGGED_LINES=""
 add_flag() {
@@ -143,7 +138,11 @@ fi
 
 while IFS= read -r root; do
   [ -n "${root// /}" ] || continue
-  ROOT_STATE_DIR="${CV_STATE_DIR}/${root}"
+  # fk-9oigyg review LOW-1: sanitize before using the root id as a path
+  # component, so a root id containing a path separator can never resolve a
+  # state-directory read/write outside CV_STATE_DIR.
+  root_safe="$(cv_path_safe_component "$root")"
+  ROOT_STATE_DIR="${CV_STATE_DIR}/${root_safe}"
   mkdir -p "$ROOT_STATE_DIR"
 
   # --- Step progress diff (ported from watch-run.sh) ---------------------
@@ -176,15 +175,18 @@ for item in data:
 
     while IFS=$'\x1f' read -r step_id status assignee outcome failure_class title; do
       [ -n "${step_id// /}" ] || continue
+      # fk-9oigyg review LOW-1: sanitize before using the step id as a path
+      # component, for the same reason as root_safe above.
+      step_id_safe="$(cv_path_safe_component "$step_id")"
       who="-"; [ -n "$assignee" ] && who="@${assignee}"
       cur="${status} ${who} outcome=${outcome}${failure_class:+ fail=${failure_class}}"
-      prev="$(cat "${ROOT_STATE_DIR}/${step_id}" 2>/dev/null || true)"
+      prev="$(cat "${ROOT_STATE_DIR}/${step_id_safe}" 2>/dev/null || true)"
       if [ "$cur" != "$prev" ]; then
-        if mayor_is_bead_escalation "$status" "$outcome" "$failure_class"; then
+        if cv_mayor_is_bead_escalation "$status" "$outcome" "$failure_class"; then
           add_flag "RUN ${root} ${step_id} [${title}]: ${prev:-<new>} -> ${cur}"
-          PENDING_STATE_WRITES["${ROOT_STATE_DIR}/${step_id}"]="$cur"
+          PENDING_STATE_WRITES["${ROOT_STATE_DIR}/${step_id_safe}"]="$cur"
         else
-          printf '%s' "$cur" > "${ROOT_STATE_DIR}/${step_id}"
+          printf '%s' "$cur" > "${ROOT_STATE_DIR}/${step_id_safe}"
           echo "con-voyage-marshal-formula-sweep: ${root} ${step_id} [${title}]: ${prev:-<new>} -> ${cur}"
         fi
       fi
@@ -222,12 +224,24 @@ print((d.get('metadata') or {}).get('gc.build.source_anchor_work_dir') or '')
     continue
   fi
 
-  AHEAD="$(git -C "$WT" rev-list --count origin/main..HEAD 2>/dev/null || echo 0)"
+  # fk-9oigyg review LOW-3: each git call after the fetch is now individually
+  # bounded by cv_with_timeout too (previously only the fetch was), so a
+  # single hung git invocation can't run past this tick's own budget. Mirrors
+  # the LOW-4/fetch fix above: a bounded rev-list that fails or times out
+  # skips this tick (leaving .anchor_done unset) rather than risk computing
+  # AHEAD off incomplete output and falsely marking the anchor clean/done.
+  AHEAD_RAW="$(cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" git -C "$WT" rev-list --count origin/main..HEAD 2>/dev/null)"
+  AHEAD_RC=$?
+  if [ "$AHEAD_RC" -ne 0 ]; then
+    echo "con-voyage-marshal-formula-sweep: ANCHOR ${root} rev-list failed, retrying next sweep" >&2
+    continue
+  fi
+  AHEAD="$AHEAD_RAW"
   case "$AHEAD" in *[!0-9]*|'') AHEAD=0 ;; esac
   [ "$AHEAD" -gt 0 ] || continue
 
-  BRANCH="$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null)"
-  STAT="$(git -C "$WT" diff --shortstat origin/main...HEAD 2>/dev/null | sed 's/^ *//')"
+  BRANCH="$(cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+  STAT="$(cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" git -C "$WT" diff --shortstat origin/main...HEAD 2>/dev/null | sed 's/^ *//')"
   DEL="$(printf '%s' "$STAT" | grep -oE '[0-9]+ deletion' | grep -oE '[0-9]+')"
   DEL="${DEL:-0}"
 
@@ -250,24 +264,18 @@ if [ -z "$FLAGGED_LINES" ]; then
 fi
 
 FLAGGED_COUNT="$(printf '%s\n' "$FLAGGED_LINES" | grep -c .)"
-mail_out="$(cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" \
-  "$GC" --city "$GC_CITY" mail send "$CV_MARSHAL_ESCALATE_TARGET" \
-    -s "MARSHAL FORMULA SWEEP: ${FLAGGED_COUNT} flagged condition(s)" \
-    -m "con-voyage-marshal-formula-sweep flagged ${FLAGGED_COUNT} condition(s) this tick:
+if cv_marshal_send_digest "$CV_LENS_STORE_TIMEOUT_SECONDS" "$CV_MARSHAL_ESCALATE_TARGET" \
+    "MARSHAL FORMULA SWEEP: ${FLAGGED_COUNT} flagged condition(s)" \
+    "con-voyage-marshal-formula-sweep flagged ${FLAGGED_COUNT} condition(s) this tick:
 
 ${FLAGGED_LINES}" \
-    2>&1)"
-mail_rc=$?
-if [ "$mail_rc" -eq 0 ]; then
+    "con-voyage-marshal-formula-sweep" "${#PENDING_STATE_WRITES[@]} step(s) and ${#PENDING_ANCHOR_DONE[@]} anchor check(s)"; then
   for pending_key in "${!PENDING_STATE_WRITES[@]}"; do
     printf '%s' "${PENDING_STATE_WRITES[$pending_key]}" > "$pending_key"
   done
   for pending_anchor in "${!PENDING_ANCHOR_DONE[@]}"; do
     touch "$pending_anchor"
   done
-else
-  echo "con-voyage-marshal-formula-sweep: WARNING: digest mail to ${CV_MARSHAL_ESCALATE_TARGET} failed: ${mail_out}" >&2
-  echo "con-voyage-marshal-formula-sweep: WARNING: not advancing persisted state for ${#PENDING_STATE_WRITES[@]} step(s) and ${#PENDING_ANCHOR_DONE[@]} anchor check(s) — will re-flag next tick" >&2
 fi
 
 exit 0

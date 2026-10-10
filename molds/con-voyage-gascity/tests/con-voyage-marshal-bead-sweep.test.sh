@@ -234,6 +234,39 @@ assert_eq "0" "$LAST_RC" "exits 0"
 assert_contains "$LAST_LOG" "mail send mayor" "a digest mail was sent for rising unread count"
 unset STUB_BDLIST_JSON STUB_MAIL_COUNT_OUTPUT
 
+# ---------------------------------------------------------------------------
+# fk-9oigyg review LOW-1: a bead id containing a path separator (or a
+# traversal sequence) must never let the per-bead state file resolve outside
+# CV_STATE_DIR.
+start_case "LOW-1: a bead id containing a path separator never escapes CV_STATE_DIR"
+export STUB_BDLIST_JSON='[{"id":"fk-evil/../../escape","status":"open","updated_at":"'"$(recent_ts)"'","metadata":{"gc.root_bead_id":"fk-rootevil","gc.outcome":"fail","gc.failure_class":"boom"}}]'
+export STUB_BDSHOW_JSON_fk_rootevil='{"id":"fk-rootevil","status":"in_progress"}'
+rm -rf "${SANDBOX}/state"
+run_script
+assert_eq "0" "$LAST_RC" "exits 0"
+assert_contains "$LAST_LOG" "mail send mayor" "a digest mail was sent for the malicious-id escalation"
+[ -e "${SANDBOX}/escape" ] \
+  && fail "a state file escaped CV_STATE_DIR via the path-separator id" \
+  || pass "no file was written outside CV_STATE_DIR"
+state_file_count="$(find "${SANDBOX}/state" -type f ! -name '_mail' | grep -c .)"
+assert_eq "1" "$state_file_count" "exactly one sanitized bead state file was written, inside CV_STATE_DIR"
+unset STUB_BDLIST_JSON STUB_BDSHOW_JSON_fk_rootevil
+
+# ---------------------------------------------------------------------------
+# fk-9oigyg review LOW-2: a bounded, age-based prune keeps CV_STATE_DIR from
+# growing unbounded as beads/roots disappear.
+start_case "LOW-2: an ancient state file is pruned from CV_STATE_DIR on the next tick"
+rm -rf "${SANDBOX}/state"
+mkdir -p "${SANDBOX}/state"
+touch -t 202001010000 "${SANDBOX}/state/fk-long-gone"
+export STUB_BDLIST_JSON='[]'
+run_script
+assert_eq "0" "$LAST_RC" "exits 0"
+[ -f "${SANDBOX}/state/fk-long-gone" ] \
+  && fail "an ancient state file for a long-gone bead was not pruned" \
+  || pass "the ancient state file was pruned"
+unset STUB_BDLIST_JSON
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "ALL CASES PASSED"
