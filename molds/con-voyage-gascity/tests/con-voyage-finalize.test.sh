@@ -198,6 +198,14 @@ case "$sub" in
           exit 1
         fi
       fi
+      # fk-dgia1g: cv_close_workflow_root's descendant sweep now re-queries
+      # "bd list --metadata-field gc.root_bead_id=..." across multiple
+      # passes, like real `bd` would stop reporting a bead this stub already
+      # closed — otherwise a static STUB_ROOT_SWEEP_MAP list gets "closed"
+      # again on every later pass and double-logs.
+      if [ -n "${STUB_CLOSED_IDS_FILE:-}" ]; then
+        printf '%s\n' "$close_id" >> "$STUB_CLOSED_IDS_FILE"
+      fi
       exit 0
     fi
     if [ "$bdsub" = "blocked" ]; then
@@ -249,6 +257,9 @@ case "$sub" in
         match_ids=""
         if [ -n "${STUB_ROOT_SWEEP_MAP:-}" ]; then
           match_ids="$(printf '%s\n' "$STUB_ROOT_SWEEP_MAP" | awk -F'|' -v f="$meta_field" '$1==f{print $2; exit}')"
+        fi
+        if [ -n "${STUB_CLOSED_IDS_FILE:-}" ] && [ -s "$STUB_CLOSED_IDS_FILE" ] && [ -n "$match_ids" ]; then
+          match_ids="$(printf '%s' "$match_ids" | tr ',' '\n' | grep -vxFf "$STUB_CLOSED_IDS_FILE" | paste -sd, -)"
         fi
         if [ -n "$match_ids" ]; then
           printf '%s' "$match_ids" | tr ',' '\n' | awk 'NF{printf "{\"id\":\"%s\"},", $0}' | sed 's/,$//' | awk '{printf "[%s]", $0}'
@@ -375,8 +386,9 @@ setup_case_env() {
   STATE_DIR="${SANDBOX}/state-${1}"
   GC_LOG="${SANDBOX}/gc-${1}.log"
   GH_LOG="${SANDBOX}/gh-${1}.log"
+  CLOSED_IDS_FILE="${SANDBOX}/closed-${1}.log"
   mkdir -p "$CITY_DIR" "$STATE_DIR"
-  : > "$GC_LOG"; : > "$GH_LOG"
+  : > "$GC_LOG"; : > "$GH_LOG"; : > "$CLOSED_IDS_FILE"
 }
 
 run_script() {
@@ -388,6 +400,7 @@ run_script() {
       CV_STATE_DIR="$STATE_DIR" \
       STUB_GC_LOG="$GC_LOG" \
       STUB_GH_LOG="$GH_LOG" \
+      STUB_CLOSED_IDS_FILE="$CLOSED_IDS_FILE" \
       "$@" \
       bash "$SCRIPT" 2>&1
   )"

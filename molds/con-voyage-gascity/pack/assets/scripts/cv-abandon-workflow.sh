@@ -15,13 +15,16 @@
 #   cv-abandon-workflow.sh ROOT_BEAD_ID [REASON]
 #
 # Exit codes:
-#   0 — the root bead itself is now closed (freshly closed, or already was).
+#   0 — the root bead itself is now closed (freshly closed, or already was)
+#       AND the descendant sweep converged to zero still-open descendants.
 #   1 — the root bead's own close failed (see con-voyage-lib.sh's
 #       close_if_open for the refusal shapes this can mean: a pin, an
 #       unsatisfied gate, or an assignee mismatch a --force retry could not
-#       clear). A descendant sweep failure alone never causes this exit —
-#       that is logged to stderr and otherwise best-effort, same contract as
-#       cv_close_workflow_root itself.
+#       clear), OR the root closed fine but one or more descendants are still
+#       open once the sweep gave up (fk-dgia1g acceptance: "abandon ... exits
+#       non-zero if anything is left open" — a lane/step bead another lens may
+#       still be mid-task on is left alone by close_if_open's own pin/gate
+#       check, so this is reported rather than silently dropped).
 #   2 — usage error (missing ROOT_BEAD_ID).
 set -uo pipefail
 
@@ -43,4 +46,9 @@ if [ -z "${ROOT_ID// /}" ]; then
 fi
 
 cv_close_workflow_root "$ROOT_ID" "$REASON"
-exit "$CV_CLOSE_RC"
+rc="$CV_CLOSE_RC"
+if [ "${CV_CLOSE_OPEN_DESCENDANTS:-0}" != "0" ]; then
+  echo "cv-abandon-workflow.sh: ${CV_CLOSE_OPEN_DESCENDANTS} descendant(s) of ${ROOT_ID} are still open after the sweep gave up — tree is NOT fully torn down" >&2
+  [ "$rc" -eq 0 ] && rc=1
+fi
+exit "$rc"

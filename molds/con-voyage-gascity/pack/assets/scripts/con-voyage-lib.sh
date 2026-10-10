@@ -1978,27 +1978,85 @@ close_if_open() {
 # an already-merged PR, because nothing ever told that workflow the PR had
 # landed).
 #
-# Sweeps descendants FIRST (best-effort: a hiccup here must never block
-# retrying the root-bead close below, and a lane/step bead another lens may
-# still be mid-task on is left alone by close_if_open's own pin/gate check —
-# same safety net every other FORCE close in this pack relies on), then
-# closes the root bead itself.
+# fk-dgia1g: closes the root bead FIRST, then sweeps descendants in repeated,
+# bounded passes, for two reasons a single descendants-then-root pass missed:
+#
+#   1. Several step prompts already check "is my workflow root closed" before
+#      doing real work (fk-jg6rm's main.build guard is one) and self-abort
+#      instead of minting a fresh descendant when it is. Closing the root
+#      FIRST arms that guard before any descendant close can trigger a
+#      graph.v2 iterate/re-mint — live evidence (2026-10-09, roots ec-h34n/
+#      va-hysrh): closing a loop's own control bead while the root was still
+#      open minted a fresh iteration bead mid-sweep (closing ec-7d3b minted
+#      iteration.3 bead ec-idtj), and a human had to force-close 13 beads by
+#      hand, loop-control-bead first, to stop it happening again.
+#   2. A single bd-list snapshot taken up front can list a descendant still
+#      blocked by a SIBLING this same sweep hasn't closed yet (ids come back
+#      in no guaranteed dependency order) — that descendant's close fails and
+#      a one-shot pass never retries it. Re-querying open descendants each
+#      pass converges once every closeable descendant is actually closed,
+#      including any newly-minted one case 1 above does not fully prevent.
+#
+# Within each pass, descendants whose `gc.kind` marks them as workflow
+# control/latch beads (the set `implementor_alive`'s own prompt enumerates:
+# workflow, scope, check, fanout, scope-check, workflow-finalize) are closed
+# before plain lane/step beads, so a loop's own gate closes before its lanes
+# — the "loop bead first" ordering the hand-closed incident above needed.
+#
+# This descendant-listing query takes no bead-id positional for gc's own
+# cwd-based auto-routing to key off (unlike every close_if_open call below,
+# which routes by the root/descendant id itself regardless of caller cwd —
+# see cv_rig_for_bead_id's header comment), so it silently falls back to
+# cwd-based single-store discovery and can report success while closing
+# nothing when run from the city root or an unrelated rig (fk-dgia1g case 1,
+# live: abandoning ec-h34n/va-hysrh from the city root found nothing). Resolve
+# --rig explicitly from the root id's own prefix first.
 #
 # CV_CLOSE_RC reflects ONLY the root bead's own close outcome — the gate a
 # caller checks before treating this workflow as fully torn down and
 # discarding its retry record, mirroring close_if_open's own CV_CLOSE_RC
-# contract. The descendant sweep's own failures are logged, not gated: an
-# orphaned lane bead this sweep could not close must not block the root
-# bead (and therefore the caller's finalize record) from ever completing.
+# contract; this is unchanged so con-voyage-finalize.sh's existing use is not
+# disturbed by the reordering above. CV_CLOSE_OPEN_DESCENDANTS is a SEPARATE
+# output: the count of descendants still open once the sweep gives up (0 on
+# full convergence) — a lane/step bead another lens may still be mid-task on
+# is left alone by close_if_open's own pin/gate check (same safety net every
+# other FORCE close in this pack relies on) and counted here instead of
+# silently dropped, so a caller like cv-abandon-workflow.sh that must report
+# "anything left open" has a real signal to check.
 cv_close_workflow_root() {
   local root_id="$1" reason="$2"
   CV_CLOSE_RC=0
+  # shellcheck disable=SC2034  # consumed by callers (cv-abandon-workflow.sh, tests), not read in this file
+  CV_CLOSE_OPEN_DESCENDANTS=0
   [ -n "${root_id// /}" ] || return 0
   local gc_bin="${GC:-gc}"
 
-  local list_json
-  list_json=$("$gc_bin" bd list --status open --metadata-field "gc.root_bead_id=${root_id}" --json --limit 0 2>/dev/null) || list_json=""
-  if [ -n "$list_json" ]; then
+  local rig
+  rig="$(cv_rig_for_bead_id "$root_id")"
+  local rig_args=()
+  if [ -n "${rig// /}" ]; then
+    rig_args=(--rig "$rig")
+  else
+    echo "cv_close_workflow_root: WARNING: could not resolve the rig owning root ${root_id} (cv_rig_for_bead_id returned empty); the descendant sweep falls back to cwd-based store discovery and may miss beads if this cwd is not already inside that rig" >&2
+  fi
+
+  # Close the root FIRST (see header comment) — CV_CLOSE_RC from here on is
+  # what the caller's completion gate reads, independent of the descendant
+  # sweep below.
+  close_if_open "$root_id" "$reason" "" "" 1
+  local root_close_rc="$CV_CLOSE_RC"
+
+  local pass=0 max_passes=10 prev_remaining=-1 remaining=0
+  while [ "$pass" -lt "$max_passes" ]; do
+    pass=$((pass+1))
+    local list_json
+    list_json=$("$gc_bin" --city "${GC_CITY:-.}" "${rig_args[@]}" bd list --status open --metadata-field "gc.root_bead_id=${root_id}" --json --limit 0 2>/dev/null) || list_json=""
+    if [ -z "$list_json" ]; then
+      if [ "$pass" -eq 1 ]; then
+        echo "cv_close_workflow_root: WARNING: could not list open descendants of root ${root_id} (bd list failed); sweeping root bead only" >&2
+      fi
+      break
+    fi
     local ids
     ids=$(printf '%s' "$list_json" | python3 -c "
 import sys, json
@@ -2008,26 +2066,39 @@ except Exception:
     data = []
 if not isinstance(data, list):
     data = []
+CONTROL_KINDS = {'workflow', 'scope', 'check', 'fanout', 'scope-check', 'workflow-finalize'}
+rows = []
 for item in data:
-    if isinstance(item, dict) and item.get('id'):
-        print(item['id'])
+    if not isinstance(item, dict) or not item.get('id'):
+        continue
+    kind = (item.get('metadata') or {}).get('gc.kind') or ''
+    rows.append((0 if kind in CONTROL_KINDS else 1, item['id']))
+rows.sort(key=lambda r: r[0])
+for _, bead_id in rows:
+    print(bead_id)
 " 2>/dev/null) || ids=""
-    if [ -n "${ids// /}" ]; then
-      while IFS= read -r descendant_id; do
-        [ -n "${descendant_id// /}" ] || continue
-        close_if_open "$descendant_id" "$reason" "" "open" 1
-        if [ "$CV_CLOSE_RC" -ne 0 ]; then
-          echo "cv_close_workflow_root: WARNING: could not close descendant ${descendant_id} of root ${root_id} (continuing sweep)" >&2
-        fi
-      done <<< "$ids"
+    if [ -z "${ids// /}" ]; then
+      remaining=0
+      break
     fi
-  else
-    echo "cv_close_workflow_root: WARNING: could not list open descendants of root ${root_id} (bd list failed); sweeping root bead only" >&2
-  fi
+    remaining=0
+    while IFS= read -r descendant_id; do
+      [ -n "${descendant_id// /}" ] || continue
+      close_if_open "$descendant_id" "$reason" "" "open" 1
+      if [ "$CV_CLOSE_RC" -ne 0 ]; then
+        remaining=$((remaining+1))
+        echo "cv_close_workflow_root: WARNING: could not close descendant ${descendant_id} of root ${root_id} (pass ${pass}, continuing sweep)" >&2
+      fi
+    done <<< "$ids"
+    if [ "$remaining" -eq "$prev_remaining" ]; then
+      echo "cv_close_workflow_root: WARNING: ${remaining} descendant(s) of root ${root_id} still open after pass ${pass} with no progress since the prior pass; stopping sweep" >&2
+      break
+    fi
+    prev_remaining="$remaining"
+  done
+  CV_CLOSE_OPEN_DESCENDANTS="$remaining"
 
-  # Close the root bead itself LAST — CV_CLOSE_RC from here on is what the
-  # caller's completion gate reads, independent of the descendant sweep above.
-  close_if_open "$root_id" "$reason" "" "" 1
+  CV_CLOSE_RC="$root_close_rc"
 }
 
 # ===========================================================================
