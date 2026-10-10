@@ -3568,12 +3568,31 @@ finalize_write() {
 # exactly one bullet per deferred status (a reader can safely count/iterate
 # lines). This only ever appends, never dedups: two real, distinct repair
 # cycles are two real events worth recording as two lines.
+#
+# Guarded by the same per-dedup_key acquire_lock/release_lock mutex every
+# other reader/writer of this convention already uses (review fk-drbqfj
+# BLOCKING-1): without it, a concurrent cv_defer_status_read_and_clear can
+# `cat`+`rm` this file in the window between this function's own read and
+# write, silently destroying an appended line with no error and no audit
+# trail. A bounded retry (not a bare acquire-or-fail) because losing a
+# deferred status is exactly the "never lost" property this helper exists to
+# guarantee — ci-repair and rereview-finalize are expected to race this lock
+# routinely, not just occasionally.
 cv_defer_status_append() {
   local dedup_key="$1" text="$2"
   [ -n "$dedup_key" ] || return 1
   local f="${CV_STATE_DIR}/${dedup_key}.pending-status"
   local flat="${text//$'\n'/ }"
+  local attempt=0
+  while ! acquire_lock "$dedup_key"; do
+    attempt=$((attempt + 1))
+    [ "$attempt" -lt 10 ] || return 1
+    sleep 0.2 2>/dev/null || sleep 1
+  done
   printf -- '- %s\n' "$flat" >> "$f"
+  local rc=$?
+  release_lock "$dedup_key"
+  return "$rc"
 }
 
 # cv_defer_status_read_and_clear DEDUP_KEY — print any deferred status lines
@@ -3581,13 +3600,27 @@ cv_defer_status_append() {
 # delete the file so the SAME deferred status can never be folded into a
 # second round's aggregated comment. Always returns 0, whether or not a file
 # existed.
+#
+# Same acquire_lock/release_lock mutex as cv_defer_status_append above, and
+# for the same reason: the read (`cat`) and the clear (`rm`) must happen
+# atomically with respect to a concurrent append, or an append landing in
+# that window is destroyed unread.
 cv_defer_status_read_and_clear() {
   local dedup_key="$1"
   [ -n "$dedup_key" ] || return 1
   local f="${CV_STATE_DIR}/${dedup_key}.pending-status"
-  [ -f "$f" ] || return 0
-  cat "$f"
-  rm -f "$f"
+  local attempt=0
+  while ! acquire_lock "$dedup_key"; do
+    attempt=$((attempt + 1))
+    [ "$attempt" -lt 10 ] || return 0
+    sleep 0.2 2>/dev/null || sleep 1
+  done
+  if [ -f "$f" ]; then
+    cat "$f"
+    rm -f "$f"
+  fi
+  release_lock "$dedup_key"
+  return 0
 }
 
 # ===========================================================================

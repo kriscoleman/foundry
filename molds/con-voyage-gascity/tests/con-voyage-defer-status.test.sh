@@ -121,6 +121,47 @@ cv_defer_status_append "cv-finalize-acme-widgets-42" "$(printf 'line one\nline t
 line_count="$(wc -l < "${CV_STATE_DIR}/cv-finalize-acme-widgets-42.pending-status" | tr -d ' ')"
 assert_eq "1" "$line_count" "an embedded newline does not split the pending-status file into extra lines"
 
+# ===========================================================================
+# CASE 6 — both helpers actually consult the per-dedup_key lock instead of
+# racing straight past it (review fk-drbqfj BLOCKING-1: the un-guarded
+# `cat`+`rm` in read_and_clear can otherwise destroy an append landing in
+# that window, silently and with no error — a pure timing race is too flaky
+# to assert on directly, so this proves the mechanism deterministically).
+# `acquire_lock` is overridden to always report "held by someone else", the
+# same observable state a real concurrent holder produces. Against the
+# pre-fix helpers (which never called acquire_lock/release_lock at all) this
+# override has no effect and both calls below would silently succeed anyway
+# — so this case only passes once the lock is genuinely wired in.
+# ===========================================================================
+start_case "6: both helpers back off instead of writing past a held lock"
+CV_STATE_DIR="$(fresh_state_dir)"
+LOCK_KEY="cv-finalize-acme-locked-7"
+PRE_EXISTING_FILE="${CV_STATE_DIR}/${LOCK_KEY}.pending-status"
+printf -- '- pre-existing status from the lock holder\n' > "$PRE_EXISTING_FILE"
+
+acquire_lock() { return 1; }  # simulate: another process holds this dedup_key's lock
+release_lock() { :; }
+
+append_rc=0
+cv_defer_status_append "$LOCK_KEY" "a status appended while the lock is held elsewhere" || append_rc=$?
+assert_eq "1" "$append_rc" "append backs off (nonzero exit) instead of writing past a held lock"
+
+file_contents_after_append="$(cat "$PRE_EXISTING_FILE")"
+case "$file_contents_after_append" in
+  *"a status appended while the lock is held elsewhere"*)
+    fail "append wrote into the pending-status file despite never acquiring the lock" ;;
+  *)
+    pass "the pre-existing pending-status file is untouched by the backed-off append" ;;
+esac
+
+read_out="$(cv_defer_status_read_and_clear "$LOCK_KEY")"
+assert_eq "" "$read_out" "read_and_clear returns nothing when it cannot acquire the lock (does not read past it)"
+[ -f "$PRE_EXISTING_FILE" ] && pass "read_and_clear left the pending-status file in place when it could not acquire the lock" \
+  || fail "read_and_clear deleted the pending-status file despite never acquiring the lock"
+
+unset -f acquire_lock release_lock
+source "$LIB"  # restore the real implementations for any later case
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "ALL CASES PASSED"
