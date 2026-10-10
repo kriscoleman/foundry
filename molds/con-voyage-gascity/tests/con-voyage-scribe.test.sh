@@ -529,6 +529,29 @@ GH_STUB
 chmod +x "${STUBDIR}/gh"
 
 echo
+echo "=== CASE: --route rejects an unrecognized value instead of silently falling through ==="
+reset_fixtures
+set +e
+BAD_ROUTE_OUT="$(scribe_file_friction "some friction text" --route fundry 2>&1 1>/dev/null)"
+BAD_ROUTE_RC=$?
+set -e 2>/dev/null || true
+if [ "$BAD_ROUTE_RC" -ne 0 ]; then
+  pass "scribe_file_friction exits non-zero on an unrecognized --route value (rc=${BAD_ROUTE_RC})"
+else
+  fail "scribe_file_friction exits non-zero on an unrecognized --route value (got rc=0)"
+fi
+if [ -s "$STUB_BD_LOG" ] || [ -s "$STUB_GH_LOG" ]; then
+  fail "an unrecognized --route value must not file anywhere (bd.log/gh.log should stay empty)"
+else
+  pass "an unrecognized --route value does not file to bd or gh"
+fi
+if printf '%s' "$BAD_ROUTE_OUT" | grep -qi "route"; then
+  pass "the rejection message mentions the bad --route value (got: ${BAD_ROUTE_OUT})"
+else
+  fail "the rejection message mentions the bad --route value (got: ${BAD_ROUTE_OUT})"
+fi
+
+echo
 echo "RESULT: ${PASS} passed, ${FAIL} failed"
 if [ "$FAIL" -eq 0 ]; then
   echo "ALL CASES PASSED"
