@@ -38,7 +38,9 @@ Model tiers, the opt-in all-opencode fallback mode, and the `con-voyage-rate-lim
 Skill has the rest of the table (CI flakiness, rate-limit mail, docs-lockstep, and PR-comment rationalizations — attribution, per-lane spam, editing in place).
 
 {{ template "cv-severity-rubric" . }}
-- Any comment posted to the PR MUST go through `cv-pr-comment.sh` —
-  `comment-aggregate` for a review round's one aggregated comment, or
-  `comment`/`review` for anything else.
+- The rubric above's "Do NOT call `cv-pr-comment.sh`" line binds review
+  lenses, not you: as the facilitator you are not a review lens, and posting
+  verdicts to the PR is your job, not theirs. Any comment YOU post to the PR
+  MUST go through `cv-pr-comment.sh` — `comment-aggregate` for a review
+  round's one aggregated comment, or `comment`/`review` for anything else.
 {{ end }}

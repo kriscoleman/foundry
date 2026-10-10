@@ -210,6 +210,16 @@ assert_not_contains "$ORCHESTRATION_FRAGMENT" \
   "- Tag every finding BLOCKING or LOW, with file:line and a concrete fix." \
   "con-voyage-orchestration fragment no longer duplicates the rubric bullet inline"
 
+start_case "the facilitator fragment's own posting instruction does not contradict the shared rubric's lens-scoped prohibition (fk-lp1pj8 review BLOCKING-1/2)"
+assert_contains "$FRAGMENT" "Do NOT call \`cv-pr-comment.sh\` or post to the PR in any form" \
+  "shared rubric still carries the lens-scoped 'do not post' prohibition"
+assert_contains "$ORCHESTRATION_FRAGMENT" \
+  "line binds review" \
+  "orchestration fragment explicitly scopes the rubric's prohibition away from the facilitator"
+assert_contains "$ORCHESTRATION_FRAGMENT" \
+  "Any comment YOU post to the PR" \
+  "orchestration fragment's own posting instruction is unambiguously the facilitator's, not a contradiction of the lens prohibition"
+
 start_case "cv-security-reviewer's own LOW example no longer invites the vandoor#10589-class downgrade"
 assert_not_contains "${AGENTS_DIR}/cv-security-reviewer/prompt.template.md" \
   "LOW\` (hardening, defense-in-depth)" \
