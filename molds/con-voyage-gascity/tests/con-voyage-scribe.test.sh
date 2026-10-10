@@ -467,6 +467,68 @@ BD_STUB
 chmod +x "${STUBDIR}/bd"
 
 echo
+echo "=== CASE: filing failure (review fk-ert7m1 BLOCKING-1, qa_test BLOCKING-1) — a hung/failing gh issue create is reported as a WARNING, not silently dropped ==="
+reset_fixtures
+cat > "${STUBDIR}/gh" <<'GH_HANG_CREATE_STUB'
+#!/usr/bin/env bash
+if [ "$1" = "issue" ] && [ "$2" = "list" ]; then
+  echo "[]"
+  exit 0
+fi
+if [ "$1" = "issue" ] && [ "$2" = "create" ]; then
+  sleep 20
+  exit 0
+fi
+exit 0
+GH_HANG_CREATE_STUB
+chmod +x "${STUBDIR}/gh"
+SAVED_TIMEOUT="$CV_SCRIBE_STORE_TIMEOUT_SECONDS"
+CV_SCRIBE_STORE_TIMEOUT_SECONDS=1
+t0=$(date +%s)
+FILING_OUT="$(scribe_file_friction "a new friction whose foundry filing call hangs" --route foundry --gh-repo kriscoleman/foundry 2>&1 1>/dev/null)"
+FILING_RC=$?
+t1=$(date +%s)
+CV_SCRIBE_STORE_TIMEOUT_SECONDS="$SAVED_TIMEOUT"
+elapsed=$((t1 - t0))
+if [ "$elapsed" -lt 10 ]; then
+  pass "scribe_file_friction's gh filing call returned in ${elapsed}s, bounded by CV_SCRIBE_STORE_TIMEOUT_SECONDS=1"
+else
+  fail "scribe_file_friction's gh filing call took ${elapsed}s — cv_with_timeout did not bound the hung gh issue create"
+fi
+if printf '%s' "$FILING_OUT" | grep -qF "filing failed"; then
+  pass "a timed-out gh issue create is surfaced as a WARNING to stderr"
+else
+  fail "a timed-out gh issue create is surfaced as a WARNING to stderr (got: ${FILING_OUT})"
+fi
+if [ "$FILING_RC" -ne 0 ]; then
+  pass "scribe_file_friction propagates the gh filing call's non-zero exit code (rc=${FILING_RC})"
+else
+  fail "scribe_file_friction propagates the gh filing call's non-zero exit code (got rc=0)"
+fi
+# restore the normal gh stub for any later cases
+cat > "${STUBDIR}/gh" <<'GH_STUB'
+#!/usr/bin/env bash
+{
+  line=""
+  for a in "$@"; do a="${a//$'\n'/ }"; line="${line}${a} "; done
+  printf '%s\n' "$line"
+} >> "${STUB_GH_LOG}"
+
+if [ "$1" = "issue" ] && [ "$2" = "list" ]; then
+  cat "${STUB_GH_LIST_JSON}"
+  exit 0
+fi
+
+if [ "$1" = "issue" ] && [ "$2" = "create" ]; then
+  echo "https://github.com/kriscoleman/foundry/issues/999"
+  exit 0
+fi
+
+exit 0
+GH_STUB
+chmod +x "${STUBDIR}/gh"
+
+echo
 echo "RESULT: ${PASS} passed, ${FAIL} failed"
 if [ "$FAIL" -eq 0 ]; then
   echo "ALL CASES PASSED"
