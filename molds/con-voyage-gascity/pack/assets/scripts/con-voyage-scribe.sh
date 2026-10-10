@@ -218,6 +218,13 @@ scribe_file_friction() {
       *) text="$1"; shift ;;
     esac
   done
+  case "$route" in
+    foundry|repl_city|auto) ;;
+    *)
+      echo "scribe: unrecognized --route value '${route}' (expected foundry, repl_city, or auto) — refusing to file" >&2
+      return 1
+      ;;
+  esac
   [ "$route" = "auto" ] && route="$(scribe_route_target "$text")"
 
   local title
