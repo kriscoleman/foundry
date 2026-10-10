@@ -196,6 +196,10 @@ JSON
       #   thread 9 (fk-dh3mkt review, BLOCKING-2) — a genuine question with
       #     no whitespace before the HTML marker (right?<!--...-->) -- must
       #     still win over the ack marker.
+      #   thread 10 (fk-dh3mkt review iteration-5, BLOCKING-1) — a genuine
+      #     question immediately closed by markdown emphasis before the HTML
+      #     marker (okay?** <!--...-->) -- must still win over the ack
+      #     marker.
       if [ "${STUB_GQL_THREADS_DOOMER_ACK_QMARK:-0}" = "1" ]; then
         cat <<'JSON'
 {"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[
@@ -218,6 +222,10 @@ JSON
 {"comments":{"nodes":[
   {"id":"PRRC_t9_agent","databaseId":557017,"path":"src/ninth.go","line":1,"author":{"login":"kriscoleman"},"body":"🤖 **Automated con-voyage agent** (foundry-kc/code-review): Fixed per finding t9-break."},
   {"id":"PRRC_t9_question","databaseId":557018,"path":"src/ninth.go","line":1,"author":{"login":"doomer-ai[bot]"},"body":"Does this still look okay?<!-- adversary-feedback-ack:v1 feedback=t9-ack -->"}
+]}},
+{"comments":{"nodes":[
+  {"id":"PRRC_t10_agent","databaseId":557019,"path":"src/tenth.go","line":1,"author":{"login":"kriscoleman"},"body":"🤖 **Automated con-voyage agent** (foundry-kc/code-review): Fixed per finding t10-break."},
+  {"id":"PRRC_t10_question","databaseId":557020,"path":"src/tenth.go","line":1,"author":{"login":"doomer-ai[bot]"},"body":"Does this still hold up to scrutiny?** <!-- adversary-feedback-ack:v1 feedback=t10-ack -->"}
 ]}}
 ]}}}}}
 JSON
@@ -4016,6 +4024,13 @@ else
   pass "thread 9: a genuine question with no whitespace before the ack marker still wins over it"
 fi
 assert_log_count "$GC_LOG" 'Does this still look okay' 1 "thread 9: the genuine question still routes"
+
+if printf '%s' "$OUT" | grep -qE 'id=PRRC_t10_question .*reason=doomer_ack_thread_closed'; then
+  fail "thread 10: a genuine question closed by markdown emphasis before the ack marker still wins over it"
+else
+  pass "thread 10: a genuine question closed by markdown emphasis before the ack marker still wins over it"
+fi
+assert_log_count "$GC_LOG" 'Does this still hold up to scrutiny' 1 "thread 10: the genuine question still routes"
 
 # ===========================================================================
 # CASE 68 (fk-dh3mkt review, mayor reopen — regraded LOW-4): the per-PR
