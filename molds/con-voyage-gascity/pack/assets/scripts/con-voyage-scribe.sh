@@ -109,6 +109,11 @@ scribe_dedup_key() {
   local text="$1"
   local collapsed
   collapsed="$(printf '%s' "$text" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')"
+  # review fk-ert7m1 BLOCKING-1: strip the same trailing period
+  # scribe_format_title strips, so the dedup query and the stored title share
+  # one normalization — otherwise a period-terminated friction's query can
+  # never be a substring of its own (period-stripped) stored title.
+  collapsed="${collapsed%.}"
   local max=60
   if [ "${#collapsed}" -gt "$max" ]; then
     collapsed="${collapsed:0:$max}"
