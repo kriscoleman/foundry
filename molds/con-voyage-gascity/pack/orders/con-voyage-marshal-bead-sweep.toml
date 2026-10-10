@@ -1,0 +1,35 @@
+# con-voyage-marshal-bead-sweep — Marshal's deterministic bead-liveness tier
+# (fk-12m3 / foundry#47, fk-d0ioj2). Ports the mayor's ad hoc watch-beads.sh
+# city-wide, unconditional progress/escalation classification so it runs even
+# when no mayor session happens to be watching, zero LLM tokens, O(1) per
+# check.
+#
+# Classes flagged to the digest (routine progress is logged, not digested):
+#   - ORPHAN: a bead still open/in_progress whose gc.root_bead_id points at
+#     an already-CLOSED workflow root. CLASSIFY-ONLY — con-voyage-orphan-
+#     sweep (fk-yli8qd) already force-closes these within its own 5m cycle;
+#     this order never touches them, it only reports one still being seen.
+#   - STUCK-READY: a bead sitting open (never started) longer than
+#     CV_MARSHAL_READY_STALE_MINUTES under a still-open root.
+#   - STRANDED-TEARDOWN: a gc.scope_role=teardown bead sitting open longer
+#     than CV_MARSHAL_TEARDOWN_STALE_MINUTES.
+#   - ESCALATION: a bead's outcome/failure_class/status shows a failure
+#     (ported mayor_is_bead_escalation), only on a state change since the
+#     last tick.
+#   - Mayor mail count climbing since the last tick.
+#
+# Disabled by default — gated by [con_voyage.assistants].marshal
+# (cv_assistant_enabled, fk-apujks). See assets/scripts/con-voyage-marshal-
+# bead-sweep.sh for full design rationale.
+
+[order]
+description = "City-wide bead liveness/progress classification (orphan/stuck-READY/stranded-teardown/escalation), gated by the marshal assistant flag"
+trigger = "cooldown"
+interval = "5m"
+exec = "$PACK_DIR/assets/scripts/con-voyage-marshal-bead-sweep.sh"
+timeout = "3m"
+
+[order.env]
+CV_MARSHAL_READY_STALE_MINUTES = "20"
+CV_MARSHAL_TEARDOWN_STALE_MINUTES = "15"
+CV_MARSHAL_ESCALATE_TARGET = "mayor"

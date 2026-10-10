@@ -3910,3 +3910,105 @@ print(nxt or '')
   fi
   return 0
 }
+
+# ---------------------------------------------------------------------------
+# Marshal sweep shared helpers (fk-9oigyg review LOW-1/5/6/7: con-voyage-
+# marshal-{bead,formula,agent}-sweep.sh each duplicated these verbatim, or
+# built an id-derived path with no sanitization).
+# ---------------------------------------------------------------------------
+
+# cv_minutes_since_iso8601 TIMESTAMP — whole minutes between TIMESTAMP (an
+# RFC3339 string as bd/gc emit) and now; empty TIMESTAMP or a parse failure
+# prints nothing so callers treat it as "unknown age", never a stale-age
+# false positive.
+cv_minutes_since_iso8601() {
+  local ts="$1"
+  [ -n "$ts" ] || return 0
+  python3 -c "
+import sys, datetime
+ts = sys.argv[1]
+try:
+    t = datetime.datetime.fromisoformat(ts.replace('Z', '+00:00'))
+except Exception:
+    sys.exit(0)
+now = datetime.datetime.now(datetime.timezone.utc)
+delta = (now - t).total_seconds() / 60.0
+print(int(delta))
+" "$ts" 2>/dev/null
+}
+
+# cv_mayor_is_bead_escalation STATUS OUTCOME FAILURE_CLASS — ported verbatim
+# from scripts/mayor/lib/events.sh: true if a bead's current state is a
+# failure/escalation rather than routine progress.
+cv_mayor_is_bead_escalation() {
+  local status="$1" outcome="$2" failure_class="$3"
+  case "$outcome" in *fail*) return 0 ;; esac
+  [ -n "$failure_class" ] && return 0
+  case "$status" in
+    open|in_progress|closed) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+# cv_path_safe_component ID — print ID with every character outside
+# [A-Za-z0-9._-] replaced by "_", for safe use as a single path component.
+# Defense-in-depth (fk-9oigyg review LOW-1): bead/step/session ids come from
+# the trusted beads/session control plane, not an untrusted boundary, but a
+# path separator or ".." segment embedded in an id should still never let a
+# state-file write land outside the intended state directory.
+cv_path_safe_component() {
+  local id="$1"
+  [ -n "$id" ] || return 0
+  local safe="${id//[^A-Za-z0-9._-]/_}"
+  case "$safe" in
+    .|..) safe="${safe//./_}" ;;
+  esac
+  printf '%s' "$safe"
+}
+
+# cv_marshal_send_digest TIMEOUT_SECONDS TARGET SUBJECT BODY SCRIPT_NAME
+# PENDING_DESC — send one digest mail via `gc mail send`, bounded by
+# TIMEOUT_SECONDS (cv_with_timeout). Returns the mail send's exit status. On
+# failure, logs a WARNING to stderr naming SCRIPT_NAME, TARGET, and the raw
+# mail-send output, plus a second WARNING citing PENDING_DESC (a caller-
+# supplied description of what will be re-flagged next tick instead of
+# retired now). Factored out of con-voyage-marshal-{bead,formula,agent}-
+# sweep.sh (fk-9oigyg review LOW-7), which each repeated this ~18-line tail
+# block with only the subject/body wording and pending-state bookkeeping
+# differing.
+cv_marshal_send_digest() {
+  local timeout_secs="$1" target="$2" subject="$3" body="$4" script_name="$5" pending_desc="$6"
+  local gc_bin="${GC:-gc}"
+  local mail_out mail_rc
+  mail_out="$(cv_with_timeout "$timeout_secs" "$gc_bin" --city "${GC_CITY:-.}" mail send "$target" -s "$subject" -m "$body" 2>&1)"
+  mail_rc=$?
+  if [ "$mail_rc" -ne 0 ]; then
+    echo "${script_name}: WARNING: digest mail to ${target} failed: ${mail_out}" >&2
+    echo "${script_name}: WARNING: not advancing persisted state for ${pending_desc} — will re-flag next tick" >&2
+  fi
+  return "$mail_rc"
+}
+
+# cv_marshal_prune_state_dir DIR TTL_DAYS — best-effort, bounded cleanup for a
+# marshal sweep's CV_STATE_DIR (fk-9oigyg review LOW-2): per-bead/step/
+# session state files are never deleted when their bead/root/session
+# disappears, so they accumulate slowly over a long-lived city. Rather than
+# needing each sweep to track every id it has ever seen, this deletes any
+# REGULAR file under DIR (recursively, so con-voyage-marshal-formula-sweep's
+# per-root subdirectories are covered too) whose mtime is older than
+# TTL_DAYS — a state file that old belongs to a bead/root/session that has
+# not ticked a change in that long, i.e. is gone or permanently idle either
+# way. Never removes directories themselves, so a live root's subdirectory
+# keeps existing. A missing DIR, or a non-numeric/non-positive TTL_DAYS, is a
+# silent no-op (always returns 0) — pruning is hygiene, never load-bearing,
+# so a misconfiguration here must never fail a sweep's own tick.
+cv_marshal_prune_state_dir() {
+  local dir="$1" ttl_days="$2"
+  case "$ttl_days" in
+    *[!0-9]*|'') return 0 ;;
+  esac
+  [ "$ttl_days" -gt 0 ] || return 0
+  [ -n "$dir" ] && [ -d "$dir" ] || return 0
+  find "$dir" -type f -mtime "+${ttl_days}" -exec rm -f {} + 2>/dev/null
+  return 0
+}
