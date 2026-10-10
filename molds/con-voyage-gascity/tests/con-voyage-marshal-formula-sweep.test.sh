@@ -167,7 +167,15 @@ rm -rf "${SANDBOX}/state"
 run_script
 assert_eq "0" "$LAST_RC" "exits 0"
 assert_not_contains "$LAST_LOG" "mail send" "no digest mail sent for routine step progress"
-assert_contains "$LAST_LOG" "" "ran without error"
+# fk-d0ioj2 review fk-9oigyg LOW-8 (regraded BLOCKING, low-batch regrade
+# 2026-10-10): the prior assertion here (`assert_contains "$LAST_LOG" ""
+# "ran without error"`) used an empty needle, which `grep -qF -- ""` always
+# matches — it could never fail no matter what the script actually did, so
+# it proved nothing beyond `run_script` not throwing a shell error. Assert a
+# concrete gc call the anchor health check must make for this root once step
+# processing completes, so a regression that skips or errors out of that
+# path (while still exiting 0) is caught.
+assert_contains "$LAST_LOG" "bd show fk-root2 --json" "the anchor health check actually ran for this root after routine step processing"
 unset STUB_ROOTS_JSON STUB_STEPS_JSON STUB_BDSHOW_JSON_fk_root2
 
 # ---------------------------------------------------------------------------
@@ -200,6 +208,52 @@ run_script
 assert_eq "0" "$LAST_RC" "exits 0"
 assert_not_contains "$LAST_LOG" "mail send" "second tick sends no mail for an already-checked anchor"
 unset STUB_ROOTS_JSON STUB_STEPS_JSON STUB_BDSHOW_JSON_fk_root3
+
+# ---------------------------------------------------------------------------
+# fk-d0ioj2 review fk-9oigyg LOW-4 (regraded BLOCKING, low-batch regrade
+# 2026-10-10): a transient `git fetch` failure right as a root's anchor
+# first drifts used to have its exit code silently discarded, so AHEAD got
+# computed off stale local refs — if that happened to read "0 ahead," the
+# root was marked `.anchor_done` (a one-shot, never-rechecked marker) and
+# this root's real drift was never looked at again. Point the worktree's
+# "origin" at a remote that no longer exists so the fetch genuinely fails,
+# and prove: (a) this tick neither mails nor marks `.anchor_done` (fail
+# loud/skip, don't fail open), and (b) once the remote is restored, the very
+# next tick retries the fetch and flags the anchor as normal.
+start_case "ANCHOR: a failed git fetch skips this tick without marking .anchor_done (retried next sweep)"
+GIT_WT_FETCHFAIL="${SANDBOX}/anchor-wt-fetchfail"
+GIT_REMOTE_FETCHFAIL="${SANDBOX}/anchor-remote-fetchfail.git"
+git init --bare -q "$GIT_REMOTE_FETCHFAIL"
+git clone -q "$GIT_REMOTE_FETCHFAIL" "$GIT_WT_FETCHFAIL"
+git -C "$GIT_WT_FETCHFAIL" config user.email "test@example.com"
+git -C "$GIT_WT_FETCHFAIL" config user.name "Test"
+echo "hello" > "$GIT_WT_FETCHFAIL/file.txt"
+git -C "$GIT_WT_FETCHFAIL" add file.txt
+git -C "$GIT_WT_FETCHFAIL" commit -q -m "initial"
+git -C "$GIT_WT_FETCHFAIL" push -q origin HEAD:main
+echo "change" >> "$GIT_WT_FETCHFAIL/file.txt"
+git -C "$GIT_WT_FETCHFAIL" commit -q -am "anchor commit"
+git -C "$GIT_WT_FETCHFAIL" checkout -q --detach HEAD
+# Break the remote so the sweep's own fetch fails, instead of removing the
+# bare repo outright (which would also break the harness's own setup calls).
+git -C "$GIT_WT_FETCHFAIL" remote set-url origin "${SANDBOX}/does-not-exist.git"
+
+export STUB_ROOTS_JSON='[{"id":"fk-root-fetchfail"}]'
+export STUB_STEPS_JSON='[]'
+export STUB_BDSHOW_JSON_fk_root_fetchfail='{"id":"fk-root-fetchfail","metadata":{"gc.build.source_anchor_work_dir":"'"$GIT_WT_FETCHFAIL"'"}}'
+rm -rf "${SANDBOX}/state"
+run_script
+assert_eq "0" "$LAST_RC" "exits 0 even though the fetch failed"
+assert_not_contains "$LAST_LOG" "mail send" "no digest mail sent this tick when the fetch itself failed"
+[ -f "${SANDBOX}/state/fk-root-fetchfail/.anchor_done" ] \
+  && fail ".anchor_done was marked despite the fetch failing (this root's real drift would never be rechecked)" \
+  || pass ".anchor_done is left unset after a failed fetch, so the next sweep retries"
+
+git -C "$GIT_WT_FETCHFAIL" remote set-url origin "$GIT_REMOTE_FETCHFAIL"
+run_script
+assert_eq "0" "$LAST_RC" "exits 0 on the retry tick"
+assert_contains "$LAST_LOG" "mail send mayor" "once the fetch succeeds, the next sweep retries and flags the anchor"
+unset STUB_ROOTS_JSON STUB_STEPS_JSON STUB_BDSHOW_JSON_fk_root_fetchfail
 
 # ---------------------------------------------------------------------------
 # fk-i1yas2 BLOCKING-3: the BIG-DELETION path depends on parsing
