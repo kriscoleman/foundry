@@ -1,0 +1,31 @@
+# con-voyage-marshal-formula-sweep — Marshal's deterministic formula/run
+# progress tier (fk-12m3 / foundry#47, fk-d0ioj2). Ports the mayor's ad hoc
+# watch-run.sh (step progress/escalation diff) + watch-anchor.sh (source-
+# anchor branch/diff-size check) into a city-wide, unconditional, single-shot
+# cooldown order so the same classification runs even when no mayor session
+# happens to be watching a specific run.
+#
+# UNLIKE THE SOURCE: watch-run.sh/watch-anchor.sh each take an explicit
+# `<rig> <root> [...]` argument naming ONE con-voyage run a mayor session
+# chose to watch, and loop forever while that session is alive. This order
+# has no args — each tick it discovers every open graph.v2 workflow root
+# itself (gc.kind=workflow) and runs both checks against all of them.
+#
+# The session-level "STUCK PROMPT" half of watch-run.sh is NOT ported here —
+# con-voyage-askuserquestion-watchdog (fk-o9ntx) already scans every active
+# session city-wide for an interactive-prompt stall; duplicating it per-run
+# here would just double-report the same condition.
+#
+# Disabled by default — gated by [con_voyage.assistants].marshal
+# (cv_assistant_enabled, fk-apujks).
+
+[order]
+description = "City-wide con-voyage run progress + source-anchor health check (step escalation diff, detached HEAD, big deletions), gated by the marshal assistant flag"
+trigger = "cooldown"
+interval = "5m"
+exec = "$PACK_DIR/assets/scripts/con-voyage-marshal-formula-sweep.sh"
+timeout = "3m"
+
+[order.env]
+CV_MARSHAL_ANCHOR_BIG_DELETION_LINES = "300"
+CV_MARSHAL_ESCALATE_TARGET = "mayor"
