@@ -229,6 +229,38 @@ assert_contains "$LAST_LOG" "prompt-stalled" "the prompt-stalled session is reco
 assert_not_contains "$LAST_LOG" "mail send" "no quiet-agent mail sent for a prompt-stalled session"
 unset STUB_SESSIONS_JSON STUB_PEEK_rc_impl2
 
+# ---------------------------------------------------------------------------
+# fk-9oigyg review LOW-1: a session id containing a path separator must never
+# let the per-session flag file resolve outside CV_STATE_DIR.
+start_case "LOW-1: a session id containing a path separator never escapes CV_STATE_DIR"
+export STUB_SESSIONS_JSON='{"sessions":[{"id":"rc-evil/../../escape","template":"foundry-kc/gc.implementation-worker","last_active":"'"$(old_ts 45)"'"}]}'
+export STUB_PEEK_rc_evil_______escape="working normally"
+rm -rf "${SANDBOX}/state"
+run_script
+assert_eq "0" "$LAST_RC" "exits 0"
+assert_contains "$LAST_LOG" "mail send mayor" "a digest mail was sent for the malicious-id quiet episode"
+[ -e "${SANDBOX}/escape" ] \
+  && fail "a flag file escaped CV_STATE_DIR via the path-separator session id" \
+  || pass "no file was written outside CV_STATE_DIR"
+state_file_count="$(find "${SANDBOX}/state" -type f | grep -c .)"
+assert_eq "1" "$state_file_count" "exactly one sanitized flag file was written, inside CV_STATE_DIR"
+unset STUB_SESSIONS_JSON STUB_PEEK_rc_evil_______escape
+
+# ---------------------------------------------------------------------------
+# fk-9oigyg review LOW-2: a bounded, age-based prune keeps CV_STATE_DIR from
+# growing unbounded as sessions disappear.
+start_case "LOW-2: an ancient flag file is pruned from CV_STATE_DIR on the next tick"
+rm -rf "${SANDBOX}/state"
+mkdir -p "${SANDBOX}/state"
+touch -t 202001010000 "${SANDBOX}/state/rc-long-gone.flagged_for"
+export STUB_SESSIONS_JSON='{"sessions":[]}'
+run_script
+assert_eq "0" "$LAST_RC" "exits 0"
+[ -f "${SANDBOX}/state/rc-long-gone.flagged_for" ] \
+  && fail "an ancient flag file for a long-gone session was not pruned" \
+  || pass "the ancient flag file was pruned"
+unset STUB_SESSIONS_JSON
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "ALL CASES PASSED"

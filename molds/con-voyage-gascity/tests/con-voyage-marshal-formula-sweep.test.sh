@@ -316,6 +316,101 @@ run_script
 assert_contains "$LAST_LOG" "mail send mayor" "tick 2: the still-unreported step escalation is re-flagged after the earlier mail failure"
 unset STUB_ROOTS_JSON STUB_STEPS_JSON STUB_BDSHOW_JSON_fk_root_failmail
 
+# ---------------------------------------------------------------------------
+# fk-9oigyg review LOW-1: a root id or step id containing a path separator
+# must never let a state-file read/write resolve outside CV_STATE_DIR.
+start_case "LOW-1: a root id containing a path separator never escapes CV_STATE_DIR"
+export STUB_ROOTS_JSON='[{"id":"fk-root/../../escape"}]'
+export STUB_STEPS_JSON='[{"id":"fk-step/../../escape2","status":"open","assignee":"","metadata":{"gc.root_bead_id":"fk-root/../../escape","gc.outcome":"fail","gc.failure_class":"boom"},"title":"Some step"}]'
+export STUB_BDSHOW_JSON_fk_root_______escape='{"id":"fk-root/../../escape","metadata":{}}'
+rm -rf "${SANDBOX}/state"
+run_script
+assert_eq "0" "$LAST_RC" "exits 0"
+assert_contains "$LAST_LOG" "mail send mayor" "a digest mail was sent for the malicious-id escalation"
+if [ -e "${SANDBOX}/escape" ] || [ -e "${SANDBOX}/escape2" ]; then
+  fail "a state file escaped CV_STATE_DIR via the path-separator ids"
+else
+  pass "no file was written outside CV_STATE_DIR"
+fi
+unset STUB_ROOTS_JSON STUB_STEPS_JSON STUB_BDSHOW_JSON_fk_root_______escape
+
+# ---------------------------------------------------------------------------
+# fk-9oigyg review LOW-2: a bounded, age-based prune keeps CV_STATE_DIR from
+# growing unbounded as workflow roots disappear.
+start_case "LOW-2: an ancient per-root state subdirectory is pruned on the next tick"
+rm -rf "${SANDBOX}/state"
+mkdir -p "${SANDBOX}/state/fk-long-gone-root"
+touch -t 202001010000 "${SANDBOX}/state/fk-long-gone-root/fk-long-gone-step"
+export STUB_ROOTS_JSON='[]'
+run_script
+assert_eq "0" "$LAST_RC" "exits 0"
+[ -f "${SANDBOX}/state/fk-long-gone-root/fk-long-gone-step" ] \
+  && fail "an ancient per-root state file was not pruned" \
+  || pass "the ancient per-root state file was pruned"
+unset STUB_ROOTS_JSON
+
+# ---------------------------------------------------------------------------
+# fk-9oigyg review LOW-3: previously only the fetch was individually bounded
+# by cv_with_timeout; a hung rev-list could still run past this tick's
+# budget, and if it somehow returned a false "0 ahead" the root would be
+# wrongly marked .anchor_done. Stub `git` so rev-list hangs well past a short
+# timeout; everything else (the fetch/rev-parse/diff setup commands run
+# directly by this test, and any other git subcommand the script itself
+# calls) passes through to the real binary.
+start_case "ANCHOR: a hung rev-list is individually bounded by the timeout and does not mark .anchor_done"
+REAL_GIT="$(command -v git)"
+cat > "${STUBDIR}/git" <<GIT_STUB
+#!/usr/bin/env bash
+for a in "\$@"; do
+  if [ "\$a" = "rev-list" ]; then
+    sleep 30
+    break
+  fi
+done
+exec "${REAL_GIT}" "\$@"
+GIT_STUB
+chmod +x "${STUBDIR}/git"
+
+GIT_WT_HANG="${SANDBOX}/anchor-wt-hang"
+GIT_REMOTE_HANG="${SANDBOX}/anchor-remote-hang.git"
+"$REAL_GIT" init --bare -q "$GIT_REMOTE_HANG"
+"$REAL_GIT" clone -q "$GIT_REMOTE_HANG" "$GIT_WT_HANG"
+"$REAL_GIT" -C "$GIT_WT_HANG" config user.email "test@example.com"
+"$REAL_GIT" -C "$GIT_WT_HANG" config user.name "Test"
+echo "hello" > "$GIT_WT_HANG/file.txt"
+"$REAL_GIT" -C "$GIT_WT_HANG" add file.txt
+"$REAL_GIT" -C "$GIT_WT_HANG" commit -q -m "initial"
+"$REAL_GIT" -C "$GIT_WT_HANG" push -q origin HEAD:main
+echo "change" >> "$GIT_WT_HANG/file.txt"
+"$REAL_GIT" -C "$GIT_WT_HANG" commit -q -am "anchor commit"
+
+export STUB_ROOTS_JSON='[{"id":"fk-root-hang"}]'
+export STUB_STEPS_JSON='[]'
+export STUB_BDSHOW_JSON_fk_root_hang='{"id":"fk-root-hang","metadata":{"gc.build.source_anchor_work_dir":"'"$GIT_WT_HANG"'"}}'
+rm -rf "${SANDBOX}/state"
+HANG_START=$(date +%s)
+(
+  export PATH="${STUBDIR}:${PATH}"
+  export STUB_GC_LOG="${SANDBOX}/gc.log"
+  export GC_RIG_ROOT="$RIG_ROOT"
+  export CV_STATE_DIR="${SANDBOX}/state"
+  export CV_LENS_STORE_TIMEOUT_SECONDS=2
+  rm -f "${SANDBOX}/gc.log"
+  bash "$SCRIPT"
+) > "${SANDBOX}/hang-stdout.log" 2>&1
+LAST_RC=$?
+HANG_ELAPSED=$(( $(date +%s) - HANG_START ))
+LAST_LOG="$(cat "${SANDBOX}/gc.log" 2>/dev/null || true)
+$(cat "${SANDBOX}/hang-stdout.log" 2>/dev/null || true)"
+assert_eq "0" "$LAST_RC" "exits 0 even though rev-list hung"
+if [ "$HANG_ELAPSED" -le 10 ]; then pass "returned well within the hung rev-list's 30s sleep (${HANG_ELAPSED}s elapsed)"; else fail "took ${HANG_ELAPSED}s — rev-list was not bounded by the timeout"; fi
+assert_not_contains "$LAST_LOG" "mail send" "no digest mail sent this tick when rev-list hung"
+[ -f "${SANDBOX}/state/fk-root-hang/.anchor_done" ] \
+  && fail ".anchor_done was marked despite rev-list hanging (this root's real drift would never be rechecked)" \
+  || pass ".anchor_done is left unset after a hung rev-list, so the next sweep retries"
+rm -f "${STUBDIR}/git"
+unset STUB_ROOTS_JSON STUB_STEPS_JSON STUB_BDSHOW_JSON_fk_root_hang
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "ALL CASES PASSED"
