@@ -2004,10 +2004,14 @@ close_if_open() {
 #      including any newly-minted one case 1 above does not fully prevent.
 #
 # Within each pass, descendants whose `gc.kind` marks them as workflow
-# control/latch beads (the set `implementor_alive`'s own prompt enumerates:
-# workflow, scope, check, fanout, scope-check, workflow-finalize) are closed
-# before plain lane/step beads, so a loop's own gate closes before its lanes
-# — the "loop bead first" ordering the hand-closed incident above needed.
+# control/latch beads are closed before plain lane/step beads, so a loop's
+# own gate closes before its lanes — the "loop bead first" ordering the
+# hand-closed incident above needed. Classified by a known-leaf test (any
+# non-empty `gc.kind` is a controller, fail-closed the same way
+# con-voyage-orphan-sweep.sh's `rank_for_kind` does) rather than an
+# enumerated control-kind set, so a future engine-introduced controller kind
+# (e.g. `ralph`, graph.v2's loop-controller kind) isn't dropped into the
+# lane bucket (review fk-sku8km BLOCKING-1).
 #
 # This descendant-listing query takes no bead-id positional for gc's own
 # cwd-based auto-routing to key off (unlike every close_if_open call below,
@@ -2114,13 +2118,16 @@ except Exception:
     data = []
 if not isinstance(data, list):
     data = []
-CONTROL_KINDS = {'workflow', 'scope', 'check', 'fanout', 'scope-check', 'workflow-finalize'}
 rows = []
 for item in data:
     if not isinstance(item, dict) or not item.get('id'):
         continue
     kind = (item.get('metadata') or {}).get('gc.kind') or ''
-    rows.append((0 if kind in CONTROL_KINDS else 1, item['id']))
+    # empty kind == leaf (priority 1); any non-empty kind is a controller
+    # (priority 0), fail-closed the same way con-voyage-orphan-sweep.sh does
+    # so a future engine-introduced controller kind (e.g. ralph) isn't
+    # dropped into the lane bucket (review fk-sku8km BLOCKING-1).
+    rows.append((1 if kind == '' else 0, item['id']))
 rows.sort(key=lambda r: r[0])
 for _, bead_id in rows:
     print(bead_id)
