@@ -813,6 +813,55 @@ run_script would-conflict "$WT30D"
 if [ "$RC" -ne 0 ]; then pass "would-conflict fails safe: non-zero exit when no base resolves"; else fail "expected non-zero exit when no base resolves"; fi
 
 # ===========================================================================
+# CASE 32 — `free-branch <dir> <branch>` (fk-zhyz68): con-voyage rereview-seed
+#   must attach a worktree to an EXISTING PR branch, but git refuses
+#   `worktree add -B <branch>` outright when that branch is already checked
+#   out in another worktree — the original build worktree, or an outside-
+#   the-rig fixer worktree. free-branch finds any OTHER worktree (found via
+#   `git -C <dir> worktree list --porcelain`, so <dir> can be any worktree
+#   of the same repo) holding <branch> and detaches it (checkout --detach)
+#   so the branch is free to be checked out elsewhere, but only when that
+#   holder is clean — a dirty holder is refused loud rather than silently
+#   discarding its uncommitted changes.
+# ===========================================================================
+start_case "32a: free-branch is a no-op when no other worktree holds the branch"
+REPO32="$(mk_repo repo32)"
+git_c "$REPO32" branch feature32
+run_script free-branch "$REPO32" feature32
+assert_eq "0" "$RC" "free-branch exits 0 when the branch is not checked out anywhere"
+
+start_case "32b: free-branch detaches a CLEAN other worktree holding the branch"
+REPO32B="$(mk_repo repo32b)"
+git_c "$REPO32B" branch feature32b
+WT32B="${SANDBOX}/repo32b-holder"
+git_c "$REPO32B" worktree add -q "$WT32B" feature32b
+BEFORE_BRANCH="$(git_c "$WT32B" symbolic-ref -q --short HEAD || true)"
+assert_eq "feature32b" "$BEFORE_BRANCH" "sanity: holder worktree starts on feature32b"
+run_script free-branch "$REPO32B" feature32b
+assert_eq "0" "$RC" "free-branch exits 0 after detaching a clean holder"
+AFTER_BRANCH="$(git_c "$WT32B" symbolic-ref -q --short HEAD || echo DETACHED)"
+assert_eq "DETACHED" "$AFTER_BRANCH" "holder worktree is detached after free-branch"
+
+start_case "32c: free-branch refuses (non-zero, holder untouched) when the holder is dirty"
+REPO32C="$(mk_repo repo32c)"
+git_c "$REPO32C" branch feature32c
+WT32C="${SANDBOX}/repo32c-holder"
+git_c "$REPO32C" worktree add -q "$WT32C" feature32c
+printf 'uncommitted\n' >> "${WT32C}/README.md"
+run_script free-branch "$REPO32C" feature32c
+if [ "$RC" -ne 0 ]; then pass "free-branch refuses a dirty holder (non-zero exit)"; else fail "expected non-zero exit for a dirty holder"; fi
+STILL_BRANCH="$(git_c "$WT32C" symbolic-ref -q --short HEAD || echo DETACHED)"
+assert_eq "feature32c" "$STILL_BRANCH" "dirty holder is left untouched (not detached)"
+
+start_case "32d: free-branch validates its arguments"
+run_script free-branch
+if [ "$RC" -ne 0 ]; then pass "free-branch exits non-zero with no arguments"; else fail "expected non-zero exit with no arguments"; fi
+run_script free-branch "$REPO32"
+if [ "$RC" -ne 0 ]; then pass "free-branch exits non-zero with no branch argument"; else fail "expected non-zero exit with no branch argument"; fi
+run_script free-branch "$NOTGIT" feature32
+if [ "$RC" -ne 0 ]; then pass "free-branch exits non-zero for a non-git directory"; else fail "expected non-zero exit for a non-git directory"; fi
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 echo

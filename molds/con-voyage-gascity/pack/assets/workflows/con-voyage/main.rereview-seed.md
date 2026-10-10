@@ -70,7 +70,15 @@ Create a fresh worktree keyed on this re-review round's OWN root (never
 reuse or assume the original con-voyage run's worktree still exists — it may
 already have been swept) and check out `$BRANCH` from `origin`, attaching it
 as a real local branch (never detached — detached HEAD here makes every
-later review step look like there is nothing to review):
+later review step look like there is nothing to review).
+
+`git worktree add -B <branch>` refuses outright when `$BRANCH` is already
+checked out in ANOTHER worktree — the original con-voyage build worktree, or
+an operator's own fixer worktree outside the rig (fk-zhyz68: this killed 3/3
+round-2 rereviews on 2026-10-09). Free the branch first via
+`cv-worktree-prep.sh free-branch`, which detaches that other worktree only
+if it is clean, and fails loud if it is dirty rather than silently
+discarding uncommitted work:
 
 ```bash
 CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
@@ -78,6 +86,8 @@ CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
 [ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
 CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
 [ -f "$CV_LIB" ] || CV_LIB=""
+CV_GUARD="${CV_PACK_ROOT}/assets/scripts/cv-worktree-prep.sh"
+[ -f "$CV_GUARD" ] || CV_GUARD=""
 RIG_ROOT=""
 if [ -n "$CV_LIB" ]; then
   RIG_ROOT="$(source "$CV_LIB" && cv_default_rig_root)"
@@ -88,14 +98,43 @@ WORKTREE="${RIG_ROOT}/worktrees/rereview-${ROOT_ID}"
 rm -rf "$WORKTREE"
 mkdir -p "$(dirname "$WORKTREE")"
 
-git fetch origin "$BRANCH" || { echo "con-voyage rereview-seed: failed to fetch ${BRANCH} from origin" >&2; exit 1; }
-git worktree add -q -B "$BRANCH" "$WORKTREE" "origin/${BRANCH}" \
-  || { echo "con-voyage rereview-seed: failed to attach a worktree for ${BRANCH} at ${WORKTREE}" >&2; exit 1; }
+SEED_FAIL=""
+git fetch origin "$BRANCH" || SEED_FAIL="failed to fetch ${BRANCH} from origin"
+if [ -z "$SEED_FAIL" ] && [ -n "$CV_GUARD" ] && [ -x "$CV_GUARD" ]; then
+  "$CV_GUARD" free-branch "$CV_TOPLEVEL" "$BRANCH" \
+    || SEED_FAIL="${BRANCH} is checked out in another worktree and could not be freed (dirty holder) — see stderr above"
+fi
+if [ -z "$SEED_FAIL" ]; then
+  git worktree add -q -B "$BRANCH" "$WORKTREE" "origin/${BRANCH}" \
+    || SEED_FAIL="failed to attach a worktree for ${BRANCH} at ${WORKTREE}"
+fi
 ```
 
-If either command above fails, mail the mayor with the exact error, close
-this step AND the workflow root (`gc.outcome=fail`), and STOP — do not
-proceed to stamp the root or close this step as pass.
+If `$SEED_FAIL` is non-empty, mail the mayor with the exact error, close
+this step AND sweep the whole workflow root (so review lanes mint nothing
+against a seed that never ran — fk-zhyz68: a failed seed previously left
+~28 descendant beads OPEN for a human to tear down by hand), and STOP — do
+not proceed to stamp the root or close this step as pass:
+
+```bash
+if [ -n "$SEED_FAIL" ]; then
+  echo "con-voyage rereview-seed: ${SEED_FAIL}" >&2
+  if [ -n "$CV_LIB" ]; then
+    MAIL_ERR_FILE="$(mktemp)"
+    source "$CV_LIB" && cv_with_timeout 30 gc mail send mayor -s "con-voyage rereview-seed failed: ${ROOT_ID}" -m "con-voyage rereview-seed (${CLAIMED_BEAD_ID}) could not attach a worktree for ${BRANCH}: ${SEED_FAIL}. The re-review workflow has been abandoned — no review lanes will be dispatched." --json >/dev/null 2>"$MAIL_ERR_FILE"
+    MAIL_RC=$?
+    MAIL_ERR_TEXT="$(cat "$MAIL_ERR_FILE" 2>/dev/null)"
+    rm -f "$MAIL_ERR_FILE"
+    [ "$MAIL_RC" -eq 0 ] || echo "con-voyage rereview-seed: mail to mayor on seed failure failed/timed out: ${MAIL_ERR_TEXT} — mayor NOT confirmed notified" >&2
+    bd update "$CLAIMED_BEAD_ID" \
+      --set-metadata 'gc.outcome=fail' \
+      --set-metadata 'gc.failure_class=seed_worktree_attach'
+    bd close "$CLAIMED_BEAD_ID" --reason "Re-review seed failed: ${SEED_FAIL}"
+    source "$CV_LIB" && cv_close_workflow_root "$ROOT_ID" "con-voyage rereview-seed failed (${CLAIMED_BEAD_ID}): ${SEED_FAIL}; no review lanes dispatched"
+  fi
+  exit 0
+fi
+```
 
 ## Stamp the workflow root for the reused review machinery
 

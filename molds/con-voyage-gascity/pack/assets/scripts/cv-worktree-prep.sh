@@ -92,6 +92,22 @@
 #                   means WOULD CONFLICT (the affirmative/actionable signal,
 #                   same convention as `built`); exit 1 means it would merge
 #                   cleanly, or (fail-safe) no base ref resolved at all.
+#   free-branch <dir> <branch>
+#                 — fk-zhyz68: `git worktree add -B <branch> ...` refuses
+#                   outright when <branch> is already checked out in another
+#                   worktree of the same repo (the original con-voyage build
+#                   worktree, or an operator's own fixer worktree outside the
+#                   rig) — con-voyage's rereview-seed hit this live 3/3 times
+#                   in one day. <dir> is any worktree of the target repo (used
+#                   only to run `git worktree list --porcelain` against — it
+#                   need not be the holder itself). If some OTHER worktree
+#                   has <branch> checked out, and that worktree is CLEAN (no
+#                   uncommitted changes outside the hygiene patterns, same
+#                   check as `dirty`), detach it (`checkout --detach`) so
+#                   <branch> is free to be checked out elsewhere. If that
+#                   holder is DIRTY, fail loud (exit 1) rather than silently
+#                   discard its uncommitted work. A no-op (exit 0) when no
+#                   other worktree holds <branch>.
 #   ensure-branch <dir> [branch-name]
 #                 — fk-tazxl: prepare-build always creates the build worktree
 #                   detached (`git worktree add --detach HEAD`), and the build
@@ -117,6 +133,7 @@
 #   cv-worktree-prep.sh built <dir> [base-ref]
 #   cv-worktree-prep.sh resolve-base <dir> [explicit-base]
 #   cv-worktree-prep.sh ensure-branch <dir> [branch-name]
+#   cv-worktree-prep.sh free-branch <dir> <branch>
 #
 # resolve-base (fk-qppb4) — echoes guard's own base-resolution algorithm
 # (explicit arg -> origin/HEAD -> origin/main -> main -> empty-tree fail-safe)
@@ -159,6 +176,7 @@ Usage:
   cv-worktree-prep.sh behind-count <dir> [base-ref]
   cv-worktree-prep.sh would-conflict <dir> [base-ref]
   cv-worktree-prep.sh ensure-branch <dir> [branch-name]
+  cv-worktree-prep.sh free-branch <dir> <branch>
 USAGE
 }
 
@@ -458,6 +476,45 @@ cmd_ensure_branch() {
   echo "cv-worktree-prep: created and attached branch '${name}' at ${head_commit} in ${dir}"
 }
 
+cmd_free_branch() {
+  local dir="$1" branch="${2:-}"
+  require_git_dir "$dir" "free-branch"
+  [ -n "$branch" ] || { usage; die "free-branch: a branch name argument is required"; }
+
+  local holder="" path="" branch_ref=""
+  while IFS= read -r line; do
+    case "$line" in
+      "worktree "*) path="${line#worktree }" ;;
+      "branch "*) branch_ref="${line#branch }" ;;
+      "")
+        if [ "$branch_ref" = "refs/heads/${branch}" ] && [ -n "$path" ]; then
+          holder="$path"
+        fi
+        path=""
+        branch_ref=""
+        ;;
+    esac
+  done < <(git -C "$dir" worktree list --porcelain 2>/dev/null; printf '\n')
+
+  if [ -z "$holder" ]; then
+    echo "cv-worktree-prep: free-branch — '${branch}' is not checked out in any other worktree"
+    return 0
+  fi
+
+  if [ ! -d "$holder" ]; then
+    echo "cv-worktree-prep: free-branch — holder worktree '${holder}' for '${branch}' no longer exists on disk; nothing to detach"
+    return 0
+  fi
+
+  if ! cmd_dirty "$holder" >/dev/null 2>&1; then
+    die "free-branch: '${branch}' is checked out at '${holder}' and that worktree has uncommitted changes outside hygiene paths — refusing to detach it; resolve by hand"
+  fi
+
+  git -C "$holder" checkout -q --detach \
+    || die "free-branch: failed to detach '${holder}' from '${branch}'"
+  echo "cv-worktree-prep: free-branch — detached '${holder}' from '${branch}' (was clean) so it can be checked out elsewhere"
+}
+
 SUBCOMMAND="${1:-}"
 [ -n "$SUBCOMMAND" ] || { usage; die "missing subcommand"; }
 shift || true
@@ -471,8 +528,9 @@ case "$SUBCOMMAND" in
   would-conflict) cmd_would_conflict "${1:-}" "${2:-}" ;;
   resolve-base) cmd_resolve_base "${1:-}" "${2:-}" ;;
   ensure-branch) cmd_ensure_branch "${1:-}" "${2:-}" ;;
+  free-branch) cmd_free_branch "${1:-}" "${2:-}" ;;
   *)
     usage
-    die "unknown subcommand '${SUBCOMMAND}' (expected exclude, guard, dirty, built, resolve-base, behind-count, would-conflict, or ensure-branch)"
+    die "unknown subcommand '${SUBCOMMAND}' (expected exclude, guard, dirty, built, resolve-base, behind-count, would-conflict, ensure-branch, or free-branch)"
     ;;
 esac
