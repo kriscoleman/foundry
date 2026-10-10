@@ -2249,6 +2249,89 @@ cv_bead_close() {
   return 0
 }
 
+# cv_ci_repair_resolve_worktree REPAIR_BEAD_ID — print "WORKTREE REUSED"
+# (space-separated, for `read -r WORKTREE WORKTREE_REUSED <<<`), read back
+# from REPAIR_BEAD_ID's ci_repair.worktree / ci_repair.worktree_reused
+# metadata that main.ci-repair.md's Step 3 stamps. Extracted (review
+# fk-80xk9s BLOCKING-3) from the identical `gc bd show | python3` heredoc that
+# was copy-pasted at every one of ci-repair's post-Step-3 call sites
+# (step4/5/6_abort, Step 7 teardown, Failure/escalation). FAIL-SAFE: an empty
+# REPAIR_BEAD_ID or an unresolvable/malformed `bd show` yields an empty
+# worktree and reused="false" — the caller's own "no worktree" handling
+# already covers that case the same way a real "never stamped" bead would.
+cv_ci_repair_resolve_worktree() {
+  local repair_bead_id="$1"
+  [ -n "${repair_bead_id// /}" ] || { printf ' false'; return 0; }
+  local gc_bin="${GC:-gc}"
+  "$gc_bin" bd show "$repair_bead_id" --json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    d = d[0] if isinstance(d, list) else d
+except Exception:
+    d = {}
+meta = d.get('metadata') or {}
+print(meta.get('ci_repair.worktree') or '', meta.get('ci_repair.worktree_reused') or 'false')
+" 2>/dev/null
+}
+
+# cv_ci_repair_remove_worktree_if_owned STEP_NAME WORKTREE REUSED — remove
+# WORKTREE via `git worktree remove --force` run from the rig root, but ONLY
+# when ci-repair actually created it this pass (REUSED != "true") and it
+# still exists on disk. Never remove a worktree Step 3 reused (review
+# fk-hbsmk BLOCKING-3/fk-q659) — that worktree is the shared con-voyage
+# source-anchor checkout (or a prior ci-repair worktree) another workflow may
+# still be reading from. A removal failure is logged and swallowed (the next
+# repair run for this convoy cleans it up); this never aborts the caller.
+cv_ci_repair_remove_worktree_if_owned() {
+  local step_name="$1" worktree="$2" reused="$3"
+  if [ "${reused:-false}" = "true" ]; then
+    [ -n "${worktree:-}" ] && echo "ci-repair ${step_name}: ${worktree} was an existing worktree Step 3 reused, not one it created — leaving it in place"
+    return 0
+  fi
+  [ -n "${worktree:-}" ] && [ -d "${worktree:-}" ] || return 0
+  local rig_root
+  rig_root="$(cv_default_rig_root 2>/dev/null)"
+  [ -n "$rig_root" ] || rig_root="${GC_CITY:-.}"
+  ( cd "$rig_root" 2>/dev/null && git worktree remove --force "$worktree" 2>/dev/null ) \
+    || echo "ci-repair ${step_name}: could not remove worktree ${worktree} (non-fatal — it will be cleaned up on the next repair run for this convoy)" >&2
+}
+
+# cv_ci_repair_abort STEP_NAME WORKTREE REUSED REPAIR_BEAD_ID MSG
+# ESCALATION_TARGET REPO PR CONVOY_ID BRANCH — the shared
+# fail-and-escalate tail every ci-repair step falls back to (review fk-80xk9s
+# BLOCKING-3, extracted from step4_abort/step5_abort/step6_abort/
+# Failure-escalation, which were identical but for the step-name string):
+# conditionally remove WORKTREE (via cv_ci_repair_remove_worktree_if_owned),
+# mail ESCALATION_TARGET, abandon REPAIR_BEAD_ID, close CONVOY_ID, and
+# drain-ack — mail fires BEFORE either bead closes (the original
+# Failure/escalation section's own ordering, preserved deliberately: a mail
+# describing an in-flight problem reads as stale/contradictory once sent
+# after the bead it describes is already closed). WORKTREE/REUSED are taken
+# as explicit args rather than read back
+# internally — ci_repair_step3_fail can fire BEFORE Step 3's own
+# ci_repair.worktree stamp succeeds, when the bead has nothing to read back
+# yet but the caller's own shell already knows the just-created path; passing
+# them through keeps this one function correct for both that pre-stamp case
+# and the post-stamp case (step4/5/6/Failure-escalation, whose callers
+# already resolved them via cv_ci_repair_resolve_worktree beforehand).
+# Returns 0; the caller is responsible for `exit 1` afterward (library
+# functions in this file never exit the caller's shell).
+cv_ci_repair_abort() {
+  local step_name="$1" worktree="$2" reused="$3" repair_bead_id="$4" msg="$5" \
+    escalation_target="$6" repo="$7" pr="$8" convoy_id="$9" branch="${10}"
+  echo "ci-repair ${step_name}: ${msg}" >&2
+  cv_ci_repair_remove_worktree_if_owned "$step_name" "$worktree" "$reused"
+  local gc_bin="${GC:-gc}"
+  "$gc_bin" mail send "$escalation_target" \
+    -s "CI repair blocked: ${repo}#${pr}" \
+    -m "Repair bead ${convoy_id} failed in ${step_name}: ${msg}. Branch: ${branch}."
+  cv_bead_close "$repair_bead_id" abandoned "$msg"
+  "$gc_bin" bd close "$convoy_id" --reason "abandoned: ${msg}"
+  "$gc_bin" runtime drain-ack
+  return 0
+}
+
 # cv_sweep_repair_beads_by_title REPO PR_NUMBER REASON [EXCLUDE_ID] — close
 # EVERY still-open bead whose title matches "Repair GitHub PR
 # <REPO>#<PR_NUMBER> (" (case-insensitive), other than EXCLUDE_ID (when given —
