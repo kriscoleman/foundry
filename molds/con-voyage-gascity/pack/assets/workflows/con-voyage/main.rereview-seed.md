@@ -195,6 +195,14 @@ for it in items:
           || echo "con-voyage rereview-seed: WARNING: could not close descendant ${DESC_ID} during fallback sweep" >&2
       done <<< "$DESC_IDS"
     fi
+
+    # review fk-pwbxc7 BLOCKING-1: cv_close_workflow_root closes the root bead
+    # itself LAST, after every descendant — this fallback swept descendants
+    # above but never closed the root, leaving the gc.kind=workflow latch
+    # open/in_progress and re-claimable by gc hook --claim. Mirror that
+    # ordering here, tolerant of an already-closed root.
+    _cv_fallback_with_timeout 30 bd close "$ROOT_ID" --reason "con-voyage rereview-seed failed (${CLAIMED_BEAD_ID}): ${SEED_FAIL}; closing workflow root (con-voyage-lib.sh unresolved, cv_close_workflow_root unavailable)" \
+      || echo "con-voyage rereview-seed: WARNING: could not close workflow root ${ROOT_ID} during fallback sweep" >&2
   fi
   exit 0
 fi
