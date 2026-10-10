@@ -853,6 +853,21 @@ if [ "$RC" -ne 0 ]; then pass "free-branch refuses a dirty holder (non-zero exit
 STILL_BRANCH="$(git_c "$WT32C" symbolic-ref -q --short HEAD || echo DETACHED)"
 assert_eq "feature32c" "$STILL_BRANCH" "dirty holder is left untouched (not detached)"
 
+start_case "32e: free-branch prunes a stale (rm -rf'd, unpruned) holder record so the branch becomes attachable again"
+REPO32E="$(mk_repo repo32e)"
+git_c "$REPO32E" branch feature32e
+WT32E="${SANDBOX}/repo32e-holder"
+git_c "$REPO32E" worktree add -q "$WT32E" feature32e
+rm -rf "$WT32E"
+run_script free-branch "$REPO32E" feature32e
+assert_eq "0" "$RC" "free-branch exits 0 for a holder whose directory was rm -rf'd without pruning"
+WT32E_REATTACH="${SANDBOX}/repo32e-reattach"
+if git_c "$REPO32E" worktree add -q -B feature32e "$WT32E_REATTACH" >/dev/null 2>&1; then
+  pass "feature32e is attachable again after free-branch pruned the stale record"
+else
+  fail "expected 'git worktree add -B feature32e' to succeed after free-branch pruned the stale record"
+fi
+
 start_case "32d: free-branch validates its arguments"
 run_script free-branch
 if [ "$RC" -ne 0 ]; then pass "free-branch exits non-zero with no arguments"; else fail "expected non-zero exit with no arguments"; fi

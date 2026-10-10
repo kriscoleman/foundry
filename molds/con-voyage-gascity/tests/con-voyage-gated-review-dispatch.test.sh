@@ -33,8 +33,9 @@ SETUP_MD="${WF_DIR}/main.setup-con-voyage-review.md"
 LOOP_MD="${WF_DIR}/main.con-voyage-review-loop.md"
 SYNTH_MD="${WF_DIR}/main.synthesize-review.md"
 APPLY_MD="${WF_DIR}/main.apply-review-findings.md"
+REREVIEW_SEED_MD="${WF_DIR}/main.rereview-seed.md"
 
-for f in "$BUILD_MD" "$SETUP_MD" "$LOOP_MD" "$SYNTH_MD" "$APPLY_MD"; do
+for f in "$BUILD_MD" "$SETUP_MD" "$LOOP_MD" "$SYNTH_MD" "$APPLY_MD" "$REREVIEW_SEED_MD"; do
   if [ ! -f "$f" ]; then
     echo "FATAL: workflow file under test not found at ${f}" >&2
     exit 2
@@ -154,6 +155,16 @@ assert_contains "$APPLY_MD" "cv_close_workflow_root \"\$ROOT_ID\"" \
   "the guard abandons the workflow instead of applying findings to an abandoned run"
 assert_order "$APPLY_MD" '## Fail fast if the workflow root is already closed (fk-jg6rm)' '## Resolve the target worktree (review fk-hbsmk B1)' \
   "the guard runs before resolving the target worktree"
+
+start_case "rereview-seed.md: a SEED_FAIL closes the step bead and sweeps the workflow root unconditionally, not gated solely on CV_LIB resolving (fk-zhyz68)"
+assert_contains "$REREVIEW_SEED_MD" 'bd close "$CLAIMED_BEAD_ID" --reason "Re-review seed failed: ${SEED_FAIL}"' \
+  "the step bead is closed on SEED_FAIL"
+assert_contains "$REREVIEW_SEED_MD" "cv_close_workflow_root \"\$ROOT_ID\"" \
+  "a SEED_FAIL sweeps the whole workflow tree via cv_close_workflow_root when CV_LIB resolves"
+assert_contains "$REREVIEW_SEED_MD" "con-voyage-lib.sh not resolved — cannot mail the mayor or run cv_close_workflow_root; falling back to a direct bd close sweep" \
+  "an unresolved CV_LIB falls back to a direct bd close sweep of descendants instead of silently doing nothing"
+assert_order "$REREVIEW_SEED_MD" 'bd close "$CLAIMED_BEAD_ID" --reason "Re-review seed failed: ${SEED_FAIL}"' 'cv_with_timeout 30 gc mail send mayor -s "con-voyage rereview-seed failed' \
+  "the step bead's own close runs ahead of (outside) the CV_LIB-gated mail/sweep branch"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

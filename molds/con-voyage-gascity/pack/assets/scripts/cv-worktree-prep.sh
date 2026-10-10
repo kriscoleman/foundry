@@ -502,7 +502,9 @@ cmd_free_branch() {
   fi
 
   if [ ! -d "$holder" ]; then
-    echo "cv-worktree-prep: free-branch — holder worktree '${holder}' for '${branch}' no longer exists on disk; nothing to detach"
+    git -C "$dir" worktree prune \
+      || die "free-branch: '${branch}' holder '${holder}' is gone but 'git worktree prune' failed; resolve by hand"
+    echo "cv-worktree-prep: free-branch — pruned stale worktree record '${holder}' holding '${branch}' (dir gone)"
     return 0
   fi
 
