@@ -7,11 +7,13 @@
 #   1. Dedup check — skip filing anything that already matches an existing
 #      bead/issue.
 #   2. Routing rule — pack-general friction (a bug/gap in the mold/pack
-#      itself, reusable across any city) -> kriscoleman/foundry as a GitHub
-#      issue; city-specific friction (this rig's own repo/config/process) ->
-#      the city rig (repl_city) as a bead. Default to pack-general unless the
-#      friction text names a repl_city-only concern (OPERATOR DECISION
-#      2026-10-03, Slack thread 1791062681.636319: confirmed default).
+#      itself, reusable across any city) -> the pack's own GitHub repo
+#      (CV_SCRIBE_GH_REPO, configured per-install — this script hardcodes no
+#      operator's own fork) as a GitHub issue; city-specific friction (this
+#      rig's own repo/config/process) -> the local city as a bead. Default to
+#      pack-general unless the friction text names a this-city-only concern
+#      (OPERATOR DECISION 2026-10-03, Slack thread 1791062681.636319:
+#      confirmed default).
 #   3. Title/body formatting — a thin deterministic pass turning freeform
 #      friction text into a Conventional-Commit-style title and an
 #      INVEST-shaped body.
@@ -36,19 +38,21 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/con-voyage-lib.sh"
 # (CV_RIG_SYNC_FETCH_TIMEOUT_SECONDS, CV_ASKQ_STORE_TIMEOUT_SECONDS).
 CV_SCRIBE_STORE_TIMEOUT_SECONDS="${CV_SCRIBE_STORE_TIMEOUT_SECONDS:-30}"
 
-# scribe_route_target TEXT — print "foundry" or "repl_city" for where a
-# friction point described by TEXT should be filed. Defaults to "foundry"
-# (pack-general) unless TEXT names an explicit repl_city-only/city-specific
-# concern, per the confirmed operator default.
+# scribe_route_target TEXT — print "pack" or "city" for where a friction
+# point described by TEXT should be filed. Defaults to "pack" (pack-general)
+# unless TEXT names an explicit this-city-only/city-specific concern, per the
+# confirmed operator default. The keyword match below is deliberately generic
+# (no city's own name is hardcoded here) so the heuristic works unmodified in
+# any city that installs this pack.
 scribe_route_target() {
   local text="$1"
   local lower
   lower="$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]')"
   case "$lower" in
-    *repl_city*|*repl-city*|*"this rig"*|*"city rig"*|*"city-specific"*|*"city specific"*|*"this city"*)
-      printf 'repl_city' ;;
+    *"this rig"*|*"city rig"*|*"city-specific"*|*"city specific"*|*"this city"*)
+      printf 'city' ;;
     *)
-      printf 'foundry' ;;
+      printf 'pack' ;;
   esac
 }
 
@@ -201,16 +205,19 @@ for item in data:
   return 0
 }
 
-# scribe_file_friction TEXT [--route foundry|repl_city] [--gh-repo REPO] —
-# the end-to-end flow: dedup check, routing decision, title/body formatting,
-# then filing via gh issue create (foundry) or bd create (repl_city). Prints
+# scribe_file_friction TEXT [--route pack|city] [--gh-repo REPO] — the
+# end-to-end flow: dedup check, routing decision, title/body formatting, then
+# filing via gh issue create (pack) or bd create (city). Prints
 # "DEDUP:<match>" and does nothing else when a dedup match is found; prints
 # the underlying gh/bd command's own output on an actual filing. --route
 # forces a target instead of the default pack-general-unless-city-specific
-# heuristic; --gh-repo overrides the default foundry repo
-# (kriscoleman/foundry).
+# heuristic; --gh-repo overrides the pack repo (CV_SCRIBE_GH_REPO). Neither
+# has a hardcoded fallback repo/city — this script ships generalized across
+# any city that installs the pack, so a --route pack with no CV_SCRIBE_GH_REPO
+# (and no --gh-repo) configured refuses to file rather than guessing an
+# operator's own fork.
 scribe_file_friction() {
-  local text="" route="auto" gh_repo="${CV_SCRIBE_GH_REPO:-kriscoleman/foundry}"
+  local text="" route="auto" gh_repo="${CV_SCRIBE_GH_REPO:-}"
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --route) route="$2"; shift 2 ;;
@@ -219,19 +226,24 @@ scribe_file_friction() {
     esac
   done
   case "$route" in
-    foundry|repl_city|auto) ;;
+    pack|city|auto) ;;
     *)
-      echo "scribe: unrecognized --route value '${route}' (expected foundry, repl_city, or auto) — refusing to file" >&2
+      echo "scribe: unrecognized --route value '${route}' (expected pack, city, or auto) — refusing to file" >&2
       return 1
       ;;
   esac
   [ "$route" = "auto" ] && route="$(scribe_route_target "$text")"
 
+  if [ "$route" = "pack" ] && [ -z "$gh_repo" ]; then
+    echo "scribe: no pack repo configured — set CV_SCRIBE_GH_REPO or pass --gh-repo — refusing to file" >&2
+    return 1
+  fi
+
   local title
   title="$(scribe_format_title "$text")"
 
   local dedup_repo=""
-  [ "$route" = "foundry" ] && dedup_repo="$gh_repo"
+  [ "$route" = "pack" ] && dedup_repo="$gh_repo"
   local dedup_key
   dedup_key="$(scribe_dedup_key "$text")"
   local existing
@@ -250,7 +262,7 @@ scribe_file_friction() {
   # zero stderr, indistinguishable from "nothing to print" or the DEDUP
   # short-circuit above, so a friction report could vanish with no trace.
   local filing_rc
-  if [ "$route" = "foundry" ]; then
+  if [ "$route" = "pack" ]; then
     local gh_bin="${GH:-gh}"
     cv_with_timeout "$CV_SCRIBE_STORE_TIMEOUT_SECONDS" "$gh_bin" issue create --repo "$gh_repo" --title "$title" --body "$body"
     filing_rc=$?
