@@ -1,0 +1,301 @@
+description = """
+Con-voyage review-only escort (fk-aygo23).
+
+Reviews an existing, open PR that con-voyage did NOT build — a teammate's
+branch, a fork PR, anything con-voyage has no publish/finalize record for.
+Checks out the PR's head commit READ-ONLY (a detached worktree from
+`pull/<n>/head`, so fork PRs with no push access work the same as any
+other), runs the SAME multi-lens review roster con-voyage's own build
+formula uses against that diff, posts exactly ONE aggregated review comment,
+and mails the mayor the verdict.
+
+Never creates, rebases, commits to, or pushes any branch. Never opens a PR.
+Never registers the PR with con-voyage-finalize, con-voyage-pr-watch,
+con-voyage-ci-repair, or con-voyage-rereview-watch — this formula does not
+own the PR, so none of those monitors should ever act on it. No apply step,
+no auto iteration loop: this formula runs review lanes exactly ONCE and
+reports whatever it finds. A re-review is a fresh dispatch of this same
+formula on demand, not a retry loop.
+
+Reuses setup-con-voyage-review.md, synthesize-review.md, and every review
+lane description_file from the con-voyage formula UNCHANGED (same relative
+paths), so a review-only round gets identical review-quality guarantees
+with no duplicated lane logic to drift out of sync. Only the seed, the loop
+controller (no apply-review-findings dependency — see above), and the
+finalize step are specific to this formula.
+"""
+formula = "con-voyage-review-escort"
+type = "expansion"
+version = 1
+contract = "graph.v2"
+
+[vars]
+[vars.repo]
+description = "GitHub repository in owner/repo form to review a PR in."
+default = ""
+
+[vars.pr]
+description = "PR number (integer string) to review read-only."
+default = ""
+
+[vars.code_lens]
+description = "Run-target for the native-language code review floor lane."
+default = "con-voyage.cv-go-principal-engineer"
+
+[vars.cv_lens_claim_seconds]
+description = "Seconds a review-lane bead may sit open+unassigned before this loop re-dispatches it (see con-voyage.formula.toml for the full rationale)."
+default = "300"
+
+[vars.cv_lens_max_redispatch]
+description = "Bounded re-dispatch attempts per stalled review lane before escalating to cv_lens_escalate_target."
+default = "3"
+
+[vars.cv_lens_escalate_target]
+description = "Mail recipient when a review lane exhausts cv_lens_max_redispatch."
+default = "human"
+
+# ---------------------------------------------------------------------------
+# Seed step — attaches a READ-ONLY detached worktree to the PR's head commit
+# and stands in for con-voyage's prepare-build/build phases (fk-9aunv) so the
+# SAME setup-con-voyage-review.md dependency gate is satisfied without ever
+# creating a branch or running a TDD round.
+# ---------------------------------------------------------------------------
+
+[[template]]
+id = "{target}.review-escort-seed"
+title = "Con-voyage: review-only escort seed (read-only PR checkout)"
+metadata = { "gc.run_target" = "gc.run-operator" }
+description_file = "../assets/workflows/con-voyage/main.review-escort-seed.md"
+
+# ---------------------------------------------------------------------------
+# Setup — REUSES the con-voyage formula's own setup-con-voyage-review.md
+# verbatim (same relative path), so a review-only round gets identical
+# review-context assembly with no duplicated logic to drift out of sync.
+# ---------------------------------------------------------------------------
+
+[[template]]
+id = "{target}.setup-con-voyage-review"
+title = "Prepare con-voyage review context"
+needs = ["{target}.review-escort-seed"]
+metadata = { "gc.run_target" = "gc.run-operator" }
+description_file = "../assets/workflows/con-voyage/main.setup-con-voyage-review.md"
+
+# ---------------------------------------------------------------------------
+# Review loop — a SINGLE pass, not a retry loop: no apply-review-findings
+# child, no [template.check]/max_attempts. Reuses every lane description_file
+# and synthesize-review.md verbatim.
+# ---------------------------------------------------------------------------
+
+[[template]]
+id = "{target}.review-escort-loop"
+title = "Run con-voyage review-only escort (single pass)"
+needs = ["{target}.setup-con-voyage-review"]
+metadata = { "gc.run_target" = "gc.run-operator" }
+description_file = "../assets/workflows/con-voyage/main.review-escort-loop.md"
+
+[[template.children]]
+id = "{target}.acceptance-review"
+title = "Con-voyage: acceptance and correctness"
+metadata = { "gc.run_target" = "gc.implementation-reviewer" }
+description_file = "../assets/workflows/con-voyage/main.acceptance-review.md"
+
+[[template.children]]
+id = "{target}.test-evidence-review"
+title = "Con-voyage: test evidence"
+metadata = { "gc.run_target" = "gc.gap-analyst" }
+description_file = "../assets/workflows/con-voyage/main.test-evidence-review.md"
+
+[[template.children]]
+id = "{target}.simplicity-review"
+title = "Con-voyage: simplicity and maintainability"
+metadata = { "gc.run_target" = "gc.design-implementation-reviewer" }
+description_file = "../assets/workflows/con-voyage/main.simplicity-review.md"
+
+[[template.children]]
+id = "{target}.security-review"
+title = "Con-voyage: security review"
+metadata = { "gc.run_target" = "con-voyage.cv-security-reviewer" }
+description_file = "../assets/workflows/con-voyage/main.security-review.md"
+
+[[template.children]]
+id = "{target}.code-review"
+title = "Con-voyage: code review (native-language)"
+metadata = { "gc.run_target" = "{code_lens}" }
+description_file = "../assets/workflows/con-voyage/main.code-review.md"
+
+[[template.children]]
+id = "{target}.product-owner-review"
+title = "Con-voyage: product-owner review"
+condition = """{{enable_product_owner}}"""
+metadata = { "gc.run_target" = "con-voyage.cv-product-owner" }
+description_file = "../assets/workflows/con-voyage/main.product-owner-review.md"
+
+[vars.enable_product_owner]
+description = "Enable product-owner roster lens."
+default = "false"
+
+[[template.children]]
+id = "{target}.founder-cto-review"
+title = "Con-voyage: founder-CTO review"
+condition = """{{enable_founder_cto}}"""
+metadata = { "gc.run_target" = "con-voyage.cv-founder-cto" }
+description_file = "../assets/workflows/con-voyage/main.founder-cto-review.md"
+
+[vars.enable_founder_cto]
+description = "Enable founder-CTO roster lens."
+default = "false"
+
+[[template.children]]
+id = "{target}.dev-ex-review"
+title = "Con-voyage: developer experience review"
+condition = """{{enable_dev_ex}}"""
+metadata = { "gc.run_target" = "con-voyage.cv-dev-ex-reviewer" }
+description_file = "../assets/workflows/con-voyage/main.dev-ex-review.md"
+
+[vars.enable_dev_ex]
+description = "Enable dev-ex reviewer roster lens."
+default = "false"
+
+[[template.children]]
+id = "{target}.standards-janitor-review"
+title = "Con-voyage: standards and conventions review"
+condition = """{{enable_standards_janitor}}"""
+metadata = { "gc.run_target" = "con-voyage.cv-standards-janitor" }
+description_file = "../assets/workflows/con-voyage/main.standards-janitor-review.md"
+
+[vars.enable_standards_janitor]
+description = "Enable standards-janitor roster lens."
+default = "false"
+
+[[template.children]]
+id = "{target}.qa-test-review"
+title = "Con-voyage: QA and test-engineering review"
+condition = """{{enable_qa_test}}"""
+metadata = { "gc.run_target" = "con-voyage.cv-qa-test-engineer" }
+description_file = "../assets/workflows/con-voyage/main.qa-test-review.md"
+
+[vars.enable_qa_test]
+description = "Enable QA / test-engineer roster lens."
+default = "false"
+
+[[template.children]]
+id = "{target}.sre-review"
+title = "Con-voyage: SRE reliability review"
+condition = """{{enable_sre}}"""
+metadata = { "gc.run_target" = "con-voyage.cv-sre-reliability" }
+description_file = "../assets/workflows/con-voyage/main.sre-review.md"
+
+[vars.enable_sre]
+description = "Enable SRE reliability roster lens."
+default = "false"
+
+[[template.children]]
+id = "{target}.design-ux-review"
+title = "Con-voyage: design and UX review"
+condition = """{{enable_design_ux}}"""
+metadata = { "gc.run_target" = "con-voyage.cv-design-ux" }
+description_file = "../assets/workflows/con-voyage/main.design-ux-review.md"
+
+[vars.enable_design_ux]
+description = "Enable design/UX roster lens."
+default = "false"
+
+[[template.children]]
+id = "{target}.documentation-review"
+title = "Con-voyage: documentation review"
+condition = """{{enable_documentation}}"""
+metadata = { "gc.run_target" = "con-voyage.cv-documentation" }
+description_file = "../assets/workflows/con-voyage/main.documentation-review.md"
+
+[vars.enable_documentation]
+description = "Enable documentation roster lens."
+default = "false"
+
+[[template.children]]
+id = "{target}.marketing-review"
+title = "Con-voyage: marketing review"
+condition = """{{enable_marketing}}"""
+metadata = { "gc.run_target" = "con-voyage.cv-marketing" }
+description_file = "../assets/workflows/con-voyage/main.marketing-review.md"
+
+[vars.enable_marketing]
+description = "Enable marketing roster lens."
+default = "false"
+
+[[template.children]]
+id = "{target}.api-platform-review"
+title = "Con-voyage: API and platform contract review"
+condition = """{{enable_api_platform}}"""
+metadata = { "gc.run_target" = "con-voyage.cv-api-platform-contract" }
+description_file = "../assets/workflows/con-voyage/main.api-platform-review.md"
+
+[vars.enable_api_platform]
+description = "Enable API/platform contract roster lens."
+default = "false"
+
+[[template.children]]
+id = "{target}.compliance-review"
+title = "Con-voyage: compliance and privacy review"
+condition = """{{enable_compliance}}"""
+metadata = { "gc.run_target" = "con-voyage.cv-compliance-privacy" }
+description_file = "../assets/workflows/con-voyage/main.compliance-review.md"
+
+[vars.enable_compliance]
+description = "Enable compliance/privacy roster lens."
+default = "false"
+
+[[template.children]]
+id = "{target}.data-db-review"
+title = "Con-voyage: data and database review"
+condition = """{{enable_data_db}}"""
+metadata = { "gc.run_target" = "con-voyage.cv-data-db-engineer" }
+description_file = "../assets/workflows/con-voyage/main.data-db-review.md"
+
+[vars.enable_data_db]
+description = "Enable data/database engineer roster lens."
+default = "false"
+
+[[template.children]]
+id = "{target}.synthesize-review"
+title = "Synthesize con-voyage review"
+needs = [
+  "{target}.acceptance-review",
+  "{target}.test-evidence-review",
+  "{target}.simplicity-review",
+  "{target}.security-review",
+  "{target}.code-review",
+  "{target}.product-owner-review",
+  "{target}.founder-cto-review",
+  "{target}.dev-ex-review",
+  "{target}.standards-janitor-review",
+  "{target}.qa-test-review",
+  "{target}.sre-review",
+  "{target}.design-ux-review",
+  "{target}.documentation-review",
+  "{target}.marketing-review",
+  "{target}.api-platform-review",
+  "{target}.compliance-review",
+  "{target}.data-db-review",
+]
+metadata = { "gc.run_target" = "gc.review-synthesizer" }
+description_file = "../assets/workflows/con-voyage/main.synthesize-review.md"
+
+# ---------------------------------------------------------------------------
+# Finalize step — posts the ONE aggregated comment and the verdict mail. No
+# push, no PR open, no .finalize record, no monitor registration.
+# ---------------------------------------------------------------------------
+
+[[template]]
+id = "{target}"
+title = "Finalize con-voyage review-only escort"
+needs = ["{target}.review-escort-loop"]
+metadata = { "gc.run_target" = "gc.run-operator", "gc.build.artifact_schema" = "gc.build.review.v1", "gc.build.artifact_path_keys" = "gc.build.review_report_path" }
+description_file = "../assets/workflows/con-voyage/main.review-escort-finalize.md"
+
+[template.check]
+max_attempts = 3
+
+[template.check.check]
+mode = "exec"
+path = ".gc/scripts/checks/build-artifact-valid.sh"
+timeout = "5m"
