@@ -1261,11 +1261,20 @@ save_seen_ids() {
 }
 
 # ---------------------------------------------------------------------------
-# cv_pr_watch_human_has_access REPO LOGIN — fk-khcrhm: "is this login at
-# least a read-collaborator on REPO" gate for the LOW-finding reaction/reply
-# triggers below (OWNER/MEMBER/COLLABORATOR-equivalent, i.e. GitHub's own
-# `permission` field is anything other than "none" — keeps drive-by strangers
-# off public repos while allowing any teammate, not just CV_PR_AUTHOR).
+# cv_pr_watch_human_has_access REPO LOGIN — fk-khcrhm: "is this login a
+# write-or-above collaborator on REPO" gate for the LOW-finding
+# reaction/reply triggers below (the triggered action is a write-equivalent
+# code push, so the bar is write/maintain/admin, never read/triage).
+#
+# review fk-khcrhm BLOCKING-1: GitHub's `.../collaborators/{login}/permission`
+# returns `"permission":"read"` for EVERY account on a public repo, not just
+# actual collaborators (verified live against octocat/torvalds/defunkt on
+# this pack's own public target repo, none of whom are collaborators) — so
+# the old `permission != "none"` check let any GitHub user, and any
+# read/triage-only grantee, through the gate. Requiring membership in
+# {admin, maintain, write} closes both: it is false for every non-write
+# grantee on a public repo (the "read for everyone" response included) and
+# false for a genuine no-access login on a private repo alike.
 #
 # Cached in CV_PR_WATCH_PERM_CACHE for the lifetime of THIS script invocation
 # (one poll run) — a login checked twice in one run costs exactly one `gh
@@ -1291,11 +1300,14 @@ except ValueError:
     d = {}
 print((d or {}).get('permission', 'none') or 'none')" 2>/dev/null || echo "none")
     fi
-    if [ "$perm" != "none" ] && [ -n "$perm" ]; then
-      CV_PR_WATCH_PERM_CACHE[$cache_key]="yes"
-    else
-      CV_PR_WATCH_PERM_CACHE[$cache_key]="no"
-    fi
+    case "$perm" in
+      admin|maintain|write)
+        CV_PR_WATCH_PERM_CACHE[$cache_key]="yes"
+        ;;
+      *)
+        CV_PR_WATCH_PERM_CACHE[$cache_key]="no"
+        ;;
+    esac
   fi
   [ "${CV_PR_WATCH_PERM_CACHE[$cache_key]}" = "yes" ]
 }
@@ -2292,6 +2304,21 @@ for pr in data:
       if ! printf '%s\n' "$open_pr_numbers" | grep -qx "$pr_num_from_file"; then
         echo "con-voyage-pr-watch: [PART B] GC: removing stale state for closed PR #${pr_num_from_file} (${full_repo})"
         rm -f "$existing_state"
+      fi
+    done
+    # fk-khcrhm (review BLOCKING-3): the finding-trigger dedup state file
+    # (written above as "${state_key}.finding-triggers.seen") shares the same
+    # per-PR state_key as .seen-ids but a different suffix, so it never
+    # matched the glob above — it leaked forever once its PR closed, the
+    # exact unbounded-accumulation class this GC block exists to stop. Mirror
+    # the same closed-PR sweep for it.
+    for existing_finding_state in "${CV_STATE_DIR}/${owner}_${repo}_"*.finding-triggers.seen; do
+      [ -f "$existing_finding_state" ] || continue
+      basename_no_ext="${existing_finding_state%.finding-triggers.seen}"
+      pr_num_from_file="${basename_no_ext##*_}"
+      if ! printf '%s\n' "$open_pr_numbers" | grep -qx "$pr_num_from_file"; then
+        echo "con-voyage-pr-watch: [PART B] GC: removing stale finding-trigger state for closed PR #${pr_num_from_file} (${full_repo})"
+        rm -f "$existing_finding_state"
       fi
     done
   fi
