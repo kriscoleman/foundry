@@ -681,12 +681,12 @@ cv_ci_repair_remove_worktree_if_owned "Step 7" "" "false" >/dev/null 2>&1 || rc=
 assert_eq "0" "$rc" "an empty worktree path never aborts the caller"
 assert_log_count 'worktree remove' 0 "an empty worktree path is never passed to git worktree remove"
 
-start_case "cv_ci_repair_abort: resolves via explicit WORKTREE/REUSED, closes repair+convoy beads, mails escalation, drain-acks"
+start_case "cv_ci_repair_abort: resolves via explicit WORKTREE/REUSED, closes the repair bead, mails escalation naming the repair bead (not the dead convoy_id token), drain-acks"
 : > "$GC_LOG"
 cv_ci_repair_abort "Step 4" "" "false" "rb-open" "boom" "human" "owner/repo" "42" "cv-convoy1" "feature-branch" >/dev/null 2>&1
 assert_log_count 'bd close rb-open --reason abandoned: boom' 1 "closes the repair bead abandoned with the given message"
-assert_log_count 'mail send human -s CI repair blocked: owner/repo#42' 1 "mails the escalation target with repo/pr in the subject"
-assert_log_count 'bd close cv-convoy1 --reason abandoned: boom' 1 "closes the convoy bead too"
+assert_log_count 'mail send human -s CI repair blocked: owner/repo#42 -m Repair bead rb-open failed' 1 "mails the escalation target naming the real repair bead id, not the never-substituted convoy_id token (fk-ne3uz)"
+assert_log_count 'bd close cv-convoy1' 0 "never closes the dead/unresolved convoy_id token — only the real repair bead (fk-ne3uz)"
 assert_log_count 'runtime drain-ack' 1 "drain-acks after escalating"
 
 start_case "cv_ci_repair_abort: returns 0 so the caller is responsible for exit 1 (library functions never exit the caller)"

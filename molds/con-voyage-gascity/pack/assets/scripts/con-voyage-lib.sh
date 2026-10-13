@@ -2355,18 +2355,23 @@ cv_ci_repair_remove_worktree_if_owned() {
 # BLOCKING-3, extracted from step4_abort/step5_abort/step6_abort/
 # Failure-escalation, which were identical but for the step-name string):
 # conditionally remove WORKTREE (via cv_ci_repair_remove_worktree_if_owned),
-# mail ESCALATION_TARGET, abandon REPAIR_BEAD_ID, close CONVOY_ID, and
-# drain-ack — mail fires BEFORE either bead closes (the original
-# Failure/escalation section's own ordering, preserved deliberately: a mail
-# describing an in-flight problem reads as stale/contradictory once sent
-# after the bead it describes is already closed). WORKTREE/REUSED are taken
-# as explicit args rather than read back
-# internally — ci_repair_step3_fail can fire BEFORE Step 3's own
+# mail ESCALATION_TARGET, abandon REPAIR_BEAD_ID, and drain-ack — mail fires
+# BEFORE the bead closes (the original Failure/escalation section's own
+# ordering, preserved deliberately: a mail describing an in-flight problem
+# reads as stale/contradictory once sent after the bead it describes is
+# already closed). WORKTREE/REUSED are taken as explicit args rather than
+# read back internally — ci_repair_step3_fail can fire BEFORE Step 3's own
 # ci_repair.worktree stamp succeeds, when the bead has nothing to read back
 # yet but the caller's own shell already knows the just-created path; passing
 # them through keeps this one function correct for both that pre-stamp case
 # and the post-stamp case (step4/5/6/Failure-escalation, whose callers
 # already resolved them via cv_ci_repair_resolve_worktree beforehand).
+# CONVOY_ID is accepted for positional-argument compatibility with every call
+# site but is otherwise UNUSED: it is a gc-internal graph.v2 token no dispatch
+# path ever passes as a `--var`, so it never resolves in this prompt file
+# (review fk-80xk9s LOW-1, fk-ne3uz). The escalation mail and the terminal
+# close both key on REPAIR_BEAD_ID instead — the one token this handoff
+# guarantees resolves to a real, human-facing bead.
 # Returns 0; the caller is responsible for `exit 1` afterward (library
 # functions in this file never exit the caller's shell).
 cv_ci_repair_abort() {
@@ -2377,9 +2382,8 @@ cv_ci_repair_abort() {
   local gc_bin="${GC:-gc}"
   "$gc_bin" mail send "$escalation_target" \
     -s "CI repair blocked: ${repo}#${pr}" \
-    -m "Repair bead ${convoy_id} failed in ${step_name}: ${msg}. Branch: ${branch}."
+    -m "Repair bead ${repair_bead_id} failed in ${step_name}: ${msg}. Branch: ${branch}."
   cv_bead_close "$repair_bead_id" abandoned "$msg"
-  "$gc_bin" bd close "$convoy_id" --reason "abandoned: ${msg}"
   "$gc_bin" runtime drain-ack
   return 0
 }
