@@ -89,14 +89,26 @@ the review finds (clean, LOW, or BLOCKING) is the final report for that
 round. Re-review after the author pushes fixes by slinging the same formula
 again — a fresh dispatch, not a retry.
 
+**Review lanes execute the PR's checked-out code** (build/test/lint) inside
+the attached worktree. The seed step refuses (fail-safe close, no worktree
+ever attached) unless the PR author's GitHub `authorAssociation` is
+`OWNER`/`MEMBER`/`COLLABORATOR` — this formula is not a safe sandbox for an
+untrusted fork or external-contributor PR.
+
 ```bash
-gc sling <target> --on con-voyage-review-escort \
+gc sling <target> <bead-or-text> --on con-voyage-review-escort \
   --var repo=<owner/repo> \
   --var pr=<pr-number> \
   [--var code_lens=con-voyage.cv-frontend-principal-engineer] \
   --var enable_<lens>=true \
   [--var enable_<lens2>=true ...]
 ```
+
+- `<target>` — Gas City `<rig>/<agent-or-pool>` to run the workflow on, same
+  as the main formula.
+- `<bead-or-text>` — an existing bead ID to anchor this workflow's root, or a
+  free-text description to auto-create one. The repo/PR being reviewed come
+  from `repo`/`pr` above, not from this anchor — any bead or text works.
 
 Same roster lens vars as the main formula (see the table above); the floor
 lanes (acceptance, test-evidence, simplicity, security, code) are always

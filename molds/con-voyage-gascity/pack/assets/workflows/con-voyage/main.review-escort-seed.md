@@ -62,6 +62,46 @@ if [ -z "${REPO_FULL}" ] || [ -z "${PR_NUMBER}" ]; then
 fi
 ```
 
+## Gate on the PR author's trust level (review fk-hbsmk BLOCKING-1)
+
+Review lanes execute the PR's own checked-out code (build/test/lint, native
+language review) inside the worktree this step attaches. This formula's
+entire purpose is reviewing PRs of unknown provenance — including forks —
+so running that code unsandboxed on the Gas City host is a direct
+RCE → secret-exfiltration path against the host's `gh` token and mail
+credentials. Refuse before fetching or attaching anything unless the PR
+author is trusted:
+
+```bash
+AUTHOR_ASSOC="$(gh pr view "$PR_NUMBER" --repo "$REPO_FULL" --json authorAssociation --jq .authorAssociation 2>/dev/null)"
+case "$AUTHOR_ASSOC" in
+  OWNER|MEMBER|COLLABORATOR) ;;
+  *)
+    echo "con-voyage review-escort-seed: refusing ${REPO_FULL}#${PR_NUMBER} — author association '${AUTHOR_ASSOC:-unknown}' is not OWNER/MEMBER/COLLABORATOR. Review lanes execute checked-out code, so this formula is not a safe sandbox for an untrusted fork/contributor PR; no worktree was attached." >&2
+    bd update "$CLAIMED_BEAD_ID" \
+      --set-metadata 'gc.outcome=fail' \
+      --set-metadata 'gc.failure_class=untrusted_pr_author'
+    bd close "$CLAIMED_BEAD_ID" --reason "Refused: PR author association '${AUTHOR_ASSOC:-unknown}' is not trusted (OWNER/MEMBER/COLLABORATOR)."
+    CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+    CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+    [ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+    CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+    [ -f "$CV_LIB" ] || CV_LIB=""
+    if [ -n "$CV_LIB" ]; then
+      source "$CV_LIB" && cv_with_timeout 30 gc mail send mayor -s "con-voyage review-escort refused: untrusted PR author (${ROOT_ID})" -m "con-voyage review-escort-seed (${CLAIMED_BEAD_ID}) refused ${REPO_FULL}#${PR_NUMBER}: author association '${AUTHOR_ASSOC:-unknown}' is not OWNER/MEMBER/COLLABORATOR. Review lanes execute checked-out code, so reviewing an untrusted fork/contributor PR here risks code execution against this host's gh token and mail credentials. If this PR must still be reviewed, do so manually or restrict escort lanes to a read-only diff review, then re-dispatch." --json >/dev/null 2>&1
+      source "$CV_LIB" && cv_close_workflow_root "$ROOT_ID" "con-voyage review-escort-seed refused (${CLAIMED_BEAD_ID}): untrusted PR author association '${AUTHOR_ASSOC:-unknown}'"
+    else
+      echo "con-voyage review-escort-seed: con-voyage-lib.sh unresolved — cannot mail the mayor or sweep the workflow root; a human must close ${ROOT_ID} by hand" >&2
+    fi
+    exit 0
+    ;;
+esac
+```
+
+An empty/unresolvable `$AUTHOR_ASSOC` (a `gh` failure, a private repo the
+token can't see, etc.) falls into the refusal branch above, not into
+"trusted" — fail safe, never fail open on an unknown trust level.
+
 ## Attach a READ-ONLY detached worktree to the PR's head commit
 
 Fetch `refs/pull/<pr>/head` — a ref GitHub publishes for every PR, including

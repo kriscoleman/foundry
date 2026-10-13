@@ -98,6 +98,28 @@ start_case "the finalize step verifies the PR head was never moved by this formu
 assert_contains "$FINALIZE_MD" "ls-remote origin \"refs/pull/\${PR_NUMBER}/head\"" "finalize re-reads the PR's live remote head"
 assert_contains "$FINALIZE_MD" "gc.review_escort.pr_head_sha" "finalize compares against the seeded head sha"
 
+start_case "the finalize step mails the mayor regardless of verdict (review fk-hbsmk BLOCKING-8)"
+assert_contains "$FINALIZE_MD" "gc mail send mayor" "finalize mails the mayor"
+assert_contains "$FINALIZE_MD" "REVIEW-ESCORT COMPLETE: \${REPO_FULL}#\${PR_NUMBER}" "verdict mail subject line names the repo and PR"
+assert_contains "$FINALIZE_MD" "\${OVERALL_LINE}" "verdict mail body carries the derived overall_line, not a placeholder"
+
+start_case "the finalize step never re-posts the aggregated comment on a retry (review fk-hbsmk BLOCKING-7)"
+assert_contains "$FINALIZE_MD" "cv_claim_once" "finalize gates the comment post on cv_claim_once"
+assert_contains "$FINALIZE_MD" "gc.review_escort.comment_posted" "finalize uses a dedicated idempotency flag for the comment post"
+assert_not_contains "$FINALIZE_MD" "<path to the assembled JSON manifest" "finalize no longer embeds a prose placeholder in the --manifest argument"
+
+start_case "the finalize step cleans up the review-escort worktree (review fk-hbsmk BLOCKING-2)"
+assert_contains "$FINALIZE_MD" "git worktree remove --force" "finalize removes the attached worktree"
+
+start_case "the finalize step resolves concrete overall_line/report-path values, not bracket placeholders (review fk-hbsmk BLOCKING-3/4/5)"
+assert_not_contains "$FINALIZE_MD" "<overall_line from review-synthesis.md>" "no unresolved overall_line placeholder"
+assert_not_contains "$FINALIZE_MD" "<final report path>" "no unresolved report-path placeholder in the close metadata"
+assert_contains "$FINALIZE_MD" "gc.build.review_report_path=\${REVIEW_REPORT_PATH}" "close metadata references a resolved variable"
+
+start_case "the seed step gates on the PR author's trust level before attaching a worktree (review fk-hbsmk BLOCKING-1)"
+assert_contains "$SEED_MD" "authorAssociation" "seed checks the PR author's GitHub authorAssociation"
+assert_contains "$SEED_MD" "OWNER|MEMBER|COLLABORATOR" "seed only proceeds for a trusted author association"
+
 start_case "the formula declares no apply-review-findings node and no push/open_pr vars"
 assert_not_contains "$FORMULA" 'id = "{target}.apply-review-findings"' "formula does not declare an apply-review-findings node"
 assert_not_contains "$FORMULA" "vars.push" "formula declares no push var (this formula never pushes)"

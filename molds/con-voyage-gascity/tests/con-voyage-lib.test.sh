@@ -476,6 +476,32 @@ gc_unset_result="$(PATH="${STUBDIR}:${PATH}" bash -c "unset GC; source '$LIB'; c
 assert_eq "fk-hd0xv" "$gc_unset_result" "a caller that forgets to set \$GC still resolves via the default, not empty"
 
 # ---------------------------------------------------------------------------
+# cv_claim_once (review fk-hbsmk BLOCKING-7: a [template.check] max_attempts
+# retry re-dispatches the SAME claimed bead, so an action with an external
+# side effect — posting a PR comment — must not repeat on a retry). This is
+# the executable proof the finding asked for: a stub `gc`/`bd update` call is
+# invoked exactly once across two calls against the same bead+key, standing
+# in for "the second call is a no-op" since review-escort-finalize.md itself
+# is prompt prose, not an executable script.
+# ---------------------------------------------------------------------------
+start_case "cv_claim_once: first call on an unset flag claims it and calls bd update exactly once"
+: > "$GC_LOG"
+unset STUB_BDSHOW_JSON_fk_once1
+assert_eq "claim" "$(cv_claim_once "fk-once1" "gc.review_escort.comment_posted")" "first call returns claim"
+assert_log_count 'bd update fk-once1 --set-metadata gc\.review_escort\.comment_posted=true' 1 "persists the flag exactly once"
+
+start_case "cv_claim_once: a second call once the flag reads back true returns skip and never calls bd update again"
+: > "$GC_LOG"
+export STUB_BDSHOW_JSON_fk_once1='{"id":"fk-once1","metadata":{"gc.review_escort.comment_posted":"true"}}'
+assert_eq "skip" "$(cv_claim_once "fk-once1" "gc.review_escort.comment_posted")" "second call (simulating a max_attempts retry re-dispatching the same bead) returns skip"
+assert_log_count 'bd update' 0 "no bd update call on the skip path — the gated action's side effect is never repeated"
+unset STUB_BDSHOW_JSON_fk_once1
+
+start_case "cv_claim_once: a lookup failure (bd show returns nothing) degrades to claim, not skip"
+: > "$GC_LOG"
+assert_eq "claim" "$(cv_claim_once "fk-once-unknown" "gc.review_escort.comment_posted")" "unknown bead fails safe toward claim (re-run the gated action) rather than silently skipping it"
+
+# ---------------------------------------------------------------------------
 # cv_flatten_roster_vars_from_json / cv_flatten_roster_vars (fk-pubvq roster
 # replay; review fk-n74o9 BLOCKING-2 — this logic used to be duplicated
 # near-identically in main.publish.md's inline python and

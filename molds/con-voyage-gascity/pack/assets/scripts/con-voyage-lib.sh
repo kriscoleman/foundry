@@ -2961,6 +2961,31 @@ print(val if isinstance(val, str) else json.dumps(val))
 " "$key" 2>/dev/null
 }
 
+# cv_claim_once BEAD_ID KEY — idempotency guard for an at-most-once action
+# gated on BEAD_ID's own KEY metadata (review fk-hbsmk BLOCKING-7: a
+# [template.check] max_attempts retry re-dispatches the SAME claimed bead on
+# a check failure, so a step whose action has an external side effect —
+# posting a PR comment, for instance — must not repeat that side effect on
+# every retry). Prints "claim" and sets KEY=true on BEAD_ID the first time
+# KEY is not already "true" — the caller should perform the gated action
+# immediately after seeing "claim". Prints "skip" on every later call for the
+# same BEAD_ID/KEY once the flag is set. A metadata lookup/persist failure
+# degrades to "claim" (fail toward re-running the gated action, never toward
+# silently dropping the only human-visible signal it produces).
+cv_claim_once() {
+  local bead_id="${1:-}" key="${2:-}"
+  local gc_bin="${GC:-gc}"
+  local current
+  current="$(cv_bead_metadata "$bead_id" "$key" 2>/dev/null || true)"
+  if [ "$current" = "true" ]; then
+    printf 'skip'
+    return 0
+  fi
+  "$gc_bin" bd update "$bead_id" --set-metadata "${key}=true" >/dev/null 2>&1 || true
+  printf 'claim'
+  return 0
+}
+
 # cv_flatten_roster_vars_from_json RAW_VARS_JSON -> prints
 # "key=value,key=value,..." built from RAW_VARS_JSON (a gc.graphv2_vars.v1
 # metadata value, itself a JSON object of formula vars), restricted to the
