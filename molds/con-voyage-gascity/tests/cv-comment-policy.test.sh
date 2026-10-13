@@ -4,18 +4,11 @@
 # the reviewer side (floor lanes + standards-janitor) flags unwarranted new
 # comments as BLOCKING.
 #
-# THE GAP (operator directive 2026-10-13, fk-qc3yua): con-voyage workers left
-# far too many code comments. Policy: default to NO new comments; a comment
-# is only warranted when the code does something exceedingly special or
-# unexpected that isn't obvious from the code itself (the WHY, never the
-# WHAT). Code-WRITING steps (main.build.md, main.apply-review-findings.md,
-# main.ci-repair.md, and the PR-feedback worker body con-voyage-pr-watch.sh
-# routes) carried no comment rule at all. On the reviewer side, only
-# cv-standards-janitor's item 6 "Comment bloat" covered this, as an OPTIONAL
-# lens graded LOW "unless egregious" — nothing in the DEFAULT roster sent
-# comment noise back. This suite asserts: every writer surface carries the
-# shared policy by reference (a single constant, not pasted per-surface, same
-# DRY convention as CV_COMMUNAL_DUTY_REMINDER); the floor code-review and
+# This suite asserts: every code-writing surface (main.build.md,
+# main.apply-review-findings.md, main.ci-repair.md, and the PR-feedback
+# worker body con-voyage-pr-watch.sh routes) carries the shared comment
+# policy by reference (a single constant, not pasted per-surface, same DRY
+# convention as CV_COMMUNAL_DUTY_REMINDER); the floor code-review and
 # simplicity-review lanes flag an unwarranted new comment BLOCKING; and
 # cv-standards-janitor's comment-bloat item is BLOCKING, not LOW.
 #
@@ -146,13 +139,42 @@ assert_contains "$STANDARDS_JANITOR" "Comment bloat" \
 assert_not_contains "$STANDARDS_JANITOR" \
   "LOW severity unless egregious" \
   "cv-standards-janitor no longer grades comment bloat LOW-unless-egregious"
-BLOAT_BLOCK="$(awk '/Comment bloat/{flag=1} flag{print; if (/^[0-9]+\. \*\*/ && !/Comment bloat/) exit}' "$STANDARDS_JANITOR")"
+BLOAT_BLOCK="$(awk '/Comment bloat/{flag=1} flag{ if (/^#/ || (/^[0-9]+\. \*\*/ && !/Comment bloat/)) exit; print }' "$STANDARDS_JANITOR")"
 case "$BLOAT_BLOCK" in
   *"BLOCKING"*)
     echo "  PASS: the Comment bloat item itself states BLOCKING" ;;
   *)
     echo "  FAIL: the Comment bloat item does not state BLOCKING" >&2
     FAILURES=$((FAILURES+1)) ;;
+esac
+
+start_case "the awk scan stops at the Comment bloat item's own boundary, not the next heading's prose"
+# Regression for a scan whose exit condition never fired when "Comment
+# bloat" is the LAST numbered item before the next heading: it ran on into
+# that heading's own prose and matched an unrelated "BLOCKING" there,
+# passing even when item 6 states no severity at all.
+FIXTURE="$(mktemp)"
+cat > "$FIXTURE" <<'FIXTURE_EOF'
+5. **Docs hygiene** — Public symbols and non-obvious behavior are documented.
+
+6. **Comment bloat — verify explicitly.** Flag comments with a third,
+   unrelated phrasing that states no severity at all.
+
+## Reviewer mode (con-voyage --review-only)
+
+In reviewer mode, a BLOCKING finding here means something else entirely.
+FIXTURE_EOF
+FIXTURE_BLOCK="$(awk '/Comment bloat/{flag=1} flag{ if (/^#/ || (/^[0-9]+\. \*\*/ && !/Comment bloat/)) exit; print }' "$FIXTURE")"
+rm -f "$FIXTURE"
+case "$FIXTURE_BLOCK" in
+  *"## Reviewer mode"*)
+    echo "  FAIL: the scan ran past the Comment bloat item into the next heading" >&2
+    FAILURES=$((FAILURES+1)) ;;
+  *"BLOCKING"*)
+    echo "  FAIL: the scan matched BLOCKING from outside the Comment bloat item" >&2
+    FAILURES=$((FAILURES+1)) ;;
+  *)
+    echo "  PASS: the scan stopped at the item's own boundary and found no BLOCKING in it" ;;
 esac
 
 echo
