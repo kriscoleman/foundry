@@ -325,7 +325,13 @@ trap cleanup EXIT
 if [ "$SUBCOMMAND" = "comment-aggregate" ]; then
   command -v python3 >/dev/null 2>&1 || die "python3 not found — required to render comment-aggregate"
 
-  RENDER_PY="$(mktemp "${TMPDIR:-/tmp}/cv-pr-comment-render.XXXXXX.py")"
+  # review fk-ppj8bx BLOCKING-1: no suffix after the XXXXXX — BSD/macOS
+  # mktemp only substitutes the trailing run of X's when they are the last
+  # characters of the template, so a ".py"/".json" suffix after them made it
+  # return the literal, unsubstituted filename every time, colliding under
+  # any two overlapping invocations. Neither python3 nor gh needs the
+  # extension.
+  RENDER_PY="$(mktemp "${TMPDIR:-/tmp}/cv-pr-comment-render.XXXXXX")"
   RENDERED_FILE="$(mktemp "${TMPDIR:-/tmp}/cv-pr-comment-aggregate.XXXXXX")"
 
   cat > "$RENDER_PY" <<'PYEOF'
@@ -460,8 +466,10 @@ if [ "$SUBCOMMAND" = "review-inline" ]; then
 
   # Reuse the same cleanup trap as comment-aggregate: assign straight into
   # the variables it already removes, rather than registering a second trap.
-  RENDER_PY="$(mktemp "${TMPDIR:-/tmp}/cv-pr-comment-review-inline.XXXXXX.py")"
-  RENDERED_FILE="$(mktemp "${TMPDIR:-/tmp}/cv-pr-comment-review-inline.XXXXXX.json")"
+  # review fk-ppj8bx BLOCKING-1: no suffix after the XXXXXX — see the
+  # identical comment on comment-aggregate's mktemp calls above.
+  RENDER_PY="$(mktemp "${TMPDIR:-/tmp}/cv-pr-comment-review-inline.XXXXXX")"
+  RENDERED_FILE="$(mktemp "${TMPDIR:-/tmp}/cv-pr-comment-review-inline.XXXXXX")"
   REVIEW_PY="$RENDER_PY"
   REVIEW_JSON="$RENDERED_FILE"
 
@@ -566,7 +574,13 @@ def main():
 
         line = finding.get("line")
         side = finding.get("side") or "RIGHT"
-        in_diff = diff_lines is None or "{}:{}".format(path, line) in diff_lines
+        # review fk-ppj8bx BLOCKING-4: GitHub's create-review endpoint is
+        # atomic across comments[] -- one comment anchored to a line outside
+        # the diff 422s the WHOLE review, dropping every finding in it, not
+        # just the bad one. Without --diff-lines-file we have no way to know
+        # whether a line is actually in the diff, so fail safe and degrade
+        # to a file-level comment instead of trusting the raw line number.
+        in_diff = diff_lines is not None and "{}:{}".format(path, line) in diff_lines
 
         if line and in_diff:
             comments.append({"path": path, "line": int(line), "side": side, "body": full_body})
@@ -593,7 +607,18 @@ PYEOF
   python3 "$REVIEW_PY" "$FINDINGS" "$RIG" "$AGENT" "$COMMIT" "$CITY_ROOT" "$SKIP_IDS_FILE" "$DIFF_LINES_FILE" "$SUMMARY_FILE" > "$REVIEW_JSON" || die "review-inline rendering failed (see above)"
 
   "$GH" api --method POST "repos/${REPO}/pulls/${PR}/reviews" --input "$REVIEW_JSON"
-  exit $?
+  REVIEW_GH_RC=$?
+  if [ "$REVIEW_GH_RC" -ne 0 ]; then
+    # review fk-ppj8bx BLOCKING-4: the generic cleanup trap below
+    # unconditionally rm's $REVIEW_JSON on exit, including this failure
+    # path, leaving no artifact to diagnose which finding (if any) triggered
+    # a 422. Preserve a copy under its own mktemp'd name before that happens.
+    FAILED_REVIEW_JSON="$(mktemp "${TMPDIR:-/tmp}/cv-pr-comment-review-inline-failed.XXXXXX" 2>/dev/null || true)"
+    if [ -n "$FAILED_REVIEW_JSON" ] && cp "$REVIEW_JSON" "$FAILED_REVIEW_JSON" 2>/dev/null; then
+      echo "cv-pr-comment: review-inline POST failed (exit ${REVIEW_GH_RC}) -- rendered payload preserved at ${FAILED_REVIEW_JSON} for diagnosis" >&2
+    fi
+  fi
+  exit "$REVIEW_GH_RC"
 fi
 
 # ---------------------------------------------------------------------------
