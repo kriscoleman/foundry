@@ -783,7 +783,12 @@ cat > "$FINDINGS" <<JSON
 JSON
 SKIP_IDS="${SANDBOX}/skip-ids-28.txt"
 printf 'cvf-alreadyopen1\n' > "$SKIP_IDS"
-ARGS=(review-inline 42 --repo kriscoleman/foundry --commit deadbeef1234 --findings "$FINDINGS" --skip-ids-file "$SKIP_IDS" --rig foundry-kc --agent reviewer-3)
+# review fk-ppj8bx BLOCKING-1: a file-level/line comment's path must be
+# confirmed changed, so give both findings' paths a --diff-lines-file entry
+# -- this case is proving skip-ids dedup, not path confirmation.
+DIFF_LINES_28="${SANDBOX}/diff-lines-28.txt"
+printf 'src/a.go:1\nsrc/b.go:2\n' > "$DIFF_LINES_28"
+ARGS=(review-inline 42 --repo kriscoleman/foundry --commit deadbeef1234 --findings "$FINDINGS" --skip-ids-file "$SKIP_IDS" --diff-lines-file "$DIFF_LINES_28" --rig foundry-kc --agent reviewer-3)
 run_script
 assert_eq "0" "$RC" "script exits 0"
 python3 -c "
@@ -933,15 +938,17 @@ if [ "$RC" -ne 0 ]; then pass "script exits non-zero when a token shape is detec
 assert_log_count "$GH_LOG" '.' 0 "gh is never invoked when the hygiene scan blocks on a token shape"
 
 # ===========================================================================
-# CASE 36 — review-inline: without --diff-lines-file, a path+line finding
-#   fails SAFE to a file-level comment rather than blindly trusting the raw
-#   line number (review fk-ppj8bx BLOCKING-4). GitHub's create-review
-#   endpoint 422s its ENTIRE comments[] array if any one comment anchors
-#   outside the diff, dropping every finding in the round — so with no way
-#   to confirm the line is actually in the diff, the safe default is to
-#   degrade, not to assume.
+# CASE 36 — review-inline: without --diff-lines-file, no path can be
+#   confirmed changed, so a path+line finding fails SAFE all the way to the
+#   PR-level summary body rather than becoming an unconfirmed file-level
+#   comment (review fk-ppj8bx BLOCKING-1, supersedes the file-level degrade
+#   this case originally proved for BLOCKING-4). GitHub's create-review
+#   endpoint 422s its ENTIRE comments[] array if any one comment's path
+#   isn't part of the diff — line-anchored or file-level alike — so with no
+#   --diff-lines-file to confirm either the line OR the path, the only safe
+#   default left is the summary body, which never 422s.
 # ===========================================================================
-start_case "36: review-inline without --diff-lines-file fails safe to a file-level comment, never trusting a raw line number"
+start_case "36: review-inline without --diff-lines-file fails safe to the PR-level summary, never an unconfirmed file-level comment"
 setup_case_env "36"
 FINDINGS="${SANDBOX}/findings-36.json"
 cat > "$FINDINGS" <<JSON
@@ -956,9 +963,38 @@ python3 -c "
 import json, sys
 d = json.load(open('${BODY_LOG}'))
 comments = d.get('comments') or []
-ok = len(comments) == 1 and comments[0].get('path') == 'src/g.go' and 'line' not in comments[0] and comments[0].get('subject_type') == 'FILE'
+ok = len(comments) == 0 and 'unverifiable line' in d.get('body','')
 sys.exit(0 if ok else 1)
-" && pass "a path+line finding with no --diff-lines-file degrades to a file-level comment (fails safe, never trusts the raw line)" || fail "a path+line finding with no --diff-lines-file was anchored to a line anyway (unsafe default)"
+" && pass "a path+line finding with no --diff-lines-file folds into the PR-level summary (fails safe, no unconfirmed comment)" || fail "a path+line finding with no --diff-lines-file was posted as a comment anyway (unsafe default)"
+
+# ===========================================================================
+# CASE 36b — review-inline: a file-level finding whose path is NOT among the
+#   paths --diff-lines-file lists as changed folds into the PR-level summary
+#   instead of becoming an unconfirmed file-level comment (review fk-ppj8bx
+#   BLOCKING-1). A "missing test" finding naturally cites a file the PR
+#   never touched; posting it as a file-level comment on that path 422s the
+#   whole atomic review the same way an out-of-diff line does.
+# ===========================================================================
+start_case "36b: review-inline finding on a path absent from --diff-lines-file folds into the summary, not comments[]"
+setup_case_env "36b"
+FINDINGS="${SANDBOX}/findings-36b.json"
+cat > "$FINDINGS" <<JSON
+[
+  {"lane": "qa-test", "severity": "blocking", "path": "tests/unrelated_test.go", "title": "missing test coverage", "body": "no test pins this new behavior"}
+]
+JSON
+DIFF_LINES="${SANDBOX}/diff-lines-36b.txt"
+printf 'src/changed.go:10\n' > "$DIFF_LINES"
+ARGS=(review-inline 42 --repo kriscoleman/foundry --commit deadbeef1234 --findings "$FINDINGS" --diff-lines-file "$DIFF_LINES" --rig foundry-kc --agent reviewer-3)
+run_script
+assert_eq "0" "$RC" "script exits 0"
+python3 -c "
+import json, sys
+d = json.load(open('${BODY_LOG}'))
+comments = d.get('comments') or []
+ok = len(comments) == 0 and 'missing test coverage' in d.get('body','')
+sys.exit(0 if ok else 1)
+" && pass "finding on an unchanged path folds into the PR-level summary, never an unconfirmed file-level comment" || fail "finding on a path absent from --diff-lines-file was posted as comments[] anyway"
 
 # ===========================================================================
 # CASE 37 — static regression guard (review fk-ppj8bx BLOCKING-1): neither

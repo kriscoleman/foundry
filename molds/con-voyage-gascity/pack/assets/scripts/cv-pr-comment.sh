@@ -60,11 +60,17 @@
 # finding with a `path` but no `line`, or whose `line` is not present in
 # --diff-lines-file (one `path:line` per line — the PR's actual diff), is
 # posted as a file-level comment (`subject_type: FILE`, no line/side)
-# instead of being dropped. `--diff-lines-file` is optional; when it is
-# omitted (or a finding's line is not listed in it), that finding fails safe
-# to a file-level comment — line anchoring requires the flag to positively
-# confirm the line is in the diff, so the atomic review can never 422 on an
-# out-of-diff line.
+# instead of being dropped — but ONLY when that finding's `path` is itself
+# one of the changed paths derived from --diff-lines-file (the path
+# component of each `path:line` entry). GitHub's create-review endpoint
+# requires every comment's `path`, line-anchored or file-level alike, to be
+# part of the PR diff; a comment on a path that was never confirmed changed
+# 422s the same atomic review a line-anchored out-of-diff comment would.
+# `--diff-lines-file` is optional; when it is omitted, or a finding's path
+# is not among the changed paths it lists, that finding fails safe by
+# folding into the PR-level summary body instead — the same place a
+# path-less finding already goes — rather than risking an unconfirmed path
+# as a file-level comment.
 #
 # Every finding comment body is, in order: `[<rig>/<agent> — <lane>]
 # **BLOCKING**|**LOW** <title>`, then the finding's own `body` text, then a
@@ -542,6 +548,15 @@ def main():
 
     skip_ids = read_lines(skip_ids_path) or set()
     diff_lines = read_lines(diff_lines_path)
+    # review fk-ppj8bx BLOCKING-1: a file-level comment's path must itself be
+    # confirmed as one of the PR's changed paths, not just checked for an
+    # exact path:line match -- the create-review endpoint 422s the whole
+    # atomic review on ANY comment whose path isn't in the diff, line-anchored
+    # or file-level alike. Derive the changed-path set from the same
+    # --diff-lines-file entries used for line-level confirmation.
+    changed_paths = None
+    if diff_lines is not None:
+        changed_paths = {entry.rsplit(":", 1)[0] for entry in diff_lines if ":" in entry}
 
     summary = read_text(summary_path)
     if not summary:
@@ -584,11 +599,18 @@ def main():
         # whether a line is actually in the diff, so fail safe and degrade
         # to a file-level comment instead of trusting the raw line number.
         in_diff = diff_lines is not None and "{}:{}".format(path, line) in diff_lines
+        # review fk-ppj8bx BLOCKING-1: the file-level degrade below is only
+        # safe when `path` is itself confirmed as a changed path -- an
+        # unchanged path (e.g. a "missing test" finding citing a file the PR
+        # never touched) 422s the same atomic review a bad line would.
+        path_in_diff = changed_paths is not None and path in changed_paths
 
         if line and in_diff:
             comments.append({"path": path, "line": int(line), "side": side, "body": full_body})
-        else:
+        elif path_in_diff:
             comments.append({"path": path, "subject_type": "FILE", "body": full_body})
+        else:
+            pr_level_bodies.append(full_body)
 
     if pr_level_bodies:
         summary = summary + "\n\n" + "\n\n".join(pr_level_bodies)
