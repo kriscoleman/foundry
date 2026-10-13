@@ -54,6 +54,8 @@ query = None
 for i, a in enumerate(args):
     if a == "--title-contains" and i + 1 < len(args):
         query = args[i + 1]
+    elif a.startswith("--title-contains="):
+        query = a.split("=", 1)[1]
 with open(os.environ["STUB_BD_LIST_JSON"]) as f:
     data = json.load(f)
 if query is not None:
@@ -150,6 +152,18 @@ else
   fail "title stays within 72 characters (len=${#TITLE})"
 fi
 
+echo
+echo "=== CASE: title truncation stays within the 72-byte cap even with a multibyte ellipsis (fk-ert7m1 code LOW-1) ==="
+reset_fixtures
+LONG_TEXT="this friction text is intentionally long enough that the formatted title must be truncated to fit within the conventional-commit length cap no matter which prefix keyword gets chosen for it"
+LONG_TITLE="$(scribe_format_title "$LONG_TEXT")"
+TITLE_BYTES="$(printf '%s' "$LONG_TITLE" | wc -c | tr -d ' ')"
+if [ "$TITLE_BYTES" -le 72 ]; then
+  pass "truncated title stays within 72 BYTES, not just 72 characters (bytes=${TITLE_BYTES})"
+else
+  fail "truncated title stays within 72 BYTES, not just 72 characters (bytes=${TITLE_BYTES}, title=${LONG_TITLE})"
+fi
+
 BODY="$(scribe_format_body "The suppression log trim fires twice per write.")"
 if printf '%s' "$BODY" | grep -qF '## Problem'; then
   pass "body includes a ## Problem section"
@@ -244,6 +258,21 @@ else
 fi
 
 echo
+echo "=== CASE: dedup (review fk-ert7m1 security LOW-9) — a dash-leading query reaches bd/gh as a single --flag=VALUE token, not a separate flag-shaped arg ==="
+reset_fixtures
+scribe_dedup_match "-dangerous-looking friction text" "example-org/example-pack" >/dev/null
+if grep -qF -- '--title-contains=-dangerous-looking friction text' "$STUB_BD_LOG"; then
+  pass "a dash-leading dedup query reaches bd as a single --title-contains=VALUE token"
+else
+  fail "a dash-leading dedup query reaches bd as a single --title-contains=VALUE token (log: $(cat "$STUB_BD_LOG"))"
+fi
+if grep -qF -- '--search=-dangerous-looking friction text' "$STUB_GH_LOG"; then
+  pass "a dash-leading dedup query reaches gh as a single --search=VALUE token"
+else
+  fail "a dash-leading dedup query reaches gh as a single --search=VALUE token (log: $(cat "$STUB_GH_LOG"))"
+fi
+
+echo
 echo "=== CASE: dedup (review fk-ert7m1 BLOCKING-1) — a bd lookup failure warns and falls through, not silent ==="
 reset_fixtures
 cat > "${STUBDIR}/bd" <<'BD_FAIL_STUB'
@@ -291,6 +320,8 @@ query = None
 for i, a in enumerate(args):
     if a == "--title-contains" and i + 1 < len(args):
         query = args[i + 1]
+    elif a.startswith("--title-contains="):
+        query = a.split("=", 1)[1]
 with open(os.environ["STUB_BD_LIST_JSON"]) as f:
     data = json.load(f)
 if query is not None:
@@ -375,6 +406,8 @@ query = None
 for i, a in enumerate(args):
     if a == "--title-contains" and i + 1 < len(args):
         query = args[i + 1]
+    elif a.startswith("--title-contains="):
+        query = a.split("=", 1)[1]
 with open(os.environ["STUB_BD_LIST_JSON"]) as f:
     data = json.load(f)
 if query is not None:
@@ -449,6 +482,8 @@ query = None
 for i, a in enumerate(args):
     if a == "--title-contains" and i + 1 < len(args):
         query = args[i + 1]
+    elif a.startswith("--title-contains="):
+        query = a.split("=", 1)[1]
 with open(os.environ["STUB_BD_LIST_JSON"]) as f:
     data = json.load(f)
 if query is not None:
@@ -546,10 +581,10 @@ if [ -s "$STUB_BD_LOG" ] || [ -s "$STUB_GH_LOG" ]; then
 else
   pass "an unrecognized --route value does not file to bd or gh"
 fi
-if printf '%s' "$BAD_ROUTE_OUT" | grep -qi "route"; then
-  pass "the rejection message mentions the bad --route value (got: ${BAD_ROUTE_OUT})"
+if printf '%s' "$BAD_ROUTE_OUT" | grep -q "fundry"; then
+  pass "the rejection message names the actual bad --route value, not just the word 'route' (got: ${BAD_ROUTE_OUT})"
 else
-  fail "the rejection message mentions the bad --route value (got: ${BAD_ROUTE_OUT})"
+  fail "the rejection message names the actual bad --route value, not just the word 'route' (got: ${BAD_ROUTE_OUT})"
 fi
 
 echo

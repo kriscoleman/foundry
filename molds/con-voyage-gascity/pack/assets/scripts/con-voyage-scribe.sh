@@ -72,10 +72,15 @@ scribe_format_title() {
     *bug*|*fail*|*broke*|*error*|*crash*|*regress*) prefix="fix" ;;
     *" add "*|*feature*|*"new "*|*introduce*) prefix="feat" ;;
   esac
+  # review fk-ert7m1 code LOW-1: budget the ellipsis itself out of body_max
+  # using an ASCII "..." (3 one-byte chars) instead of the single multibyte
+  # "…" (1 char but 3 bytes in UTF-8) — the prior form kept the *character*
+  # count within body_max but overran the 72-byte cap by 2 bytes once the
+  # ellipsis's extra encoding bytes are counted.
   local max=72
   local body_max=$(( max - ${#prefix} - 2 ))
   if [ "${#collapsed}" -gt "$body_max" ]; then
-    collapsed="${collapsed:0:$((body_max - 1))}…"
+    collapsed="${collapsed:0:$((body_max - 3))}..."
   fi
   printf '%s: %s' "$prefix" "$collapsed"
 }
@@ -125,6 +130,33 @@ scribe_dedup_key() {
   printf '%s' "$collapsed"
 }
 
+# scribe_json_first_field JSON LIST_KEY ID_KEY — print the first non-empty
+# ID_KEY value found in JSON, which may be either a bare JSON list or an
+# object wrapping the list under LIST_KEY (e.g. a {"issues": [...]}
+# response); prints nothing on no match or malformed input. Factored out of
+# scribe_dedup_match's two near-identical bd/gh extraction blocks (review
+# fk-ert7m1 simplicity LOW-7) — the bd and gh result shapes differ only in
+# that one optional unwrap step, so both call sites share this helper.
+scribe_json_first_field() {
+  local json="$1" list_key="$2" id_key="$3"
+  printf '%s' "$json" | python3 -c "
+import json, sys
+list_key, id_key = sys.argv[1], sys.argv[2]
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    data = []
+if isinstance(data, dict):
+    data = data.get(list_key) or []
+if not isinstance(data, list):
+    data = []
+for item in data:
+    if isinstance(item, dict) and item.get(id_key):
+        print(item[id_key])
+        break
+" "$list_key" "$id_key" 2>/dev/null
+}
+
 # scribe_dedup_match QUERY [GH_REPO] — search for an existing OPEN bead
 # (bd list --title-contains) and, when GH_REPO is given, an existing OPEN
 # GitHub issue (gh issue list --search) matching QUERY. Prints the first
@@ -140,34 +172,23 @@ scribe_dedup_key() {
 # OPEN items only (no `--all` / `--state all`) — matching a CLOSED bead or
 # issue would silently suppress re-filing of a friction that recurred after
 # its original fix, defeating the whole point of surfacing recurring
-# friction.
+# friction. Review fk-ert7m1 security LOW-9: QUERY is passed to both CLIs
+# via the `--flag=value` single-token form rather than `--flag value`, so a
+# QUERY beginning with "-" can never be reparsed as a separate flag by
+# bd/gh's own argv parser.
 scribe_dedup_match() {
   local query="$1" gh_repo="${2:-}"
   local bd_bin="${BD:-bd}" gh_bin="${GH:-gh}"
   [ -n "$query" ] || return 0
 
   local bd_json bd_rc
-  bd_json="$(cv_with_timeout "$CV_SCRIBE_STORE_TIMEOUT_SECONDS" "$bd_bin" list --title-contains "$query" --json 2>/dev/null)"
+  bd_json="$(cv_with_timeout "$CV_SCRIBE_STORE_TIMEOUT_SECONDS" "$bd_bin" list "--title-contains=${query}" --json 2>/dev/null)"
   bd_rc=$?
   if [ "$bd_rc" -ne 0 ]; then
     echo "scribe: dedup search failed (bd list exited ${bd_rc}), proceeding without dedup" >&2
   else
     local bd_id
-    bd_id="$(printf '%s' "$bd_json" | python3 -c "
-import json, sys
-try:
-    data = json.load(sys.stdin)
-except Exception:
-    data = []
-if isinstance(data, dict):
-    data = data.get('issues') or []
-if not isinstance(data, list):
-    data = []
-for item in data:
-    if isinstance(item, dict) and item.get('id'):
-        print(item['id'])
-        break
-" 2>/dev/null)"
+    bd_id="$(scribe_json_first_field "$bd_json" "issues" "id")"
     if [ -n "$bd_id" ]; then
       printf 'bd:%s' "$bd_id"
       return 0
@@ -176,26 +197,14 @@ for item in data:
 
   if [ -n "$gh_repo" ]; then
     local gh_json gh_rc
-    gh_json="$(cv_with_timeout "$CV_SCRIBE_STORE_TIMEOUT_SECONDS" "$gh_bin" issue list --repo "$gh_repo" --search "$query" --json number,title 2>/dev/null)"
+    gh_json="$(cv_with_timeout "$CV_SCRIBE_STORE_TIMEOUT_SECONDS" "$gh_bin" issue list --repo "$gh_repo" "--search=${query}" --json number,title 2>/dev/null)"
     gh_rc=$?
     if [ "$gh_rc" -ne 0 ]; then
       echo "scribe: dedup search failed (gh issue list exited ${gh_rc}), proceeding without dedup" >&2
       return 0
     fi
     local gh_number
-    gh_number="$(printf '%s' "$gh_json" | python3 -c "
-import json, sys
-try:
-    data = json.load(sys.stdin)
-except Exception:
-    data = []
-if not isinstance(data, list):
-    data = []
-for item in data:
-    if isinstance(item, dict) and item.get('number'):
-        print(item['number'])
-        break
-" 2>/dev/null)"
+    gh_number="$(scribe_json_first_field "$gh_json" "issues" "number")"
     if [ -n "$gh_number" ]; then
       printf 'gh:%s#%s' "$gh_repo" "$gh_number"
       return 0
@@ -205,7 +214,7 @@ for item in data:
   return 0
 }
 
-# scribe_file_friction TEXT [--route pack|city] [--gh-repo REPO] — the
+# scribe_file_friction TEXT [--route pack|city|auto] [--gh-repo REPO] — the
 # end-to-end flow: dedup check, routing decision, title/body formatting, then
 # filing via gh issue create (pack) or bd create (city). Prints
 # "DEDUP:<match>" and does nothing else when a dedup match is found; prints
