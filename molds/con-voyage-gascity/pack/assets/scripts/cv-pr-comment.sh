@@ -60,8 +60,11 @@
 # finding with a `path` but no `line`, or whose `line` is not present in
 # --diff-lines-file (one `path:line` per line — the PR's actual diff), is
 # posted as a file-level comment (`subject_type: FILE`, no line/side)
-# instead of being dropped. `--diff-lines-file` is optional; when omitted,
-# every path+line finding is posted as given.
+# instead of being dropped. `--diff-lines-file` is optional; when it is
+# omitted (or a finding's line is not listed in it), that finding fails safe
+# to a file-level comment — line anchoring requires the flag to positively
+# confirm the line is in the diff, so the atomic review can never 422 on an
+# out-of-diff line.
 #
 # Every finding comment body is, in order: `[<rig>/<agent> — <lane>]
 # **BLOCKING**|**LOW** <title>`, then the finding's own `body` text, then a
