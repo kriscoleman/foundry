@@ -4380,11 +4380,17 @@ assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 0 "a bot's r
 
 start_case "75: fk-khcrhm — 👍 from a user with no repo access never triggers"
 setup_case_env "75"
+# review fk-khcrhm BLOCKING-1: on the real (public) target repo, GitHub's
+# collaborators/{login}/permission endpoint returns "read" for every
+# account, collaborator or not -- "none" only models private-repo behavior
+# for a scenario that exclusively matters on public repos. Model the
+# public-repo-accurate response here so this case actually exercises the
+# gate's real-world failure mode, not a shape GitHub never returns for it.
 run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
   STUB_PR11_EMPTY="1" STUB_GQL_THREADS_CVFINDING="1" CVFIND_SEVERITY="low" \
-  CVFIND_REACTIONS="a-stranger:THUMBS_UP" STUB_COLLAB_PERMS="a-stranger=none"
+  CVFIND_REACTIONS="a-stranger:THUMBS_UP" STUB_COLLAB_PERMS="a-stranger=read"
 assert_eq "0" "$RC" "script exits 0"
-assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 0 "a no-access user's reaction never dispatches a finding-trigger route"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 0 "a read-only (non-collaborator-on-public-repo) user's reaction never dispatches a finding-trigger route"
 
 # ===========================================================================
 # CASE 76 — fk-khcrhm AC7: a con-voyage BLOCKING inline comment is NEVER
@@ -4413,6 +4419,36 @@ setup_case_env "77"
 run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman"
 assert_eq "0" "$RC" "script exits 0"
 assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin STDIN:.*please fix the null check' 1 "the ordinary human issue comment still routes"
+
+# ===========================================================================
+# CASE 78 — fk-khcrhm requirement 5 (review BLOCKING-2): a resolved thread is
+#   ignored entirely. A 👍 on a finding comment whose thread isResolved=true
+#   must never re-dispatch, even though the same reaction shape routes in
+#   case 71 when the thread is unresolved.
+# ===========================================================================
+start_case "78: fk-khcrhm — a resolved finding thread never triggers, even with a 👍"
+setup_case_env "78"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_PR11_EMPTY="1" STUB_GQL_THREADS_CVFINDING="1" CVFIND_SEVERITY="low" \
+  CVFIND_RESOLVED="true" \
+  CVFIND_REACTIONS="kriscoleman:THUMBS_UP" STUB_COLLAB_PERMS="kriscoleman=admin"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 0 "a reaction on an already-resolved thread never dispatches a finding-trigger route"
+
+# ===========================================================================
+# CASE 79 — fk-khcrhm (review BLOCKING-4): a genuine API failure on the
+#   collaborator-permission lookup (rate limit, deleted account, transient
+#   5xx) must fail closed exactly like a confirmed no-access response -- this
+#   exercises the STUB_COLLAB_PERM_FAIL branch the fail-closed guarantee
+#   previously had no coverage for.
+# ===========================================================================
+start_case "79: fk-khcrhm — a collaborator-permission API failure fails closed (never triggers)"
+setup_case_env "79"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_PR11_EMPTY="1" STUB_GQL_THREADS_CVFINDING="1" CVFIND_SEVERITY="low" \
+  CVFIND_REACTIONS="kriscoleman:THUMBS_UP" STUB_COLLAB_PERM_FAIL="1"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 0 "a permission-lookup API failure never dispatches a finding-trigger route"
 
 # ===========================================================================
 # Summary
