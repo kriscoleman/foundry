@@ -63,11 +63,18 @@ planning pass. Structure it as:
 1. Overall verdict: approve or iterate
 2. BLOCKING findings (must fix before landing): one `### ` sub-heading per
    finding (any consistent per-finding title works, e.g. `BLOCKING-<n>`), each
-   listing lane, file:line, fix. Write literal `None.` when there are zero.
+   listing lane, location, fix. Write literal `None.` when there are zero.
 3. LOW findings (surface to human for decision): one `### ` sub-heading per
-   finding, each listing lane, file:line, fix. Write literal `None.` when
+   finding, each listing lane, location, fix. Write literal `None.` when
    there are zero.
 4. Lanes approved with no findings
+
+Location (fk inline-findings v1) is whatever the reporting lane gave you —
+`path:line`, `path` alone (file-level), or no path (PR-level) — carried
+through VERBATIM. Never drop a reported location and never invent one a lane
+did not give you: a downstream consumer anchors this finding to a PR review
+comment on exactly that location, so a location you changed or fabricated
+posts the comment in the wrong place or crashes trying.
 
 `cv-synthesis-low-mail.sh` (below) counts each section's findings by its
 number of `### ` sub-headings — every finding must get its own `### `

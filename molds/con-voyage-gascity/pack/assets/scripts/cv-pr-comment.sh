@@ -39,6 +39,50 @@
 #       --manifest <path.json> [--city-root <path>] \
 #       [--formula <name>] [--agent <rig/agent>]
 #
+#   cv-pr-comment.sh review-inline <pr> --repo <owner/repo> \
+#       --commit <head_sha> --findings <path.json> --rig <rig> \
+#       [--agent <agent>] [--summary-file <path>] \
+#       [--skip-ids-file <path>] [--diff-lines-file <path>] \
+#       [--city-root <path>]
+#
+# `review-inline` submits ONE GitHub review (POST
+# repos/{repo}/pulls/{pr}/reviews, event=COMMENT, commit_id=<head sha>) whose
+# comments[] array has one entry per finding in --findings (a JSON array of
+# {lane, severity, path?, line?, side?, title, body, id?} objects) instead of
+# the old comment-aggregate root-level issue comment. This is fk inline-
+# findings v1: it SUPERSEDES comment-aggregate for con-voyage review rounds
+# (comment-aggregate itself is unchanged, for any other caller that still
+# wants a root-level aggregate comment).
+#
+# Each finding becomes an inline review comment on {path, line, side}
+# (side defaults to RIGHT). A finding with no `path` is PR-level and is
+# folded into the review's one-line top body instead of comments[]. A
+# finding with a `path` but no `line`, or whose `line` is not present in
+# --diff-lines-file (one `path:line` per line — the PR's actual diff), is
+# posted as a file-level comment (`subject_type: FILE`, no line/side)
+# instead of being dropped. `--diff-lines-file` is optional; when omitted,
+# every path+line finding is posted as given.
+#
+# Every finding comment body is, in order: `[<rig>/<agent> — <lane>]
+# **BLOCKING**|**LOW** <title>`, then the finding's own `body` text, then a
+# trailing `<!-- cv-finding v1 id=<id> severity=<severity> lane=<lane> -->`
+# marker. `id` is the finding's own `id` field when given, else a
+# deterministic id derived from (lane, path, normalized title) — the same
+# finding always gets the same id across rounds, so round-over-round dedup
+# can actually match it. A finding whose `id` is listed in
+# --skip-ids-file (one id per line — ids with an already-open/unresolved
+# con-voyage thread from a prior round) is skipped entirely, not re-posted.
+#
+# The review's top body is one line from --summary-file (verbatim), or a
+# generic "[<rig>/con-voyage — review] see inline comments" fallback when
+# omitted, with any PR-level finding bodies appended below it.
+#
+# The rendered payload is written to a throwaway temp file and submitted via
+# `gh api --method POST .../reviews --input <file>` — never `-f`/`-F` field
+# flags — so the body (and every finding's text) never round-trips through
+# argv. The same hygiene scan as comment-aggregate (city-root rewrite,
+# token-shaped-string block) applies to every finding body and the summary.
+#
 # `comment-aggregate` renders ONE minimal, doomer-style root-level comment for
 # a whole con-voyage review round from a JSON manifest (see "AGGREGATE REVIEW
 # COMMENTS" below) and posts it — never per-lane comments, never an edit of an
@@ -141,6 +185,7 @@ Usage:
   cv-pr-comment.sh create --repo <owner/repo> --title <title> --body-file <path> [--base <branch>] [--head <branch>] [--draft] [--formula <name>] [--agent <rig/agent>]
   cv-pr-comment.sh reply-thread <pr> --repo <owner/repo> --comment-id <db_id> --body-file <path> [--formula <name>] [--agent <rig/agent>]
   cv-pr-comment.sh comment-aggregate <pr> --repo <owner/repo> --manifest <path.json> [--city-root <path>] [--formula <name>] [--agent <rig/agent>]
+  cv-pr-comment.sh review-inline <pr> --repo <owner/repo> --commit <head_sha> --findings <path.json> --rig <rig> [--agent <agent>] [--summary-file <path>] [--skip-ids-file <path>] [--diff-lines-file <path>] [--city-root <path>]
 USAGE
 }
 
@@ -149,10 +194,10 @@ SUBCOMMAND="${1:-}"
 shift || true
 
 case "$SUBCOMMAND" in
-  comment|review|create|reply-thread|comment-aggregate) ;;
+  comment|review|create|reply-thread|comment-aggregate|review-inline) ;;
   *)
     usage
-    die "unknown subcommand '${SUBCOMMAND}' (expected comment, review, create, reply-thread, or comment-aggregate — no raw gh passthrough is supported)"
+    die "unknown subcommand '${SUBCOMMAND}' (expected comment, review, create, reply-thread, comment-aggregate, or review-inline — no raw gh passthrough is supported)"
     ;;
 esac
 
@@ -169,6 +214,12 @@ REVIEW_VERB=""
 COMMENT_ID=""
 MANIFEST=""
 CITY_ROOT="${CV_CITY_ROOT:-}"
+COMMIT=""
+FINDINGS=""
+RIG=""
+SUMMARY_FILE=""
+SKIP_IDS_FILE=""
+DIFF_LINES_FILE=""
 
 # create has no positional PR argument; comment/review/reply-thread do.
 if [ "$SUBCOMMAND" != "create" ]; then
@@ -190,6 +241,12 @@ while [ $# -gt 0 ]; do
     --comment-id) COMMENT_ID="${2:-}"; shift 2 || true ;;
     --manifest) MANIFEST="${2:-}"; shift 2 || true ;;
     --city-root) CITY_ROOT="${2:-}"; shift 2 || true ;;
+    --commit) COMMIT="${2:-}"; shift 2 || true ;;
+    --findings) FINDINGS="${2:-}"; shift 2 || true ;;
+    --rig) RIG="${2:-}"; shift 2 || true ;;
+    --summary-file) SUMMARY_FILE="${2:-}"; shift 2 || true ;;
+    --skip-ids-file) SKIP_IDS_FILE="${2:-}"; shift 2 || true ;;
+    --diff-lines-file) DIFF_LINES_FILE="${2:-}"; shift 2 || true ;;
     --draft) DRAFT="true"; shift || true ;;
     --comment) REVIEW_VERB="--comment"; shift || true ;;
     --approve) REVIEW_VERB="--approve"; shift || true ;;
@@ -202,6 +259,19 @@ done
 if [ "$SUBCOMMAND" = "comment-aggregate" ]; then
   [ -n "$MANIFEST" ] || { usage; die "--manifest is required for comment-aggregate"; }
   [ -f "$MANIFEST" ] || die "--manifest '${MANIFEST}' does not exist or is not a regular file"
+elif [ "$SUBCOMMAND" = "review-inline" ]; then
+  [ -n "$COMMIT" ] || { usage; die "--commit is required for review-inline (the head sha reviewed)"; }
+  [ -n "$FINDINGS" ] || { usage; die "--findings is required for review-inline"; }
+  [ -f "$FINDINGS" ] || die "--findings '${FINDINGS}' does not exist or is not a regular file"
+  if [ -n "$SKIP_IDS_FILE" ]; then
+    [ -f "$SKIP_IDS_FILE" ] || die "--skip-ids-file '${SKIP_IDS_FILE}' does not exist or is not a regular file"
+  fi
+  if [ -n "$DIFF_LINES_FILE" ]; then
+    [ -f "$DIFF_LINES_FILE" ] || die "--diff-lines-file '${DIFF_LINES_FILE}' does not exist or is not a regular file"
+  fi
+  if [ -n "$SUMMARY_FILE" ]; then
+    [ -f "$SUMMARY_FILE" ] || die "--summary-file '${SUMMARY_FILE}' does not exist or is not a regular file"
+  fi
 else
   [ -n "$BODY_FILE" ] || { usage; die "--body-file is required (inline --body is not supported — always write to a file first)"; }
   [ -f "$BODY_FILE" ] || die "--body-file '${BODY_FILE}' does not exist or is not a regular file"
@@ -375,6 +445,155 @@ PYEOF
 
   python3 "$RENDER_PY" "$MANIFEST" "$CITY_ROOT" > "$RENDERED_FILE" || die "comment-aggregate rendering failed (see above)"
   BODY_FILE="$RENDERED_FILE"
+fi
+
+# ---------------------------------------------------------------------------
+# review-inline: render the one GitHub review payload (top body + per-finding
+# comments[]) to a throwaway temp file, then submit it directly via
+# `gh api ... --input <file>` — this bypasses the generic banner/body-file
+# flow below entirely, since the payload is JSON, not a single markdown body,
+# and each finding already carries its own [<rig>/<agent> — <lane>] identity
+# line per the shared fk inline-findings v1 contract.
+# ---------------------------------------------------------------------------
+if [ "$SUBCOMMAND" = "review-inline" ]; then
+  command -v python3 >/dev/null 2>&1 || die "python3 not found — required to render review-inline"
+
+  # Reuse the same cleanup trap as comment-aggregate: assign straight into
+  # the variables it already removes, rather than registering a second trap.
+  RENDER_PY="$(mktemp "${TMPDIR:-/tmp}/cv-pr-comment-review-inline.XXXXXX.py")"
+  RENDERED_FILE="$(mktemp "${TMPDIR:-/tmp}/cv-pr-comment-review-inline.XXXXXX.json")"
+  REVIEW_PY="$RENDER_PY"
+  REVIEW_JSON="$RENDERED_FILE"
+
+  cat > "$REVIEW_PY" <<'PYEOF'
+import hashlib
+import json
+import re
+import sys
+
+TOKEN_RE = re.compile(
+    r'ghp_[A-Za-z0-9]{36}'
+    r'|gho_[A-Za-z0-9]{36}'
+    r'|ghs_[A-Za-z0-9]{36}'
+    r'|ghr_[A-Za-z0-9]{36}'
+    r'|github_pat_[A-Za-z0-9_]{22,}'
+    r'|xox[baprs]-[A-Za-z0-9-]{10,}'
+    r'|AKIA[0-9A-Z]{16}'
+    r'|sk-ant-[A-Za-z0-9-]{20,}'
+    r'|sk-[A-Za-z0-9]{20,}'
+)
+
+
+def die(msg):
+    sys.stderr.write("cv-pr-comment: ERROR: " + msg + "\n")
+    sys.exit(1)
+
+
+def hygiene_rewrite(text, city_root):
+    if city_root:
+        text = text.replace(city_root, "<city-root>")
+    return text
+
+
+def stable_id(lane, path, title):
+    norm_title = re.sub(r'[^a-z0-9]+', '-', (title or '').strip().lower()).strip('-')
+    key = "{}|{}|{}".format(lane or '', path or '', norm_title)
+    return "cvf-" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+
+
+def read_lines(path):
+    if not path:
+        return None
+    try:
+        with open(path) as f:
+            return {line.strip() for line in f if line.strip()}
+    except Exception:
+        return set()
+
+
+def read_text(path, default=""):
+    if not path:
+        return default
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except Exception:
+        return default
+
+
+def main():
+    findings_path, rig, agent, commit, city_root, skip_ids_path, diff_lines_path, summary_path = sys.argv[1:9]
+
+    with open(findings_path) as f:
+        findings = json.load(f)
+    if not isinstance(findings, list):
+        die("--findings must be a JSON array of finding objects")
+
+    skip_ids = read_lines(skip_ids_path) or set()
+    diff_lines = read_lines(diff_lines_path)
+
+    summary = read_text(summary_path)
+    if not summary:
+        summary = "[{}/con-voyage — review] see inline comments".format(rig or "unknown-rig")
+
+    comments = []
+    pr_level_bodies = []
+
+    for finding in findings:
+        lane = finding.get("lane") or "unknown"
+        severity = (finding.get("severity") or "low").lower()
+        severity_label = "BLOCKING" if severity == "blocking" else "LOW"
+        path = finding.get("path") or ""
+        title = finding.get("title") or ""
+        body_text = (finding.get("body") or "").strip()
+        fid = finding.get("id") or stable_id(lane, path, title)
+
+        if fid in skip_ids:
+            continue
+
+        identity = "[{}/{} — {}]".format(rig or "unknown-rig", agent or "unknown", lane)
+        header = "{} **{}** {}".format(identity, severity_label, title)
+        marker = "<!-- cv-finding v1 id={} severity={} lane={} -->".format(fid, severity, lane)
+        full_body = "\n\n".join(part for part in [header, body_text] if part) + "\n\n" + marker
+        full_body = hygiene_rewrite(full_body, city_root)
+
+        if TOKEN_RE.search(full_body):
+            die("refusing to post -- matched a token-shaped string (hygiene scan) in finding {}".format(fid))
+
+        if not path:
+            pr_level_bodies.append(full_body)
+            continue
+
+        line = finding.get("line")
+        side = finding.get("side") or "RIGHT"
+        in_diff = diff_lines is None or "{}:{}".format(path, line) in diff_lines
+
+        if line and in_diff:
+            comments.append({"path": path, "line": int(line), "side": side, "body": full_body})
+        else:
+            comments.append({"path": path, "subject_type": "FILE", "body": full_body})
+
+    if pr_level_bodies:
+        summary = summary + "\n\n" + "\n\n".join(pr_level_bodies)
+
+    summary = hygiene_rewrite(summary, city_root)
+    if TOKEN_RE.search(summary):
+        die("refusing to post -- matched a token-shaped string (hygiene scan) in summary")
+
+    payload = {"event": "COMMENT", "commit_id": commit, "body": summary}
+    if comments:
+        payload["comments"] = comments
+
+    sys.stdout.write(json.dumps(payload))
+
+
+main()
+PYEOF
+
+  python3 "$REVIEW_PY" "$FINDINGS" "$RIG" "$AGENT" "$COMMIT" "$CITY_ROOT" "$SKIP_IDS_FILE" "$DIFF_LINES_FILE" "$SUMMARY_FILE" > "$REVIEW_JSON" || die "review-inline rendering failed (see above)"
+
+  "$GH" api --method POST "repos/${REPO}/pulls/${PR}/reviews" --input "$REVIEW_JSON"
+  exit $?
 fi
 
 # ---------------------------------------------------------------------------

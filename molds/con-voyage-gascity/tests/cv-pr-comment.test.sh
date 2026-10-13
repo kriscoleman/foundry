@@ -56,19 +56,22 @@ trap cleanup EXIT
 cat > "${STUBDIR}/gh" <<'GH_STUB'
 #!/usr/bin/env bash
 # Records argv with any body-carrying temp path REDACTED to a fixed token, so the
-# recorded line is deterministic run-to-run. Two body-carrying shapes are
+# recorded line is deterministic run-to-run. Three body-carrying shapes are
 # redacted+captured:
 #   --body-file <path>   (pr comment/review/create modes)
 #   -F body=@<path>      (the reply-thread mode's `gh api ... -F body=@file`,
 #                         which mirrors --body-file's foot-gun avoidance: the
 #                         body never round-trips through argv, only the file path
 #                         does — and we redact that path too).
+#   --input <path>       (the review-inline mode's `gh api ... --input file`,
+#                         which submits the whole review payload — JSON body
+#                         plus per-line comments — as a file, never argv).
 {
   line=""
   prev=""
   for a in "$@"; do
     a="${a//$'\n'/ }"
-    if [ "$prev" = "--body-file" ]; then
+    if [ "$prev" = "--body-file" ] || [ "$prev" = "--input" ]; then
       line="${line}<BODY_FILE_PATH> "
     elif [ "$prev" = "-F" ] && [ "${a#body=@}" != "$a" ]; then
       # `-F body=@<path>` — redact only the file path, keep the `body=@` shape
@@ -82,11 +85,12 @@ cat > "${STUBDIR}/gh" <<'GH_STUB'
   printf '%s\n' "$line"
 } >> "${STUB_GH_LOG}"
 
-# Copy the body content (if any) to the body log, verbatim. Handles BOTH the
-# `--body-file <path>` shape and the `-F body=@<path>` shape.
+# Copy the body content (if any) to the body log, verbatim. Handles all three
+# body-carrying shapes: `--body-file <path>`, `-F body=@<path>`, and
+# `--input <path>`.
 prev=""
 for a in "$@"; do
-  if [ "$prev" = "--body-file" ]; then
+  if [ "$prev" = "--body-file" ] || [ "$prev" = "--input" ]; then
     if [ -n "${STUB_BODY_LOG:-}" ]; then
       cat "$a" > "${STUB_BODY_LOG}" 2>/dev/null || true
     fi
@@ -658,6 +662,212 @@ ARGS=(comment-aggregate 42 --repo kriscoleman/foundry --manifest "${SANDBOX}/doe
 run_script
 if [ "$RC" -ne 0 ]; then pass "script exits non-zero"; else fail "expected non-zero exit for a nonexistent manifest file"; fi
 assert_log_count "$GH_LOG" '.' 0 "gh is never invoked when the manifest file does not exist"
+
+# ===========================================================================
+# CASE 25 — review-inline: happy path. Findings with path+line land as inline
+#   review comments on the exact line, each body carrying the
+#   [<rig>/<agent> — <lane>] identity + severity + title header and the
+#   trailing cv-finding v1 marker. One GitHub review is submitted
+#   (gh api POST .../reviews --input <file>, never pr comment/review).
+# ===========================================================================
+start_case "25: review-inline happy path — inline comments on exact lines, identity+severity+marker, one review posted"
+setup_case_env "25"
+FINDINGS="${SANDBOX}/findings-25.json"
+cat > "$FINDINGS" <<JSON
+[
+  {"lane": "security", "severity": "blocking", "path": "src/auth.go", "line": 42, "title": "missing nil check", "body": "Dereferences token without a nil check.\nFix: guard before use."},
+  {"lane": "simplicity", "severity": "low", "path": "src/util.go", "line": 7, "title": "duplicated helper", "body": "This mirrors helper() above.\nFix: extract a shared function."}
+]
+JSON
+ARGS=(review-inline 42 --repo kriscoleman/foundry --commit deadbeef1234 --findings "$FINDINGS" --rig foundry-kc --agent reviewer-3)
+run_script
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GH_LOG" '^api --method POST repos/kriscoleman/foundry/pulls/42/reviews --input <BODY_FILE_PATH>' 1 "gh invoked exactly once as a single POST .../reviews call"
+assert_log_count "$GH_LOG" 'pr comment|pr review' 0 "review-inline never falls back to pr comment/review"
+if grep -qF '"event": "COMMENT"' "$BODY_LOG"; then pass "review event is COMMENT"; else fail "review event missing or wrong"; fi
+if grep -qF '"commit_id": "deadbeef1234"' "$BODY_LOG"; then pass "commit_id matches --commit"; else fail "commit_id missing or wrong"; fi
+if grep -qF '"path": "src/auth.go"' "$BODY_LOG" && grep -qF '"line": 42' "$BODY_LOG"; then
+  pass "first finding anchored to its exact path/line"
+else
+  fail "first finding not anchored correctly"
+fi
+if grep -qF '"path": "src/util.go"' "$BODY_LOG" && grep -qF '"line": 7' "$BODY_LOG"; then
+  pass "second finding anchored to its exact path/line"
+else
+  fail "second finding not anchored correctly"
+fi
+if grep -qF '[foundry-kc/reviewer-3 — security] **BLOCKING** missing nil check' "$BODY_LOG"; then
+  pass "blocking finding header carries identity, severity, and title"
+elif python3 -c "
+import json, sys
+d = json.load(open('${BODY_LOG}'))
+ok = any('[foundry-kc/reviewer-3' in c.get('body','') and 'BLOCKING' in c.get('body','') and 'missing nil check' in c.get('body','') for c in d.get('comments', []))
+sys.exit(0 if ok else 1)
+" 2>/dev/null; then
+  pass "blocking finding header carries identity, severity, and title"
+else
+  fail "blocking finding header missing identity/severity/title"
+fi
+if grep -qF 'cv-finding v1 id=' "$BODY_LOG" && grep -qF 'severity=blocking' "$BODY_LOG" && grep -qF 'lane=security' "$BODY_LOG"; then
+  pass "blocking finding carries the cv-finding v1 marker with severity and lane"
+else
+  fail "cv-finding v1 marker missing or malformed"
+fi
+
+# ===========================================================================
+# CASE 26 — review-inline: a finding with no path is PR-level, folded into
+#   the review's top body rather than dropped or crashing.
+# ===========================================================================
+start_case "26: review-inline PR-level finding (no path) folds into the review body"
+setup_case_env "26"
+FINDINGS="${SANDBOX}/findings-26.json"
+cat > "$FINDINGS" <<JSON
+[
+  {"lane": "acceptance", "severity": "low", "title": "missing test evidence", "body": "No test run was attached to this PR."}
+]
+JSON
+ARGS=(review-inline 42 --repo kriscoleman/foundry --commit deadbeef1234 --findings "$FINDINGS" --rig foundry-kc --agent reviewer-9)
+run_script
+assert_eq "0" "$RC" "script exits 0"
+if grep -qF 'missing test evidence' "$BODY_LOG"; then pass "PR-level finding content present in the payload"; else fail "PR-level finding missing"; fi
+python3 -c "
+import json, sys
+d = json.load(open('${BODY_LOG}'))
+comments = d.get('comments') or []
+sys.exit(0 if all('path' not in c or c.get('path') != '' for c in comments) and 'missing test evidence' in d.get('body','') else 1)
+" && pass "PR-level finding lands in the top body, not as a line comment" || fail "PR-level finding did not land in the top body"
+
+# ===========================================================================
+# CASE 27 — review-inline: a finding whose line is not present in the
+#   --diff-lines-file (the PR's actual diff) degrades to a file-level
+#   comment rather than being dropped or erroring.
+# ===========================================================================
+start_case "27: review-inline finding outside the diff degrades to a file-level comment"
+setup_case_env "27"
+FINDINGS="${SANDBOX}/findings-27.json"
+cat > "$FINDINGS" <<JSON
+[
+  {"lane": "code-review", "severity": "low", "path": "src/legacy.go", "line": 999, "title": "stale comment", "body": "This comment is out of date."}
+]
+JSON
+DIFF_LINES="${SANDBOX}/diff-lines-27.txt"
+printf 'src/legacy.go:5\nsrc/legacy.go:6\n' > "$DIFF_LINES"
+ARGS=(review-inline 42 --repo kriscoleman/foundry --commit deadbeef1234 --findings "$FINDINGS" --diff-lines-file "$DIFF_LINES" --rig foundry-kc --agent reviewer-5)
+run_script
+assert_eq "0" "$RC" "script exits 0"
+python3 -c "
+import json, sys
+d = json.load(open('${BODY_LOG}'))
+comments = d.get('comments') or []
+ok = len(comments) == 1 and comments[0].get('path') == 'src/legacy.go' and 'line' not in comments[0] and comments[0].get('subject_type') == 'FILE'
+sys.exit(0 if ok else 1)
+" && pass "out-of-diff finding degrades to a file-level comment (no line, subject_type=FILE)" || fail "out-of-diff finding was not degraded to file-level"
+
+# ===========================================================================
+# CASE 28 — review-inline: a finding whose stable id is already listed in
+#   --skip-ids-file (an open thread from a prior round) is NOT re-posted.
+# ===========================================================================
+start_case "28: review-inline skips findings with an already-open thread"
+setup_case_env "28"
+FINDINGS="${SANDBOX}/findings-28.json"
+cat > "$FINDINGS" <<JSON
+[
+  {"lane": "security", "severity": "low", "path": "src/a.go", "line": 1, "title": "old finding", "body": "already open from round 1", "id": "cvf-alreadyopen1"},
+  {"lane": "security", "severity": "low", "path": "src/b.go", "line": 2, "title": "new finding", "body": "new in this round", "id": "cvf-brandnew0001"}
+]
+JSON
+SKIP_IDS="${SANDBOX}/skip-ids-28.txt"
+printf 'cvf-alreadyopen1\n' > "$SKIP_IDS"
+ARGS=(review-inline 42 --repo kriscoleman/foundry --commit deadbeef1234 --findings "$FINDINGS" --skip-ids-file "$SKIP_IDS" --rig foundry-kc --agent reviewer-3)
+run_script
+assert_eq "0" "$RC" "script exits 0"
+python3 -c "
+import json, sys
+d = json.load(open('${BODY_LOG}'))
+comments = d.get('comments') or []
+ids = [c.get('body','') for c in comments]
+has_old = any('old finding' in b for b in ids)
+has_new = any('new finding' in b for b in ids)
+sys.exit(0 if (not has_old and has_new and len(comments) == 1) else 1)
+" && pass "already-open finding skipped, new finding still posted" || fail "dedup via --skip-ids-file did not work as expected"
+
+# ===========================================================================
+# CASE 29 — review-inline: zero findings (all deduped or none supplied)
+#   still posts a single review with just the one-line summary body and no
+#   inline comments — never an empty/crashing payload.
+# ===========================================================================
+start_case "29: review-inline with zero findings posts a summary-only review"
+setup_case_env "29"
+FINDINGS="${SANDBOX}/findings-29.json"
+printf '[]\n' > "$FINDINGS"
+SUMMARY="${SANDBOX}/summary-29.txt"
+printf '[foundry-kc/con-voyage - review] 0 lanes, 0 blocking, 0 low - see inline\n' > "$SUMMARY"
+ARGS=(review-inline 42 --repo kriscoleman/foundry --commit deadbeef1234 --findings "$FINDINGS" --summary-file "$SUMMARY" --rig foundry-kc --agent gc.publisher)
+run_script
+assert_eq "0" "$RC" "script exits 0"
+if grep -qF '0 lanes, 0 blocking, 0 low' "$BODY_LOG"; then pass "summary-only body posted"; else fail "summary body missing"; fi
+python3 -c "
+import json, sys
+d = json.load(open('${BODY_LOG}'))
+sys.exit(0 if not (d.get('comments') or []) else 1)
+" && pass "no inline comments posted when there are zero findings" || fail "unexpected inline comments with zero findings"
+
+# ===========================================================================
+# CASE 30 — review-inline: missing --commit is a hard error; gh never
+#   invoked.
+# ===========================================================================
+start_case "30: review-inline without --commit is rejected before invoking gh"
+setup_case_env "30"
+FINDINGS="${SANDBOX}/findings-30.json"
+printf '[]\n' > "$FINDINGS"
+ARGS=(review-inline 42 --repo kriscoleman/foundry --findings "$FINDINGS")
+run_script
+if [ "$RC" -ne 0 ]; then pass "script exits non-zero"; else fail "expected non-zero exit for missing --commit"; fi
+assert_log_count "$GH_LOG" '.' 0 "gh is never invoked when --commit is missing"
+
+# ===========================================================================
+# CASE 31 — review-inline: missing --findings is a hard error; gh never
+#   invoked.
+# ===========================================================================
+start_case "31: review-inline without --findings is rejected before invoking gh"
+setup_case_env "31"
+ARGS=(review-inline 42 --repo kriscoleman/foundry --commit deadbeef1234)
+run_script
+if [ "$RC" -ne 0 ]; then pass "script exits non-zero"; else fail "expected non-zero exit for missing --findings"; fi
+assert_log_count "$GH_LOG" '.' 0 "gh is never invoked when --findings is missing"
+
+# ===========================================================================
+# CASE 32 — review-inline: gh failure propagates verbatim.
+# ===========================================================================
+start_case "32: review-inline gh failure propagates"
+setup_case_env "32"
+FINDINGS="${SANDBOX}/findings-32.json"
+printf '[]\n' > "$FINDINGS"
+ARGS=(review-inline 42 --repo kriscoleman/foundry --commit deadbeef1234 --findings "$FINDINGS")
+OUT="$(env GH="${STUBDIR}/gh" STUB_GH_LOG="$GH_LOG" STUB_BODY_LOG="$BODY_LOG" STUB_GH_EXIT=7 bash "$SCRIPT" "${ARGS[@]}" 2>&1)"
+RC=$?
+assert_eq "7" "$RC" "script propagates gh's exit code verbatim"
+
+# ===========================================================================
+# CASE 33 — review-inline: stable-id determinism. The same lane/path/title
+#   produces the same id across two separate invocations with no explicit
+#   --id, so a later round's dedup (--skip-ids-file) can actually match it.
+# ===========================================================================
+start_case "33: review-inline stable id is deterministic across separate invocations"
+setup_case_env "33"
+FINDINGS="${SANDBOX}/findings-33.json"
+cat > "$FINDINGS" <<JSON
+[
+  {"lane": "security", "severity": "low", "path": "src/c.go", "line": 3, "title": "Same Finding Title", "body": "body text"}
+]
+JSON
+BODY_LOG_A="${SANDBOX}/body-33-a.json"
+BODY_LOG_B="${SANDBOX}/body-33-b.json"
+env GH="${STUBDIR}/gh" STUB_GH_LOG="${SANDBOX}/gh-33a.log" STUB_BODY_LOG="$BODY_LOG_A" bash "$SCRIPT" review-inline 42 --repo kriscoleman/foundry --commit deadbeef1234 --findings "$FINDINGS" --rig foundry-kc --agent reviewer-3 >/dev/null 2>&1
+env GH="${STUBDIR}/gh" STUB_GH_LOG="${SANDBOX}/gh-33b.log" STUB_BODY_LOG="$BODY_LOG_B" bash "$SCRIPT" review-inline 42 --repo kriscoleman/foundry --commit deadbeef1234 --findings "$FINDINGS" --rig foundry-kc --agent reviewer-3 >/dev/null 2>&1
+ID_A="$(python3 -c "import json; print(json.load(open('${BODY_LOG_A}'))['comments'][0]['body'].split('id=')[1].split()[0])" 2>/dev/null)"
+ID_B="$(python3 -c "import json; print(json.load(open('${BODY_LOG_B}'))['comments'][0]['body'].split('id=')[1].split()[0])" 2>/dev/null)"
+assert_eq "$ID_A" "$ID_B" "the same finding produces the same stable id across invocations"
 
 # ===========================================================================
 # Summary

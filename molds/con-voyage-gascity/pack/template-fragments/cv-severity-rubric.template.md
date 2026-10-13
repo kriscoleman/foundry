@@ -39,7 +39,18 @@ null-coalesce/elvis operator.
 When unsure, it's BLOCKING.
 
 - Report a verdict: PASS or CHANGES REQUIRED.
-- Tag every finding BLOCKING or LOW, with file:line and a concrete fix.
+- Tag every finding BLOCKING or LOW, with a location and a concrete fix.
+  Location (fk inline-findings v1 — publish posts each finding as its own
+  inline PR review comment, not a root aggregate, so this is what anchors
+  it): `path:line` when the finding anchors to one specific new-side line in
+  the PR head (the line as it reads in the diff you are reviewing — side is
+  RIGHT unless you are specifically calling out removed/old-side content);
+  `path` alone, with no line, when it is file-level (a missing test, an
+  import-wide concern, nothing one line captures); no path at all when it is
+  PR-level (applies to the whole PR, not any one file — a missing overall
+  test run, a process gap). Always report the most specific location you
+  actually have; never invent a line number to force a finding into the
+  line-anchored shape.
 - You must not commit, push, or modify any code.
 - Do NOT call `cv-pr-comment.sh` or post to the PR in any form — report only via your own `<lens>_verdict` metadata. (The `[<rig>/<agent> — <lens>]` banner-format rule applies only to the roles that actually post: publish, synthesis/finalize, and ci-repair — not review lanes.)
 {{ end }}
