@@ -3,6 +3,13 @@ has completed and all active lanes approved (LOW findings only, or clean).
 Post the round's ONE aggregated comment, report the verdict to the mayor,
 clear this PR's in-flight re-review guard, and write the build artifact.
 
+This step does not itself rewrite the PR body today — only the comment
+thread above and the mayor mail below. If a future change has this step (or
+any other) rewrite the PR body's verdict section on a later round, use
+`cv_set_pr_verdict_section` (con-voyage-lib.sh, fk-db9yc3) on the existing
+body rather than hand-building the section again — it replaces the marked
+verdict block in place so a later round never leaves two.
+
 ## Resolve this run's inputs
 
 ```bash

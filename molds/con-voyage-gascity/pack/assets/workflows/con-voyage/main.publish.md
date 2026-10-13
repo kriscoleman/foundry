@@ -166,9 +166,19 @@ If push is true:
 If open_pr is true (requires push to have succeeded):
 - Open a PR only after push succeeds.
 - Use the final review report for the PR title and body. The title must be a
-  conventional-commit title derived from the work bead. The body must include
-  the review verdict (APPROVED), the active reviewer roster, the number of
-  review cycles completed, and any LOW findings surfaced to the human.
+  conventional-commit title derived from the work bead. The body's verdict
+  section must include the review verdict (APPROVED), the active reviewer
+  roster, the number of review cycles completed, and any LOW findings
+  surfaced to the human — assemble that content, then wrap it with
+  `cv_render_pr_verdict_section` (or build the full PR body with
+  `cv_set_pr_verdict_section` if a verdict section may already be present —
+  see con-voyage-lib.sh) rather than writing a bare H2 heading: the verdict
+  word stays visible in the collapsed `<summary>` (`Con-voyage review
+  verdict: APPROVED`/`BLOCKED`/etc.), with the roster/cycles/LOW-list content
+  inside the `<details>` body, unchanged. If this PR body is ever re-written
+  on a later round, call `cv_set_pr_verdict_section` again on the existing
+  body so the verdict block is REPLACED in place — never append a second
+  verdict block.
 - The PR body is posted under the operator's GitHub PAT, exactly like every
   other piece of text con-voyage writes to GitHub — it MUST lead with the
   machine-identity banner. Do NOT run raw `gh pr create` with an unbannered
