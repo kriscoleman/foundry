@@ -1393,8 +1393,8 @@ import sys
 
 body = sys.argv[1]
 section = sys.argv[2].strip("\n")
-start = "<!-- con-voyage-pr-verdict:start -->"
-end = "<!-- con-voyage-pr-verdict:end -->"
+start = sys.argv[3]
+end = sys.argv[4]
 pattern = re.compile(re.escape(start) + r".*?" + re.escape(end), re.DOTALL)
 if pattern.search(body):
     new_body = pattern.sub(lambda m: section, body, count=1)
@@ -1402,7 +1402,7 @@ else:
     sep = "\n\n" if body.strip() else ""
     new_body = body.rstrip("\n") + sep + section
 sys.stdout.write(new_body.rstrip("\n") + "\n")
-' "$body" "$section"
+' "$body" "$section" "$CV_PR_VERDICT_MARKER_START" "$CV_PR_VERDICT_MARKER_END"
 }
 
 # shellcheck disable=SC2034  # ST_* globals are consumed by the sourcing

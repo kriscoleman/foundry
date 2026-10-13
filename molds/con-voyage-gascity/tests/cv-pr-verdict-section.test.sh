@@ -66,7 +66,7 @@ Does the thing."
 NEW_BODY="$(cv_set_pr_verdict_section "$PR_BODY_BASE" "APPROVED" "$ROSTER_CONTENT")"
 assert_contains "## Summary" "$NEW_BODY" "original body content retained"
 assert_contains "<summary>Con-voyage review verdict: APPROVED</summary>" "$NEW_BODY" "verdict section appended"
-assert_eq "1" "$(printf '%s' "$NEW_BODY" | grep -c -- '<!-- con-voyage-pr-verdict:start -->')" "exactly one start marker after first write"
+assert_eq "1" "$(printf '%s' "$NEW_BODY" | grep -c -- "$CV_PR_VERDICT_MARKER_START")" "exactly one start marker after first write"
 
 start_case "cv_set_pr_verdict_section: a later round replaces the existing block instead of duplicating it"
 ROUND2_CONTENT="Active reviewer roster: code-review, security.
@@ -75,7 +75,7 @@ Review cycles completed: 3.
 Not auto-merged — a human lands this PR."
 REWRITTEN_BODY="$(cv_set_pr_verdict_section "$NEW_BODY" "APPROVED" "$ROUND2_CONTENT")"
 assert_contains "## Summary" "$REWRITTEN_BODY" "original body content still retained across a re-write"
-assert_eq "1" "$(printf '%s' "$REWRITTEN_BODY" | grep -c -- '<!-- con-voyage-pr-verdict:start -->')" "still exactly one start marker after a second write"
+assert_eq "1" "$(printf '%s' "$REWRITTEN_BODY" | grep -c -- "$CV_PR_VERDICT_MARKER_START")" "still exactly one start marker after a second write"
 assert_eq "1" "$(printf '%s' "$REWRITTEN_BODY" | grep -c '<details>')" "still exactly one details block after a second write"
 assert_contains "Review cycles completed: 3." "$REWRITTEN_BODY" "round 2 content present"
 assert_not_contains "Review cycles completed: 2." "$REWRITTEN_BODY" "round 1 content fully replaced, not appended alongside"
@@ -84,7 +84,19 @@ start_case "cv_set_pr_verdict_section: a later round can change the verdict word
 REBLOCKED_BODY="$(cv_set_pr_verdict_section "$REWRITTEN_BODY" "BLOCKED" "A new blocking finding was raised.")"
 assert_contains "<summary>Con-voyage review verdict: BLOCKED</summary>" "$REBLOCKED_BODY" "verdict word updates on re-write"
 assert_not_contains "Con-voyage review verdict: APPROVED" "$REBLOCKED_BODY" "stale APPROVED summary is gone"
-assert_eq "1" "$(printf '%s' "$REBLOCKED_BODY" | grep -c -- '<!-- con-voyage-pr-verdict:start -->')" "exactly one start marker after a verdict change"
+assert_eq "1" "$(printf '%s' "$REBLOCKED_BODY" | grep -c -- "$CV_PR_VERDICT_MARKER_START")" "exactly one start marker after a verdict change"
+
+start_case "cv_set_pr_verdict_section: replaces in place even when the marker constants change between calls (review fk-9oigyg BLOCKING-1)"
+ORIG_START="$CV_PR_VERDICT_MARKER_START"
+ORIG_END="$CV_PR_VERDICT_MARKER_END"
+CV_PR_VERDICT_MARKER_START="<!-- con-voyage-pr-verdict:start:v2 -->"
+CV_PR_VERDICT_MARKER_END="<!-- con-voyage-pr-verdict:end:v2 -->"
+RENAMED_BODY="$(cv_set_pr_verdict_section "$PR_BODY_BASE" "APPROVED" "$ROSTER_CONTENT")"
+RENAMED_REWRITE="$(cv_set_pr_verdict_section "$RENAMED_BODY" "APPROVED" "Review cycles completed: 2.")"
+assert_eq "1" "$(printf '%s' "$RENAMED_REWRITE" | grep -c -- "$CV_PR_VERDICT_MARKER_START")" "a second write under the renamed marker still finds and replaces the first block, not append a duplicate"
+assert_not_contains "Active reviewer roster: code-review, security, simplicity, qa-test." "$RENAMED_REWRITE" "first write's content is gone after the replace, not left behind as a second block"
+CV_PR_VERDICT_MARKER_START="$ORIG_START"
+CV_PR_VERDICT_MARKER_END="$ORIG_END"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
