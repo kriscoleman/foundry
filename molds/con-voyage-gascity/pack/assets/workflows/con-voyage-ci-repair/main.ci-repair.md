@@ -437,8 +437,14 @@ ci_repair_step3_fail() {
     echo "ci-repair: con-voyage-lib.sh not found — cannot run the shared abort/escalate helper" >&2
     gc mail send {escalation_target} \
       -s "CI repair blocked: {repo}#{pr}" \
-      -m "Repair bead {convoy_id} is stuck in Step 3 (worktree setup). Reason: ${msg}. Branch: {branch}."
-    gc bd close "{convoy_id}" --reason "abandoned: ${msg}"
+      -m "Repair bead {repair_bead} is stuck in Step 3 (worktree setup). Reason: ${msg}. Branch: {branch}."
+    # review fk-80xk9s LOW-1/LOW-4: {convoy_id} never resolves (fk-ne3uz), so
+    # close the one token this handoff guarantees resolves — {repair_bead} —
+    # not the dead token. This is the ONLY reachable call site for this
+    # branch (every later ci_repair_step3_fail call in this step has already
+    # confirmed $CV_LIB is non-empty), so there is never a worktree to tear
+    # down here yet.
+    gc bd close "{repair_bead}" --reason "abandoned: ${msg}"
     gc runtime drain-ack
   fi
   exit 1
@@ -559,15 +565,6 @@ root stays on whatever branch every other worker expects it to be on. A
 reused worktree is already on `{branch}` by construction — nothing to sync
 there either.
 
-<!-- FOLLOW-UP (noted, not fixed — out of scope for fk-4xq): every remaining
-     {branch} interpolation in this file (Steps 4/6/7 below) is unquoted in
-     its shell command example. GitHub branch names can't contain spaces, but
-     can contain other shell-meaningful characters; quoting "{branch}"
-     everywhere would be the safer default. Step 3's own {branch}
-     interpolations are quoted above since this change already touches that
-     block; the rest are left as-is per fk-4xq's scope (BLOCKING-1/2 + LOW-1/2
-     only) — file separately if this needs hardening. -->
-
 Verify you are on the right branch, in the dedicated worktree, before doing
 anything else:
 
@@ -631,8 +628,15 @@ step4_abort() {
     echo "ci-repair Step 4: con-voyage-lib.sh not found — cannot run the shared abort/escalate helper" >&2
     gc mail send {escalation_target} \
       -s "CI repair blocked: {repo}#{pr}" \
-      -m "Repair bead {convoy_id} failed to re-anchor in Step 4: ${msg}. Branch: {branch}."
-    gc bd close "{convoy_id}" --reason "abandoned: ${msg}"
+      -m "Repair bead {repair_bead} failed to re-anchor in Step 4: ${msg}. Branch: {branch}."
+    # review fk-80xk9s LOW-1/LOW-4: {convoy_id} never resolves (fk-ne3uz), so
+    # close {repair_bead} instead — the one token this handoff guarantees
+    # resolves. A bare inline worktree removal is deliberately NOT duplicated
+    # here (it would reintroduce the exact copy-pasted removal logic
+    # BLOCKING-3 just eliminated, which con-voyage-ci-repair-worktree-isolation
+    # case 8e guards against); any worktree this degraded path can't close is
+    # still cleaned up by the repair-watchdog's stall sweep.
+    gc bd close "{repair_bead}" --reason "abandoned: ${msg}"
     gc runtime drain-ack
   fi
   exit 1
@@ -715,7 +719,7 @@ After the rebase completes and conflicts are resolved:
    this requires a force-push — use `--force-with-lease` (never a bare
    `--force`), and only ever on this PR's own branch:
    ```bash
-   git push --force-with-lease origin {branch}
+   git push --force-with-lease origin "{branch}"
    ```
 3. **Surface a human-readable summary of the resolution** — which files
    conflicted and what the resolution did — as BOTH a machine-bannered PR
@@ -750,7 +754,7 @@ After the merge completes and conflicts are resolved:
 2. Push the branch. The merge commit fast-forwards from the branch's own
    prior head, so a plain push suffices — no force-push is needed:
    ```bash
-   git push origin {branch}
+   git push origin "{branch}"
    ```
 3. **Surface a human-readable summary of the resolution** — same requirement
    as the rebase sub-path above: a machine-bannered PR comment and the bead
@@ -782,7 +786,7 @@ Run the full test suite and lint (Step 5's commands) before pushing, then push
 with `--force-with-lease` — never a bare `--force`:
 
 ```bash
-git push --force-with-lease origin {branch}
+git push --force-with-lease origin "{branch}"
 ```
 
 **Reconciling this with Step 2's forbidden tactics:** Step 2 forbids
@@ -879,8 +883,11 @@ step5_abort() {
     echo "ci-repair Step 5: con-voyage-lib.sh not found — cannot run the shared abort/escalate helper" >&2
     gc mail send {escalation_target} \
       -s "CI repair blocked: {repo}#{pr}" \
-      -m "Repair bead {convoy_id} failed to re-anchor in Step 5: ${msg}. Branch: {branch}."
-    gc bd close "{convoy_id}" --reason "abandoned: ${msg}"
+      -m "Repair bead {repair_bead} failed to re-anchor in Step 5: ${msg}. Branch: {branch}."
+    # review fk-80xk9s LOW-1/LOW-4: see Step 4's fallback above — same fix,
+    # same reason a bare inline worktree removal is deliberately not
+    # duplicated here.
+    gc bd close "{repair_bead}" --reason "abandoned: ${msg}"
     gc runtime drain-ack
   fi
   exit 1
@@ -950,8 +957,11 @@ step6_abort() {
     echo "ci-repair Step 6: con-voyage-lib.sh not found — cannot run the shared abort/escalate helper" >&2
     gc mail send {escalation_target} \
       -s "CI repair blocked: {repo}#{pr}" \
-      -m "Repair bead {convoy_id} failed to re-anchor in Step 6: ${msg}. Branch: {branch}."
-    gc bd close "{convoy_id}" --reason "abandoned: ${msg}"
+      -m "Repair bead {repair_bead} failed to re-anchor in Step 6: ${msg}. Branch: {branch}."
+    # review fk-80xk9s LOW-1/LOW-4: see Step 4's fallback above — same fix,
+    # same reason a bare inline worktree removal is deliberately not
+    # duplicated here.
+    gc bd close "{repair_bead}" --reason "abandoned: ${msg}"
     gc runtime drain-ack
   fi
   exit 1
@@ -1006,7 +1016,7 @@ git commit -m "fix: <brief description of CI fix> (repair {convoy_id})"
 Push to the PR branch:
 
 ```bash
-git push origin {branch}
+git push origin "{branch}"
 ```
 
 **NEVER push to main, NEVER merge, NEVER approve, NEVER submit to any merge
@@ -1112,8 +1122,16 @@ else
   echo "ci-repair: con-voyage-lib.sh not found — cannot run the shared abort/escalate helper" >&2
   gc mail send {escalation_target} \
     -s "CI repair blocked: {repo}#{pr}" \
-    -m "Repair bead {convoy_id} is stuck. Reason: <brief explanation>. Branch: {branch}."
-  gc bd close "{convoy_id}" --reason "abandoned: escalated to {escalation_target} — <brief explanation>"
+    -m "Repair bead ${REPAIR_BEAD_ID} is stuck. Reason: <brief explanation>. Branch: {branch}."
+  # review fk-80xk9s LOW-1/LOW-4: {convoy_id} never resolves (fk-ne3uz); close
+  # $REPAIR_BEAD_ID instead (already set above regardless of $CV_LIB) — the
+  # one token this handoff guarantees resolves. A bare inline worktree removal
+  # is deliberately NOT duplicated here (it would reintroduce the exact
+  # copy-pasted removal logic BLOCKING-3 just eliminated, which
+  # con-voyage-ci-repair-worktree-isolation case 8e guards against); any
+  # worktree this degraded path can't close is still cleaned up by the
+  # repair-watchdog's stall sweep.
+  gc bd close "$REPAIR_BEAD_ID" --reason "abandoned: escalated to {escalation_target} — <brief explanation>"
   gc runtime drain-ack
 fi
 exit 1

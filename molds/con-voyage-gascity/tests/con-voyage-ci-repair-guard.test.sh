@@ -799,10 +799,10 @@ fi
 #   `--with-lease`) must still never appear anywhere.
 # ---------------------------------------------------------------------------
 start_case "R7b: behind_base defaults to --force-with-lease; gh pr update-branch is opt-in only"
-if grep -q 'git push --force-with-lease origin {branch}' "$CI_REPAIR_MD"; then
+if grep -q 'git push --force-with-lease origin "{branch}"' "$CI_REPAIR_MD"; then
   pass "behind_base default path pushes with --force-with-lease"
 else
-  fail "expected behind_base default path to push with git push --force-with-lease origin {branch}"
+  fail 'expected behind_base default path to push with git push --force-with-lease origin "{branch}"'
 fi
 # shellcheck disable=SC2016  # backticks below are literal markdown, not command substitution
 c_rebase_line=$(grep -n '^#### 4c Strategy: `rebase` (DEFAULT' "$CI_REPAIR_MD" | head -1 | cut -d: -f1)
@@ -857,6 +857,22 @@ if grep -qi 'Reconciling this with Step 2' "$CI_REPAIR_MD"; then
   pass "carries the explicit CV-A reconciliation note (force-with-lease vs the CI-kick force-push ban)"
 else
   fail "expected an explicit reconciliation note distinguishing behind_base's force-with-lease from Step 2's CI-kick force-push ban"
+fi
+
+# ---------------------------------------------------------------------------
+# R7g (review fk-80xk9s LOW-2, fk-4xq) — every `git fetch`/`git push {branch}`
+#   command example quotes the interpolation. GitHub branch names can't
+#   contain spaces, but can contain other shell-meaningful characters;
+#   leaving even one bare `origin {branch}` is an inconsistency this file's
+#   own Step 3 (`git fetch origin "{branch}"`) already avoids. This was
+#   carried as a known, explicitly-scoped-out gap (an inline FOLLOW-UP
+#   comment said so) until this fix.
+# ---------------------------------------------------------------------------
+start_case "R7g: every git fetch/push {branch} interpolation is quoted (no bare 'origin {branch}')"
+if grep -q 'origin {branch}' "$CI_REPAIR_MD"; then
+  fail 'found an unquoted origin {branch} interpolation in a git fetch/push command example — quote it as origin "{branch}" (fk-4xq)'
+else
+  pass 'no unquoted origin {branch} interpolation remains'
 fi
 
 # ---------------------------------------------------------------------------
