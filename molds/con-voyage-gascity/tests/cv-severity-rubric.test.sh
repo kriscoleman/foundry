@@ -283,6 +283,32 @@ assert_contains "$SYNTHESIZER" "no longer load-bearing for correctness" \
 assert_contains "$SYNTHESIZER" "fk-6os73y" \
   "synthesizer cites the fk-6os73y evidence for the no-downgrade rule"
 
+start_case "the fragment pins the three-shape location contract review-inline depends on (BLOCKING-2, review fk-hbsmk iteration 2)"
+assert_contains "$FRAGMENT" "path:line" \
+  "fragment names the path:line line-anchored shape"
+assert_contains "$FRAGMENT" "file-level" \
+  "fragment names the file-level (path only) shape"
+assert_contains "$FRAGMENT" "PR-level" \
+  "fragment names the PR-level (no path) shape"
+
+start_case "the acceptance lane pins the same three-shape location contract"
+assert_contains "$ACCEPTANCE_LANE" "path:line" \
+  "main.acceptance-review.md names the path:line line-anchored shape"
+assert_contains "$ACCEPTANCE_LANE" "file-level" \
+  "main.acceptance-review.md names the file-level (path only) shape"
+assert_contains "$ACCEPTANCE_LANE" "PR-level" \
+  "main.acceptance-review.md names the PR-level (no path) shape"
+
+start_case "the synthesizer pins the same three-shape location contract and its VERBATIM carry-through rule"
+assert_contains "$SYNTHESIZER" "path:line" \
+  "main.synthesize-review.md names the path:line line-anchored shape"
+assert_contains "$SYNTHESIZER" "file-level" \
+  "main.synthesize-review.md names the file-level (path only) shape"
+assert_contains "$SYNTHESIZER" "PR-level" \
+  "main.synthesize-review.md names the PR-level (no path) shape"
+assert_contains "$SYNTHESIZER" "through VERBATIM" \
+  "main.synthesize-review.md states the location must be carried through verbatim"
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "ALL CASES PASSED"
