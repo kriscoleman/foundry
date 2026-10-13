@@ -679,7 +679,12 @@ cat > "$FINDINGS" <<JSON
   {"lane": "simplicity", "severity": "low", "path": "src/util.go", "line": 7, "title": "duplicated helper", "body": "This mirrors helper() above.\nFix: extract a shared function."}
 ]
 JSON
-ARGS=(review-inline 42 --repo kriscoleman/foundry --commit deadbeef1234 --findings "$FINDINGS" --rig foundry-kc --agent reviewer-3)
+# review fk-ppj8bx BLOCKING-4: a path+line finding only anchors to the exact
+# line when --diff-lines-file confirms it's actually in the diff (fail-safe
+# default otherwise) — supply one covering both findings' lines.
+DIFF_LINES_25="${SANDBOX}/diff-lines-25.txt"
+printf 'src/auth.go:42\nsrc/util.go:7\n' > "$DIFF_LINES_25"
+ARGS=(review-inline 42 --repo kriscoleman/foundry --commit deadbeef1234 --findings "$FINDINGS" --diff-lines-file "$DIFF_LINES_25" --rig foundry-kc --agent reviewer-3)
 run_script
 assert_eq "0" "$RC" "script exits 0"
 assert_log_count "$GH_LOG" '^api --method POST repos/kriscoleman/foundry/pulls/42/reviews --input <BODY_FILE_PATH>' 1 "gh invoked exactly once as a single POST .../reviews call"
@@ -842,11 +847,21 @@ assert_log_count "$GH_LOG" '.' 0 "gh is never invoked when --findings is missing
 start_case "32: review-inline gh failure propagates"
 setup_case_env "32"
 FINDINGS="${SANDBOX}/findings-32.json"
-printf '[]\n' > "$FINDINGS"
+printf '[{"lane": "security", "severity": "blocking", "path": "src/d.go", "line": 1, "title": "unreachable finding", "body": "would have 422ed"}]\n' > "$FINDINGS"
 ARGS=(review-inline 42 --repo kriscoleman/foundry --commit deadbeef1234 --findings "$FINDINGS")
 OUT="$(env GH="${STUBDIR}/gh" STUB_GH_LOG="$GH_LOG" STUB_BODY_LOG="$BODY_LOG" STUB_GH_EXIT=7 bash "$SCRIPT" "${ARGS[@]}" 2>&1)"
 RC=$?
 assert_eq "7" "$RC" "script propagates gh's exit code verbatim"
+# review fk-ppj8bx BLOCKING-4: the rendered review payload must survive the
+# cleanup trap on a failed POST, so a human/ci-repair can see which finding
+# triggered it.
+PRESERVED_PATH="$(printf '%s' "$OUT" | sed -n 's/.*rendered payload preserved at \([^ ]*\) for diagnosis.*/\1/p')"
+if [ -n "$PRESERVED_PATH" ] && [ -f "$PRESERVED_PATH" ] && grep -qF "unreachable finding" "$PRESERVED_PATH"; then
+  pass "rendered review payload is preserved on disk after a failed POST, for diagnosis"
+else
+  fail "rendered review payload was not preserved after a failed POST (stderr: ${OUT})"
+fi
+[ -n "$PRESERVED_PATH" ] && rm -f "$PRESERVED_PATH"
 
 # ===========================================================================
 # CASE 33 — review-inline: stable-id determinism. The same lane/path/title
@@ -868,6 +883,100 @@ env GH="${STUBDIR}/gh" STUB_GH_LOG="${SANDBOX}/gh-33b.log" STUB_BODY_LOG="$BODY_
 ID_A="$(python3 -c "import json; print(json.load(open('${BODY_LOG_A}'))['comments'][0]['body'].split('id=')[1].split()[0])" 2>/dev/null)"
 ID_B="$(python3 -c "import json; print(json.load(open('${BODY_LOG_B}'))['comments'][0]['body'].split('id=')[1].split()[0])" 2>/dev/null)"
 assert_eq "$ID_A" "$ID_B" "the same finding produces the same stable id across invocations"
+
+# ===========================================================================
+# CASE 34 — review-inline: hygiene scan rewrites a local city-root path
+#   inside a finding body AND the summary (review fk-ppj8bx BLOCKING-2 —
+#   mirrors comment-aggregate's case 21, review-inline's own copy of this
+#   control previously had zero coverage).
+# ===========================================================================
+start_case "34: review-inline hygiene scan rewrites local city-root paths"
+setup_case_env "34"
+FINDINGS="${SANDBOX}/findings-34.json"
+cat > "$FINDINGS" <<JSON
+[
+  {"lane": "sre", "severity": "low", "path": "src/e.go", "line": 1, "title": "path leak", "body": "See /fake/city/rigs/foundry-kc/worktrees/fk-x for details."}
+]
+JSON
+SUMMARY_34="${SANDBOX}/summary-34.txt"
+printf 'Also see /fake/city/rigs/foundry-kc/worktrees/fk-x in the summary.\n' > "$SUMMARY_34"
+ARGS=(review-inline 42 --repo kriscoleman/foundry --commit deadbeef1234 --findings "$FINDINGS" --summary-file "$SUMMARY_34" --rig foundry-kc --agent reviewer-3 --city-root /fake/city)
+run_script
+assert_eq "0" "$RC" "script exits 0"
+if grep -qF '<city-root>/rigs/foundry-kc/worktrees/fk-x' "$BODY_LOG"; then
+  pass "local city-root path rewritten to the <city-root> placeholder in a finding body and the summary"
+else
+  fail "local city-root path was not rewritten"
+fi
+if grep -qF '/fake/city' "$BODY_LOG"; then
+  fail "raw city-root path still present in the posted review payload"
+else
+  pass "raw city-root path no longer present in the posted review payload"
+fi
+
+# ===========================================================================
+# CASE 35 — review-inline: hygiene scan BLOCKS (refuses to post, gh never
+#   invoked) when a finding body contains a token-shaped string (review
+#   fk-ppj8bx BLOCKING-2 — mirrors comment-aggregate's case 22).
+# ===========================================================================
+start_case "35: review-inline hygiene scan blocks posting when a token shape is present"
+setup_case_env "35"
+FINDINGS="${SANDBOX}/findings-35.json"
+cat > "$FINDINGS" <<JSON
+[
+  {"lane": "security", "severity": "blocking", "path": "src/f.go", "line": 1, "title": "leaked credential", "body": "Found ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA in the diff."}
+]
+JSON
+ARGS=(review-inline 42 --repo kriscoleman/foundry --commit deadbeef1234 --findings "$FINDINGS" --rig foundry-kc --agent reviewer-3)
+run_script
+if [ "$RC" -ne 0 ]; then pass "script exits non-zero when a token shape is detected"; else fail "expected non-zero exit when a token shape is present"; fi
+assert_log_count "$GH_LOG" '.' 0 "gh is never invoked when the hygiene scan blocks on a token shape"
+
+# ===========================================================================
+# CASE 36 — review-inline: without --diff-lines-file, a path+line finding
+#   fails SAFE to a file-level comment rather than blindly trusting the raw
+#   line number (review fk-ppj8bx BLOCKING-4). GitHub's create-review
+#   endpoint 422s its ENTIRE comments[] array if any one comment anchors
+#   outside the diff, dropping every finding in the round — so with no way
+#   to confirm the line is actually in the diff, the safe default is to
+#   degrade, not to assume.
+# ===========================================================================
+start_case "36: review-inline without --diff-lines-file fails safe to a file-level comment, never trusting a raw line number"
+setup_case_env "36"
+FINDINGS="${SANDBOX}/findings-36.json"
+cat > "$FINDINGS" <<JSON
+[
+  {"lane": "sre", "severity": "blocking", "path": "src/g.go", "line": 123, "title": "unverifiable line", "body": "no diff-lines-file was supplied this round"}
+]
+JSON
+ARGS=(review-inline 42 --repo kriscoleman/foundry --commit deadbeef1234 --findings "$FINDINGS" --rig foundry-kc --agent reviewer-3)
+run_script
+assert_eq "0" "$RC" "script exits 0"
+python3 -c "
+import json, sys
+d = json.load(open('${BODY_LOG}'))
+comments = d.get('comments') or []
+ok = len(comments) == 1 and comments[0].get('path') == 'src/g.go' and 'line' not in comments[0] and comments[0].get('subject_type') == 'FILE'
+sys.exit(0 if ok else 1)
+" && pass "a path+line finding with no --diff-lines-file degrades to a file-level comment (fails safe, never trusts the raw line)" || fail "a path+line finding with no --diff-lines-file was anchored to a line anyway (unsafe default)"
+
+# ===========================================================================
+# CASE 37 — static regression guard (review fk-ppj8bx BLOCKING-1): neither
+#   review-inline's nor comment-aggregate's mktemp templates may carry a
+#   suffix after the XXXXXX placeholder. BSD/macOS mktemp only substitutes
+#   the trailing run of X's when they are the LAST characters of the
+#   template; a ".py"/".json" suffix after them makes it return the
+#   literal, unsubstituted filename every time, so two overlapping
+#   invocations collide on the identical path. This can't be exercised
+#   reliably as a behavioral test (the collision only manifests under
+#   overlapping invocations), so guard the source shape directly instead.
+# ===========================================================================
+start_case "37: no mktemp template in this script carries a suffix after XXXXXX (BSD/macOS does not randomize those)"
+if grep -qE 'mktemp "\$\{TMPDIR:-/tmp\}/[^"]*XXXXXX\.[A-Za-z]+"' "$SCRIPT"; then
+  fail "found a mktemp template with a suffix after XXXXXX — this never randomizes on BSD/macOS mktemp"
+else
+  pass "no mktemp template in this script has a suffix after XXXXXX"
+fi
 
 # ===========================================================================
 # Summary
