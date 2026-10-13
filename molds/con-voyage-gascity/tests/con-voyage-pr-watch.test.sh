@@ -275,11 +275,95 @@ JSON
 JSON
         exit 0
       fi
+      # STUB_GQL_THREADS_CVFINDING=1 (fk-khcrhm): one inline review thread
+      # shaped exactly like the shared cv-finding v1 contract (a sibling
+      # bead's publisher output) — `[<rig>/<agent> — <lens>] **SEV** ...`
+      # first line, trailing `<!-- cv-finding v1 id=... severity=... lane=...
+      # -->` marker. Reactions and an optional human reply are built from
+      # CVFIND_* env vars so one fixture generator covers every trigger
+      # scenario (no-action, operator thumbs-up, teammate thumbs-up, bot/
+      # no-access thumbs-up, human reply, BLOCKING immunity, resolved-thread
+      # suppression) without hand-duplicating near-identical JSON blobs.
+      if [ "${STUB_GQL_THREADS_CVFINDING:-0}" = "1" ]; then
+        python3 - <<'PYEOF'
+import json
+import os
+
+sev = os.environ.get("CVFIND_SEVERITY", "low")
+resolved = os.environ.get("CVFIND_RESOLVED", "false") == "true"
+reactions_env = os.environ.get("CVFIND_REACTIONS", "")
+reply_author = os.environ.get("CVFIND_REPLY_AUTHOR", "")
+reply_body = os.environ.get("CVFIND_REPLY_BODY", "")
+finding_id = os.environ.get("CVFIND_ID", "finding-abc123")
+
+reactions = []
+if reactions_env:
+    for pair in reactions_env.split(","):
+        login, content = pair.split(":", 1)
+        reactions.append({"content": content, "user": {"login": login}})
+
+finding_comment = {
+    "id": "PRRC_cvfind_1",
+    "databaseId": 660001,
+    "path": "src/finding.go",
+    "line": 9,
+    "author": {"login": "kriscoleman"},
+    "body": (
+        "[foundry-kc/reviewer-2 — security] **%s** example finding\n\n"
+        "Details and a concrete fix.\n\n"
+        "<!-- cv-finding v1 id=%s severity=%s lane=security -->"
+    ) % (sev.upper(), finding_id, sev),
+    "reactions": {"nodes": reactions},
+}
+nodes = [finding_comment]
+if reply_author:
+    nodes.append({
+        "id": "PRRC_cvfind_reply_1",
+        "databaseId": 660002,
+        "path": "src/finding.go",
+        "line": 9,
+        "author": {"login": reply_author},
+        "body": reply_body or "please fix this",
+        "reactions": {"nodes": []},
+    })
+
+out = {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [
+    {"isResolved": resolved, "comments": {"nodes": nodes}}
+]}}}}}
+print(json.dumps(out))
+PYEOF
+        exit 0
+      fi
       cat <<'JSON'
 {"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"comments":{"nodes":[{"id":"PRRC_test_11","databaseId":556677,"path":"src/retry.go","line":42,"author":{"login":"a-human-reviewer"},"body":"inline: rename this var"}]}}]}}}}}
 JSON
       exit 0
     fi
+    # repos/{owner}/{repo}/collaborators/{login}/permission (fk-khcrhm): GitHub
+    # permission lookup backing the "human with repo access" gate for a LOW
+    # finding's reaction/reply trigger. STUB_COLLAB_PERMS is a comma-separated
+    # login=permission list (e.g. "kriscoleman=admin,teammate=write"); any
+    # login not listed defaults to "none" (fail closed — an unknown login is
+    # never treated as having access). STUB_COLLAB_PERM_FAIL=1 simulates a
+    # genuine API failure (e.g. rate limit) for the retry-safety case.
+    case "$apisub" in
+      repos/*/collaborators/*/permission)
+        if [ "${STUB_COLLAB_PERM_FAIL:-0}" = "1" ]; then
+          exit 1
+        fi
+        login="$(printf '%s' "$apisub" | sed -E 's#^repos/[^/]+/[^/]+/collaborators/([^/]+)/permission$#\1#')"
+        perm="none"
+        if [ -n "${STUB_COLLAB_PERMS:-}" ]; then
+          IFS=',' read -ra _perm_pairs <<< "$STUB_COLLAB_PERMS"
+          for _pair in "${_perm_pairs[@]}"; do
+            _k="${_pair%%=*}"; _v="${_pair#*=}"
+            if [ "$_k" = "$login" ]; then perm="$_v"; fi
+          done
+        fi
+        printf '{"permission":"%s"}\n' "$perm"
+        exit 0
+        ;;
+    esac
     # `gh api user --jq .login` — configurable login for default-resolution tests.
     # STUB_GH_USER_LOGIN unset/empty => emit nothing (simulates unresolvable).
     # STUB_GH_USER_FAIL=1 => exit non-zero.
@@ -4216,6 +4300,119 @@ if grep -qF 'id=PRRC_t1_ack' "$SUPPRESSION_LOG_69"; then
 else
   fail "the newest write survives the default-cap trim"
 fi
+
+# ===========================================================================
+# CASE 70 — fk-khcrhm AC1: a con-voyage LOW inline finding with no human
+#   action must never auto-route. The finding comment itself is suppressed
+#   (never treated as ordinary human feedback), and with no reaction/reply
+#   there is no finding-trigger candidate either.
+# ===========================================================================
+start_case "70: fk-khcrhm — LOW finding with no human action never routes"
+setup_case_env "70"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_PR11_EMPTY="1" STUB_GQL_THREADS_CVFINDING="1" CVFIND_SEVERITY="low"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 0 "no feedback bead is created for an un-acted-on LOW finding"
+
+# ===========================================================================
+# CASE 71 — fk-khcrhm AC2: the operator reacts 👍 on a LOW finding -> exactly
+#   one feedback route is created referencing that comment, carrying the
+#   reply-thread comment-id (never a root comment), and a SECOND poll creates
+#   none (idempotent).
+# ===========================================================================
+start_case "71: fk-khcrhm — operator 👍 on LOW finding routes once, idempotent on replay"
+setup_case_env "71"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_PR11_EMPTY="1" STUB_GQL_THREADS_CVFINDING="1" CVFIND_SEVERITY="low" \
+  CVFIND_REACTIONS="kriscoleman:THUMBS_UP" STUB_COLLAB_PERMS="kriscoleman=admin"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 1 "exactly one finding-trigger route is created"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin STDIN:.*finding-abc123' 1 "the routed bead names the finding id"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin STDIN:.*reply-thread comment-id:660001' 1 "the routed bead instructs an in-thread reply on the exact comment-id (never a root comment)"
+
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_PR11_EMPTY="1" STUB_GQL_THREADS_CVFINDING="1" CVFIND_SEVERITY="low" \
+  CVFIND_REACTIONS="kriscoleman:THUMBS_UP" STUB_COLLAB_PERMS="kriscoleman=admin"
+assert_eq "0" "$RC" "second poll also exits 0"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 1 "second poll does not re-dispatch the same reaction (idempotent)"
+
+# ===========================================================================
+# CASE 72 — fk-khcrhm AC3: a human replies "please fix this" in the finding's
+#   thread -> one route is created carrying the reply text.
+# ===========================================================================
+start_case "72: fk-khcrhm — human reply in a LOW finding's thread routes with the reply text"
+setup_case_env "72"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_PR11_EMPTY="1" STUB_GQL_THREADS_CVFINDING="1" CVFIND_SEVERITY="low" \
+  CVFIND_REPLY_AUTHOR="a-teammate" CVFIND_REPLY_BODY="please fix this" \
+  STUB_COLLAB_PERMS="a-teammate=write"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 1 "exactly one route is created for the reply trigger"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin STDIN:.*please fix this' 1 "the routed bead carries the reply text"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin STDIN:.*reply-thread comment-id:660001' 1 "the routed bead names the reply-thread target"
+
+# ===========================================================================
+# CASE 73 — fk-khcrhm AC5: a teammate (repo collaborator, not the operator)
+#   reacting 👍 also routes exactly once — the access gate is "any human
+#   collaborator", not "operator only".
+# ===========================================================================
+start_case "73: fk-khcrhm — a non-operator teammate's 👍 also routes"
+setup_case_env "73"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_PR11_EMPTY="1" STUB_GQL_THREADS_CVFINDING="1" CVFIND_SEVERITY="low" \
+  CVFIND_REACTIONS="a-teammate:THUMBS_UP" STUB_COLLAB_PERMS="a-teammate=write"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 1 "exactly one route is created for the teammate's reaction"
+
+# ===========================================================================
+# CASE 74 — fk-khcrhm AC6: a 👍 from a Bot/App account, or from a user with no
+#   repo access, never triggers (the bot-reaction case is unroutable from the
+#   python scan itself; the no-access case must be caught by the permission
+#   gate). Ordinary comment routing is untouched by either.
+# ===========================================================================
+start_case "74: fk-khcrhm — bot reaction never triggers"
+setup_case_env "74"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_PR11_EMPTY="1" STUB_GQL_THREADS_CVFINDING="1" CVFIND_SEVERITY="low" \
+  CVFIND_REACTIONS="doomer-ai[bot]:THUMBS_UP" STUB_COLLAB_PERMS="doomer-ai[bot]=write"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 0 "a bot's reaction never dispatches a finding-trigger route"
+
+start_case "75: fk-khcrhm — 👍 from a user with no repo access never triggers"
+setup_case_env "75"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_PR11_EMPTY="1" STUB_GQL_THREADS_CVFINDING="1" CVFIND_SEVERITY="low" \
+  CVFIND_REACTIONS="a-stranger:THUMBS_UP" STUB_COLLAB_PERMS="a-stranger=none"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 0 "a no-access user's reaction never dispatches a finding-trigger route"
+
+# ===========================================================================
+# CASE 76 — fk-khcrhm AC7: a con-voyage BLOCKING inline comment is NEVER
+#   routed via this new path, regardless of reactions or replies on it — the
+#   internal review loop already owns BLOCKINGs.
+# ===========================================================================
+start_case "76: fk-khcrhm — a BLOCKING finding is never routed via this path, even with a 👍 and a reply"
+setup_case_env "76"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_PR11_EMPTY="1" STUB_GQL_THREADS_CVFINDING="1" CVFIND_SEVERITY="blocking" \
+  CVFIND_REACTIONS="kriscoleman:THUMBS_UP" \
+  CVFIND_REPLY_AUTHOR="kriscoleman" CVFIND_REPLY_BODY="please fix this" \
+  STUB_COLLAB_PERMS="kriscoleman=admin"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 0 "a BLOCKING finding never dispatches via the finding-trigger path"
+
+# ===========================================================================
+# CASE 77 — fk-khcrhm regression guard: ordinary human-comment routing (the
+#   pre-existing PART B behavior) is unaffected by the new cv_finding
+#   suppression/trigger machinery — the baseline default fixture (one plain
+#   human issue comment, no finding markers anywhere) still routes exactly
+#   once, same as every pre-fk-khcrhm case in this suite.
+# ===========================================================================
+start_case "77: fk-khcrhm regression guard — ordinary human comments still route normally"
+setup_case_env "77"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin STDIN:.*please fix the null check' 1 "the ordinary human issue comment still routes"
 
 # ===========================================================================
 # Summary
