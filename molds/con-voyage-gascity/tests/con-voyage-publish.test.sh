@@ -375,6 +375,31 @@ fi
 start_case "16: fk-bcyt7v follow-up — a legacy root (attempted not true) still falls back and publishes as before"
 assert_contains 'REVIEWED_HEAD_SHA="$PUBLISHED_HEAD_SHA"' "legacy fallback to publish-time HEAD is preserved"
 
+# ===========================================================================
+# CASE 17 (review fk-9oigyg BLOCKING-2): the PR-body verdict-collapse
+# acceptance criterion ("the verdict section is a single <details> block")
+# used to be enforced only by prose telling the agent to call
+# cv_render_pr_verdict_section/cv_set_pr_verdict_section, with nothing
+# checking the assembled body actually did so before the PR opens — unlike
+# the machine-identity banner check a few paragraphs later, which is
+# fail-closed (exit 1 if cv-pr-comment.sh is missing). Pin that the step now
+# greps the assembled body for BOTH verdict markers and exits loud if either
+# is missing, BEFORE the PR is opened (before the cv-pr-comment.sh banner
+# guard, which is the next fail-closed check in this same section).
+# ===========================================================================
+start_case "17: fk-9oigyg BLOCKING-2 — the assembled PR body is checked for the verdict markers before the PR opens"
+assert_contains 'if ! grep -qF -- "$CV_PR_VERDICT_MARKER_START" "<path to the assembled PR body>" \' "greps the assembled body for the start marker before opening the PR"
+assert_contains 'assembled PR body is missing the verdict <details> block' "fails loud naming the actual gap (missing verdict block), not a generic error"
+
+verdict_check_line="$(line_of 'assembled PR body is missing the verdict <details> block')"
+banner_check_line="$(line_of 'cv-pr-comment.sh not found — refusing to open the PR without the banner')"
+if [ -n "$verdict_check_line" ] && [ -n "$banner_check_line" ] && [ "$verdict_check_line" -lt "$banner_check_line" ]; then
+  echo "  PASS: the verdict-marker check (line ${verdict_check_line}) runs before the banner guard (line ${banner_check_line}), both before the PR opens"
+else
+  echo "  FAIL: expected the verdict-marker check to appear before the existing banner guard" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "ALL CASES PASSED"

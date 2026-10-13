@@ -179,6 +179,33 @@ If open_pr is true (requires push to have succeeded):
   on a later round, call `cv_set_pr_verdict_section` again on the existing
   body so the verdict block is REPLACED in place — never append a second
   verdict block.
+- Before opening the PR, verify the assembled body actually carries the
+  verdict section through `cv_render_pr_verdict_section`/
+  `cv_set_pr_verdict_section` rather than a bare H2 heading — the preceding
+  paragraph's instruction to use those helpers is prose-only and nothing
+  downstream otherwise checks it, so a future edit (or an agent that skims
+  past it) could silently regress to the old bare heading with nothing to
+  catch it. Fail closed exactly like the machine-identity banner check right
+  below — grep the assembled body file for both markers and refuse to open
+  the PR if either is missing:
+
+  ```bash
+  CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+  CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+  [ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+  CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+  [ -f "$CV_LIB" ] || CV_LIB=""
+  if [ -z "$CV_LIB" ]; then
+    echo "con-voyage-lib.sh not found — refusing to open the PR without verifying the verdict section" >&2
+    exit 1
+  fi
+  source "$CV_LIB"
+  if ! grep -qF -- "$CV_PR_VERDICT_MARKER_START" "<path to the assembled PR body>" \
+    || ! grep -qF -- "$CV_PR_VERDICT_MARKER_END" "<path to the assembled PR body>"; then
+    echo "assembled PR body is missing the verdict <details> block (cv_render_pr_verdict_section/cv_set_pr_verdict_section) — refusing to open the PR with a bare heading" >&2
+    exit 1
+  fi
+  ```
 - The PR body is posted under the operator's GitHub PAT, exactly like every
   other piece of text con-voyage writes to GitHub — it MUST lead with the
   machine-identity banner. Do NOT run raw `gh pr create` with an unbannered
