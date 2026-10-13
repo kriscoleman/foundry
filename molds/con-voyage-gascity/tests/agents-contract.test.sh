@@ -121,7 +121,7 @@ for formula in "${MOLD_DIR}"/pack/formulas/*.toml; do
 done
 
 if [ "$comment_policy_node_count" -eq 0 ]; then
-  echo "FATAL: discovered zero code-writing (git commit -m) nodes across pack/formulas/*.toml — detector broken?" >&2
+  echo "FATAL: discovered zero code-writing (git commit, any flag spelling) nodes across pack/formulas/*.toml — detector broken?" >&2
   exit 2
 fi
 echo "  (checked ${comment_policy_node_count} code-writing workflow nodes for the comment policy)"
@@ -131,6 +131,33 @@ if [ "$node_count" -eq 0 ]; then
   exit 2
 fi
 echo "  (checked ${node_count} formula-dispatched workflow nodes)"
+
+start_case "the broadened code-writing-node detector actually catches more than the old literal pattern (qa-test fk-sag938 / test-evidence fk-h18i5k BLOCKING-1)"
+# The iteration-2 fix broadened the detector from the literal
+# `grep -qF 'git commit -m'` to `grep -qE 'git commit'` so that a
+# code-writing node whose only commit invocation uses a different flag
+# spelling (e.g. `git commit -am`) still gets caught. Every real node the
+# sweep discovers today happens to also contain a literal `git commit -m`
+# line, so nothing in the suite actually exercised the broadening — this
+# case proves the divergence directly against a throwaway fixture file
+# instead of relying on a real node to happen to differ.
+fixture_file="$(mktemp)"
+printf 'some prose\ngit commit -am "x"\nmore prose\n' > "$fixture_file"
+
+if grep -qE 'git commit' "$fixture_file" 2>/dev/null; then
+  echo "  PASS: broadened pattern (grep -qE 'git commit') matches a git-commit-am-only fixture"
+else
+  echo "  FAIL: broadened pattern (grep -qE 'git commit') did not match a git-commit-am-only fixture" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
+if grep -qF 'git commit -m' "$fixture_file" 2>/dev/null; then
+  echo "  FAIL: old literal pattern (grep -qF 'git commit -m') unexpectedly matched a git-commit-am-only fixture — the two patterns no longer diverge, the fix is unproven" >&2
+  FAILURES=$((FAILURES+1))
+else
+  echo "  PASS: old literal pattern (grep -qF 'git commit -m') does NOT match the fixture, confirming the broadening changes real behavior"
+fi
+rm -f "$fixture_file"
 
 start_case "the routed PR-feedback bead body (con-voyage-pr-watch.sh) includes the reminder"
 if declare -f cv_build_pr_feedback_body >/dev/null 2>&1; then
