@@ -71,6 +71,38 @@ Each chosen roster lens is activated by its own `--var enable_<lens>=true`. Floo
 | `enable_compliance=true` | Compliance/privacy: regulatory risk, data handling, GDPR/SOC2 |
 | `enable_data_db=true` | Data/database engineer: schema, migrations, query correctness |
 
+## Reviewing a PR you didn't build
+
+con-voyage's main formula and `con-voyage-rereview` both assume con-voyage
+owns the branch: they commit, rebase, and push it. Pointed at a teammate's
+PR (or any PR con-voyage never built), that posture is wrong — it would
+silently become "push commits to your teammate's branch." Use the
+`con-voyage-review-escort` formula instead: it checks out the PR's head
+commit **read-only** (`pull/<n>/head`, so fork PRs with no push access work
+too), runs the same multi-lens review roster once, posts exactly one
+aggregated comment, and mails the mayor the verdict. It never creates,
+commits to, rebases, or pushes any branch, never opens a PR, and never
+registers the PR with con-voyage-finalize/pr-watch/ci-repair/
+rereview-watch — con-voyage doesn't own this PR, so none of those monitors
+should ever touch it. There is no apply step and no iteration loop: whatever
+the review finds (clean, LOW, or BLOCKING) is the final report for that
+round. Re-review after the author pushes fixes by slinging the same formula
+again — a fresh dispatch, not a retry.
+
+```bash
+gc sling <target> --on con-voyage-review-escort \
+  --var repo=<owner/repo> \
+  --var pr=<pr-number> \
+  [--var code_lens=con-voyage.cv-frontend-principal-engineer] \
+  --var enable_<lens>=true \
+  [--var enable_<lens2>=true ...]
+```
+
+Same roster lens vars as the main formula (see the table above); the floor
+lanes (acceptance, test-evidence, simplicity, security, code) are always
+active. There is no `push`/`open_pr`/`finalize_key` var — this formula never
+has anything to push or finalize.
+
 ## The Journey (summary)
 
 The always-resident `con-voyage-orchestration` template fragment (appended into every mayor's SessionStart context) carries only the facilitator contract, dispatch posture, and one-line phase pointers. The full runbook below is what it points to.
