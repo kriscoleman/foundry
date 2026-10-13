@@ -107,12 +107,12 @@ for formula in "${MOLD_DIR}"/pack/formulas/*.toml; do
     assert_contains "$node_path" "$CV_NO_INTERACTIVE_PROMPT_REMINDER" \
       "$(basename "$formula"): $(basename "$rel_path") (no interactive prompts)"
     # The comment policy is only for code-writing steps, not review-only
-    # lanes — a node that commits to the worktree (`git commit -m`) is a
-    # code-writing step by construction, so this discovers the set the same
-    # way node_count discovers nodes: from file content, not a hand-maintained
-    # list, catching a new code-writing node the same way a new node is
-    # already caught above.
-    if grep -qF 'git commit -m' "$node_path" 2>/dev/null; then
+    # lanes — a node that commits to the worktree (`git commit`, any flag
+    # spelling) is a code-writing step by construction, so this discovers the
+    # set the same way node_count discovers nodes: from file content, not a
+    # hand-maintained list, catching a new code-writing node the same way a
+    # new node is already caught above.
+    if grep -qE 'git commit' "$node_path" 2>/dev/null; then
       comment_policy_node_count=$((comment_policy_node_count+1))
       assert_contains "$node_path" "$CV_COMMENT_POLICY_REMINDER" \
         "$(basename "$formula"): $(basename "$rel_path") (comment policy)"
