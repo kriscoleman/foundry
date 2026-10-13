@@ -52,6 +52,17 @@
 #     Inline review-thread comments (reviewThreads) are also captured in
 #     addition to top-level reviews and issue comments.
 #
+#     fk-khcrhm (operator directive 2026-10-13): con-voyage's OWN inline
+#     findings (posted by a separate sibling bead's publisher, identified by
+#     the shared `<!-- cv-finding v1 id=... severity=... lane=... -->`
+#     marker) are NEVER routed just because they exist — a BLOCKING finding
+#     is already owned by the internal review loop, and a LOW finding is
+#     routed only when a human (any repo collaborator, not just CV_PR_AUTHOR)
+#     reacts 👍 on it or replies in its thread. That routed feedback carries
+#     the finding's comment-id so the worker replies IN-thread via
+#     `cv-pr-comment.sh reply-thread`, never as a root PR comment, and never
+#     auto-resolves the thread.
+#
 #     Deduplication uses GitHub GraphQL node-ID STRINGS (e.g. "PRR_kwDO...",
 #     "IC_kwDO..."). IDs are stored newline-delimited in a per-PR state file.
 #     The seen-set is capped each run to IDs from currently-open PRs to prevent
@@ -1249,6 +1260,46 @@ save_seen_ids() {
   sort -u > "$state_file"
 }
 
+# ---------------------------------------------------------------------------
+# cv_pr_watch_human_has_access REPO LOGIN — fk-khcrhm: "is this login at
+# least a read-collaborator on REPO" gate for the LOW-finding reaction/reply
+# triggers below (OWNER/MEMBER/COLLABORATOR-equivalent, i.e. GitHub's own
+# `permission` field is anything other than "none" — keeps drive-by strangers
+# off public repos while allowing any teammate, not just CV_PR_AUTHOR).
+#
+# Cached in CV_PR_WATCH_PERM_CACHE for the lifetime of THIS script invocation
+# (one poll run) — a login checked twice in one run costs exactly one `gh
+# api` call, never N+1. This script requires bash 4+ (see header), so the
+# associative array is safe here unlike the bash-3.2-gated code in
+# con-voyage-lib.sh.
+#
+# Fails closed: a `gh api` error (rate limit, deleted account, etc.) or an
+# unparseable response is treated as "no access" — never silently grant a
+# trigger on an API hiccup.
+declare -A CV_PR_WATCH_PERM_CACHE=()
+cv_pr_watch_human_has_access() {
+  local repo="$1" login="$2"
+  local cache_key="${repo}|${login}"
+  if [ -z "${CV_PR_WATCH_PERM_CACHE[$cache_key]+x}" ]; then
+    local perm_json perm="none"
+    if perm_json=$("$GH" api "repos/${repo}/collaborators/${login}/permission" 2>/dev/null); then
+      perm=$(printf '%s' "$perm_json" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except ValueError:
+    d = {}
+print((d or {}).get('permission', 'none') or 'none')" 2>/dev/null || echo "none")
+    fi
+    if [ "$perm" != "none" ] && [ -n "$perm" ]; then
+      CV_PR_WATCH_PERM_CACHE[$cache_key]="yes"
+    else
+      CV_PR_WATCH_PERM_CACHE[$cache_key]="no"
+    fi
+  fi
+  [ "${CV_PR_WATCH_PERM_CACHE[$cache_key]}" = "yes" ]
+}
+
 # Process each monitor's repo
 for monitor_repo in "${MONITOR_REPOS[@]}"; do
   # Split "owner/repo|rig" — use parameter expansion, not IFS tricks
@@ -1385,6 +1436,17 @@ print((d.get('author') or {}).get('login', ''))" 2>/dev/null || echo "")
     # Load seen IDs into a temp file so we can pass to python3 via stdin
     seen_ids_content=$(load_seen_ids "$state_file")
 
+    # fk-khcrhm: a SEPARATE small state file for con-voyage finding-trigger
+    # dedup tokens (cvfind:<finding-id>:reaction:<login> /
+    # :reply:<comment-node-id>). It cannot share state_file's persist timing
+    # with ordinary comment routing above: a finding-trigger token is only
+    # ever written once access is VERIFIED and the route actually succeeds,
+    # independently of whether ordinary human-comment routing this same cycle
+    # succeeded or failed (see the dispatch loop below) -- folding both into
+    # one all-or-nothing write would wrongly couple two unrelated outcomes.
+    finding_seen_file="${CV_STATE_DIR}/${state_key}.finding-triggers.seen"
+    finding_seen_content=$(load_seen_ids "$finding_seen_file")
+
     # Fetch PR reviews, issue comments, and inline review-thread comments, then
     # merge them into a single {reviews, comments, reviewThreads} object for the
     # parser below (which walks all three).
@@ -1427,8 +1489,14 @@ print((d.get('author') or {}).get('login', ''))" 2>/dev/null || echo "")
     # key, but a threaded reply is posted via the review-comment replies API,
     # which is keyed on the REST databaseId — so `cv-pr-comment.sh reply-thread
     # --comment-id <databaseId>` needs the databaseId, not the node-id.
+    # `isResolved` (per thread) and `reactions` (per comment) were added for
+    # fk-khcrhm: gating con-voyage LOW-finding repair on a human reaction or
+    # thread reply (see the finding-trigger scan below) needs both, and
+    # reusing this already-fetched query avoids a second per-comment REST
+    # round-trip just to read reactions (GraphQL review-thread comments don't
+    # carry reactions by default).
     # shellcheck disable=SC2016
-    _GQL_REVIEW_THREADS='query($owner:String!,$repo:String!,$num:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$num){reviewThreads(first:100){nodes{comments(first:100){nodes{id databaseId path line author{login} body}}}}}}}'
+    _GQL_REVIEW_THREADS='query($owner:String!,$repo:String!,$num:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$num){reviewThreads(first:100){nodes{isResolved comments(first:100){nodes{id databaseId path line author{login} body reactions(first:50){nodes{content user{login}}}}}}}}}}'
     review_threads_json=$("$GH" api graphql \
       -f query="$_GQL_REVIEW_THREADS" \
       -F owner="$owner" \
@@ -1657,6 +1725,26 @@ QUESTION_MARK_RE = re.compile(
 def is_question(body):
     return bool(QUESTION_MARK_RE.search(body or ""))
 
+# fk-khcrhm (operator directive 2026-10-13): con-voyages OWN inline findings
+# (posted by a separate, possibly-not-yet-landed sibling beads publisher)
+# must never auto-trigger PR repair just by existing -- a LOW finding is
+# addressed only when a human reacts or replies (see the finding-trigger scan
+# below the inline-thread loop). The shared contract marker is the ONLY
+# identifier for a finding thread (never the `[rig/agent — lens]` identity
+# line alone, which a human could coincidentally echo) -- severity/id/lane are
+# parsed straight out of it so this stays authoritative even if the identity
+# lines prose ever drifts.
+CV_FINDING_MARKER_RE = re.compile(
+    r"<!--\s*cv-finding\s+v1\s+id=(?P<id>\S+)\s+severity=(?P<severity>blocking|low)\s+lane=(?P<lane>\S+)\s*-->",
+    re.IGNORECASE,
+)
+
+def parse_cv_finding(body):
+    m = CV_FINDING_MARKER_RE.search(body or "")
+    if not m:
+        return None
+    return {"id": m.group("id"), "severity": m.group("severity").lower(), "lane": m.group("lane")}
+
 # ONE shared classifier used by all three scan loops below (reviews, issue
 # comments, inline review-thread comments). fk-9xyo4/PR#160 recurred TWICE
 # because each loop carried its own hand-copied is_bot/is_ai_reviewer_bot/
@@ -1670,6 +1758,12 @@ def is_question(body):
 # applies its own type-specific empty-body/PENDING rules on top of a None
 # result).
 def classify_suppression(author, body, state):
+    if parse_cv_finding(body) is not None:
+        # Never routed as ordinary human feedback by itself, BLOCKING or LOW
+        # alike -- BLOCKINGs are already owned by the internal review loop,
+        # and a LOW only ever routes via the dedicated finding-trigger scan
+        # below (human reaction/reply), never from this loop.
+        return "cv_finding"
     if is_slash_command(body):
         return "slash_command"
     if is_ai_reviewer_bot(author):
@@ -1774,6 +1868,8 @@ for review in pr_data.get("reviews", []):
     reason = classify_suppression(author, body, state)
     if reason:
         log_suppression("review", nid, author, reason)
+        if reason == "cv_finding":
+            new_ids.add(nid)  # same unbounded-relog guard as doomer_ack_thread_closed below
         continue
     if state == "PENDING":
         continue
@@ -1798,6 +1894,8 @@ for comment in pr_data.get("comments", []):
     reason = classify_suppression(author, body, "")
     if reason:
         log_suppression("comment", nid, author, reason)
+        if reason == "cv_finding":
+            new_ids.add(nid)
         continue
     if not body.strip():
         continue
@@ -1819,6 +1917,18 @@ for thread in pr_data.get("reviewThreads", []):
     # reviews/issue-comments loops, which see single items with no thread
     # context at all).
     agent_replied_in_thread = False
+    # fk-khcrhm: a reply to a con-voyage finding is ordinary-looking prose
+    # (e.g. "please fix this") and carries no cv-finding marker of its own, so
+    # classify_suppression(body) alone cannot recognize it -- only the OTHER
+    # comment in the same thread (the finding itself) carries the marker.
+    # Without this, that reply is dispatched BOTH by the dedicated
+    # finding-trigger scan below AND by this ordinary loop. Once any comment
+    # in the thread is a finding, the whole threads dispatch is owned by the
+    # finding-trigger scan -- suppress every comment in it here.
+    thread_is_finding = any(
+        parse_cv_finding(c.get("body", "") or "") is not None
+        for c in thread.get("comments", {}).get("nodes", []) or []
+    )
     for comment in thread.get("comments", {}).get("nodes", []):
         nid = str(comment.get("id") or "").strip()
         author = comment.get("author", {}).get("login", "")
@@ -1827,7 +1937,9 @@ for thread in pr_data.get("reviewThreads", []):
             agent_replied_in_thread = True
         if not nid or nid in seen_ids:
             continue
-        if (
+        if thread_is_finding:
+            reason = "cv_finding"
+        elif (
             agent_replied_in_thread
             and is_ai_reviewer_bot(author)
             and has_adversary_ack_marker(body)
@@ -1839,7 +1951,7 @@ for thread in pr_data.get("reviewThreads", []):
             reason = classify_suppression(author, body, "")
         if reason:
             log_suppression("inline", nid, author, reason)
-            if reason == "doomer_ack_thread_closed":
+            if reason in ("doomer_ack_thread_closed", "cv_finding"):
                 # fk-yztb54 BLOCKING-1: this suppression is durably appended
                 # to suppression_log_file above. Without also marking nid
                 # seen here, this monitor (a periodic poller against the same
@@ -1870,6 +1982,92 @@ for thread in pr_data.get("reviewThreads", []):
         })
         new_ids.add(nid)
 
+# --- con-voyage finding triggers (fk-khcrhm) -------------------------------
+# A LOW finding comment (recognized above by CV_FINDING_MARKER_RE and ALWAYS
+# suppressed from ordinary routing) is only ever acted on when a human either
+# thumbs-ups it or replies in its thread. This is a SEPARATE pass over the
+# same reviewThreads data (not folded into the suppression walk above)
+# because a reaction can arrive on a poll AFTER the finding comment nid is
+# already marked seen -- the trigger-vs-comment dedup lifecycles are
+# independent (a finding comment is marked seen once; a given reaction or
+# reply is dispatched at most once, separately, tracked by the caller in its
+# own small state file). Access control (is this login a human with at least
+# read-collaborator repo access) cannot be decided here -- it needs a live
+# `gh api` call per login -- so this only emits CANDIDATES; the caller
+# verifies access, dedups against its own already-dispatched set, and routes.
+already_dispatched_tokens = set(
+    line.strip() for line in sys.argv[6].splitlines() if line.strip()
+) if len(sys.argv) > 6 else set()
+
+finding_triggers = []
+for thread in pr_data.get("reviewThreads", []):
+    if thread.get("isResolved"):
+        # fk-khcrhm requirement 5: once a human resolves the thread, ignore
+        # it entirely -- a stale reaction/reply must never re-dispatch after
+        # the human has already closed the conversation.
+        continue
+    nodes = thread.get("comments", {}).get("nodes", []) or []
+    finding = None
+    finding_comment = None
+    for c in nodes:
+        info = parse_cv_finding(c.get("body", "") or "")
+        if info:
+            finding = info
+            finding_comment = c
+            break
+    if not finding or finding["severity"] != "low":
+        continue
+    db_id = finding_comment.get("databaseId")
+    comment_id = "" if db_id is None else str(db_id)
+    if not comment_id:
+        continue
+    path = finding_comment.get("path") or ""
+    line_no = finding_comment.get("line")
+    line_str = "" if line_no is None else str(line_no)
+
+    # Trigger A: a THUMBS_UP reaction on the finding comment itself, from
+    # anyone who is not a bot (access is verified by the caller). Dedup token
+    # is per (finding, login) -- a SECOND different person reacting is a
+    # SEPARATE, independently-routable trigger.
+    for r in (finding_comment.get("reactions", {}) or {}).get("nodes", []) or []:
+        if (r.get("content") or "").upper() != "THUMBS_UP":
+            continue
+        login = (r.get("user") or {}).get("login", "")
+        if not login or is_bot(login):
+            continue
+        token = "cvfind:%s:reaction:%s" % (finding["id"], login)
+        if token in already_dispatched_tokens:
+            continue
+        finding_triggers.append({
+            "finding_id": finding["id"], "lane": finding["lane"],
+            "comment_id": comment_id, "path": path, "line": line_str,
+            "trigger_type": "reaction", "login": login,
+            "text": "\U0001F44D reaction", "dedup_token": token,
+        })
+
+    # Trigger B: a plain (non-agent, non-bot, non-finding) reply anywhere else
+    # in the SAME thread. Dedup token is the replys own node-id, so a later
+    # SECOND reply in the thread is its own independent trigger.
+    for c in nodes:
+        if c is finding_comment:
+            continue
+        body = c.get("body", "") or ""
+        if not body.strip():
+            continue
+        author = (c.get("author") or {}).get("login", "")
+        if is_bot(author) or is_agent_comment(body) or is_slash_command(body) or parse_cv_finding(body):
+            continue
+        reply_nid = str(c.get("id") or "")
+        token = "cvfind:%s:reply:%s" % (finding["id"], reply_nid)
+        if token in already_dispatched_tokens:
+            continue
+        finding_triggers.append({
+            "finding_id": finding["id"], "lane": finding["lane"],
+            "comment_id": comment_id, "path": path, "line": line_str,
+            "trigger_type": "reply", "login": author,
+            "text": body[:500], "dedup_token": token,
+        })
+
 # Emit results
 if not found:
     print("NONE")
@@ -1877,13 +2075,15 @@ else:
     # Stable order: new items first (their relative order from the API)
     print(json.dumps(found))
 
+print("FINDING_TRIGGERS:" + json.dumps(finding_triggers))
+
 # Always emit updated seen-IDs set (existing + newly routed) on a sentinel
 # line so the shell can persist it without a second python invocation.
 all_ids = seen_ids | new_ids
 print("SEEN_IDS:" + "\n".join(sorted(all_ids)))
 '
     suppression_log_file="${CV_STATE_DIR}/${state_key}.suppressions.log"
-    new_comments=$(printf '%s' "$pr_comments_json" | python3 -c "$_PY_SCAN_COMMENTS" "$seen_ids_content" "$CV_AGENT_PREFIX_PATTERN" "$full_repo" "$pr_number" "$suppression_log_file") || {
+    new_comments=$(printf '%s' "$pr_comments_json" | python3 -c "$_PY_SCAN_COMMENTS" "$seen_ids_content" "$CV_AGENT_PREFIX_PATTERN" "$full_repo" "$pr_number" "$suppression_log_file" "$finding_seen_content") || {
       echo "con-voyage-pr-watch: [PART B] WARNING: comment parsing failed for ${full_repo}#${pr_number}" >&2
       continue
     }
@@ -1891,6 +2091,84 @@ print("SEEN_IDS:" + "\n".join(sorted(all_ids)))
     # Split python3 output into the result and the SEEN_IDS block
     result_line=$(printf '%s\n' "$new_comments" | grep -v '^SEEN_IDS:' | head -1)
     updated_seen_ids=$(printf '%s\n' "$new_comments" | awk '/^SEEN_IDS:/{found=1; sub(/^SEEN_IDS:/,""); print; next} found{print}')
+    finding_triggers_line=$(printf '%s\n' "$new_comments" | grep '^FINDING_TRIGGERS:' | head -1 | sed 's/^FINDING_TRIGGERS://')
+
+    # ---------------------------------------------------------------------
+    # fk-khcrhm: dispatch any human-triggered LOW-finding repairs. This is
+    # INDEPENDENT of the ordinary found/NONE branch below it (a cycle can
+    # have a finding trigger and zero ordinary human comments, or vice
+    # versa), so it must run before the "nothing new -> continue" early-out.
+    # Field order per record (one \x1f-joined line per candidate, emitted by
+    # the python one-liner below): dedup_token, login, trigger_type,
+    # finding_id, lane, comment_id, path, line, base64(text).
+    # ---------------------------------------------------------------------
+    ft_newly_dispatched=""
+    # shellcheck disable=SC2016
+    _PY_EMIT_FINDING_TRIGGER_RECORDS='
+import sys, json, base64
+items = json.loads(sys.argv[1] or "[]")
+for it in items:
+    text_b64 = base64.b64encode((it.get("text", "") or "").encode("utf-8")).decode("ascii")
+    fields = [
+        it.get("dedup_token", ""), it.get("login", ""), it.get("trigger_type", ""),
+        it.get("finding_id", ""), it.get("lane", ""), it.get("comment_id", ""),
+        it.get("path", ""), it.get("line", ""), text_b64,
+    ]
+    print("\x1f".join(fields))
+'
+    while IFS=$'\x1f' read -r ft_token ft_login ft_type ft_finding_id ft_lane ft_comment_id ft_path ft_line ft_text_b64; do
+      [ -n "$ft_token" ] || continue
+      if ! cv_pr_watch_human_has_access "$full_repo" "$ft_login"; then
+        echo "con-voyage-pr-watch: [PART B] ${full_repo}#${pr_number}: SUPPRESS finding-trigger ${ft_token} (login='${ft_login}' is a bot or lacks repo access) — not routing" >&2
+        continue
+      fi
+      ft_text="$(printf '%s' "$ft_text_b64" | base64 -d 2>/dev/null)"
+      ft_loc=""
+      if [ -n "$ft_path" ]; then
+        ft_loc=" @ ${ft_path}"
+        [ -n "$ft_line" ] && ft_loc="${ft_loc}:${ft_line}"
+      fi
+      case "$ft_type" in
+        reaction)
+          ft_summary="  [finding] @${ft_login} gave a 👍 reaction on LOW finding ${ft_finding_id} (lane ${ft_lane})${ft_loc}  [reply-thread comment-id:${ft_comment_id}]"
+          ;;
+        reply)
+          ft_summary="  [finding] @${ft_login} replied on LOW finding ${ft_finding_id} (lane ${ft_lane})${ft_loc}: ${ft_text:0:300}  [reply-thread comment-id:${ft_comment_id}]"
+          ;;
+        *)
+          continue
+          ;;
+      esac
+      ft_title="Human-triggered LOW finding repair on ${full_repo}#${pr_number}: ${head_ref}"
+      ft_body="$(cv_build_pr_feedback_body "$pr_url" "$head_ref" "$ft_summary" \
+        "cv-finding-${full_repo//\//_}-${pr_number}-${ft_finding_id}-${ft_type}-${ft_login}" "cv_finding_trigger")" || {
+        echo "con-voyage-pr-watch: [PART B] WARNING: could not build a trustworthy fenced body for finding-trigger ${ft_finding_id} on ${full_repo}#${pr_number}; skipping this cycle" >&2
+        continue
+      }
+      if ft_sling_out="$(printf '%s\n\n%s\n' "$ft_title" "$ft_body" \
+        | "$GC" --city "$GC_CITY" sling "$route_target" --stdin 2>&1)"; then
+        echo "con-voyage-pr-watch: [PART B] ${full_repo}#${pr_number}: routed finding-trigger ${ft_finding_id} (${ft_type} by ${ft_login}) to ${route_target}"
+        [ -z "$ft_sling_out" ] || printf '%s\n' "$ft_sling_out"
+        ft_newly_dispatched="${ft_newly_dispatched}${ft_token}
+"
+      elif [ "$route_target" != "$pool_route_target" ]; then
+        echo "con-voyage-pr-watch: [PART B] WARNING: gc sling to recorded implementor ${route_target} failed for finding-trigger ${ft_finding_id} (${ft_sling_out}) — falling back to pool route ${pool_route_target}" >&2
+        if ft_sling_out="$(printf '%s\n\n%s\n' "$ft_title" "$ft_body" \
+          | "$GC" --city "$GC_CITY" sling "$pool_route_target" --stdin 2>&1)"; then
+          echo "con-voyage-pr-watch: [PART B] ${full_repo}#${pr_number}: routed finding-trigger ${ft_finding_id} to pool fallback ${pool_route_target}"
+          ft_newly_dispatched="${ft_newly_dispatched}${ft_token}
+"
+        else
+          echo "con-voyage-pr-watch: [PART B] WARNING: gc sling also failed for pool route ${pool_route_target} for finding-trigger ${ft_finding_id} (${ft_sling_out}); will retry next cycle" >&2
+        fi
+      else
+        echo "con-voyage-pr-watch: [PART B] WARNING: gc sling failed for finding-trigger ${ft_finding_id} (${ft_sling_out}); will retry next cycle" >&2
+      fi
+    done < <(python3 -c "$_PY_EMIT_FINDING_TRIGGER_RECORDS" "$finding_triggers_line" 2>/dev/null)
+
+    if [ -n "$ft_newly_dispatched" ]; then
+      { [ -f "$finding_seen_file" ] && cat "$finding_seen_file"; printf '%s' "$ft_newly_dispatched"; } | save_seen_ids "$finding_seen_file"
+    fi
 
     if [ "$result_line" = "NONE" ] || [ -z "$result_line" ]; then
       echo "con-voyage-pr-watch: [PART B] ${full_repo}#${pr_number}: no new human comments"

@@ -17,6 +17,15 @@
 # #                                                                          #
 # # Corollary: raw `gh pr comment` / `gh pr review` / `gh pr create` are     #
 # # FORBIDDEN in every con-voyage worker path. Use this script instead.      #
+# #                                                                          #
+# # fk-khcrhm: agents NEVER add GitHub reactions (👍 or otherwise). There is #
+# # no "react" subcommand here, deliberately -- every agent posts under the  #
+# # operator's own PAT/login, so an agent-added reaction would be            #
+# # indistinguishable from a genuine human one, defeating the only thing     #
+# # that makes an operator-login 👍 a trustworthy "a human approved this"    #
+# # signal to con-voyage-pr-watch.sh's finding-trigger gate. The subcommand   #
+# # dispatch below already fails closed on anything not in its known list,   #
+# # so attempting one is refused before `gh` is ever invoked.                #
 # ############################################################################
 #
 # Usage:

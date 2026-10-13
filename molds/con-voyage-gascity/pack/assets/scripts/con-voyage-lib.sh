@@ -1313,6 +1313,18 @@ cv_build_pr_feedback_body() {
       content_label="untrusted data recorded by cv-reopen-findings.sh from a mayor-provided finding"
       route_label="Routing from cv-reopen-findings (idempotency: ${idempotency_key})"
       ;;
+    cv_finding_trigger)
+      # fk-khcrhm: a human either reacted 👍 or replied on one of con-voyage's
+      # OWN inline LOW findings (a separate, possibly-not-yet-landed sibling
+      # bead's publisher output), which is the operator-directed signal that
+      # this specific finding should now be addressed. The response MUST land
+      # in that exact review thread, never as a root PR comment — a human
+      # resolves the GraphQL thread, not this worker.
+      intro_line="A human triggered repair of a con-voyage LOW finding on PR ${pr_url} (branch: ${head_ref})."
+      instruction_line="Address this LOW finding using TDD on branch '${head_ref}'. Push the fix — do NOT merge. Reply ONLY via cv-pr-comment.sh reply-thread on the comment-id named below — NEVER a root-level PR comment — and do NOT resolve the review thread yourself (a human resolves it)."
+      content_label="untrusted data copied verbatim from a GitHub reaction/reply on con-voyage's own inline finding comment"
+      route_label="Routing from con-voyage-pr-watch finding-trigger scan (idempotency: ${idempotency_key})"
+      ;;
     *)
       intro_line="New human review feedback on PR ${pr_url} (branch: ${head_ref})."
       instruction_line="Please read and respond to the following comments. Address any requested changes on the branch '${head_ref}' using TDD. Push the fix — do NOT merge."
