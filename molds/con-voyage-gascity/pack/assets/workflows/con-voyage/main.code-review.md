@@ -13,6 +13,8 @@ Focus areas:
   boundaries, appropriate use of the standard library
 - Maintainability: function/method size, cyclomatic complexity, missing or
   misleading comments on non-obvious logic, test coverage of new paths
+- Comment discipline: any unwarranted new comment — one that narrates what the
+  code does rather than a non-obvious WHY — is BLOCKING, not a style nit
 - Architecture: encapsulation, dependency direction, interface boundaries, whether
   the change fits the existing design without creating accidental coupling
 
