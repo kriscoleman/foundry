@@ -65,6 +65,11 @@ if [ -z "${CV_PR_REPLY_INTEGRITY_REMINDER:-}" ]; then
   exit 2
 fi
 
+if [ -z "${CV_COMMENT_POLICY_REMINDER:-}" ]; then
+  echo "FATAL: CV_COMMENT_POLICY_REMINDER is not defined by ${LIB}" >&2
+  exit 2
+fi
+
 FAILURES=0
 start_case() { echo; echo "=== CASE: $1 ==="; }
 
@@ -88,19 +93,38 @@ start_case "every formula-dispatched workflow node carries the communal-duty rem
 # graph, not a hand-maintained list — so a new node added later without the
 # reminder fails here instead of shipping a blind spot.
 node_count=0
+comment_policy_node_count=0
 for formula in "${MOLD_DIR}"/pack/formulas/*.toml; do
   formula_dir="$(dirname "$formula")"
   while IFS= read -r rel_path; do
     [ -n "$rel_path" ] || continue
     node_count=$((node_count+1))
-    assert_contains "${formula_dir}/${rel_path}" "$CV_COMMUNAL_DUTY_REMINDER" \
+    node_path="${formula_dir}/${rel_path}"
+    assert_contains "$node_path" "$CV_COMMUNAL_DUTY_REMINDER" \
       "$(basename "$formula"): $(basename "$rel_path") (communal duty)"
-    assert_contains "${formula_dir}/${rel_path}" "$CV_SHELL_SAFETY_REMINDER" \
+    assert_contains "$node_path" "$CV_SHELL_SAFETY_REMINDER" \
       "$(basename "$formula"): $(basename "$rel_path") (shell safety)"
-    assert_contains "${formula_dir}/${rel_path}" "$CV_NO_INTERACTIVE_PROMPT_REMINDER" \
+    assert_contains "$node_path" "$CV_NO_INTERACTIVE_PROMPT_REMINDER" \
       "$(basename "$formula"): $(basename "$rel_path") (no interactive prompts)"
+    # The comment policy is only for code-writing steps, not review-only
+    # lanes — a node that commits to the worktree (`git commit -m`) is a
+    # code-writing step by construction, so this discovers the set the same
+    # way node_count discovers nodes: from file content, not a hand-maintained
+    # list, catching a new code-writing node the same way a new node is
+    # already caught above.
+    if grep -qF 'git commit -m' "$node_path" 2>/dev/null; then
+      comment_policy_node_count=$((comment_policy_node_count+1))
+      assert_contains "$node_path" "$CV_COMMENT_POLICY_REMINDER" \
+        "$(basename "$formula"): $(basename "$rel_path") (comment policy)"
+    fi
   done < <(grep -oE 'description_file *= *"[^"]+"' "$formula" | sed -E 's/description_file *= *"([^"]+)"/\1/')
 done
+
+if [ "$comment_policy_node_count" -eq 0 ]; then
+  echo "FATAL: discovered zero code-writing (git commit -m) nodes across pack/formulas/*.toml — detector broken?" >&2
+  exit 2
+fi
+echo "  (checked ${comment_policy_node_count} code-writing workflow nodes for the comment policy)"
 
 if [ "$node_count" -eq 0 ]; then
   echo "FATAL: discovered zero description_file entries across pack/formulas/*.toml — parser broken?" >&2

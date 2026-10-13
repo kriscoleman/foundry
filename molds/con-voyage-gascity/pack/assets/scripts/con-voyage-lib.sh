@@ -1040,14 +1040,7 @@ CV_SHELL_SAFETY_REMINDER='This Bash tool runs whichever shell the operator has c
 # same reminder tells every other worker to mail instead.
 CV_NO_INTERACTIVE_PROMPT_REMINDER='This session runs headless — nobody is watching a terminal, so an interactive prompt tool (for example AskUserQuestion) blocks the session forever with no one able to answer it. Never call an interactive prompt tool. When a real decision is needed, mail the mayor (`gc mail`) with the question, then either wait for a reply or close the bead as blocked with the open question recorded in the close reason.'
 
-# ---------------------------------------------------------------------------
-# Code-comment policy reminder (operator directive 2026-10-13, fk-qc3yua):
-# con-voyage workers left far too many code comments. Distributed the same
-# way as CV_COMMUNAL_DUTY_REMINDER/CV_SHELL_SAFETY_REMINDER above, to every
-# code-writing step (main.build.md, main.apply-review-findings.md,
-# main.ci-repair.md) and to the routed PR-feedback bead body
-# (cv_build_pr_feedback_body) — tests/cv-comment-policy.test.sh diffs them
-# against it.
+# distributed like CV_COMMUNAL_DUTY_REMINDER above
 CV_COMMENT_POLICY_REMINDER='Code comment policy: default to NO new comments. Add one only when the code does something exceedingly special or unexpected that is NOT obvious from the code itself — the WHY, never the WHAT. Never add a comment that narrates what the code does, restates a name, labels a section, logs a changelog/"fixed X"/review-round/bead-ID note, or leaves a TODO. When you edit a line, do not add a comment to it. Leave existing comments alone unless they become wrong.'
 
 # ---------------------------------------------------------------------------
