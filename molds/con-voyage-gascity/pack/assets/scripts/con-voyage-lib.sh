@@ -1353,6 +1353,58 @@ ${route_label}
 BODY
 }
 
+# cv_render_pr_verdict_section / cv_set_pr_verdict_section (fk-db9yc3):
+# the "Con-voyage review verdict: <verdict>" section publish.md and
+# rereview-finalize write into a PR body used to be a loud H2 heading +
+# roster paragraph + numbered LOW list + "Not auto-merged" line, inline in
+# the PR body at full visibility. Collapse it into a single <details> block
+# (verdict word stays in the <summary> so it is visible collapsed) without
+# changing any of that content. The two markers below bound the block so a
+# later round replaces it in place instead of appending a duplicate.
+CV_PR_VERDICT_MARKER_START="<!-- con-voyage-pr-verdict:start -->"
+CV_PR_VERDICT_MARKER_END="<!-- con-voyage-pr-verdict:end -->"
+
+cv_render_pr_verdict_section() {
+  local verdict="$1" content="$2"
+  cat <<SECTION
+${CV_PR_VERDICT_MARKER_START}
+<details>
+<summary>Con-voyage review verdict: ${verdict}</summary>
+
+${content}
+
+</details>
+${CV_PR_VERDICT_MARKER_END}
+SECTION
+}
+
+# cv_set_pr_verdict_section BODY VERDICT CONTENT — returns BODY with its
+# verdict <details> block set to render(VERDICT, CONTENT): replaces the
+# existing marked block in place if one is present (a later round updating
+# the same PR body), otherwise appends the block once. Never produces more
+# than one marked block.
+cv_set_pr_verdict_section() {
+  local body="$1" verdict="$2" content="$3"
+  local section
+  section="$(cv_render_pr_verdict_section "$verdict" "$content")"
+  python3 -c '
+import re
+import sys
+
+body = sys.argv[1]
+section = sys.argv[2].strip("\n")
+start = "<!-- con-voyage-pr-verdict:start -->"
+end = "<!-- con-voyage-pr-verdict:end -->"
+pattern = re.compile(re.escape(start) + r".*?" + re.escape(end), re.DOTALL)
+if pattern.search(body):
+    new_body = pattern.sub(lambda m: section, body, count=1)
+else:
+    sep = "\n\n" if body.strip() else ""
+    new_body = body.rstrip("\n") + sep + section
+sys.stdout.write(new_body.rstrip("\n") + "\n")
+' "$body" "$section"
+}
+
 # shellcheck disable=SC2034  # ST_* globals are consumed by the sourcing
 # scripts (con-voyage-pr-watch.sh, con-voyage-repair-watchdog.sh), invisible
 # to shellcheck when this file is checked standalone (same posture as
