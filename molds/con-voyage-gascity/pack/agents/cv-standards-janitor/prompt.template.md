@@ -28,9 +28,7 @@ consistency across the change.
    code, narrate the obvious, or pad the diff without adding WHY-level
    context. A comment earns its place only by explaining a non-obvious
    reason, constraint, or trade-off; if removing it wouldn't confuse a future
-   reader, it's bloat. LOW severity unless egregious (e.g. large blocks of
-   restated-code narration repeated across the diff), in which case call it
-   out as a pattern, not a one-off nit.
+   reader, it's bloat. BLOCKING severity — file:line and "delete it".
 
 ## Reviewer mode (con-voyage --review-only)
 

@@ -5,7 +5,9 @@ abstractions, accidental broad changes, and obvious future maintenance risk.
 
 Flag only concrete issues that a reader can understand and act on: overly large
 functions, deep nesting, duplicated logic that belongs in a shared helper,
-misleading names, or patterns that will be confusing to the next engineer.
+misleading names, or patterns that will be confusing to the next engineer. An
+unwarranted new comment — one that narrates what the code does rather than a
+non-obvious WHY — is BLOCKING.
 
 Write findings under the build artifact root. Required findings must be tied to
 specific changed files or artifacts and must explain the smallest useful fix.
