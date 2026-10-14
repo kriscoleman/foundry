@@ -171,7 +171,32 @@ case "$sub" in
       fi
       exit 0
     fi
-    # bd close / bd update — generic accept, still logged above for assertions.
+    if [ "$bdsub" = "close" ]; then
+      close_id="${args[$((i+2))]:-}"
+      # STUB_BD_CLOSE_FAIL=1 fails every `bd close` call (fk-6rj8zo CASE 24).
+      # STUB_BD_CLOSE_FAIL_ID=<id> fails only that one id's close, letting
+      # other beads in the same run close normally. Neither message matches
+      # close_if_open's assignee-mismatch retry text, so a FORCE call site
+      # never silently recovers via its own --force retry.
+      if [ "${STUB_BD_CLOSE_FAIL:-0}" = "1" ] \
+        || { [ -n "${STUB_BD_CLOSE_FAIL_ID:-}" ] && [ "$close_id" = "${STUB_BD_CLOSE_FAIL_ID}" ]; }; then
+        echo "gc bd close: failed (simulated)" >&2
+        exit 1
+      fi
+      exit 0
+    fi
+    if [ "$bdsub" = "list" ]; then
+      # STUB_BDLIST_JSON: raw JSON array to return for `bd list`, as the real
+      # `--json` output shape ([{"id":...,"status":...}, ...]). Default: an
+      # empty list (no orphans found).
+      if [ -n "${STUB_BDLIST_JSON:-}" ]; then
+        printf '%s' "$STUB_BDLIST_JSON"
+      else
+        printf '[]'
+      fi
+      exit 0
+    fi
+    # bd update — generic accept, still logged above for assertions.
     exit 0
     ;;
   sling)
@@ -1029,6 +1054,141 @@ for ((t = 1; t <= TRIALS23; t++)); do
     fail "at most one run logs the stale-lock steal NOTICE (expected <=1, got ${notice_count_230})"
   fi
 done
+
+# ===========================================================================
+# CASE 24 — fk-6rj8zo DEFECT 1: close_if_open on the tracked bead fails
+#   (times out / errors). The old bead stays open, so minting and slinging a
+#   replacement this cycle would give the PR two simultaneously-live repair
+#   lineages (SEEN LIVE: replicatedhq/vandoor#10644, 4 live ci-repair
+#   workers on one PR). The fix must skip minting/slinging entirely and
+#   leave the attempt counter untouched so the close is retried next cycle.
+# ===========================================================================
+start_case "24: DEFECT 1 — a failed supersede close skips minting, not a second lineage"
+setup_case_env "24"
+write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-240" \
+  "gc__impl-rc-dead" "wd-bead240" "merge_conflict" "kriscoleman" "vandoor/gc.implementation-worker" \
+  "kriscoleman/foundry" "240" "fix/thing" "0" "0"
+run_script "${DEFAULT_ENV[@]}" STUB_BDSHOW_MAP="wd-bead240|open|$(iso_ago 30)" \
+  STUB_SESSION_LIST_JSON='{"sessions":[]}' STUB_BD_CLOSE_FAIL="1"
+assert_eq "0" "$RC" "script exits 0 (a failed supersede close is non-fatal to the whole run)"
+assert_log_count "$GC_LOG" 'bd create' 0 "no fallback bead is minted when the supersede close failed"
+assert_log_count "$GC_LOG" 'sling' 0 "no re-dispatch when the supersede close failed"
+assert_eq "wd-bead240" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-240" "inflight_rework")" "the tracked bead id is unchanged — nothing to replace it with"
+assert_eq "0" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-240" "attempt_count")" "attempt_count is left untouched — this was not a real attempt"
+if printf '%s' "$OUT" | grep -q 'WARNING.*did not complete'; then
+  pass "logs a WARNING naming the failed supersede"
+else
+  fail "expected a WARNING for the failed supersede close"
+fi
+
+# ===========================================================================
+# CASE 25 — fk-6rj8zo DEFECT 2: an orphaned duplicate repair bead for the
+#   SAME PR (tagged with this dedup_key, but not the one tracked in the
+#   state record — e.g. left behind by an earlier cycle's close failure)
+#   must be force-closed before a fresh fallback bead is minted, and the
+#   fresh bead must be tagged with the dedup_key so a LATER cycle's sweep
+#   can find it too.
+# ===========================================================================
+start_case "25: DEFECT 2 — an orphaned duplicate repair bead is force-closed before minting"
+setup_case_env "25"
+write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-250" \
+  "gc__impl-rc-dead" "wd-bead250" "merge_conflict" "kriscoleman" "vandoor/gc.implementation-worker" \
+  "kriscoleman/foundry" "250" "fix/thing" "0" "0"
+run_script "${DEFAULT_ENV[@]}" STUB_BDSHOW_MAP="wd-bead250|open|$(iso_ago 30)" \
+  STUB_SESSION_LIST_JSON='{"sessions":[]}' STUB_BD_CREATE_ID="wd-bead250b" \
+  STUB_BDLIST_JSON='[{"id":"wd-orphan250","status":"open"},{"id":"wd-bead250","status":"open"}]'
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd close wd-bead250 .*superseded: watchdog reassigning' 1 "the tracked bead is superseded as usual"
+assert_log_count "$GC_LOG" 'bd close wd-orphan250 .*orphaned duplicate repair bead.*dedup_key=cv-ci-repair-kriscoleman-foundry-250' 1 "the orphaned duplicate (not the tracked bead) is force-closed, tagged with its dedup_key in the reason"
+assert_log_count "$GC_LOG" 'bd close wd-bead250 .*orphaned duplicate' 0 "the already-tracked bead is never double-closed via the orphan-sweep path (self-skip)"
+assert_log_count "$GC_LOG" '\-\-rig vandoor bd create' 1 "a fresh fallback bead is still minted after the sweep"
+assert_log_count "$GC_LOG" 'bd update wd-bead250b --set-metadata gc.repair_dedup_key=cv-ci-repair-kriscoleman-foundry-250' 1 "the freshly-minted bead is tagged with its dedup_key"
+assert_log_count "$GC_LOG" 'sling vandoor/gc.implementation-worker wd-bead250b --on con-voyage-ci-repair' 1 "the re-dispatch still fires normally after the sweep"
+
+# ===========================================================================
+# CASE 26 — fk-6rj8zo DEFECT 2 fail-safe: a `bd list` failure/garbage
+#   response while sweeping for orphans must never block the real
+#   re-dispatch — it is logged and the normal mint/sling proceeds exactly as
+#   if no orphan existed.
+# ===========================================================================
+start_case "26: DEFECT 2 fail-safe — a bd list failure during the orphan sweep never blocks re-dispatch"
+setup_case_env "26"
+write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-260" \
+  "gc__impl-rc-dead" "wd-bead260" "merge_conflict" "kriscoleman" "vandoor/gc.implementation-worker" \
+  "kriscoleman/foundry" "260" "fix/thing" "0" "0"
+run_script "${DEFAULT_ENV[@]}" STUB_BDSHOW_MAP="wd-bead260|open|$(iso_ago 30)" \
+  STUB_SESSION_LIST_JSON='{"sessions":[]}' STUB_BD_CREATE_ID="wd-bead260b" \
+  STUB_BDLIST_JSON='not valid json {{{'
+assert_eq "0" "$RC" "script exits 0 (garbage bd list output does not crash the run)"
+assert_log_count "$GC_LOG" '\-\-rig vandoor bd create' 1 "the fallback mint still happens despite an unparsable orphan-sweep response"
+assert_log_count "$GC_LOG" 'sling vandoor/gc.implementation-worker wd-bead260b --on con-voyage-ci-repair' 1 "the re-dispatch still fires"
+
+# ===========================================================================
+# CASE 27 — fk-6rj8zo DEFECT 3: a tracked bead with NO known implementor
+#   that is still UNCLAIMED (bd status "open") and only past CV_STALL_SECONDS
+#   (not CV_UNCLAIMED_STALL_SECONDS) must NOT be treated as stalled — claim
+#   latency under pool contention is expected and gets the more generous
+#   threshold.
+# ===========================================================================
+start_case "27: DEFECT 3 — an unclaimed bead past CV_STALL_SECONDS but under CV_UNCLAIMED_STALL_SECONDS is not stalled"
+setup_case_env "27"
+write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-270" \
+  "" "wd-bead270" "blocked" "kriscoleman" "vandoor/gc.implementation-worker" \
+  "kriscoleman/foundry" "270" "fix/thing" "0" "0"
+run_script "${DEFAULT_ENV[@]}" STUB_BDSHOW_MAP="wd-bead270|open|$(iso_ago 1200)"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd create' 0 "no fallback bead — 1200s is past CV_STALL_SECONDS (900) but under the default CV_UNCLAIMED_STALL_SECONDS (1800) for an unclaimed bead"
+assert_log_count "$GC_LOG" 'bd close' 0 "no supersede either"
+assert_eq "0" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-270" "attempt_count")" "attempt_count stays 0"
+
+# ===========================================================================
+# CASE 28 — fk-6rj8zo DEFECT 3: the SAME unclaimed bead, now past
+#   CV_UNCLAIMED_STALL_SECONDS, IS treated as stalled and re-dispatched.
+# ===========================================================================
+start_case "28: DEFECT 3 — an unclaimed bead past CV_UNCLAIMED_STALL_SECONDS is stalled and re-dispatched"
+setup_case_env "28"
+write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-280" \
+  "" "wd-bead280" "blocked" "kriscoleman" "vandoor/gc.implementation-worker" \
+  "kriscoleman/foundry" "280" "fix/thing" "0" "0"
+run_script "${DEFAULT_ENV[@]}" STUB_BDSHOW_MAP="wd-bead280|open|$(iso_ago 2000)" \
+  STUB_BD_CREATE_ID="wd-bead280b"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd close wd-bead280 .*superseded' 1 "the long-unclaimed bead is superseded"
+assert_log_count "$GC_LOG" 'sling vandoor/gc.implementation-worker wd-bead280b --on con-voyage-ci-repair' 1 "a fresh fallback bead is dispatched"
+assert_eq "1" "$(state_field "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-280" "attempt_count")" "attempt counter increments"
+
+# ===========================================================================
+# CASE 29 — fk-6rj8zo DEFECT 3: a tracked bead with NO known implementor
+#   that WAS claimed (bd status "in_progress") but whose claimant this
+#   watchdog never adopted still uses the SHORTER CV_STALL_SECONDS
+#   threshold — it has a live worker and "no progress" is the real signal,
+#   not claim latency, so it must be treated as stalled sooner than an
+#   unclaimed bead would be at the same age.
+# ===========================================================================
+start_case "29: DEFECT 3 — a claimed-but-unadopted bead uses CV_STALL_SECONDS, not the unclaimed threshold"
+setup_case_env "29"
+write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-290" \
+  "" "wd-bead290" "blocked" "kriscoleman" "vandoor/gc.implementation-worker" \
+  "kriscoleman/foundry" "290" "fix/thing" "0" "0"
+run_script "${DEFAULT_ENV[@]}" STUB_BDSHOW_MAP="wd-bead290|in_progress|$(iso_ago 1200)" \
+  STUB_BD_CREATE_ID="wd-bead290b"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd close wd-bead290 .*superseded' 1 "a claimed-but-unadopted bead at 1200s (> CV_STALL_SECONDS) is treated as stalled"
+assert_log_count "$GC_LOG" 'sling vandoor/gc.implementation-worker wd-bead290b --on con-voyage-ci-repair' 1 "and re-dispatched"
+
+# ===========================================================================
+# CASE 30 — fk-6rj8zo DEFECT 3 symmetry: the same claimed-but-unadopted bead,
+#   still within CV_STALL_SECONDS, is left alone.
+# ===========================================================================
+start_case "30: DEFECT 3 — a claimed-but-unadopted bead within CV_STALL_SECONDS is left alone"
+setup_case_env "30"
+write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-300" \
+  "" "wd-bead300" "blocked" "kriscoleman" "vandoor/gc.implementation-worker" \
+  "kriscoleman/foundry" "300" "fix/thing" "0" "0"
+run_script "${DEFAULT_ENV[@]}" STUB_BDSHOW_MAP="wd-bead300|in_progress|$(iso_ago 500)"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd create' 0 "no re-dispatch — 500s is under CV_STALL_SECONDS (900)"
+assert_log_count "$GC_LOG" 'bd close' 0 "no supersede either"
 
 # ===========================================================================
 # Summary
