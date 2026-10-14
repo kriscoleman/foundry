@@ -45,6 +45,12 @@
 #       [--skip-ids-file <path>] [--diff-lines-file <path>] \
 #       [--city-root <path>]
 #
+# `--rig` is required for review-inline: every finding comment's identity
+# line is `[<rig>/<agent> — <lane>]`, and a missing rig used to silently
+# degrade to the literal string "unknown-rig" rather than failing — an
+# agent-identifying comment landing with a wrong/placeholder identity is
+# worse than refusing to post.
+#
 # `review-inline` submits ONE GitHub review (POST
 # repos/{repo}/pulls/{pr}/reviews, event=COMMENT, commit_id=<head sha>) whose
 # comments[] array has one entry per finding in --findings (a JSON array of
@@ -58,19 +64,29 @@
 # (side defaults to RIGHT). A finding with no `path` is PR-level and is
 # folded into the review's one-line top body instead of comments[]. A
 # finding with a `path` but no `line`, or whose `line` is not present in
-# --diff-lines-file (one `path:line` per line — the PR's actual diff), is
-# posted as a file-level comment (`subject_type: FILE`, no line/side)
-# instead of being dropped — but ONLY when that finding's `path` is itself
-# one of the changed paths derived from --diff-lines-file (the path
-# component of each `path:line` entry). GitHub's create-review endpoint
-# requires every comment's `path`, line-anchored or file-level alike, to be
-# part of the PR diff; a comment on a path that was never confirmed changed
-# 422s the same atomic review a line-anchored out-of-diff comment would.
+# --diff-lines-file (one `path:line:side` per line — the PR's actual diff,
+# `side` being LEFT or RIGHT, matching the diff side GitHub anchors that
+# line on), is posted as a file-level comment (`subject_type: FILE`, no
+# line/side) instead of being dropped — but ONLY when that finding's `path`
+# is itself one of the changed paths derived from --diff-lines-file (the
+# path component of each `path:line:side` entry). GitHub's create-review
+# endpoint requires every comment's `path`, line-anchored or file-level
+# alike, to be part of the PR diff; a comment on a path that was never
+# confirmed changed 422s the same atomic review a line-anchored
+# out-of-diff comment would. A finding's own `line` only counts as "in the
+# diff" when its `path:line:side` entry (side defaulting to RIGHT, same as
+# the finding) is present — a line that exists on the opposite side (e.g. a
+# deleted LEFT-side line reused as a RIGHT-side anchor) is not a match.
 # `--diff-lines-file` is optional; when it is omitted, or a finding's path
 # is not among the changed paths it lists, that finding fails safe by
 # folding into the PR-level summary body instead — the same place a
 # path-less finding already goes — rather than risking an unconfirmed path
-# as a file-level comment.
+# as a file-level comment. A `--diff-lines-file` that is present but
+# contains zero entries is rejected outright (die, gh never invoked) rather
+# than silently treated as "confirmed nothing changed" — an empty file more
+# likely means the caller's diff-line generation step failed than that the
+# PR's diff is genuinely empty, and either way the ambiguity is cheaper to
+# reject than to guess.
 #
 # Every finding comment body is, in order: `[<rig>/<agent> — <lane>]
 # **BLOCKING**|**LOW** <title>`, then the finding's own `body` text, then a
@@ -168,6 +184,10 @@
 #                 foundry-kc/gc.implementation-worker). Optional.
 #   CV_CITY_ROOT  Default --city-root when the flag is omitted
 #                 (comment-aggregate only). Optional.
+#   CV_REVIEW_INLINE_RETRY_MAX    Bounded retry attempts for review-inline's
+#                 POST .../reviews call (default: 3). Optional.
+#   CV_REVIEW_INLINE_RETRY_SLEEP  Seconds to sleep before the first retry,
+#                 doubling each subsequent attempt (default: 2). Optional.
 #
 # Exit codes:
 #   0 — posted successfully
@@ -272,6 +292,11 @@ elif [ "$SUBCOMMAND" = "review-inline" ]; then
   [ -n "$COMMIT" ] || { usage; die "--commit is required for review-inline (the head sha reviewed)"; }
   [ -n "$FINDINGS" ] || { usage; die "--findings is required for review-inline"; }
   [ -f "$FINDINGS" ] || die "--findings '${FINDINGS}' does not exist or is not a regular file"
+  # review fk-ppj8bx BLOCKING-1: --rig was documented as required but never
+  # enforced, so a missing --rig silently degraded every finding's identity
+  # line to the literal "unknown-rig" instead of failing. Fail hard before
+  # gh is ever invoked.
+  [ -n "$RIG" ] || { usage; die "--rig is required for review-inline"; }
   if [ -n "$SKIP_IDS_FILE" ]; then
     [ -f "$SKIP_IDS_FILE" ] || die "--skip-ids-file '${SKIP_IDS_FILE}' does not exist or is not a regular file"
   fi
@@ -320,9 +345,44 @@ command -v "$GH" >/dev/null 2>&1 || die "gh CLI not found at '${GH}'. Install gi
 # still cleans up whatever was already created.
 RENDER_PY=""
 RENDERED_FILE=""
+HYGIENE_PY=""
 POSTED_BODY_FILE="$(mktemp "${TMPDIR:-/tmp}/cv-pr-comment-body.XXXXXX")"
-cleanup() { rm -f "$POSTED_BODY_FILE" "$RENDER_PY" "$RENDERED_FILE"; }
+cleanup() { rm -f "$POSTED_BODY_FILE" "$RENDER_PY" "$RENDERED_FILE" "$HYGIENE_PY"; }
 trap cleanup EXIT
+
+# ---------------------------------------------------------------------------
+# Shared hygiene-scan Python (TOKEN_RE + hygiene_rewrite): comment-aggregate
+# and review-inline each render their own standalone Python script, but both
+# need the identical token-shape regex and city-root rewrite — previously
+# copy-pasted verbatim in both heredocs below, which is exactly the kind of
+# duplication that silently drifts (a token pattern added to one copy but not
+# the other). Rendered once here; both heredocs below prepend this file's
+# contents to their own rather than redefining it.
+# ---------------------------------------------------------------------------
+if [ "$SUBCOMMAND" = "comment-aggregate" ] || [ "$SUBCOMMAND" = "review-inline" ]; then
+  HYGIENE_PY="$(mktemp "${TMPDIR:-/tmp}/cv-pr-comment-hygiene.XXXXXX")"
+  cat > "$HYGIENE_PY" <<'PYEOF'
+import re
+
+TOKEN_RE = re.compile(
+    r'ghp_[A-Za-z0-9]{36}'
+    r'|gho_[A-Za-z0-9]{36}'
+    r'|ghs_[A-Za-z0-9]{36}'
+    r'|ghr_[A-Za-z0-9]{36}'
+    r'|github_pat_[A-Za-z0-9_]{22,}'
+    r'|xox[baprs]-[A-Za-z0-9-]{10,}'
+    r'|AKIA[0-9A-Z]{16}'
+    r'|sk-ant-[A-Za-z0-9-]{20,}'
+    r'|sk-[A-Za-z0-9]{20,}'
+)
+
+
+def hygiene_rewrite(text, city_root):
+    if city_root:
+        text = text.replace(city_root, "<city-root>")
+    return text
+PYEOF
+fi
 
 # ---------------------------------------------------------------------------
 # comment-aggregate: render the manifest into a throwaway temp file FIRST,
@@ -343,36 +403,18 @@ if [ "$SUBCOMMAND" = "comment-aggregate" ]; then
   RENDER_PY="$(mktemp "${TMPDIR:-/tmp}/cv-pr-comment-render.XXXXXX")"
   RENDERED_FILE="$(mktemp "${TMPDIR:-/tmp}/cv-pr-comment-aggregate.XXXXXX")"
 
-  cat > "$RENDER_PY" <<'PYEOF'
+  cat "$HYGIENE_PY" > "$RENDER_PY"
+  cat >> "$RENDER_PY" <<'PYEOF'
 import json
-import re
 import sys
 
 MAX_BODY = 65000  # headroom under GitHub's 65536-char comment limit for the banner
 TRUNCATE_POINTER = "\n\n...[truncated -- full report at {path}]\n"
 
-TOKEN_RE = re.compile(
-    r'ghp_[A-Za-z0-9]{36}'
-    r'|gho_[A-Za-z0-9]{36}'
-    r'|ghs_[A-Za-z0-9]{36}'
-    r'|ghr_[A-Za-z0-9]{36}'
-    r'|github_pat_[A-Za-z0-9_]{22,}'
-    r'|xox[baprs]-[A-Za-z0-9-]{10,}'
-    r'|AKIA[0-9A-Z]{16}'
-    r'|sk-ant-[A-Za-z0-9-]{20,}'
-    r'|sk-[A-Za-z0-9]{20,}'
-)
-
 
 def die(msg):
     sys.stderr.write("cv-pr-comment: ERROR: " + msg + "\n")
     sys.exit(1)
-
-
-def hygiene_rewrite(text, city_root):
-    if city_root:
-        text = text.replace(city_root, "<city-root>")
-    return text
 
 
 def read_entry(entry, city_root):
@@ -482,34 +524,16 @@ if [ "$SUBCOMMAND" = "review-inline" ]; then
   REVIEW_PY="$RENDER_PY"
   REVIEW_JSON="$RENDERED_FILE"
 
-  cat > "$REVIEW_PY" <<'PYEOF'
+  cat "$HYGIENE_PY" > "$REVIEW_PY"
+  cat >> "$REVIEW_PY" <<'PYEOF'
 import hashlib
 import json
-import re
 import sys
-
-TOKEN_RE = re.compile(
-    r'ghp_[A-Za-z0-9]{36}'
-    r'|gho_[A-Za-z0-9]{36}'
-    r'|ghs_[A-Za-z0-9]{36}'
-    r'|ghr_[A-Za-z0-9]{36}'
-    r'|github_pat_[A-Za-z0-9_]{22,}'
-    r'|xox[baprs]-[A-Za-z0-9-]{10,}'
-    r'|AKIA[0-9A-Z]{16}'
-    r'|sk-ant-[A-Za-z0-9-]{20,}'
-    r'|sk-[A-Za-z0-9]{20,}'
-)
 
 
 def die(msg):
     sys.stderr.write("cv-pr-comment: ERROR: " + msg + "\n")
     sys.exit(1)
-
-
-def hygiene_rewrite(text, city_root):
-    if city_root:
-        text = text.replace(city_root, "<city-root>")
-    return text
 
 
 def stable_id(lane, path, title):
@@ -548,15 +572,24 @@ def main():
 
     skip_ids = read_lines(skip_ids_path) or set()
     diff_lines = read_lines(diff_lines_path)
+    # review fk-ppj8bx BLOCKING-7 (re-opened LOW-8): a --diff-lines-file that
+    # is PRESENT but has zero path:line:side entries used to be treated the
+    # same as "confirmed nothing changed" (every finding folds to the
+    # summary) -- but an empty file is far more likely to mean the caller's
+    # diff-line generation step failed than that the PR's diff is genuinely
+    # empty. Reject it outright rather than silently guessing either way.
+    if diff_lines_path and diff_lines is not None and len(diff_lines) == 0:
+        die("--diff-lines-file '{}' was provided but contains no path:line:side entries -- omit --diff-lines-file entirely for \"no diff info\", don't pass an empty file".format(diff_lines_path))
     # review fk-ppj8bx BLOCKING-1: a file-level comment's path must itself be
     # confirmed as one of the PR's changed paths, not just checked for an
-    # exact path:line match -- the create-review endpoint 422s the whole
+    # exact path:line:side match -- the create-review endpoint 422s the whole
     # atomic review on ANY comment whose path isn't in the diff, line-anchored
     # or file-level alike. Derive the changed-path set from the same
-    # --diff-lines-file entries used for line-level confirmation.
+    # --diff-lines-file entries used for line-level confirmation. Entries are
+    # path:line:side, so the path is everything before the last two colons.
     changed_paths = None
     if diff_lines is not None:
-        changed_paths = {entry.rsplit(":", 1)[0] for entry in diff_lines if ":" in entry}
+        changed_paths = {entry.rsplit(":", 2)[0] for entry in diff_lines if entry.count(":") >= 2}
 
     summary = read_text(summary_path)
     if not summary:
@@ -567,8 +600,15 @@ def main():
 
     for finding in findings:
         lane = finding.get("lane") or "unknown"
-        severity = (finding.get("severity") or "low").lower()
-        severity_label = "BLOCKING" if severity == "blocking" else "LOW"
+        severity_raw = (finding.get("severity") or "low").lower()
+        severity_label = "BLOCKING" if severity_raw == "blocking" else "LOW"
+        # review fk-ppj8bx BLOCKING-3 (re-opened LOW-3): the marker used to
+        # emit the finding's RAW severity value while the header label
+        # normalizes anything that isn't exactly "blocking" to LOW -- so an
+        # unrecognized severity (e.g. "critical") posted a header saying LOW
+        # but a marker saying severity=critical, disagreeing with itself.
+        # Both now derive from the same normalized value.
+        severity = severity_label.lower()
         path = finding.get("path") or ""
         title = finding.get("title") or ""
         body_text = (finding.get("body") or "").strip()
@@ -598,7 +638,15 @@ def main():
         # just the bad one. Without --diff-lines-file we have no way to know
         # whether a line is actually in the diff, so fail safe and degrade
         # to a file-level comment instead of trusting the raw line number.
-        in_diff = diff_lines is not None and "{}:{}".format(path, line) in diff_lines
+        # review fk-ppj8bx BLOCKING-2 (re-opened LOW-2): a path:line match
+        # used to ignore the diff SIDE entirely -- a line number that only
+        # exists on the diff's LEFT side (e.g. a deleted line) was treated as
+        # "in the diff" even for a RIGHT-side finding anchored to that same
+        # line number on the new file, which GitHub's create-review endpoint
+        # would 422 as out-of-diff. The --diff-lines-file entry format is
+        # path:line:side, so the membership check must include the finding's
+        # own side to actually confirm the SAME anchor exists in the diff.
+        in_diff = diff_lines is not None and "{}:{}:{}".format(path, line, side) in diff_lines
         # review fk-ppj8bx BLOCKING-1: the file-level degrade below is only
         # safe when `path` is itself confirmed as a changed path -- an
         # unchanged path (e.g. a "missing test" finding citing a file the PR
@@ -631,8 +679,29 @@ PYEOF
 
   python3 "$REVIEW_PY" "$FINDINGS" "$RIG" "$AGENT" "$COMMIT" "$CITY_ROOT" "$SKIP_IDS_FILE" "$DIFF_LINES_FILE" "$SUMMARY_FILE" > "$REVIEW_JSON" || die "review-inline rendering failed (see above)"
 
-  "$GH" api --method POST "repos/${REPO}/pulls/${PR}/reviews" --input "$REVIEW_JSON"
-  REVIEW_GH_RC=$?
+  # review fk-ppj8bx BLOCKING-5 (re-opened LOW-5): the review POST had no
+  # retry at all -- a transient network blip or a momentary GitHub 5xx
+  # dropped the whole review with no recovery. Retry a bounded number of
+  # times with backoff between attempts; a 422 from a genuinely malformed
+  # payload fails the same way on every attempt (no different outcome), so
+  # bounding the attempt count costs nothing on the permanent-failure path
+  # while giving the transient-failure path a real chance to recover.
+  # Overridable by env for callers/tests that need a different cadence.
+  REVIEW_RETRY_MAX="${CV_REVIEW_INLINE_RETRY_MAX:-3}"
+  REVIEW_RETRY_SLEEP="${CV_REVIEW_INLINE_RETRY_SLEEP:-2}"
+  REVIEW_GH_RC=1
+  REVIEW_ATTEMPT=1
+  while [ "$REVIEW_ATTEMPT" -le "$REVIEW_RETRY_MAX" ]; do
+    "$GH" api --method POST "repos/${REPO}/pulls/${PR}/reviews" --input "$REVIEW_JSON"
+    REVIEW_GH_RC=$?
+    [ "$REVIEW_GH_RC" -eq 0 ] && break
+    if [ "$REVIEW_ATTEMPT" -lt "$REVIEW_RETRY_MAX" ]; then
+      echo "cv-pr-comment: review-inline POST failed (exit ${REVIEW_GH_RC}), attempt ${REVIEW_ATTEMPT}/${REVIEW_RETRY_MAX} -- retrying in ${REVIEW_RETRY_SLEEP}s" >&2
+      sleep "$REVIEW_RETRY_SLEEP"
+      REVIEW_RETRY_SLEEP=$((REVIEW_RETRY_SLEEP * 2))
+    fi
+    REVIEW_ATTEMPT=$((REVIEW_ATTEMPT + 1))
+  done
   if [ "$REVIEW_GH_RC" -ne 0 ]; then
     # review fk-ppj8bx BLOCKING-4: the generic cleanup trap below
     # unconditionally rm's $REVIEW_JSON on exit, including this failure
@@ -640,7 +709,7 @@ PYEOF
     # a 422. Preserve a copy under its own mktemp'd name before that happens.
     FAILED_REVIEW_JSON="$(mktemp "${TMPDIR:-/tmp}/cv-pr-comment-review-inline-failed.XXXXXX" 2>/dev/null || true)"
     if [ -n "$FAILED_REVIEW_JSON" ] && cp "$REVIEW_JSON" "$FAILED_REVIEW_JSON" 2>/dev/null; then
-      echo "cv-pr-comment: review-inline POST failed (exit ${REVIEW_GH_RC}) -- rendered payload preserved at ${FAILED_REVIEW_JSON} for diagnosis" >&2
+      echo "cv-pr-comment: review-inline POST failed (exit ${REVIEW_GH_RC}) after ${REVIEW_RETRY_MAX} attempt(s) -- rendered payload preserved at ${FAILED_REVIEW_JSON} for diagnosis" >&2
     fi
   fi
   exit "$REVIEW_GH_RC"
