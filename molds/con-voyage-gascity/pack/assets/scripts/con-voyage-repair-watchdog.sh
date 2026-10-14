@@ -295,6 +295,10 @@ CV_MAX_ATTEMPTS="${CV_MAX_ATTEMPTS:-3}"
 CV_ESCALATE_TARGET="${CV_ESCALATE_TARGET:-human}"
 CV_LOCK_STALE_SECONDS="${CV_LOCK_STALE_SECONDS:-300}"
 CV_GH_TIMEOUT_SECONDS="${CV_GH_TIMEOUT_SECONDS:-20}"
+# Bound on the DEFECT-2 orphan-sweep `bd list`/`bd update` store calls below,
+# same knob and default as every sibling store-enumeration call in this pack
+# (con-voyage-marshal-bead-sweep.sh, con-voyage-orphan-sweep.sh).
+CV_LENS_STORE_TIMEOUT_SECONDS="${CV_LENS_STORE_TIMEOUT_SECONDS:-30}"
 # Forwarded, NOT read, by this script (see header) — declared here with the
 # other tunables rather than left as an inline ${..:-default} at each use
 # site, so every configuration knob resolves in one place.
@@ -323,6 +327,9 @@ case "$CV_LOCK_STALE_SECONDS" in
 esac
 case "$CV_GH_TIMEOUT_SECONDS" in
   *[!0-9]*|'') CV_GH_TIMEOUT_SECONDS="20" ;;
+esac
+case "$CV_LENS_STORE_TIMEOUT_SECONDS" in
+  *[!0-9]*|'') CV_LENS_STORE_TIMEOUT_SECONDS="30" ;;
 esac
 
 # ---------------------------------------------------------------------------
@@ -709,14 +716,29 @@ process_state_record() {
     # this cycle's single-bead ST_INFLIGHT pointer). Every bead this watchdog
     # and con-voyage-pr-watch.sh mint for a given PR is tagged with the same
     # gc.repair_dedup_key metadata (tagged on THIS mint below); sweeping and
-    # force-closing every OTHER open bead carrying that tag before minting
-    # keeps "at most one repair bead per PR is ever open" true even after a
-    # close failure already happened once. Fail-safe: a `bd list` failure
-    # (bad JSON, gc error) is logged and skipped — it must never block the
-    # real re-dispatch below.
-    orphan_json="$("$GC" --city "$GC_CITY" --rig "$rig" bd list --status open \
+    # force-closing every OTHER open-or-in_progress bead carrying that tag
+    # before minting keeps "at most one repair bead per PR is ever open" true
+    # even after a close failure already happened once.
+    #
+    # review fk-wmhr96 BLOCKING-1 (acceptance fk-s0cniq, code-review
+    # fk-7ai3uo BLOCKING-2): the live incident this defect targets
+    # (replicatedhq/vandoor#10644) was simultaneously-live workers that had
+    # already claimed their bead — i.e. status in_progress, not open — so
+    # the sweep must query both statuses, matching every sibling sweep
+    # (con-voyage-marshal-bead-sweep.sh, con-voyage-orphan-sweep.sh). Bound
+    # by cv_with_timeout, same knob/default as those siblings, since this
+    # call runs while holding the per-dedup_key lock (review fk-wmhr96
+    # BLOCKING-5, SRE) and an unbounded read here would turn that lock into a
+    # stall point for the PR under exactly the store-contention load this fix
+    # exists to survive. A `bd list` failure (timeout, bad JSON, gc error) is
+    # logged with a WARNING and skipped — it must never block the real
+    # re-dispatch below.
+    orphan_json="$(cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" \
+      "$GC" --city "$GC_CITY" --rig "$rig" bd list --status open,in_progress \
       --metadata-field "gc.repair_dedup_key=${dedup_key}" --json --limit 0 2>/dev/null)" || orphan_json=""
-    if [ -n "$orphan_json" ]; then
+    if [ -z "$orphan_json" ]; then
+      echo "con-voyage-repair-watchdog: WARNING: orphan sweep bd list failed or returned empty for ${label} (dedup_key=${dedup_key}); skipping the sweep this cycle, proceeding with re-dispatch" >&2
+    else
       orphan_rows="$(printf '%s' "$orphan_json" | python3 -c "
 import json, sys
 try:
@@ -729,12 +751,33 @@ for item in data:
     if isinstance(item, dict) and item.get('id'):
         print('%s|%s' % (item['id'], item.get('status') or ''))
 " 2>/dev/null || true)"
-      if [ -n "$orphan_rows" ]; then
+      if [ -z "$orphan_rows" ]; then
+        echo "con-voyage-repair-watchdog: WARNING: orphan sweep bd list returned unparseable JSON for ${label} (dedup_key=${dedup_key}); skipping the sweep this cycle, proceeding with re-dispatch" >&2
+      else
+        # review fk-wmhr96 BLOCKING-4 (QA/test-engineering fk-5lhtbk,
+        # test-evidence fk-wjpega): close_if_open is fail-safe by design — a
+        # failed force-close logs a WARNING and leaves the bead open rather
+        # than aborting, so its own return value can't be trusted here any
+        # more than it could for the ST_INFLIGHT supersede above. Track
+        # CV_CLOSE_RC across every orphan in the loop and skip minting a
+        # replacement this cycle if any orphan's force-close failed — minting
+        # on top of a still-open, still-claimable orphan reproduces the exact
+        # live-incident shape (N simultaneously-live repair workers on one
+        # PR) this bead exists to close, just reached via this sweep instead
+        # of the main supersede path DEFECT 1 already guards.
+        orphan_close_failed=0
         while IFS='|' read -r orphan_id orphan_status; do
           [ -n "${orphan_id// /}" ] || continue
           [ "$orphan_id" = "$ST_INFLIGHT" ] && continue
           close_if_open "$orphan_id" "superseded: orphaned duplicate repair bead for ${label} (dedup_key=${dedup_key})" "" "$orphan_status" "1"
+          if [ "${CV_CLOSE_RC:-0}" -ne 0 ]; then
+            orphan_close_failed=1
+          fi
         done <<< "$orphan_rows"
+        if [ "$orphan_close_failed" -eq 1 ]; then
+          echo "con-voyage-repair-watchdog: WARNING: ${label} orphan-sweep force-close of at least one duplicate (dedup_key=${dedup_key}) did not complete; not minting a replacement this cycle, will retry the sweep next cycle" >&2
+          return
+        fi
       fi
     fi
 
@@ -753,7 +796,20 @@ for item in data:
     # is logged but not fatal — the mint/sling below still proceeds; worst
     # case a later orphan sweep simply can't see this one bead by tag (same
     # exposure as before this fix existed).
-    "$GC" bd update "$new_bead_id" --set-metadata "gc.repair_dedup_key=${dedup_key}" >/dev/null 2>&1 \
+    #
+    # review fk-wmhr96 BLOCKING-2 (acceptance fk-s0cniq, code-review
+    # fk-7ai3uo BLOCKING-1): scope with --city/--rig like every sibling gc
+    # call in this block (bd list above, bd create above, sling below).
+    # Cross-rig repair routing is the normal case (rig is parsed from
+    # ST_REPAIR_ROUTE and commonly differs from the watchdog's own
+    # city/rig) — an unscoped bd update can route to the wrong store,
+    # leaving the newly minted bead untagged in its real target rig, which
+    # defeats this sweep's own mechanism for the watchdog's own mints.
+    # review fk-wmhr96 LOW-3 (SRE): also bound by cv_with_timeout, folded
+    # into this same fix pass since the line is already being touched for
+    # the scoping fix above.
+    cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" \
+      "$GC" --city "$GC_CITY" --rig "$rig" bd update "$new_bead_id" --set-metadata "gc.repair_dedup_key=${dedup_key}" >/dev/null 2>&1 \
       || echo "con-voyage-repair-watchdog: WARNING: failed to tag ${new_bead_id} with gc.repair_dedup_key=${dedup_key}; a future orphan sweep for ${label} will not find it by tag" >&2
 
     if "$GC" --city "$GC_CITY" sling "$ST_REPAIR_ROUTE" "$new_bead_id" \

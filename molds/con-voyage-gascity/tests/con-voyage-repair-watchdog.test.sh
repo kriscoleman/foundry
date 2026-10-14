@@ -186,6 +186,12 @@ case "$sub" in
       exit 0
     fi
     if [ "$bdsub" = "list" ]; then
+      # STUB_BDLIST_FAIL=1 (fk-wmhr96 BLOCKING-3/CASE 26b): simulate the call
+      # failing outright (non-zero exit, no stdout) — distinct from
+      # STUB_BDLIST_JSON's garbage-but-present-output case (CASE 26).
+      if [ "${STUB_BDLIST_FAIL:-0}" = "1" ]; then
+        exit 1
+      fi
       # STUB_BDLIST_JSON: raw JSON array to return for `bd list`, as the real
       # `--json` output shape ([{"id":...,"status":...}, ...]). Default: an
       # empty list (no orphans found).
@@ -1088,6 +1094,12 @@ fi
 #   must be force-closed before a fresh fallback bead is minted, and the
 #   fresh bead must be tagged with the dedup_key so a LATER cycle's sweep
 #   can find it too.
+#
+#   review fk-wmhr96 BLOCKING-1 (acceptance fk-s0cniq, code-review fk-7ai3uo
+#   BLOCKING-2): the live incident this defect targets was workers that had
+#   already claimed their bead (status in_progress), so the orphan fixture
+#   includes an in_progress row, not just open, and the sweep's own bd list
+#   call is asserted to query both statuses.
 # ===========================================================================
 start_case "25: DEFECT 2 — an orphaned duplicate repair bead is force-closed before minting"
 setup_case_env "25"
@@ -1096,22 +1108,28 @@ write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-250" \
   "kriscoleman/foundry" "250" "fix/thing" "0" "0"
 run_script "${DEFAULT_ENV[@]}" STUB_BDSHOW_MAP="wd-bead250|open|$(iso_ago 30)" \
   STUB_SESSION_LIST_JSON='{"sessions":[]}' STUB_BD_CREATE_ID="wd-bead250b" \
-  STUB_BDLIST_JSON='[{"id":"wd-orphan250","status":"open"},{"id":"wd-bead250","status":"open"}]'
+  STUB_BDLIST_JSON='[{"id":"wd-orphan250","status":"open"},{"id":"wd-orphan250b","status":"in_progress"},{"id":"wd-bead250","status":"open"}]'
 assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd list --status open,in_progress .*gc.repair_dedup_key=cv-ci-repair-kriscoleman-foundry-250' 1 "the orphan sweep queries both open AND in_progress statuses"
 assert_log_count "$GC_LOG" 'bd close wd-bead250 .*superseded: watchdog reassigning' 1 "the tracked bead is superseded as usual"
-assert_log_count "$GC_LOG" 'bd close wd-orphan250 .*orphaned duplicate repair bead.*dedup_key=cv-ci-repair-kriscoleman-foundry-250' 1 "the orphaned duplicate (not the tracked bead) is force-closed, tagged with its dedup_key in the reason"
+assert_log_count "$GC_LOG" 'bd close wd-orphan250 .*orphaned duplicate repair bead.*dedup_key=cv-ci-repair-kriscoleman-foundry-250' 1 "the open orphan is force-closed, tagged with its dedup_key in the reason"
+assert_log_count "$GC_LOG" 'bd close wd-orphan250b .*orphaned duplicate repair bead.*dedup_key=cv-ci-repair-kriscoleman-foundry-250' 1 "the in_progress orphan (the live-incident shape) is also force-closed"
 assert_log_count "$GC_LOG" 'bd close wd-bead250 .*orphaned duplicate' 0 "the already-tracked bead is never double-closed via the orphan-sweep path (self-skip)"
 assert_log_count "$GC_LOG" '\-\-rig vandoor bd create' 1 "a fresh fallback bead is still minted after the sweep"
-assert_log_count "$GC_LOG" 'bd update wd-bead250b --set-metadata gc.repair_dedup_key=cv-ci-repair-kriscoleman-foundry-250' 1 "the freshly-minted bead is tagged with its dedup_key"
+assert_log_count "$GC_LOG" '\-\-rig vandoor bd update wd-bead250b --set-metadata gc.repair_dedup_key=cv-ci-repair-kriscoleman-foundry-250' 1 "the freshly-minted bead is tagged with its dedup_key, scoped to the target rig"
 assert_log_count "$GC_LOG" 'sling vandoor/gc.implementation-worker wd-bead250b --on con-voyage-ci-repair' 1 "the re-dispatch still fires normally after the sweep"
 
 # ===========================================================================
-# CASE 26 — fk-6rj8zo DEFECT 2 fail-safe: a `bd list` failure/garbage
+# CASE 26 — fk-6rj8zo DEFECT 2 fail-safe: a `bd list` garbage/unparseable
 #   response while sweeping for orphans must never block the real
-#   re-dispatch — it is logged and the normal mint/sling proceeds exactly as
-#   if no orphan existed.
+#   re-dispatch — it is logged with a WARNING and the normal mint/sling
+#   proceeds exactly as if no orphan existed.
+#
+#   review fk-wmhr96 BLOCKING-3 (code-review fk-7ai3uo): the sweep's own
+#   comment claims a bd list failure "is logged and skipped" — assert the
+#   WARNING is actually emitted, not just that re-dispatch proceeds.
 # ===========================================================================
-start_case "26: DEFECT 2 fail-safe — a bd list failure during the orphan sweep never blocks re-dispatch"
+start_case "26: DEFECT 2 fail-safe — an unparseable bd list response during the orphan sweep logs a WARNING and never blocks re-dispatch"
 setup_case_env "26"
 write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-260" \
   "gc__impl-rc-dead" "wd-bead260" "merge_conflict" "kriscoleman" "vandoor/gc.implementation-worker" \
@@ -1122,6 +1140,67 @@ run_script "${DEFAULT_ENV[@]}" STUB_BDSHOW_MAP="wd-bead260|open|$(iso_ago 30)" \
 assert_eq "0" "$RC" "script exits 0 (garbage bd list output does not crash the run)"
 assert_log_count "$GC_LOG" '\-\-rig vandoor bd create' 1 "the fallback mint still happens despite an unparsable orphan-sweep response"
 assert_log_count "$GC_LOG" 'sling vandoor/gc.implementation-worker wd-bead260b --on con-voyage-ci-repair' 1 "the re-dispatch still fires"
+if printf '%s' "$OUT" | grep -q 'WARNING.*unparseable JSON'; then
+  pass "logs a WARNING for the unparseable orphan-sweep response"
+else
+  fail "expected a WARNING naming the unparseable bd list response"
+fi
+
+# ===========================================================================
+# CASE 26b — fk-6rj8zo DEFECT 2 fail-safe: a `bd list` call that fails
+#   outright (non-zero exit / empty output) during the orphan sweep also
+#   logs a WARNING and never blocks re-dispatch.
+#
+#   review fk-wmhr96 BLOCKING-3 (code-review fk-7ai3uo): the empty-output
+#   path is the OTHER half of the "logged and skipped" claim this gate
+#   verifies — distinct from CASE 26's garbage-but-non-empty response.
+# ===========================================================================
+start_case "26b: DEFECT 2 fail-safe — an empty bd list response during the orphan sweep logs a WARNING and never blocks re-dispatch"
+setup_case_env "26b"
+write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-261" \
+  "gc__impl-rc-dead" "wd-bead261" "merge_conflict" "kriscoleman" "vandoor/gc.implementation-worker" \
+  "kriscoleman/foundry" "261" "fix/thing" "0" "0"
+run_script "${DEFAULT_ENV[@]}" STUB_BDSHOW_MAP="wd-bead261|open|$(iso_ago 30)" \
+  STUB_SESSION_LIST_JSON='{"sessions":[]}' STUB_BD_CREATE_ID="wd-bead261b" \
+  STUB_BDLIST_FAIL="1"
+assert_eq "0" "$RC" "script exits 0 (an empty bd list response does not crash the run)"
+assert_log_count "$GC_LOG" '\-\-rig vandoor bd create' 1 "the fallback mint still happens despite an empty orphan-sweep response"
+assert_log_count "$GC_LOG" 'sling vandoor/gc.implementation-worker wd-bead261b --on con-voyage-ci-repair' 1 "the re-dispatch still fires"
+if printf '%s' "$OUT" | grep -q 'WARNING.*bd list failed or returned empty'; then
+  pass "logs a WARNING for the empty orphan-sweep response"
+else
+  fail "expected a WARNING naming the empty bd list response"
+fi
+
+# ===========================================================================
+# CASE 26c — fk-6rj8zo DEFECT 2: an orphan's force-close itself fails. Minting
+#   a replacement anyway would reproduce the exact live-incident shape (N
+#   simultaneously-live repair workers on one PR) this bead exists to close,
+#   just reached via the orphan-sweep path instead of the main supersede path
+#   DEFECT 1 already guards.
+#
+#   review fk-wmhr96 BLOCKING-4 (QA/test-engineering fk-5lhtbk, test-evidence
+#   fk-wjpega, independently cross-corroborated).
+# ===========================================================================
+start_case "26c: DEFECT 2 — an orphan force-close failure skips minting a replacement"
+setup_case_env "26c"
+write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-262" \
+  "gc__impl-rc-dead" "wd-bead262" "merge_conflict" "kriscoleman" "vandoor/gc.implementation-worker" \
+  "kriscoleman/foundry" "262" "fix/thing" "0" "0"
+run_script "${DEFAULT_ENV[@]}" STUB_BDSHOW_MAP="wd-bead262|open|$(iso_ago 30)" \
+  STUB_SESSION_LIST_JSON='{"sessions":[]}' STUB_BD_CREATE_ID="wd-bead262b" \
+  STUB_BD_CLOSE_FAIL_ID="wd-orphan262" \
+  STUB_BDLIST_JSON='[{"id":"wd-orphan262","status":"open"},{"id":"wd-bead262","status":"open"}]'
+assert_eq "0" "$RC" "script exits 0 (an orphan force-close failure is non-fatal to the whole run)"
+assert_log_count "$GC_LOG" 'bd close wd-bead262 .*superseded: watchdog reassigning' 1 "the tracked bead is still superseded normally"
+assert_log_count "$GC_LOG" 'bd close wd-orphan262 .*orphaned duplicate' 1 "the orphan's force-close is attempted"
+assert_log_count "$GC_LOG" '\-\-rig vandoor bd create' 0 "no fallback bead is minted when an orphan's force-close failed"
+assert_log_count "$GC_LOG" 'sling' 0 "no re-dispatch when an orphan's force-close failed"
+if printf '%s' "$OUT" | grep -q 'WARNING.*orphan-sweep force-close.*did not complete'; then
+  pass "logs a WARNING naming the failed orphan force-close"
+else
+  fail "expected a WARNING for the failed orphan force-close"
+fi
 
 # ===========================================================================
 # CASE 27 — fk-6rj8zo DEFECT 3: a tracked bead with NO known implementor
