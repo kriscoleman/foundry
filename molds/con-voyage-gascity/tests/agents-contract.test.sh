@@ -96,7 +96,7 @@ start_case "every formula-dispatched workflow node carries the communal-duty rem
 # CV_CODE_WRITING_NODE_RE is the one detector pattern, shared below with the
 # divergence case (fk-bwqk7d review BLOCKING-1) so that case can never carry
 # a stale private copy that drifts from what this loop actually uses.
-CV_CODE_WRITING_NODE_RE='^[[:space:]]*git commit'
+CV_CODE_WRITING_NODE_RE='^[[:space:]]*(\$[[:space:]]+)?git commit'
 node_count=0
 comment_policy_node_count=0
 for formula in "${MOLD_DIR}"/pack/formulas/*.toml; do
@@ -186,6 +186,25 @@ else
   echo "  PASS: \$CV_CODE_WRITING_NODE_RE does NOT match a prose-only mention of git commit"
 fi
 rm -f "$prose_fixture"
+
+start_case "the code-writing-node detector still matches a \$-prompt-prefixed git commit line (Mayor regrade round-2 BLOCKING-1, review fk-n7vy64)"
+# The line-start anchor from the prior fix (review fk-bwqk7d BLOCKING-1) relies
+# on an unenforced convention: the command is the first token on its line. A
+# node written with a shell-prompt prefix (e.g. `$ git commit ...`, as a doc
+# author might type to show a copy-pasteable command) silently falls outside
+# the anchored pattern and drops out of the matched set with no FATAL guard
+# tripped, hiding a real regression. The detector must tolerate an optional
+# `$ ` prompt prefix without losing the prose-only exclusion proven above.
+prompt_fixture="$(mktemp)"
+printf '$ git commit -m "x"\n' > "$prompt_fixture"
+
+if grep -qE "$CV_CODE_WRITING_NODE_RE" "$prompt_fixture" 2>/dev/null; then
+  echo "  PASS: \$CV_CODE_WRITING_NODE_RE matches a \$-prompt-prefixed git commit line"
+else
+  echo "  FAIL: \$CV_CODE_WRITING_NODE_RE did not match a \$-prompt-prefixed git commit line — a prompt-prefixed code-writing node silently drops out of the matched set" >&2
+  FAILURES=$((FAILURES+1))
+fi
+rm -f "$prompt_fixture"
 
 start_case "the routed PR-feedback bead body (con-voyage-pr-watch.sh) includes the reminder"
 if declare -f cv_build_pr_feedback_body >/dev/null 2>&1; then
