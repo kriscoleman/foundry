@@ -501,6 +501,29 @@ start_case "cv_claim_once: a lookup failure (bd show returns nothing) degrades t
 : > "$GC_LOG"
 assert_eq "claim" "$(cv_claim_once "fk-once-unknown" "gc.review_escort.comment_posted")" "unknown bead fails safe toward claim (re-run the gated action) rather than silently skipping it"
 
+# review fk-eruo3s BLOCKING-1 (sre, qa-test): a persist failure used to be
+# silently swallowed (`|| true`), still printing "claim" exactly like a
+# genuine persist, so a later [template.check] max_attempts retry against the
+# same bead re-read the still-unset flag and claimed (and so re-posted) a
+# second time — reopening the exact duplicate-comment bug (fk-hbsmk
+# BLOCKING-7) this helper exists to close. This is the executable proof the
+# finding asked for: a persist that fails on every retry must (a) actually
+# retry with backoff before giving up — mirroring cv_ensure_work_branch_name's
+# established pattern — and (b) return a value distinct from a genuine
+# persisted claim, so a caller can tell "the action ran, but the flag may not
+# have stuck" and escalate instead of trusting the flag blindly on the next
+# retry.
+start_case "cv_claim_once: persist fails on every retry -> retries 3x, stamps a durable unpersisted flag, and returns a value distinct from a genuine claim"
+: > "$GC_LOG"
+unset STUB_BDSHOW_JSON_fk_once2
+export STUB_BDUPDATE_FAIL_fk_once2=1
+claim_result="$(cv_claim_once "fk-once2" "gc.review_escort.comment_posted" 2>"${SANDBOX}/claim_once_fail.stderr")"
+assert_eq "claim-unpersisted" "$claim_result" "a persist that never sticks is distinguishable from a genuine claim"
+assert_log_count 'bd update fk-once2 --set-metadata gc\.review_escort\.comment_posted=true' 3 "retries the failed persist 3 times total"
+assert_log_count 'bd update fk-once2 --set-metadata gc\.review_escort\.comment_posted_unpersisted=true' 1 "stamps a durable unpersisted flag once retries are exhausted"
+assert_eq "1" "$(grep -c 'failed to persist gc.review_escort.comment_posted=true' "${SANDBOX}/claim_once_fail.stderr")" "warns on stderr about the exhausted persist retries"
+unset STUB_BDSHOW_JSON_fk_once2 STUB_BDUPDATE_FAIL_fk_once2
+
 # ---------------------------------------------------------------------------
 # cv_flatten_roster_vars_from_json / cv_flatten_roster_vars (fk-pubvq roster
 # replay; review fk-n74o9 BLOCKING-2 — this logic used to be duplicated
