@@ -2108,6 +2108,45 @@ case "$od_present_out" in
     ;;
 esac
 
+# acquire_lock/release_lock dedup_key charset guard (review fk-7bmhlz LOW-1,
+# security fk-10g34z: advisory, closed "at the primitive" rather than at each
+# of the several callers that build a path from a caller-supplied dedup_key).
+# Not exploitable today (every real caller derives dedup_key from GitHub's
+# own restricted {owner}/{repo}/{pr} charset), but a `/` or `..` segment
+# would otherwise let an unvalidated dedup_key escape CV_STATE_DIR/.locks —
+# this proves the primitive refuses before ever calling mkdir on such a path.
+start_case "acquire_lock: a dedup_key containing a path separator is refused, not used to mkdir outside .locks"
+UNSAFE_LOCK_DIR="${CV_STATE_DIR}/.locks/../escaped.lock"
+rm -rf "$UNSAFE_LOCK_DIR" 2>/dev/null
+unsafe_rc=0
+acquire_lock "../escaped" || unsafe_rc=$?
+assert_eq "1" "$unsafe_rc" "acquire_lock refuses a dedup_key containing '..'"
+[ -d "$UNSAFE_LOCK_DIR" ] && fail "acquire_lock created a lock dir outside .locks for a '..' dedup_key" \
+  || pass "acquire_lock did not create any lock dir for a '..' dedup_key"
+rm -rf "$UNSAFE_LOCK_DIR" 2>/dev/null
+
+start_case "acquire_lock: a dedup_key containing a slash is refused"
+slash_rc=0
+acquire_lock "owner/repo/1" || slash_rc=$?
+assert_eq "1" "$slash_rc" "acquire_lock refuses a dedup_key containing '/'"
+[ -d "${CV_STATE_DIR}/.locks/owner" ] && fail "acquire_lock created an intermediate directory for a slash-containing dedup_key" \
+  || pass "acquire_lock did not create any directory for a slash-containing dedup_key"
+
+start_case "acquire_lock: an ordinary dedup_key (no / or ..) is unaffected by the guard"
+ORDINARY_LOCK_DIR="${CV_STATE_DIR}/.locks/cv-finalize-acme-widgets-42.lock"
+rm -rf "$ORDINARY_LOCK_DIR" 2>/dev/null
+ordinary_rc=0
+acquire_lock "cv-finalize-acme-widgets-42" || ordinary_rc=$?
+assert_eq "0" "$ordinary_rc" "acquire_lock still succeeds for a normal dedup_key"
+[ -d "$ORDINARY_LOCK_DIR" ] && pass "acquire_lock still creates the lock dir for a normal dedup_key" \
+  || fail "acquire_lock unexpectedly did not create the lock dir for a normal dedup_key"
+release_lock "cv-finalize-acme-widgets-42"
+
+start_case "release_lock: a dedup_key containing '..' is refused, never passed to rm -rf"
+release_rc=0
+release_lock "../escaped" || release_rc=$?
+assert_eq "1" "$release_rc" "release_lock refuses a dedup_key containing '..'"
+
 if ! command -v zsh >/dev/null 2>&1; then
   echo
   echo "SKIP: zsh not installed on this host, skipping zsh portability cases" >&2

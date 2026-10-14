@@ -91,10 +91,26 @@ just inside this round's one comment instead of as its own.
 # every one of them here rather than reusing names from the earlier fence,
 # the same remedy already applied elsewhere in this pack
 # (main.apply-review-findings.md).
+#
+# review fk-7bmhlz LOW-6 (SRE reliability): CV_LIB/CV_PACK_ROOT are resolved
+# BEFORE the ROOT_ID fallback below (reordered from the earlier fix) so the
+# fallback's own `gc bd show` call can be wrapped in cv_with_timeout once
+# CV_LIB is known to be available — an unwrapped call here is the one this
+# fence can actually reach (GC_ROOT_BEAD_ID is unset) if a hung/slow store
+# ever makes it the live path, unlike every other `gc`/`bd` call in this
+# file, which only runs on failure branches that already exit immediately.
 GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
+
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
+
 ROOT_ID="${GC_ROOT_BEAD_ID:-}"
 if [ -z "$ROOT_ID" ]; then
-  ROOT_ID="$(gc bd show "$GC_BEAD_ID" --json 2>/dev/null | python3 -c "
+  if [ -n "$CV_LIB" ]; then
+    ROOT_ID="$(source "$CV_LIB" && cv_with_timeout "${CV_LENS_STORE_TIMEOUT_SECONDS:-30}" gc bd show "$GC_BEAD_ID" --json 2>/dev/null | python3 -c "
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -103,14 +119,19 @@ except Exception:
     d = {}
 print((d.get('metadata') or {}).get('gc.root_bead_id') or '')
 " 2>/dev/null)"
+  else
+    ROOT_ID="$(gc bd show "$GC_BEAD_ID" --json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    d = d[0] if isinstance(d, list) else d
+except Exception:
+    d = {}
+print((d.get('metadata') or {}).get('gc.root_bead_id') or '')
+" 2>/dev/null)"
+  fi
 fi
 [ -n "$ROOT_ID" ] || ROOT_ID="$GC_BEAD_ID"
-
-CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
-CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
-[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
-CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
-[ -f "$CV_LIB" ] || CV_LIB=""
 
 FINALIZE_KEY=""
 CV_STATE_DIR=""
@@ -120,9 +141,15 @@ if [ -n "$CV_LIB" ]; then
 fi
 [ -n "${CV_STATE_DIR:-}" ] || CV_STATE_DIR="${GC_CITY:-.}/.gc/cv-pr-watch"
 
+# review fk-7bmhlz LOW-5 (code-review/native-language fk-202t44): PEEK, don't
+# clear, here. This fence runs before the aggregate comment is actually
+# posted (below); clearing the per-PR record now and having the post later
+# fail would silently drop this round's only chance to surface it — it
+# would never be re-offered to a later round. The posting fence clears the
+# record for real, and only once that post is CONFIRMED to have succeeded.
 CV_DEFERRED_STATUS=""
 if [ -n "$CV_LIB" ] && [ -n "$FINALIZE_KEY" ]; then
-  CV_DEFERRED_STATUS="$(export CV_STATE_DIR; source "$CV_LIB" && cv_defer_status_read_and_clear "$FINALIZE_KEY")"
+  CV_DEFERRED_STATUS="$(export CV_STATE_DIR; source "$CV_LIB" && cv_defer_status_peek "$FINALIZE_KEY")"
 fi
 
 # Same absolute-rig-root resolution main.publish.md uses for every lane
@@ -177,6 +204,31 @@ if [ -n "${CV_BIN:-}" ]; then
       -s "con-voyage re-review: aggregated comment failed for ${REPO_FULL}#${PR_NUMBER}" \
       -m "cv-pr-comment.sh comment-aggregate failed for re-review round ${REVIEW_ROUND}: ${CV_AGGREGATE_OUT}" \
       2>&1 || echo "note: escalation mail failed too (continuing)" >&2
+  else
+    # review fk-7bmhlz LOW-5 (code-review/native-language fk-202t44): only
+    # clear the deferred ci-repair pending-status once THIS round's
+    # aggregate comment is CONFIRMED posted (the fold-in fence above only
+    # peeked it, on purpose — see its own comment). Re-derive CV_LIB and the
+    # finalize key fully self-contained here, independent of whatever this
+    # fence's own $CV_LIB/$ROOT_ID happen to resolve to above, so this clear
+    # is correct even if this fence runs on its own: a failed post leaves
+    # the per-PR pending-status file untouched, so the NEXT round's fold-in
+    # naturally re-peeks and re-offers it instead of this round silently
+    # discarding it on a post failure.
+    CLEAR_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+    CLEAR_CV_LIB="${CLEAR_TOPLEVEL:+${CLEAR_TOPLEVEL}/molds/con-voyage-gascity/pack/assets/scripts/con-voyage-lib.sh}"
+    [ -n "$CLEAR_CV_LIB" ] && [ -f "$CLEAR_CV_LIB" ] || CLEAR_CV_LIB="${GC_CITY:-.}/packs/con-voyage/assets/scripts/con-voyage-lib.sh"
+    [ -f "$CLEAR_CV_LIB" ] || CLEAR_CV_LIB=""
+    if [ -n "$CLEAR_CV_LIB" ]; then
+      CLEAR_ROOT_ID="${GC_ROOT_BEAD_ID:-}"
+      [ -n "$CLEAR_ROOT_ID" ] || CLEAR_ROOT_ID="$GC_BEAD_ID"
+      CLEAR_FINALIZE_KEY="$(source "$CLEAR_CV_LIB" && cv_bead_metadata "$CLEAR_ROOT_ID" gc.var.finalize_key)"
+      CLEAR_CV_STATE_DIR="$(source "$CLEAR_CV_LIB" && cv_default_state_dir)"
+      [ -n "$CLEAR_CV_STATE_DIR" ] || CLEAR_CV_STATE_DIR="${GC_CITY:-.}/.gc/cv-pr-watch"
+      if [ -n "$CLEAR_FINALIZE_KEY" ]; then
+        (export CV_STATE_DIR="$CLEAR_CV_STATE_DIR"; source "$CLEAR_CV_LIB" && cv_defer_status_read_and_clear "$CLEAR_FINALIZE_KEY" >/dev/null)
+      fi
+    fi
   fi
 else
   echo "cv-pr-comment.sh not found — skipping the aggregated review comment" >&2

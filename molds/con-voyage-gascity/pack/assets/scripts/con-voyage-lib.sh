@@ -1550,8 +1550,22 @@ resolve_lock_stale_seconds() {
 # acquire_lock DEDUP_KEY — exit 0 (lock held) or 1 (held by someone else and
 # not stale). A stale lock (older than CV_LOCK_STALE_SECONDS — a crashed or
 # hung holder) is stolen rather than left to wedge this record forever.
+#
+# review fk-7bmhlz LOW-1 (security fk-10g34z, advisory): dedup_key is
+# interpolated directly into a filesystem path below with no charset check.
+# Not exploitable today — every real caller derives it from GitHub's own
+# restricted {owner}/{repo}/{pr} charset — but closing it here, at the one
+# shared primitive every dedup_key-keyed lock path in this pack goes
+# through, is cheaper than auditing every current and future caller
+# individually.
 acquire_lock() {
   local dedup_key="$1"
+  case "$dedup_key" in
+    */*|*..*)
+      echo "con-voyage-lib: REFUSING acquire_lock for unsafe dedup_key (contains '/' or '..'): ${dedup_key}" >&2
+      return 1
+      ;;
+  esac
   local lock_base="${CV_STATE_DIR}/.locks"
   local lockdir="${lock_base}/${dedup_key}.lock"
   mkdir -p "$lock_base" 2>/dev/null
@@ -1595,8 +1609,16 @@ sys.exit(0 if age > float(sys.argv[2]) else 1)
 
 # release_lock DEDUP_KEY — always safe to call even if the lock was never
 # acquired (e.g. a caller that skipped straight past acquire_lock's failure).
+# Same dedup_key guard as acquire_lock above (fk-7bmhlz LOW-1): refuses
+# rather than rm -rf'ing a path built from an unsafe key.
 release_lock() {
   local dedup_key="$1"
+  case "$dedup_key" in
+    */*|*..*)
+      echo "con-voyage-lib: REFUSING release_lock for unsafe dedup_key (contains '/' or '..'): ${dedup_key}" >&2
+      return 1
+      ;;
+  esac
   rm -rf "${CV_STATE_DIR}/.locks/${dedup_key}.lock" 2>/dev/null || true
 }
 
@@ -3720,6 +3742,13 @@ finalize_write() {
 cv_defer_status_append() {
   local dedup_key="$1" text="$2"
   [ -n "$dedup_key" ] || return 1
+  # fk-7bmhlz LOW-1: acquire_lock below already refuses an unsafe dedup_key,
+  # but failing here immediately (instead of only discovering it 10 retries
+  # and ~2s later via the bounded-retry loop) keeps the common-case latency
+  # of a genuinely held lock distinct from a permanently invalid key.
+  case "$dedup_key" in
+    */*|*..*) return 1 ;;
+  esac
   local f="${CV_STATE_DIR}/${dedup_key}.pending-status"
   local flat="${text//$'\n'/ }"
   local attempt=0
@@ -3747,6 +3776,10 @@ cv_defer_status_append() {
 cv_defer_status_read_and_clear() {
   local dedup_key="$1"
   [ -n "$dedup_key" ] || return 1
+  # fk-7bmhlz LOW-1: see cv_defer_status_append's identical guard above.
+  case "$dedup_key" in
+    */*|*..*) return 0 ;;
+  esac
   local f="${CV_STATE_DIR}/${dedup_key}.pending-status"
   local attempt=0
   while ! acquire_lock "$dedup_key"; do
@@ -3758,6 +3791,41 @@ cv_defer_status_read_and_clear() {
     cat "$f"
     rm -f "$f"
   fi
+  release_lock "$dedup_key"
+  return 0
+}
+
+# cv_defer_status_peek DEDUP_KEY — print any deferred status lines for
+# DEDUP_KEY to stdout (nothing printed when none are pending) WITHOUT
+# clearing them. Always returns 0, whether or not a file existed.
+#
+# review fk-7bmhlz LOW-5 (code-review/native-language fk-202t44): a caller
+# that needs to fold pending status into content it builds BEFORE that
+# content is actually posted/confirmed (main.rereview-finalize.md's fold-in
+# fence, which runs before the aggregate-comment post) must not destroy the
+# source-of-truth record on a post that might still fail — use this to build
+# that content, then call cv_defer_status_read_and_clear above for real only
+# once posting is confirmed. A failed post then leaves the record intact for
+# the NEXT round to naturally re-peek and retry, instead of this round
+# silently discarding it.
+#
+# Same acquire_lock/release_lock mutex as the two functions above: the read
+# here must not race a concurrent append the same way read_and_clear's
+# cat+rm must not.
+cv_defer_status_peek() {
+  local dedup_key="$1"
+  [ -n "$dedup_key" ] || return 1
+  case "$dedup_key" in
+    */*|*..*) return 0 ;;
+  esac
+  local f="${CV_STATE_DIR}/${dedup_key}.pending-status"
+  local attempt=0
+  while ! acquire_lock "$dedup_key"; do
+    attempt=$((attempt + 1))
+    [ "$attempt" -lt 10 ] || return 0
+    sleep 0.2 2>/dev/null || sleep 1
+  done
+  [ -f "$f" ] && cat "$f"
   release_lock "$dedup_key"
   return 0
 }

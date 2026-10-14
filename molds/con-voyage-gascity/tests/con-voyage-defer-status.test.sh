@@ -247,6 +247,89 @@ assert_eq "3" "$ACQUIRE_LOCK_CALLS" "read_and_clear retried acquire_lock exactly
 unset -f acquire_lock __real_acquire_lock
 source "$LIB"  # restore the real implementations for any later case
 
+# ===========================================================================
+# CASE 9 — empty dedup_key is refused by both helpers instead of touching
+# "CV_STATE_DIR/.pending-status" (review fk-7bmhlz LOW-3, carried forward
+# from iteration 1: these edge cases were never directly exercised before).
+# ===========================================================================
+start_case "9: an empty dedup_key is refused by cv_defer_status_append, no file written"
+CV_STATE_DIR="$(fresh_state_dir)"
+empty_key_append_rc=0
+cv_defer_status_append "" "text for an empty dedup_key" || empty_key_append_rc=$?
+assert_eq "1" "$empty_key_append_rc" "cv_defer_status_append refuses an empty dedup_key"
+[ -f "${CV_STATE_DIR}/.pending-status" ] && fail "cv_defer_status_append wrote a .pending-status file for an empty dedup_key" \
+  || pass "cv_defer_status_append wrote nothing for an empty dedup_key"
+
+start_case "9b: an empty dedup_key is refused by cv_defer_status_read_and_clear, returns nothing"
+CV_STATE_DIR="$(fresh_state_dir)"
+empty_key_read_rc=0
+empty_key_out="$(cv_defer_status_read_and_clear "" )" || empty_key_read_rc=$?
+assert_eq "1" "$empty_key_read_rc" "cv_defer_status_read_and_clear refuses an empty dedup_key"
+assert_eq "" "$empty_key_out" "cv_defer_status_read_and_clear prints nothing for an empty dedup_key"
+
+# ===========================================================================
+# CASE 10 — a missing CV_STATE_DIR does not crash either helper; append
+# surfaces the failure (no silent data loss), read_and_clear reports nothing
+# pending (review fk-7bmhlz LOW-3).
+# ===========================================================================
+start_case "10: a missing CV_STATE_DIR does not crash cv_defer_status_append"
+CV_STATE_DIR="${SANDBOX}/does-not-exist-$$-${RANDOM}"
+missing_dir_append_rc=0
+cv_defer_status_append "cv-finalize-acme-missing-dir" "text with no CV_STATE_DIR" || missing_dir_append_rc=$?
+case "$missing_dir_append_rc" in
+  # acquire_lock's own "mkdir -p \${CV_STATE_DIR}/.locks" already creates
+  # CV_STATE_DIR as a pre-existing side effect (not something this fix
+  # changes) — the only thing this case pins is "no crash", any clean exit.
+  0|1) pass "cv_defer_status_append exits 0 or 1 (no crash) when CV_STATE_DIR does not exist (rc=${missing_dir_append_rc})" ;;
+  *) fail "cv_defer_status_append exited abnormally (rc=${missing_dir_append_rc}) when CV_STATE_DIR does not exist" ;;
+esac
+
+start_case "10b: a missing CV_STATE_DIR does not crash cv_defer_status_read_and_clear"
+CV_STATE_DIR="${SANDBOX}/still-does-not-exist-$$-${RANDOM}"
+missing_dir_read_out="$(cv_defer_status_read_and_clear "cv-finalize-acme-missing-dir" 2>&1)"
+missing_dir_read_rc=$?
+assert_eq "0" "$missing_dir_read_rc" "cv_defer_status_read_and_clear exits 0 (no crash) when CV_STATE_DIR does not exist"
+assert_eq "" "$missing_dir_read_out" "cv_defer_status_read_and_clear prints nothing when CV_STATE_DIR does not exist"
+
+# ===========================================================================
+# CASE 11 — real-process concurrency: a REAL backgrounded OS process holding
+# the dedup_key's lock actually blocks a foreground caller in another
+# process, not just an in-process function-override simulation (review
+# fk-7bmhlz LOW-2, QA/test-engineering, carried forward from iteration 2:
+# CASE 6-8 above prove the mechanism by overriding acquire_lock in-process,
+# which can't rule out the lock being process-local rather than a real
+# filesystem-level mutex two separate processes both honor). The background
+# process acquires the SAME lock via the real acquire_lock, holds it for a
+# known ~1s while it appends its own line, then releases — a foreground
+# cv_defer_status_append racing against it is only safe if it genuinely
+# waits on the real, cross-process `mkdir`-based lock in
+# ${CV_STATE_DIR}/.locks, not an in-memory guard scoped to one process.
+# ===========================================================================
+start_case "11: a real background process holding the lock actually blocks a foreground cv_defer_status_append in a different process"
+CV_STATE_DIR="$(fresh_state_dir)"
+CONCURRENCY_KEY="cv-finalize-acme-real-concurrency"
+(
+  # shellcheck disable=SC1090
+  source "$LIB"
+  while ! acquire_lock "$CONCURRENCY_KEY"; do sleep 0.1; done
+  sleep 1
+  printf -- '- background holder appended its line\n' >> "${CV_STATE_DIR}/${CONCURRENCY_KEY}.pending-status"
+  release_lock "$CONCURRENCY_KEY"
+) &
+BG_PID=$!
+sleep 0.2  # give the background process a head start so it holds the lock first
+fg_append_rc=0
+cv_defer_status_append "$CONCURRENCY_KEY" "foreground text appended after the real lock released" || fg_append_rc=$?
+wait "$BG_PID"
+assert_eq "0" "$fg_append_rc" "the foreground append eventually succeeds once the real background holder (a separate OS process) releases the lock"
+final_contents="$(cat "${CV_STATE_DIR}/${CONCURRENCY_KEY}.pending-status" 2>/dev/null)"
+case "$final_contents" in
+  *"background holder appended its line"*"foreground text appended after the real lock released"*)
+    pass "both the background process's and the foreground process's lines are present, in order — the real cross-process lock serialized them" ;;
+  *)
+    fail "expected both lines present in append order, got: ${final_contents}" ;;
+esac
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "ALL CASES PASSED"

@@ -12,10 +12,12 @@
 #     cv_defer_status_append instead of a fresh PR comment.
 #   - AC4: the 4d branch-protection escalation still posts a PR comment and
 #     mails the mayor immediately, unchanged.
-#   - the next aggregated comment (main.rereview-finalize.md) reads and
-#     clears the SAME dedup_key convention ci-repair derives on its own
-#     (cv-finalize-<owner>-<repo>-<pr>), before building that round's
-#     manifest, so the deferred status is never posted twice.
+#   - the next aggregated comment (main.rereview-finalize.md) PEEKS the SAME
+#     dedup_key convention ci-repair derives on its own
+#     (cv-finalize-<owner>-<repo>-<pr>) before building that round's
+#     manifest, and only actually CLEARS it once that round's comment post
+#     is confirmed (review fk-7bmhlz LOW-5), so the deferred status is never
+#     posted twice and never silently lost on a failed post either.
 #
 # Run:  bash tests/con-voyage-ci-repair-defer-status-wiring.test.sh   (exit 0 => all passed)
 
@@ -44,7 +46,7 @@ fail() { echo "  FAIL: $1" >&2; FAILURES=$((FAILURES + 1)); }
 # CASE 1 — con-voyage-lib.sh actually defines the two helpers this suite
 # (and main.ci-repair.md / main.rereview-finalize.md) assume exist.
 # ===========================================================================
-start_case "1: con-voyage-lib.sh defines cv_defer_status_append and cv_defer_status_read_and_clear"
+start_case "1: con-voyage-lib.sh defines cv_defer_status_append, cv_defer_status_peek, and cv_defer_status_read_and_clear"
 if grep -qE '^cv_defer_status_append\(\)' "$CV_LIB"; then
   pass "cv_defer_status_append is defined"
 else
@@ -54,6 +56,14 @@ if grep -qE '^cv_defer_status_read_and_clear\(\)' "$CV_LIB"; then
   pass "cv_defer_status_read_and_clear is defined"
 else
   fail "cv_defer_status_read_and_clear is not defined in con-voyage-lib.sh"
+fi
+# review fk-7bmhlz LOW-5: cv_defer_status_peek is the non-destructive sibling
+# the fold-in fence now uses so a failed later post never silently drops the
+# per-PR record.
+if grep -qE '^cv_defer_status_peek\(\)' "$CV_LIB"; then
+  pass "cv_defer_status_peek is defined"
+else
+  fail "cv_defer_status_peek is not defined in con-voyage-lib.sh"
 fi
 
 # ===========================================================================
@@ -120,23 +130,38 @@ else
 fi
 
 # ===========================================================================
-# CASE 5 — main.rereview-finalize.md reads and clears the deferred status
-# using the SAME finalize-record dedup_key ($FINALIZE_KEY) BEFORE building
-# the round's manifest, so a deferred status is folded into this round's
-# comment, not lost or posted twice.
+# CASE 5 — main.rereview-finalize.md PEEKS the deferred status using the
+# SAME finalize-record dedup_key ($FINALIZE_KEY) BEFORE building the round's
+# manifest, so a deferred status is folded into this round's comment, not
+# lost or posted twice — and only actually CLEARS it (via
+# cv_defer_status_read_and_clear) after that comment post is confirmed
+# (review fk-7bmhlz LOW-5: clearing it up front, before the post is even
+# attempted, meant a failed post silently dropped the record for good — the
+# NEXT round's fold-in could never re-offer what this round already erased).
 # ===========================================================================
-start_case "5: rereview-finalize reads+clears deferred status by \$FINALIZE_KEY before posting"
-if grep -q 'cv_defer_status_read_and_clear "\$FINALIZE_KEY"' "$REREVIEW_FINALIZE_MD"; then
-  pass "rereview-finalize calls cv_defer_status_read_and_clear \"\$FINALIZE_KEY\""
+start_case "5: rereview-finalize peeks deferred status by \$FINALIZE_KEY before posting, clears it only after a confirmed post"
+if grep -q 'cv_defer_status_peek "\$FINALIZE_KEY"' "$REREVIEW_FINALIZE_MD"; then
+  pass "rereview-finalize calls cv_defer_status_peek \"\$FINALIZE_KEY\" in the fold-in fence"
 else
-  fail "rereview-finalize does not call cv_defer_status_read_and_clear \"\$FINALIZE_KEY\""
+  fail "rereview-finalize does not call cv_defer_status_peek \"\$FINALIZE_KEY\""
 fi
-read_line="$(grep -n 'cv_defer_status_read_and_clear' "$REREVIEW_FINALIZE_MD" | head -1 | cut -d: -f1)"
-post_line="$(grep -n 'comment-aggregate "\$PR_NUMBER"' "$REREVIEW_FINALIZE_MD" | head -1 | cut -d: -f1)"
-if [ -n "$read_line" ] && [ -n "$post_line" ] && [ "$read_line" -lt "$post_line" ]; then
-  pass "deferred status is read+cleared before the aggregated comment is posted (line ${read_line} < ${post_line})"
+if grep -q 'cv_defer_status_read_and_clear "\$CLEAR_FINALIZE_KEY"' "$REREVIEW_FINALIZE_MD"; then
+  pass "rereview-finalize calls cv_defer_status_read_and_clear \"\$CLEAR_FINALIZE_KEY\" in the posting fence's confirmed-success path"
 else
-  fail "deferred status read/clear does not precede the aggregated comment post (read_line=${read_line:-?}, post_line=${post_line:-?})"
+  fail "rereview-finalize does not call cv_defer_status_read_and_clear \"\$CLEAR_FINALIZE_KEY\""
+fi
+peek_line="$(grep -n 'cv_defer_status_peek' "$REREVIEW_FINALIZE_MD" | head -1 | cut -d: -f1)"
+post_line="$(grep -n 'comment-aggregate "\$PR_NUMBER"' "$REREVIEW_FINALIZE_MD" | head -1 | cut -d: -f1)"
+if [ -n "$peek_line" ] && [ -n "$post_line" ] && [ "$peek_line" -lt "$post_line" ]; then
+  pass "the deferred status is peeked before the aggregated comment is posted (line ${peek_line} < ${post_line})"
+else
+  fail "the deferred-status peek does not precede the aggregated comment post (peek_line=${peek_line:-?}, post_line=${post_line:-?})"
+fi
+clear_line="$(grep -n 'cv_defer_status_read_and_clear "\$CLEAR_FINALIZE_KEY"' "$REREVIEW_FINALIZE_MD" | head -1 | cut -d: -f1)"
+if [ -n "$clear_line" ] && [ -n "$post_line" ] && [ "$clear_line" -gt "$post_line" ]; then
+  pass "the real clear happens AFTER the aggregated comment post is attempted (line ${clear_line} > ${post_line}), not before"
+else
+  fail "the real clear should happen after the post is attempted (clear_line=${clear_line:-?}, post_line=${post_line:-?})"
 fi
 
 echo
