@@ -168,6 +168,42 @@
 #   "cannot tell" and falls through to this script's PRE-Fix-3 behavior — an
 #   inability to check must never suppress a real re-dispatch.
 #
+# Fix 4 (fk-6rj8zo): SEEN LIVE 2026-10-14 on replicatedhq/vandoor#10644 — 4
+# simultaneously live ci-repair workers, 4 in_progress con-voyage-ci-repair
+# roots, and 14 duplicate "Watchdog re-dispatch" beads on one PR, all in the
+# same shared rig checkout; earlier on that PR, 61+ repair cycles. Root cause
+# in process_state_record()'s use_fallback branch: it called close_if_open on
+# the previously tracked bead but never checked whether that close actually
+# succeeded before minting and slinging a replacement. Under load,
+# close_if_open can time out (cv_with_timeout), warn, and leave the bead
+# open; the per-dedup_key state record only remembers the newest bead, so the
+# orphan is invisible to later cycles and a pool worker can still claim it,
+# giving N live repairs on one PR. Three fixes:
+#
+#   DEFECT 1: check `CV_CLOSE_RC` (set by close_if_open) immediately after
+#   the supersede close. If it is non-zero, skip minting/slinging this cycle
+#   entirely — the attempt counter is left untouched (not a real attempt) —
+#   and retry the close next cycle, same posture as the pre-existing
+#   missing-repair_route guard just above.
+#
+#   DEFECT 2: tag every minted bead with its dedup_key as
+#   `gc.repair_dedup_key` metadata. Before minting a replacement, sweep for
+#   any OTHER open bead carrying that same tag (an orphan DEFECT 1 above
+#   didn't prevent, or that slipped through before this fix existed) and
+#   force-close it, so at most one repair bead per PR is ever open even if a
+#   close failure happens more than once in a row.
+#
+#   DEFECT 3: `is_stale` for a tracked bead with no known implementor now
+#   distinguishes "minted, unclaimed" (bd status "open" — claim latency
+#   under pool contention, generous `CV_UNCLAIMED_STALL_SECONDS` threshold)
+#   from "claimed, no progress" (bd status "in_progress" but this watchdog
+#   has no implementor on record — the normal, shorter `CV_STALL_SECONDS`
+#   threshold). Previously both used `CV_STALL_SECONDS`, so a bead merely
+#   waiting its turn under pool contention could be misread as stalled and
+#   re-dispatched on top of a worker about to claim it anyway (the
+#   secondary cause named in the bead: `CV_STALL_SECONDS` had no claim-
+#   latency allowance).
+#
 # Environment / configuration (all optional with sane defaults):
 #
 #   GC                Path to the gc binary (default: gc)
@@ -191,8 +227,21 @@
 #                     cannot be resolved, the script FAILS CLOSED (exit 1)
 #                     before reading any state record.
 #   CV_STALL_SECONDS  Seconds of no progress (tracked bead `updated_at`
-#                     unchanged) before a rework is considered stalled.
-#                     Default: 900 (15 minutes).
+#                     unchanged) before a rework is considered stalled. Also
+#                     the threshold for a tracked bead that WAS claimed but
+#                     whose claimant this watchdog has not adopted as an
+#                     implementor (bd status "in_progress", no known
+#                     implementor_session — see CV_UNCLAIMED_STALL_SECONDS
+#                     for the bd status "open" case). Default: 900 (15
+#                     minutes).
+#   CV_UNCLAIMED_STALL_SECONDS  Seconds a tracked bead may sit UNCLAIMED
+#                     (bd status "open", no known implementor_session)
+#                     before being treated as stalled (fk-6rj8zo DEFECT 3).
+#                     Deliberately longer than CV_STALL_SECONDS: claim
+#                     latency under pool contention is expected and must
+#                     not be misread as a stalled rework and re-dispatched
+#                     on top of a worker that is about to claim it anyway.
+#                     Default: 1800 (30 minutes).
 #   CV_MAX_ATTEMPTS   Consecutive watchdog re-dispatches allowed for the SAME
 #                     problem cycle before escalating instead. Default: 3.
 #   CV_LOCK_STALE_SECONDS  Seconds after which a held per-dedup_key lock is
@@ -213,6 +262,22 @@
 #                     con-voyage-pr-watch.sh. Default: rebase.
 #   CV_GH_TIMEOUT_SECONDS  Wall-clock bound (via cv_with_timeout) on the Fix 3
 #                     pre-dispatch `gh pr view` recheck. Default: 20.
+#   CV_MAX_ORPHANS_PER_SWEEP  review fk-ewz4un BLOCKING-2: caps how many
+#                     orphaned duplicate beads the DEFECT-2 orphan sweep
+#                     force-closes in a single cycle while holding the
+#                     per-dedup_key lock. Each force-close costs up to
+#                     2*CV_LENS_STORE_TIMEOUT_SECONDS (a bd show plus a bd
+#                     close, both store calls), so an uncapped sweep's worst
+#                     case (N orphans * up to 60s) can exceed
+#                     CV_LOCK_STALE_SECONDS and let a concurrent watchdog
+#                     steal the lock mid-sweep — reproducing the exact
+#                     N-simultaneously-live-repairs incident this watchdog
+#                     exists to close. Orphans beyond the cap are left for a
+#                     later cycle; the sweep already tolerates being re-run.
+#                     Keep CV_MAX_ORPHANS_PER_SWEEP *
+#                     2*CV_LENS_STORE_TIMEOUT_SECONDS comfortably under
+#                     CV_LOCK_STALE_SECONDS. Default: 3 (3*2*30s = 180s, well
+#                     under the default 300s CV_LOCK_STALE_SECONDS).
 #
 # Exit codes:
 #   0 — completed (some, all, or none of the tracked records needed action)
@@ -241,10 +306,18 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/con-voyage-lib.sh"
 CV_STATE_DIR="${CV_STATE_DIR:-$(cv_default_state_dir)}"
 CV_PR_AUTHOR="${CV_PR_AUTHOR:-}"
 CV_STALL_SECONDS="${CV_STALL_SECONDS:-900}"
+CV_UNCLAIMED_STALL_SECONDS="${CV_UNCLAIMED_STALL_SECONDS:-1800}"
 CV_MAX_ATTEMPTS="${CV_MAX_ATTEMPTS:-3}"
 CV_ESCALATE_TARGET="${CV_ESCALATE_TARGET:-human}"
 CV_LOCK_STALE_SECONDS="${CV_LOCK_STALE_SECONDS:-300}"
 CV_GH_TIMEOUT_SECONDS="${CV_GH_TIMEOUT_SECONDS:-20}"
+# Bound on the DEFECT-2 orphan-sweep `bd list`/`bd update` store calls below,
+# same knob and default as every sibling store-enumeration call in this pack
+# (con-voyage-marshal-bead-sweep.sh, con-voyage-orphan-sweep.sh).
+CV_LENS_STORE_TIMEOUT_SECONDS="${CV_LENS_STORE_TIMEOUT_SECONDS:-30}"
+# review fk-ewz4un BLOCKING-2: caps orphan force-closes per sweep cycle —
+# see the header doc above for the lock-hold-time rationale.
+CV_MAX_ORPHANS_PER_SWEEP="${CV_MAX_ORPHANS_PER_SWEEP:-3}"
 # Forwarded, NOT read, by this script (see header) — declared here with the
 # other tunables rather than left as an inline ${..:-default} at each use
 # site, so every configuration knob resolves in one place.
@@ -262,6 +335,9 @@ CV_CONFLICT_STRATEGY="${CV_CONFLICT_STRATEGY:-rebase}"
 case "$CV_STALL_SECONDS" in
   *[!0-9]*|'') CV_STALL_SECONDS="900" ;;
 esac
+case "$CV_UNCLAIMED_STALL_SECONDS" in
+  *[!0-9]*|'') CV_UNCLAIMED_STALL_SECONDS="1800" ;;
+esac
 case "$CV_MAX_ATTEMPTS" in
   *[!0-9]*|'') CV_MAX_ATTEMPTS="3" ;;
 esac
@@ -270,6 +346,12 @@ case "$CV_LOCK_STALE_SECONDS" in
 esac
 case "$CV_GH_TIMEOUT_SECONDS" in
   *[!0-9]*|'') CV_GH_TIMEOUT_SECONDS="20" ;;
+esac
+case "$CV_LENS_STORE_TIMEOUT_SECONDS" in
+  *[!0-9]*|'') CV_LENS_STORE_TIMEOUT_SECONDS="30" ;;
+esac
+case "$CV_MAX_ORPHANS_PER_SWEEP" in
+  *[!0-9]*|'') CV_MAX_ORPHANS_PER_SWEEP="3" ;;
 esac
 
 # ---------------------------------------------------------------------------
@@ -502,19 +584,35 @@ process_state_record() {
       needs_action=1
       use_fallback=1
       action_desc="DEAD"
-    elif is_stale "$tracked_updated_at" "$CV_STALL_SECONDS"; then
-      needs_action=1
-      if [ "$implementor_known" -eq 1 ]; then
+    elif [ "$implementor_known" -eq 1 ]; then
+      if is_stale "$tracked_updated_at" "$CV_STALL_SECONDS"; then
         # Acceptance: "Rework stalled past threshold, implementor alive ->
         # supersede + re-dispatch to same implementor."
+        needs_action=1
         use_fallback=0
         action_desc="STALLED (implementor alive)"
-      else
-        # No implementor was ever known and the fallback bead has sat unclaimed
-        # past the threshold — nobody ever picked it up. Same remedy as a dead
-        # implementor: a fresh fallback dispatch.
+      fi
+    else
+      # fk-6rj8zo DEFECT 3 (claim-latency-aware stall detection): no
+      # implementor is known for this tracked bead. It may be a freshly
+      # minted fallback bead nobody has claimed yet (bd status "open" —
+      # claim latency under pool contention is expected and must not read
+      # as a stalled rework), or one that WAS claimed but whose claimant
+      # this watchdog has not adopted as an implementor (bd status
+      # "in_progress" — claimant adoption is con-voyage-pr-watch.sh's job,
+      # see its own SCOPE NOTE above). An unclaimed bead gets the more
+      # generous CV_UNCLAIMED_STALL_SECONDS threshold; a claimed-but-
+      # unadopted bead still uses the normal CV_STALL_SECONDS progress
+      # threshold, since it has a live worker and "no progress" is the real
+      # signal there, not claim latency.
+      never_claimed_threshold="$CV_STALL_SECONDS"
+      [ "$tracked_status" = "open" ] && never_claimed_threshold="$CV_UNCLAIMED_STALL_SECONDS"
+      if is_stale "$tracked_updated_at" "$never_claimed_threshold"; then
+        # Nobody ever picked it up (or picked it up but made no progress).
+        # Same remedy as a dead implementor: a fresh fallback dispatch.
+        needs_action=1
         use_fallback=1
-        action_desc="STALLED (never claimed)"
+        action_desc="STALLED (no implementor known)"
       fi
     fi
   fi
@@ -610,6 +708,120 @@ process_state_record() {
     # anyway (no lookup is ever made either way).
     close_if_open "$ST_INFLIGHT" "superseded: watchdog reassigning ${label} (${action_desc})" "" "$tracked_status"
 
+    # fk-6rj8zo DEFECT 1: close_if_open is fail-safe (it warns and leaves the
+    # bead open rather than aborting), so its own return value can't be
+    # trusted to tell us whether the supersede actually happened — check
+    # CV_CLOSE_RC (set by close_if_open on every real close attempt) instead.
+    # A non-empty ST_INFLIGHT whose close failed/timed out must NOT be
+    # followed by minting a replacement this cycle: that is exactly how the
+    # old bead was left open and claimable while a fresh lineage got
+    # dispatched on top of it (SEEN LIVE: replicatedhq/vandoor#10644, 4
+    # simultaneously live ci-repair workers on one PR). Leave the attempt
+    # counter untouched — this was not a real attempt — and retry the close
+    # next cycle.
+    if [ -n "${ST_INFLIGHT// /}" ] && [ "${CV_CLOSE_RC:-0}" -ne 0 ]; then
+      echo "con-voyage-repair-watchdog: WARNING: ${label} supersede of ${ST_INFLIGHT} did not complete (close rc=${CV_CLOSE_RC}); not minting a replacement this cycle, will retry the close next cycle" >&2
+      return
+    fi
+
+    # fk-6rj8zo DEFECT 2: catch an orphan that already slipped through a
+    # PRIOR cycle's close failure above (or any other path that left a
+    # duplicate repair bead for this same PR open and claimable, invisible to
+    # this cycle's single-bead ST_INFLIGHT pointer). Every bead this watchdog
+    # and con-voyage-pr-watch.sh mint for a given PR is tagged with the same
+    # gc.repair_dedup_key metadata (tagged on THIS mint below); sweeping and
+    # force-closing every OTHER open-or-in_progress bead carrying that tag
+    # before minting keeps "at most one repair bead per PR is ever open" true
+    # even after a close failure already happened once.
+    #
+    # review fk-wmhr96 BLOCKING-1 (acceptance fk-s0cniq, code-review
+    # fk-7ai3uo BLOCKING-2): the live incident this defect targets
+    # (replicatedhq/vandoor#10644) was simultaneously-live workers that had
+    # already claimed their bead — i.e. status in_progress, not open — so
+    # the sweep must query both statuses, matching every sibling sweep
+    # (con-voyage-marshal-bead-sweep.sh, con-voyage-orphan-sweep.sh). Bound
+    # by cv_with_timeout, same knob/default as those siblings, since this
+    # call runs while holding the per-dedup_key lock (review fk-wmhr96
+    # BLOCKING-5, SRE) and an unbounded read here would turn that lock into a
+    # stall point for the PR under exactly the store-contention load this fix
+    # exists to survive. A `bd list` failure (timeout, bad JSON, gc error) is
+    # logged with a WARNING and skipped — it must never block the real
+    # re-dispatch below.
+    orphan_json="$(cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" \
+      "$GC" --city "$GC_CITY" --rig "$rig" bd list --status open,in_progress \
+      --metadata-field "gc.repair_dedup_key=${dedup_key}" --json --limit 0 2>/dev/null)" || orphan_json=""
+    if [ -z "$orphan_json" ]; then
+      echo "con-voyage-repair-watchdog: WARNING: orphan sweep bd list failed or returned empty for ${label} (dedup_key=${dedup_key}); skipping the sweep this cycle, proceeding with re-dispatch" >&2
+    else
+      # fk-0r3km0 BLOCKING-1: a genuinely valid empty orphan list (`[]`, the
+      # normal "no duplicates" case) and truly unparseable JSON both printed
+      # nothing from the python snippet below, so the two were
+      # indistinguishable and `[]` was misreported as a parse failure on
+      # every clean re-dispatch. Fail loud (sys.exit(2)) on a real parse
+      # error instead of swallowing it into an empty result, drop the
+      # `|| true` that discarded python's exit code, and branch on that exit
+      # code rather than on whether any rows printed — `[]` with exit 0 is
+      # silently fine, only a non-zero exit logs the WARNING.
+      orphan_rows="$(printf '%s' "$orphan_json" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(2)
+if not isinstance(data, list):
+    sys.exit(2)
+for item in data:
+    if isinstance(item, dict) and item.get('id'):
+        print('%s|%s' % (item['id'], item.get('status') or ''))
+")"
+      orphan_parse_rc=$?
+      if [ "$orphan_parse_rc" -ne 0 ]; then
+        echo "con-voyage-repair-watchdog: WARNING: orphan sweep bd list returned unparseable JSON for ${label} (dedup_key=${dedup_key}); skipping the sweep this cycle, proceeding with re-dispatch" >&2
+      elif [ -n "$orphan_rows" ]; then
+        # review fk-wmhr96 BLOCKING-4 (QA/test-engineering fk-5lhtbk,
+        # test-evidence fk-wjpega): close_if_open is fail-safe by design — a
+        # failed force-close logs a WARNING and leaves the bead open rather
+        # than aborting, so its own return value can't be trusted here any
+        # more than it could for the ST_INFLIGHT supersede above. Track
+        # CV_CLOSE_RC across every orphan in the loop and skip minting a
+        # replacement this cycle if any orphan's force-close failed — minting
+        # on top of a still-open, still-claimable orphan reproduces the exact
+        # live-incident shape (N simultaneously-live repair workers on one
+        # PR) this bead exists to close, just reached via this sweep instead
+        # of the main supersede path DEFECT 1 already guards.
+        # review fk-ewz4un BLOCKING-2: bound the number of orphans this cycle
+        # force-closes (CV_MAX_ORPHANS_PER_SWEEP, see header doc) rather than
+        # walking every row unbounded — an uncapped loop over a double-digit
+        # orphan count (the live incident's own shape) can hold the
+        # per-dedup_key lock past CV_LOCK_STALE_SECONDS and let a concurrent
+        # watchdog steal it mid-sweep. Any rows left over are picked up by a
+        # later cycle's sweep, which already tolerates being re-run.
+        orphan_close_failed=0
+        orphan_closed_count=0
+        orphan_capped=0
+        while IFS='|' read -r orphan_id orphan_status; do
+          [ -n "${orphan_id// /}" ] || continue
+          [ "$orphan_id" = "$ST_INFLIGHT" ] && continue
+          if [ "$orphan_closed_count" -ge "$CV_MAX_ORPHANS_PER_SWEEP" ]; then
+            orphan_capped=1
+            continue
+          fi
+          close_if_open "$orphan_id" "superseded: orphaned duplicate repair bead for ${label} (dedup_key=${dedup_key})" "" "$orphan_status" "1"
+          orphan_closed_count=$((orphan_closed_count + 1))
+          if [ "${CV_CLOSE_RC:-0}" -ne 0 ]; then
+            orphan_close_failed=1
+          fi
+        done <<< "$orphan_rows"
+        if [ "$orphan_capped" -eq 1 ]; then
+          echo "con-voyage-repair-watchdog: ${label} orphan sweep hit the CV_MAX_ORPHANS_PER_SWEEP cap (${CV_MAX_ORPHANS_PER_SWEEP}, dedup_key=${dedup_key}); remaining orphans left for a later cycle" >&2
+        fi
+        if [ "$orphan_close_failed" -eq 1 ]; then
+          echo "con-voyage-repair-watchdog: WARNING: ${label} orphan-sweep force-close of at least one duplicate (dedup_key=${dedup_key}) did not complete; not minting a replacement this cycle, will retry the sweep next cycle" >&2
+          return
+        fi
+      fi
+    fi
+
     new_bead_id=$("$GC" --city "$GC_CITY" --rig "$rig" bd create \
       "Watchdog re-dispatch: GitHub PR ${label} (${ST_LAST_STATE})" \
       --priority 1 --silent 2>/dev/null || true)
@@ -618,6 +830,28 @@ process_state_record() {
       echo "con-voyage-repair-watchdog: WARNING: failed to create a fallback repair bead for ${label}; will retry next cycle" >&2
       return
     fi
+
+    # Tag the freshly-minted bead with its dedup_key (fk-6rj8zo DEFECT 2) so
+    # a FUTURE cycle's orphan sweep (above) can find and force-close it if it
+    # is ever superseded-but-not-actually-closed the same way. A failed tag
+    # is logged but not fatal — the mint/sling below still proceeds; worst
+    # case a later orphan sweep simply can't see this one bead by tag (same
+    # exposure as before this fix existed).
+    #
+    # review fk-wmhr96 BLOCKING-2 (acceptance fk-s0cniq, code-review
+    # fk-7ai3uo BLOCKING-1): scope with --city/--rig like every sibling gc
+    # call in this block (bd list above, bd create above, sling below).
+    # Cross-rig repair routing is the normal case (rig is parsed from
+    # ST_REPAIR_ROUTE and commonly differs from the watchdog's own
+    # city/rig) — an unscoped bd update can route to the wrong store,
+    # leaving the newly minted bead untagged in its real target rig, which
+    # defeats this sweep's own mechanism for the watchdog's own mints.
+    # review fk-wmhr96 LOW-3 (SRE): also bound by cv_with_timeout, folded
+    # into this same fix pass since the line is already being touched for
+    # the scoping fix above.
+    cv_with_timeout "$CV_LENS_STORE_TIMEOUT_SECONDS" \
+      "$GC" --city "$GC_CITY" --rig "$rig" bd update "$new_bead_id" --set-metadata "gc.repair_dedup_key=${dedup_key}" >/dev/null 2>&1 \
+      || echo "con-voyage-repair-watchdog: WARNING: failed to tag ${new_bead_id} with gc.repair_dedup_key=${dedup_key}; a future orphan sweep for ${label} will not find it by tag" >&2
 
     if "$GC" --city "$GC_CITY" sling "$ST_REPAIR_ROUTE" "$new_bead_id" \
       --on con-voyage-ci-repair \
