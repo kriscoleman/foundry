@@ -46,16 +46,21 @@ fail() { echo "  FAIL: $1" >&2; FAILURES=$((FAILURES + 1)); }
 # CASE 1 — con-voyage-lib.sh actually defines the two helpers this suite
 # (and main.ci-repair.md / main.rereview-finalize.md) assume exist.
 # ===========================================================================
-start_case "1: con-voyage-lib.sh defines cv_defer_status_append, cv_defer_status_peek, and cv_defer_status_read_and_clear"
+start_case "1: con-voyage-lib.sh defines cv_defer_status_append, cv_defer_status_peek, and cv_defer_status_clear_through"
 if grep -qE '^cv_defer_status_append\(\)' "$CV_LIB"; then
   pass "cv_defer_status_append is defined"
 else
   fail "cv_defer_status_append is not defined in con-voyage-lib.sh"
 fi
-if grep -qE '^cv_defer_status_read_and_clear\(\)' "$CV_LIB"; then
-  pass "cv_defer_status_read_and_clear is defined"
+# review fk-z6rts BLOCKING-1 (iteration 2): cv_defer_status_read_and_clear's
+# blind cat+rm raced a concurrent append landing between a peek and a later
+# confirmed post; cv_defer_status_clear_through replaces it as the posting
+# fence's own clear call, clearing only the exact content that was actually
+# peeked and posted.
+if grep -qE '^cv_defer_status_clear_through\(\)' "$CV_LIB"; then
+  pass "cv_defer_status_clear_through is defined"
 else
-  fail "cv_defer_status_read_and_clear is not defined in con-voyage-lib.sh"
+  fail "cv_defer_status_clear_through is not defined in con-voyage-lib.sh"
 fi
 # review fk-7bmhlz LOW-5: cv_defer_status_peek is the non-destructive sibling
 # the fold-in fence now uses so a failed later post never silently drops the
@@ -134,10 +139,12 @@ fi
 # SAME finalize-record dedup_key ($FINALIZE_KEY) BEFORE building the round's
 # manifest, so a deferred status is folded into this round's comment, not
 # lost or posted twice — and only actually CLEARS it (via
-# cv_defer_status_read_and_clear) after that comment post is confirmed
-# (review fk-7bmhlz LOW-5: clearing it up front, before the post is even
-# attempted, meant a failed post silently dropped the record for good — the
-# NEXT round's fold-in could never re-offer what this round already erased).
+# cv_defer_status_clear_through, which clears only the exact content that
+# was peeked and posted, review fk-z6rts BLOCKING-1) after that comment
+# post is confirmed (review fk-7bmhlz LOW-5: clearing it up front, before
+# the post is even attempted, meant a failed post silently dropped the
+# record for good — the NEXT round's fold-in could never re-offer what this
+# round already erased).
 # ===========================================================================
 start_case "5: rereview-finalize peeks deferred status by \$FINALIZE_KEY before posting, clears it only after a confirmed post"
 if grep -q 'cv_defer_status_peek "\$FINALIZE_KEY"' "$REREVIEW_FINALIZE_MD"; then
@@ -145,10 +152,10 @@ if grep -q 'cv_defer_status_peek "\$FINALIZE_KEY"' "$REREVIEW_FINALIZE_MD"; then
 else
   fail "rereview-finalize does not call cv_defer_status_peek \"\$FINALIZE_KEY\""
 fi
-if grep -q 'cv_defer_status_read_and_clear "\$CLEAR_FINALIZE_KEY"' "$REREVIEW_FINALIZE_MD"; then
-  pass "rereview-finalize calls cv_defer_status_read_and_clear \"\$CLEAR_FINALIZE_KEY\" in the posting fence's confirmed-success path"
+if grep -q 'cv_defer_status_clear_through "\$CLEAR_FINALIZE_KEY"' "$REREVIEW_FINALIZE_MD"; then
+  pass "rereview-finalize calls cv_defer_status_clear_through \"\$CLEAR_FINALIZE_KEY\" in the posting fence's confirmed-success path"
 else
-  fail "rereview-finalize does not call cv_defer_status_read_and_clear \"\$CLEAR_FINALIZE_KEY\""
+  fail "rereview-finalize does not call cv_defer_status_clear_through \"\$CLEAR_FINALIZE_KEY\""
 fi
 peek_line="$(grep -n 'cv_defer_status_peek' "$REREVIEW_FINALIZE_MD" | head -1 | cut -d: -f1)"
 post_line="$(grep -n 'comment-aggregate "\$PR_NUMBER"' "$REREVIEW_FINALIZE_MD" | head -1 | cut -d: -f1)"
@@ -157,7 +164,7 @@ if [ -n "$peek_line" ] && [ -n "$post_line" ] && [ "$peek_line" -lt "$post_line"
 else
   fail "the deferred-status peek does not precede the aggregated comment post (peek_line=${peek_line:-?}, post_line=${post_line:-?})"
 fi
-clear_line="$(grep -n 'cv_defer_status_read_and_clear "\$CLEAR_FINALIZE_KEY"' "$REREVIEW_FINALIZE_MD" | head -1 | cut -d: -f1)"
+clear_line="$(grep -n 'cv_defer_status_clear_through "\$CLEAR_FINALIZE_KEY"' "$REREVIEW_FINALIZE_MD" | head -1 | cut -d: -f1)"
 if [ -n "$clear_line" ] && [ -n "$post_line" ] && [ "$clear_line" -gt "$post_line" ]; then
   pass "the real clear happens AFTER the aggregated comment post is attempted (line ${clear_line} > ${post_line}), not before"
 else

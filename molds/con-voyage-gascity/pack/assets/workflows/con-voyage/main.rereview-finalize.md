@@ -107,29 +107,14 @@ CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
 CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
 [ -f "$CV_LIB" ] || CV_LIB=""
 
-ROOT_ID="${GC_ROOT_BEAD_ID:-}"
-if [ -z "$ROOT_ID" ]; then
-  if [ -n "$CV_LIB" ]; then
-    ROOT_ID="$(source "$CV_LIB" && cv_with_timeout "${CV_LENS_STORE_TIMEOUT_SECONDS:-30}" gc bd show "$GC_BEAD_ID" --json 2>/dev/null | python3 -c "
-import json, sys
-try:
-    d = json.load(sys.stdin)
-    d = d[0] if isinstance(d, list) else d
-except Exception:
-    d = {}
-print((d.get('metadata') or {}).get('gc.root_bead_id') or '')
-" 2>/dev/null)"
-  else
-    ROOT_ID="$(gc bd show "$GC_BEAD_ID" --json 2>/dev/null | python3 -c "
-import json, sys
-try:
-    d = json.load(sys.stdin)
-    d = d[0] if isinstance(d, list) else d
-except Exception:
-    d = {}
-print((d.get('metadata') or {}).get('gc.root_bead_id') or '')
-" 2>/dev/null)"
-  fi
+# review fk-z6rts BLOCKING-2 (iteration 2, QA/test-engineering): resolve via
+# the shared cv_step_root_bead_id helper (GC_ROOT_BEAD_ID env var, else a
+# timeout-bounded live lookup) so this fence and the posting fence below
+# cannot drift onto two different fallback behaviors again.
+if [ -n "$CV_LIB" ]; then
+  ROOT_ID="$(source "$CV_LIB" && cv_step_root_bead_id "$GC_BEAD_ID")"
+else
+  ROOT_ID="${GC_ROOT_BEAD_ID:-$GC_BEAD_ID}"
 fi
 [ -n "$ROOT_ID" ] || ROOT_ID="$GC_BEAD_ID"
 
@@ -220,13 +205,39 @@ if [ -n "${CV_BIN:-}" ]; then
     [ -n "$CLEAR_CV_LIB" ] && [ -f "$CLEAR_CV_LIB" ] || CLEAR_CV_LIB="${GC_CITY:-.}/packs/con-voyage/assets/scripts/con-voyage-lib.sh"
     [ -f "$CLEAR_CV_LIB" ] || CLEAR_CV_LIB=""
     if [ -n "$CLEAR_CV_LIB" ]; then
-      CLEAR_ROOT_ID="${GC_ROOT_BEAD_ID:-}"
-      [ -n "$CLEAR_ROOT_ID" ] || CLEAR_ROOT_ID="$GC_BEAD_ID"
+      # review fk-z6rts BLOCKING-2 (iteration 2): same shared helper the
+      # fold-in fence above uses. This fence's own `gc bd show` fallback was
+      # missing outright, so CLEAR_ROOT_ID silently resolved to this
+      # rereview-finalize STEP bead (which carries no gc.var.finalize_key)
+      # instead of the workflow root whenever GC_ROOT_BEAD_ID did not
+      # survive into this separately-invoked fence — silently skipping the
+      # clear on every successful post in the realistic production case.
+      CLEAR_ROOT_ID="$(source "$CLEAR_CV_LIB" && cv_step_root_bead_id "$GC_BEAD_ID")"
       CLEAR_FINALIZE_KEY="$(source "$CLEAR_CV_LIB" && cv_bead_metadata "$CLEAR_ROOT_ID" gc.var.finalize_key)"
       CLEAR_CV_STATE_DIR="$(source "$CLEAR_CV_LIB" && cv_default_state_dir)"
       [ -n "$CLEAR_CV_STATE_DIR" ] || CLEAR_CV_STATE_DIR="${GC_CITY:-.}/.gc/cv-pr-watch"
       if [ -n "$CLEAR_FINALIZE_KEY" ]; then
-        (export CV_STATE_DIR="$CLEAR_CV_STATE_DIR"; source "$CLEAR_CV_LIB" && cv_defer_status_read_and_clear "$CLEAR_FINALIZE_KEY" >/dev/null)
+        # review fk-z6rts BLOCKING-1 (iteration 2): clear only the content
+        # this round's fold-in fence actually peeked and just included in
+        # the post confirmed above — never whatever is in the file at clear
+        # time. A concurrent con-voyage-ci-repair append landing in the
+        # (network-call-length) window between that peek and this confirmed
+        # post must survive into the NEXT round's peek, not be silently
+        # destroyed by a blind read_and_clear here. The fold-in fence above
+        # wrote the exact peeked content to ci-repair-status.md (under the
+        # same rig-root/root-bead-id-keyed build dir) whenever it peeked
+        # something non-empty; re-read that file here as the expected
+        # content to clear through.
+        CLEAR_RIG_ROOT="${GC_RIG_ROOT:-}"
+        [ -n "$CLEAR_RIG_ROOT" ] || CLEAR_RIG_ROOT="$(source "$CLEAR_CV_LIB" && cv_default_rig_root)"
+        [ -n "$CLEAR_RIG_ROOT" ] || CLEAR_RIG_ROOT="${GC_CITY:-.}"
+        CLEAR_EXPECTED_FILE="${CLEAR_RIG_ROOT}/.gc/build/${CLEAR_ROOT_ID}/ci-repair-status.md"
+        CLEAR_EXPECTED_CONTENT=""
+        [ -f "$CLEAR_EXPECTED_FILE" ] && CLEAR_EXPECTED_CONTENT="$(cat "$CLEAR_EXPECTED_FILE")"
+        if [ -n "$CLEAR_EXPECTED_CONTENT" ]; then
+          (export CV_STATE_DIR="$CLEAR_CV_STATE_DIR"; source "$CLEAR_CV_LIB" && cv_defer_status_clear_through "$CLEAR_FINALIZE_KEY" "$CLEAR_EXPECTED_CONTENT" >/dev/null) \
+            || echo "con-voyage rereview-finalize: WARNING: deferred ci-repair status at ${CLEAR_FINALIZE_KEY} changed since this round's peek — leaving it untouched for the next round rather than risk dropping unposted content" >&2
+        fi
       fi
     fi
   fi

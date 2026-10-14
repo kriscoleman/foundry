@@ -328,6 +328,12 @@ cv_defer_status_append "$FINALIZE_KEY_VAL" "ci-repair: a second deferred status,
   || { echo "FATAL: could not seed a deferred status for the posting-fence cases" >&2; exit 2; }
 POSTING_PENDING_FILE="${CV_STATE_DIR}/${FINALIZE_KEY_VAL}.pending-status"
 [ -f "$POSTING_PENDING_FILE" ] || { echo "FATAL: expected ${POSTING_PENDING_FILE} to exist after seeding" >&2; exit 2; }
+# review fk-z6rts BLOCKING-1 (iteration 2): the posting fence now clears
+# only the exact content the fold-in fence peeked and wrote to
+# ci-repair-status.md, not whatever is in the pending-status file at clear
+# time — simulate what the fold-in fence would have done by peeking and
+# writing that same content here.
+cv_defer_status_peek "$FINALIZE_KEY_VAL" > "${CV_BUILD_DIR}/ci-repair-status.md"
 
 POSTING_OUT_OK="$(run_posting_fence "1")"
 echo "$POSTING_OUT_OK"
@@ -341,6 +347,7 @@ start_case "the posting fence leaves the deferred ci-repair pending-status untou
 cv_defer_status_append "$FINALIZE_KEY_VAL" "ci-repair: a third deferred status, for the failed-post case" \
   || { echo "FATAL: could not re-seed a deferred status for the failed-post case" >&2; exit 2; }
 [ -f "$POSTING_PENDING_FILE" ] || { echo "FATAL: expected ${POSTING_PENDING_FILE} to exist after re-seeding" >&2; exit 2; }
+cv_defer_status_peek "$FINALIZE_KEY_VAL" > "${CV_BUILD_DIR}/ci-repair-status.md"
 
 POSTING_OUT_FAIL="$(run_posting_fence "0")"
 echo "$POSTING_OUT_FAIL"
@@ -350,6 +357,112 @@ else
   fail "the pending-status file was removed even though the post FAILED — this is exactly the data-loss fk-7bmhlz LOW-5 flags"
 fi
 rm -f "$POSTING_PENDING_FILE"
+
+# ===========================================================================
+# CASE 5 — review fk-z6rts BLOCKING-2 (iteration 2, QA/test-engineering): the
+# posting fence's CLEAR_ROOT_ID resolution must fall back to a live `gc bd
+# show` lookup, the same way the fold-in fence already does, when
+# GC_ROOT_BEAD_ID is unset — the realistic production case per the fold-in
+# fence's own comments. Before this fix, CLEAR_ROOT_ID fell straight to
+# GC_BEAD_ID (the step bead, which carries no gc.var.finalize_key), so
+# CLEAR_FINALIZE_KEY resolved empty and the entire clear block was skipped
+# even on a confirmed successful post.
+# ===========================================================================
+start_case "the posting fence resolves the workflow root and clears even when GC_ROOT_BEAD_ID is unset"
+cv_defer_status_append "$FINALIZE_KEY_VAL" "ci-repair: a fourth deferred status, for the unset-GC_ROOT_BEAD_ID case" \
+  || { echo "FATAL: could not re-seed a deferred status for the unset-root case" >&2; exit 2; }
+[ -f "$POSTING_PENDING_FILE" ] || { echo "FATAL: expected ${POSTING_PENDING_FILE} to exist after re-seeding" >&2; exit 2; }
+cv_defer_status_peek "$FINALIZE_KEY_VAL" > "${CV_BUILD_DIR}/ci-repair-status.md"
+
+run_posting_fence_no_root() {
+  (
+    cd "$ISOLATED_DIR" && \
+    env -i \
+      PATH="${POSTING_STUB_DIR}:/usr/bin:/bin" \
+      HOME="${HOME:-/tmp}" \
+      GC_BEAD_ID="fk-bead" \
+      GC_CITY="$ISOLATED_DIR" \
+      GC_RIG_ROOT="$ISOLATED_DIR" \
+      CV_LIB="${ISOLATED_DIR}/packs/con-voyage/assets/scripts/con-voyage-lib.sh" \
+      CV_PACK_ROOT="${ISOLATED_DIR}/packs/con-voyage" \
+      PR_NUMBER="42" \
+      REPO_FULL="owner/repo" \
+      REVIEW_ROUND="2" \
+      STUB_CV_PR_COMMENT_SUCCEED="1" \
+      bash "$POSTING_RUN_SCRIPT" 2>&1
+  )
+}
+# POSTING_STUB_DIR's gc stub (above) only answers "bd show fk-bead" via the
+# FOLD-IN stub, not the posting stub — extend it to answer the step bead too,
+# the same way the fold-in CASE 1 stub does, so CLEAR_ROOT_ID's live-lookup
+# fallback has something real to resolve against.
+cat > "$POSTING_STUB_DIR/gc" <<STUB
+#!/usr/bin/env bash
+if [ "\$1" = "mail" ] && [ "\$2" = "send" ]; then
+  echo "MAIL \$*" >> "${WORKDIR}/mail.log"
+  exit 0
+fi
+if [ "\$1" = "bd" ] && [ "\$2" = "show" ]; then
+  id="\$3"
+  case "\$id" in
+    fk-bead)
+      echo '{"id":"fk-bead","metadata":{"gc.root_bead_id":"${ROOT_ID_VAL}"}}'
+      ;;
+    "${ROOT_ID_VAL}")
+      echo '{"id":"${ROOT_ID_VAL}","metadata":{"gc.var.finalize_key":"${FINALIZE_KEY_VAL}"}}'
+      ;;
+    *)
+      echo '{}'
+      ;;
+  esac
+  exit 0
+fi
+echo "gc-posting-stub: unexpected invocation: \$*" >&2
+exit 1
+STUB
+chmod +x "$POSTING_STUB_DIR/gc"
+
+POSTING_OUT_NO_ROOT="$(run_posting_fence_no_root)"
+echo "$POSTING_OUT_NO_ROOT"
+if [ -f "$POSTING_PENDING_FILE" ]; then
+  fail "the pending-status file still exists after a CONFIRMED post with GC_ROOT_BEAD_ID unset — CLEAR_ROOT_ID failed to resolve the workflow root via the live-lookup fallback"
+else
+  pass "the pending-status file was cleared on a confirmed post even with GC_ROOT_BEAD_ID unset, via the same live-lookup fallback the fold-in fence uses"
+fi
+
+# ===========================================================================
+# CASE 6 — review fk-z6rts BLOCKING-1 (iteration 2), end-to-end through the
+# real posting fence: a status appended AFTER the fold-in fence's peek (the
+# realistic window is the live network call posting the aggregate comment)
+# must survive the clear, not be destroyed along with the already-posted
+# content.
+# ===========================================================================
+start_case "the posting fence preserves a status appended after the fold-in fence's peek (the peek-then-post-then-clear race)"
+cv_defer_status_append "$FINALIZE_KEY_VAL" "ci-repair: status present at peek time" \
+  || { echo "FATAL: could not seed a deferred status for the race case" >&2; exit 2; }
+# Simulate the fold-in fence having peeked exactly this content earlier.
+cv_defer_status_peek "$FINALIZE_KEY_VAL" > "${CV_BUILD_DIR}/ci-repair-status.md"
+# Simulate a concurrent con-voyage-ci-repair run appending a NEW status in
+# the window between that peek and this round's aggregate-comment post
+# (which the stub below answers instantly, but in production is a real,
+# seconds-long GitHub network call).
+cv_defer_status_append "$FINALIZE_KEY_VAL" "ci-repair: status appended after the peek, while the post was still in flight" \
+  || { echo "FATAL: could not append the race-case status" >&2; exit 2; }
+
+POSTING_OUT_RACE="$(run_posting_fence "1")"
+echo "$POSTING_OUT_RACE"
+RACE_REMAINING="$(cat "$POSTING_PENDING_FILE" 2>/dev/null)"
+case "$RACE_REMAINING" in
+  *"status present at peek time"*)
+    fail "the already-posted status was left behind after the clear (got: ${RACE_REMAINING})" ;;
+esac
+case "$RACE_REMAINING" in
+  *"status appended after the peek, while the post was still in flight"*)
+    pass "the status appended after the peek survived the clear, intact for the next round's peek" ;;
+  *)
+    fail "the status appended after the peek was destroyed by the clear (got: ${RACE_REMAINING})" ;;
+esac
+rm -f "$POSTING_PENDING_FILE" "${CV_BUILD_DIR}/ci-repair-status.md"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
