@@ -53,20 +53,10 @@ the root's own status before gathering any review context:
 
 ```bash
 ROOT_ID="${GC_ROOT_BEAD_ID:-$GC_BEAD_ID}"
-ROOT_BEAD_STATUS=""
 if [ -n "$CV_LIB" ]; then
-  IFS=$'\x1f' read -r ROOT_BEAD_STATUS _ <<< "$(source "$CV_LIB" && bead_status "$ROOT_ID" id)"
-fi
-if [ "$ROOT_BEAD_STATUS" = "closed" ]; then
-  echo "setup-con-voyage-review: workflow root ${ROOT_ID} is already closed — abandoning this step and any pending descendants, minting nothing" >&2
-  if [ -n "$CV_LIB" ]; then
-    source "$CV_LIB" && cv_close_workflow_root "$ROOT_ID" "workflow root already closed before setup-con-voyage-review ran; aborting, minting nothing"
+  if source "$CV_LIB" && cv_root_closed_guard "$ROOT_ID" "$CLAIMED_BEAD_ID" "setup-con-voyage-review" "do"; then
+    exit 0
   fi
-  bd update "$CLAIMED_BEAD_ID" \
-    --set-metadata 'gc.outcome=skipped' \
-    --set-metadata 'gc.skip_reason=workflow root already closed'
-  bd close "$CLAIMED_BEAD_ID" --reason 'Skipped: workflow root already closed, nothing to do.'
-  exit 0
 fi
 ```
 

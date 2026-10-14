@@ -65,7 +65,21 @@ below both note — but it is always logged and escalated, never silently
 absorbed:
 
 ```bash
-REMOTE_HEAD_SHA="$(git ls-remote origin "refs/pull/${PR_NUMBER}/head" 2>/dev/null | cut -f1)"
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
+
+# review fk-eruo3s LOW-4: this push-safety check had no wall-clock bound — a
+# hung remote read would stall finalize (and the one-time comment post below)
+# indefinitely instead of failing safe.
+if [ -n "$CV_LIB" ]; then
+  LS_REMOTE_OUT="$(source "$CV_LIB" && cv_with_timeout 30 git ls-remote origin "refs/pull/${PR_NUMBER}/head" 2>/dev/null)"
+else
+  LS_REMOTE_OUT="$(git ls-remote origin "refs/pull/${PR_NUMBER}/head" 2>/dev/null)"
+fi
+REMOTE_HEAD_SHA="$(printf '%s' "$LS_REMOTE_OUT" | cut -f1)"
 PR_MOVED="false"
 if [ -n "$PR_HEAD_SHA_SEEDED" ] && [ -n "$REMOTE_HEAD_SHA" ] && [ "$PR_HEAD_SHA_SEEDED" != "$REMOTE_HEAD_SHA" ]; then
   PR_MOVED="true"

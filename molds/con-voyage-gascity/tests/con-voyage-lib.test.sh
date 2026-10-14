@@ -196,6 +196,27 @@ if [ "${args[$i]:-}" = "bd" ] && [ "${args[$((i+1))]:-}" = "update" ]; then
   if [ "${!var:-0}" = "1" ]; then
     exit 1
   fi
+  # review fk-eruo3s LOW-6: STUB_BDUPDATE_FAIL_FIRST_N_<id>=N simulates a
+  # persist that fails on its first N attempts then succeeds — distinct from
+  # STUB_BDUPDATE_FAIL_<id>, which fails every attempt forever. Mirrors the
+  # STUB_BDCLOSE_FAIL_FIRST_N_<id>/STUB_BDCLOSE_COUNTER_DIR pattern above.
+  # Requires STUB_BDUPDATE_COUNTER_DIR for the per-id attempt count.
+  var="STUB_BDUPDATE_FAIL_FIRST_N_${id//-/_}"
+  fail_first_n="${!var:-0}"
+  if [ "$fail_first_n" -gt 0 ] 2>/dev/null; then
+    attempt=1
+    if [ -n "${STUB_BDUPDATE_COUNTER_DIR:-}" ]; then
+      mkdir -p "$STUB_BDUPDATE_COUNTER_DIR"
+      counter_file="${STUB_BDUPDATE_COUNTER_DIR}/${id}"
+      attempt=0
+      [ -f "$counter_file" ] && attempt="$(cat "$counter_file")"
+      attempt=$((attempt+1))
+      echo "$attempt" > "$counter_file"
+    fi
+    if [ "$attempt" -le "$fail_first_n" ]; then
+      exit 1
+    fi
+  fi
   exit 0
 fi
 exit 0
@@ -242,6 +263,10 @@ export STUB_SWEEP_COUNTER_FILE="${SANDBOX}/sweep_count"
 # Per-id close-attempt counter directory for STUB_BDCLOSE_FAIL_FIRST_N_<id>
 # (fk-dgia1g) — see the stub's "bd close" handler above.
 export STUB_BDCLOSE_COUNTER_DIR="${SANDBOX}/close_counts"
+
+# Per-id update-attempt counter directory for STUB_BDUPDATE_FAIL_FIRST_N_<id>
+# (review fk-eruo3s LOW-6) — see the stub's "bd update" handler above.
+export STUB_BDUPDATE_COUNTER_DIR="${SANDBOX}/update_counts"
 
 # shellcheck source=../pack/assets/scripts/con-voyage-lib.sh
 source "$LIB"
@@ -523,6 +548,18 @@ assert_log_count 'bd update fk-once2 --set-metadata gc\.review_escort\.comment_p
 assert_log_count 'bd update fk-once2 --set-metadata gc\.review_escort\.comment_posted_unpersisted=true' 1 "stamps a durable unpersisted flag once retries are exhausted"
 assert_eq "1" "$(grep -c 'failed to persist gc.review_escort.comment_posted=true' "${SANDBOX}/claim_once_fail.stderr")" "warns on stderr about the exhausted persist retries"
 unset STUB_BDSHOW_JSON_fk_once2 STUB_BDUPDATE_FAIL_fk_once2
+
+start_case "cv_claim_once: persist fails once, succeeds on retry -> returns the genuine claim value, not claim-unpersisted (review fk-eruo3s LOW-6)"
+: > "$GC_LOG"
+unset STUB_BDSHOW_JSON_fk_once3
+rm -rf "$STUB_BDUPDATE_COUNTER_DIR"
+export STUB_BDUPDATE_FAIL_FIRST_N_fk_once3=1
+claim_result="$(cv_claim_once "fk-once3" "gc.review_escort.comment_posted" 2>"${SANDBOX}/claim_once_retry.stderr")"
+assert_eq "claim" "$claim_result" "a persist that sticks on retry returns the genuine 'claim' value, not claim-unpersisted"
+assert_log_count 'bd update fk-once3 --set-metadata gc\.review_escort\.comment_posted=true' 2 "retries once (fails) then succeeds on the second attempt"
+assert_log_count 'bd update fk-once3 --set-metadata gc\.review_escort\.comment_posted_unpersisted=true' 0 "never stamps the unpersisted marker once a retry actually sticks"
+unset STUB_BDSHOW_JSON_fk_once3 STUB_BDUPDATE_FAIL_FIRST_N_fk_once3
+rm -rf "$STUB_BDUPDATE_COUNTER_DIR"
 
 # ---------------------------------------------------------------------------
 # cv_flatten_roster_vars_from_json / cv_flatten_roster_vars (fk-pubvq roster
@@ -1886,6 +1923,51 @@ else
   FAILURES=$((FAILURES+1))
 fi
 unset STUB_BDLIST_SWEEP_HANG_SECONDS CV_LENS_STORE_TIMEOUT_SECONDS
+
+# ---------------------------------------------------------------------------
+# cv_root_closed_guard (review fk-eruo3s LOW-3): shared "is the workflow root
+# already closed" entry guard, extracted from six near-identical inline
+# copies in main.review-escort-loop.md, main.con-voyage-review-loop.md,
+# main.build.md, main.apply-review-findings.md,
+# main.setup-con-voyage-review.md, and main.synthesize-review.md.
+# ---------------------------------------------------------------------------
+start_case "cv_root_closed_guard: root open -> returns false, no bd update/close calls at all"
+export STUB_BDSHOW_JSON_fk_rootopen='{"id":"fk-rootopen","status":"open","metadata":{},"dependencies":[]}'
+: > "$GC_LOG"
+if cv_root_closed_guard "fk-rootopen" "fk-claimedopen" "test step" "do a thing" 2>/dev/null; then
+  echo "  FAIL: expected a non-zero (false) return for an open root" >&2
+  FAILURES=$((FAILURES+1))
+else
+  echo "  PASS: returns false for an open root"
+fi
+assert_log_count 'bd (update|close)' 0 "an open root triggers no bd update/close calls at all"
+unset STUB_BDSHOW_JSON_fk_rootopen
+
+start_case "cv_root_closed_guard: unresolvable root status (bd show returns nothing) -> returns false, falls through like an open root rather than 'confirmed closed'"
+: > "$GC_LOG"
+if cv_root_closed_guard "fk-rootunknown" "fk-claimedunknown" "test step" "do a thing" 2>/dev/null; then
+  echo "  FAIL: expected a non-zero (false) return for an unknown root status" >&2
+  FAILURES=$((FAILURES+1))
+else
+  echo "  PASS: an unknown status falls through exactly like an open root"
+fi
+assert_log_count 'bd (update|close)' 0 "an unresolvable root status triggers no bd update/close calls"
+
+start_case "cv_root_closed_guard: root closed -> returns true, sweeps the tree, and closes the claimed bead as skipped"
+export STUB_BDSHOW_JSON_fk_rootclosed='{"id":"fk-rootclosed","status":"closed","metadata":{},"dependencies":[]}'
+rm -f "$STUB_SWEEP_COUNTER_FILE"
+: > "$GC_LOG"
+GUARD_STDERR="${SANDBOX}/root_closed_guard.stderr"
+if cv_root_closed_guard "fk-rootclosed" "fk-claimedclosed" "test step" "do a thing" 2>"$GUARD_STDERR"; then
+  echo "  PASS: returns true once the root reads back closed"
+else
+  echo "  FAIL: expected a zero (true) return for a closed root" >&2
+  FAILURES=$((FAILURES+1))
+fi
+assert_eq "1" "$(grep -c 'workflow root fk-rootclosed is already closed' "$GUARD_STDERR")" "logs the abandon line naming the root and step label"
+assert_log_count 'bd update fk-claimedclosed --set-metadata gc\.outcome=skipped' 1 "stamps gc.outcome=skipped on the claimed bead exactly once"
+assert_log_count 'bd close fk-claimedclosed --reason Skipped: workflow root already closed, nothing to do a thing\.' 1 "closes the claimed bead with a reason naming the caller-supplied noop noun"
+unset STUB_BDSHOW_JSON_fk_rootclosed
 
 start_case "close_if_open: the bd close call itself is bounded by a timeout, not left to hang (fk-0ks7ui, review fk-sku8km BLOCKING-1)"
 export STUB_BDCLOSE_HANG_SECONDS=5

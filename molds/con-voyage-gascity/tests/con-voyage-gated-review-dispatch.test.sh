@@ -91,8 +91,8 @@ assert_order "$BUILD_MD" '## Abandon the workflow on a terminal build failure (f
 start_case "build.md: a root already closed before this build attempt even starts mints nothing (fk-jg6rm)"
 assert_contains "$BUILD_MD" '## Fail fast if the workflow root is already closed (fk-jg6rm)' \
   "a root-closed entry guard exists"
-assert_contains "$BUILD_MD" "cv_close_workflow_root \"\$ROOT_ID\" \"workflow root already closed" \
-  "the entry guard sweeps any pending descendants instead of just exiting"
+assert_contains "$BUILD_MD" 'cv_root_closed_guard "$ROOT_ID" "$CLAIMED_BEAD_ID" "build" "build"' \
+  "the entry guard delegates to the shared cv_root_closed_guard helper (review fk-eruo3s LOW-3), which sweeps any pending descendants instead of just exiting"
 assert_order "$BUILD_MD" '## Fail fast if the workflow root is already closed (fk-jg6rm)' '## Sync the worktree to the current base' \
   "the root-closed entry guard runs before any worktree sync/build work"
 
@@ -143,16 +143,16 @@ assert_order "$LOOP_MD" '## Gate lane reopen on apply-review-findings landing a 
 start_case "synthesize-review.md: a root-closed guard exists ahead of reading review lane reports (fk-jg6rm)"
 assert_contains "$SYNTH_MD" '## Fail fast if the workflow root is already closed (fk-jg6rm)' \
   "a root-closed entry guard exists"
-assert_contains "$SYNTH_MD" "cv_close_workflow_root \"\$ROOT_ID\"" \
-  "the guard abandons the workflow instead of synthesizing a review of nothing"
+assert_contains "$SYNTH_MD" 'cv_root_closed_guard "$ROOT_ID" "$CLAIMED_BEAD_ID" "synthesize-review" "synthesize"' \
+  "the guard delegates to the shared cv_root_closed_guard helper (review fk-eruo3s LOW-3), which abandons the workflow instead of synthesizing a review of nothing"
 assert_order "$SYNTH_MD" '## Fail fast if the workflow root is already closed (fk-jg6rm)' 'Read all active review lane reports.' \
   "the guard runs before reading any lane reports"
 
 start_case "apply-review-findings.md: a root-closed guard exists ahead of resolving the target worktree (fk-jg6rm)"
 assert_contains "$APPLY_MD" '## Fail fast if the workflow root is already closed (fk-jg6rm)' \
   "a root-closed entry guard exists"
-assert_contains "$APPLY_MD" "cv_close_workflow_root \"\$ROOT_ID\"" \
-  "the guard abandons the workflow instead of applying findings to an abandoned run"
+assert_contains "$APPLY_MD" 'cv_root_closed_guard "$ROOT_ID" "$CLAIMED_BEAD_ID" "apply-review-findings" "apply"' \
+  "the guard delegates to the shared cv_root_closed_guard helper (review fk-eruo3s LOW-3), which abandons the workflow instead of applying findings to an abandoned run"
 assert_order "$APPLY_MD" '## Fail fast if the workflow root is already closed (fk-jg6rm)' '## Resolve the target worktree (review fk-hbsmk B1)' \
   "the guard runs before resolving the target worktree"
 
