@@ -106,6 +106,8 @@ assert_order "$BUILD_MD" '## Fail fast if the workflow root is already closed (f
 start_case "setup-con-voyage-review.md: a root-closed guard exists ahead of any review-context gathering (fk-jg6rm)"
 assert_contains "$SETUP_MD" '## Fail fast if the workflow root is already closed (fk-jg6rm)' \
   "a root-closed entry guard exists"
+assert_contains "$SETUP_MD" 'cv_root_closed_guard "$ROOT_ID" "$CLAIMED_BEAD_ID" "setup-con-voyage-review" "do"' \
+  "the entry guard delegates to the shared cv_root_closed_guard helper with this call site's own signature-exact step-label/noop-noun args (mayor regrade of review fk-nzcvnt LOW-2), not a wrong-arg wiring mistake"
 assert_order "$SETUP_MD" '## Fail fast if the workflow root is already closed (fk-jg6rm)' '## Resolve the journey'"'"'s base branch' \
   "the root-closed guard runs before resolving the journey base branch"
 
@@ -121,6 +123,8 @@ assert_contains "$SETUP_MD" "cv_close_workflow_root \"\$ROOT_ID\" \"build outcom
 start_case "con-voyage-review-loop.md: gated on setup-con-voyage-review having passed (fk-jg6rm)"
 assert_contains "$LOOP_MD" '## Fail fast if the workflow root is already closed, or setup did not pass (fk-jg6rm)' \
   "an entry guard exists covering both a closed root and a failed/skipped setup"
+assert_contains "$LOOP_MD" 'cv_root_closed_guard "$ROOT_ID" "$CLAIMED_BEAD_ID" "review loop" "review"' \
+  "the entry guard delegates to the shared cv_root_closed_guard helper with this call site's own signature-exact step-label/noop-noun args (mayor regrade of review fk-nzcvnt LOW-2), not a wrong-arg wiring mistake"
 assert_contains "$LOOP_MD" 'cv_dependency_outcome "$GC_BEAD_ID" "Prepare con-voyage review context"' \
   "the setup-outcome check reuses cv_dependency_outcome against setup's own title, same idiom as build.md/setup.md"
 assert_contains "$LOOP_MD" "cv_close_workflow_root \"\$ROOT_ID\"" \
