@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.18.0](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.17.0...con-voyage-gascity-v0.18.0) (2026-10-14)
+
+
+### Features
+
+* **con-voyage:** collapse PR-body review verdict into a &lt;details&gt; block ([59930ec](https://github.com/kriscoleman/foundry/commit/59930ec7298bbd97a7d0e57f9dafe5ed70510adc))
+
+
+### Bug Fixes
+
+* **con-voyage:** ci-repair attaches a dedicated worktree instead of checking out in the rig root ([595a8cb](https://github.com/kriscoleman/foundry/commit/595a8cbcb963e13298dc9b4e5d4ab909f578d611))
+* extract ci-repair worktree teardown/abort helpers, detect detached worktree reuse (review fk-80xk9s BLOCKING-1..3) ([e88c6c1](https://github.com/kriscoleman/foundry/commit/e88c6c187fb6aa93889f3cc983921dd41c275633))
+* give ci-repair Step 5 and Step 6 their own cwd re-anchor (review fk-80xk9s BLOCKING-1) ([e0204e2](https://github.com/kriscoleman/foundry/commit/e0204e20da6dac4489c68959b608c9a1abff9d6a))
+* key ci-repair worktree metadata on repair_bead, default-deny worktree reuse, teardown on abort (review fk-hbsmk BLOCKING-1/2/3/4) ([99e6365](https://github.com/kriscoleman/foundry/commit/99e63656a472578b4c077f6ccf2fcea6da3c2a86))
+* key ci-repair worktree on repair_bead, reuse existing checkout, close out failure paths (review fk-bjn2ba BLOCKING-1/2/3/4) ([7be982a](https://github.com/kriscoleman/foundry/commit/7be982ae8cdca6db0d0c0411e3a5d7c7706f61bf))
+* pin PR verdict marker single-source + fail-closed verdict check (review fk-9oigyg) ([77f3b7f](https://github.com/kriscoleman/foundry/commit/77f3b7f0f2e95a5c506c68a50a93f3a20a10006d))
+* resolve ci-repair's LOW-1/LOW-2/LOW-4 review findings (review fk-80xk9s) ([de6b29e](https://github.com/kriscoleman/foundry/commit/de6b29e2c4681582cf47f0f6f860b0619ef1b8f2))
+* update sync-base test to match ci-repair's dedicated-worktree design (repair fk-p5dmsn) ([78e6e44](https://github.com/kriscoleman/foundry/commit/78e6e449f52e86caa057765cb33d877414c607a5))
+
 ## [0.17.0](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.16.3...con-voyage-gascity-v0.17.0) (2026-10-13)
 
 
