@@ -1286,11 +1286,21 @@ save_seen_ids() {
 # unparseable response is treated as "no access" — never silently grant a
 # trigger on an API hiccup.
 declare -A CV_PR_WATCH_PERM_CACHE=()
+# review fk-y67x7w LOW-4 (mayor reopen BLOCKING-3): a bare "no" from this gate
+# cannot tell an operator tailing logs whether GitHub actually denied access
+# or the `gh api` call itself errored (rate limit, deleted account, transient
+# 5xx) — both fail closed identically, but only one of them means "upstream
+# is having an incident". CV_PR_WATCH_PERM_API_OK records, per cache key,
+# whether the underlying API call succeeded; CV_PR_WATCH_LAST_ACCESS_API_OK
+# mirrors the value for the call the caller just made (this script is
+# single-threaded within one poll cycle, so a plain global is safe here).
+declare -A CV_PR_WATCH_PERM_API_OK=()
+CV_PR_WATCH_LAST_ACCESS_API_OK="1"
 cv_pr_watch_human_has_access() {
   local repo="$1" login="$2"
   local cache_key="${repo}|${login}"
   if [ -z "${CV_PR_WATCH_PERM_CACHE[$cache_key]+x}" ]; then
-    local perm_json perm="none"
+    local perm_json perm="none" api_ok="1"
     if perm_json=$("$GH" api "repos/${repo}/collaborators/${login}/permission" 2>/dev/null); then
       perm=$(printf '%s' "$perm_json" | python3 -c "
 import sys, json
@@ -1298,7 +1308,10 @@ try:
     d = json.load(sys.stdin)
 except ValueError:
     d = {}
-print((d or {}).get('permission', 'none') or 'none')" 2>/dev/null || echo "none")
+print((d or {}).get('permission', 'none') or 'none')" 2>/dev/null) || api_ok="0"
+      [ -n "$perm" ] || { perm="none"; api_ok="0"; }
+    else
+      api_ok="0"
     fi
     case "$perm" in
       admin|maintain|write)
@@ -1308,8 +1321,72 @@ print((d or {}).get('permission', 'none') or 'none')" 2>/dev/null || echo "none"
         CV_PR_WATCH_PERM_CACHE[$cache_key]="no"
         ;;
     esac
+    CV_PR_WATCH_PERM_API_OK[$cache_key]="$api_ok"
   fi
+  CV_PR_WATCH_LAST_ACCESS_API_OK="${CV_PR_WATCH_PERM_API_OK[$cache_key]}"
   [ "${CV_PR_WATCH_PERM_CACHE[$cache_key]}" = "yes" ]
+}
+
+# review fk-y67x7w LOW-3 (mayor reopen FIX-6): the finding-trigger dispatch
+# and the ordinary-comment routing block below it each tried `gc sling
+# "$route_target"`, and on failure fell back to `$pool_route_target` once,
+# logging a warning either way — copy-pasted almost line for line. This file
+# already documents (around classify_suppression, citing fk-9xyo4) that
+# exactly this copy-paste shape has caused the same bug to recur twice.
+# Shared here so both call sites can only drift by their own arguments, never
+# by an independently hand-edited control-flow copy.
+#
+# Args: route_target pool_route_target full_repo pr_number fail_descriptor
+#       success_label_primary success_label_pool title body
+# fail_descriptor is the "failed for X" noun phrase in a WARNING line (e.g.
+# "${full_repo}#${pr_number}" or "finding-trigger ${id}"). success_label_* are
+# inserted verbatim between "routed " and "to"/"to pool fallback" in the
+# success lines (pass "" for the plain "routed to X" shape; include your own
+# trailing space when non-empty, e.g. "finding-trigger ${id} ").
+# Returns 0 and echoes a success line on either a direct or fallback route;
+# returns 1 after logging a WARNING on total failure (caller decides what, if
+# anything, to persist).
+cv_pr_watch_sling_with_fallback() {
+  local route_target="$1" pool_route_target="$2" full_repo="$3" pr_number="$4" \
+        fail_descriptor="$5" success_label_primary="$6" success_label_pool="$7" \
+        title="$8" body="$9"
+  local out
+  if out="$(printf '%s\n\n%s\n' "$title" "$body" | "$GC" --city "$GC_CITY" sling "$route_target" --stdin 2>&1)"; then
+    echo "con-voyage-pr-watch: [PART B] ${full_repo}#${pr_number}: routed ${success_label_primary}to ${route_target}"
+    [ -z "$out" ] || printf '%s\n' "$out"
+    return 0
+  fi
+  if [ "$route_target" != "$pool_route_target" ]; then
+    echo "con-voyage-pr-watch: [PART B] WARNING: gc sling to recorded implementor ${route_target} failed for ${fail_descriptor} (${out}) — falling back to pool route ${pool_route_target}" >&2
+    if out="$(printf '%s\n\n%s\n' "$title" "$body" | "$GC" --city "$GC_CITY" sling "$pool_route_target" --stdin 2>&1)"; then
+      echo "con-voyage-pr-watch: [PART B] ${full_repo}#${pr_number}: routed ${success_label_pool}to pool fallback ${pool_route_target}"
+      [ -z "$out" ] || printf '%s\n' "$out"
+      return 0
+    fi
+    echo "con-voyage-pr-watch: [PART B] WARNING: gc sling also failed for pool route ${pool_route_target} for ${fail_descriptor} (${out}); will retry next cycle" >&2
+    return 1
+  fi
+  echo "con-voyage-pr-watch: [PART B] WARNING: gc sling failed for ${fail_descriptor} (${out}); will retry next cycle" >&2
+  return 1
+}
+
+# cv_pr_watch_gc_stale_state OPEN_PR_NUMBERS STATE_PREFIX SUFFIX LABEL REPO —
+# review fk-y67x7w LOW-7 (mayor reopen FIX-7): removes STATE_PREFIX*SUFFIX
+# files whose embedded PR number is not in OPEN_PR_NUMBERS (one PR number per
+# line). Shared by every per-PR state-file kind's closed-PR sweep so a new
+# kind only ever needs one call here, never a hand-copied loop.
+cv_pr_watch_gc_stale_state() {
+  local open_pr_numbers="$1" state_prefix="$2" suffix="$3" label="$4" full_repo="$5"
+  local existing_state basename_no_ext pr_num_from_file
+  for existing_state in "${state_prefix}"*"${suffix}"; do
+    [ -f "$existing_state" ] || continue
+    basename_no_ext="${existing_state%"${suffix}"}"
+    pr_num_from_file="${basename_no_ext##*_}"
+    if ! printf '%s\n' "$open_pr_numbers" | grep -qx "$pr_num_from_file"; then
+      echo "con-voyage-pr-watch: [PART B] GC: removing stale ${label} for closed PR #${pr_num_from_file} (${full_repo})"
+      rm -f "$existing_state"
+    fi
+  done
 }
 
 # Process each monitor's repo
@@ -1508,7 +1585,7 @@ print((d.get('author') or {}).get('login', ''))" 2>/dev/null || echo "")
     # round-trip just to read reactions (GraphQL review-thread comments don't
     # carry reactions by default).
     # shellcheck disable=SC2016
-    _GQL_REVIEW_THREADS='query($owner:String!,$repo:String!,$num:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$num){reviewThreads(first:100){nodes{isResolved comments(first:100){nodes{id databaseId path line author{login} body reactions(first:50){nodes{content user{login}}}}}}}}}}'
+    _GQL_REVIEW_THREADS='query($owner:String!,$repo:String!,$num:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$num){reviewThreads(first:100){nodes{isResolved comments(first:100){nodes{id databaseId path line author{login} body reactions(first:50){pageInfo{hasNextPage endCursor} nodes{content user{login}}}}}}}}}}'
     review_threads_json=$("$GH" api graphql \
       -f query="$_GQL_REVIEW_THREADS" \
       -F owner="$owner" \
@@ -1548,6 +1625,65 @@ print(json.dumps(out))
       echo "con-voyage-pr-watch: [PART B] WARNING: failed to merge PR comment payloads for ${full_repo}#${pr_number}; skipping" >&2
       continue
     }
+
+    # review fk-y67x7w LOW-1 (mayor reopen BLOCKING-1): the reactions(first:50)
+    # selection above caps at 50 reactions per comment, so a qualifying 👍
+    # beyond the 50th is never seen. Paginate past that cap: for every comment
+    # whose reactions.pageInfo.hasNextPage came back true, walk the GraphQL
+    # node(id:) connection forward (first:100 per page) until exhausted, and
+    # merge the extra reaction nodes back into that comment. Best-effort/
+    # fail-soft like the rest of PART B's GraphQL fetches — a pagination
+    # failure leaves the comment with whatever reactions its first page
+    # already carried rather than aborting the whole PR's comment scan.
+    _PY_PAGINATE_REACTIONS='
+import sys, json, os, subprocess
+
+gh = os.environ.get("CV_PR_WATCH_GH_BIN", "gh")
+data = json.loads(sys.argv[1] or "{}")
+
+_NODE_Q_FIRST = "query($id:ID!){node(id:$id){... on PullRequestReviewComment{reactions(first:100){pageInfo{hasNextPage endCursor} nodes{content user{login}}}}}}"
+_NODE_Q_AFTER = "query($id:ID!,$cursor:String!){node(id:$id){... on PullRequestReviewComment{reactions(first:100, after:$cursor){pageInfo{hasNextPage endCursor} nodes{content user{login}}}}}}"
+
+def fetch_more(comment_id, cursor):
+    extra = []
+    while True:
+        if cursor:
+            args = [gh, "api", "graphql", "-f", "query=" + _NODE_Q_AFTER, "-F", "id=" + comment_id, "-F", "cursor=" + cursor]
+        else:
+            args = [gh, "api", "graphql", "-f", "query=" + _NODE_Q_FIRST, "-F", "id=" + comment_id]
+        try:
+            proc = subprocess.run(args, capture_output=True, text=True, timeout=30)
+        except Exception:
+            break
+        if proc.returncode != 0:
+            break
+        try:
+            gq = json.loads(proc.stdout)
+            reactions = (((gq.get("data") or {}).get("node") or {}) or {}).get("reactions") or {}
+        except (ValueError, AttributeError):
+            break
+        extra.extend(reactions.get("nodes") or [])
+        page_info = reactions.get("pageInfo") or {}
+        if not page_info.get("hasNextPage"):
+            break
+        cursor = page_info.get("endCursor")
+        if not cursor:
+            break
+    return extra
+
+for thread in data.get("reviewThreads", []) or []:
+    for c in (thread.get("comments", {}) or {}).get("nodes", []) or []:
+        reactions = c.get("reactions") or {}
+        page_info = reactions.get("pageInfo") or {}
+        nodes = list(reactions.get("nodes") or [])
+        if page_info.get("hasNextPage") and c.get("id"):
+            nodes.extend(fetch_more(c["id"], page_info.get("endCursor")))
+        c["reactions"] = {"nodes": nodes}
+
+print(json.dumps(data))
+'
+    _cv_paginated_json=$(CV_PR_WATCH_GH_BIN="$GH" python3 -c "$_PY_PAGINATE_REACTIONS" "$pr_comments_json" 2>/dev/null)
+    [ -n "$_cv_paginated_json" ] && pr_comments_json="$_cv_paginated_json"
 
     # Extract new human comments using python3.
     # Reads PR JSON from stdin (fd 0) and seen-IDs + config from argv.
@@ -2112,28 +2248,45 @@ print("SEEN_IDS:" + "\n".join(sorted(all_ids)))
     # versa), so it must run before the "nothing new -> continue" early-out.
     # Field order per record (one \x1f-joined line per candidate, emitted by
     # the python one-liner below): dedup_token, login, trigger_type,
-    # finding_id, lane, comment_id, path, line, base64(text).
+    # base64(finding_id), base64(lane), comment_id, path, line, base64(text).
+    #
+    # review fk-y67x7w LOW-2 (mayor reopen BLOCKING-2): finding_id/lane come
+    # straight from parse_cv_finding's id=/lane= captures, which are regex
+    # groups over \S (any non-whitespace, including a literal 0x1F byte) on
+    # an attacker-authored PR comment body -- only `text` used to be
+    # base64-encoded on this \x1f-joined transport, so a marker engineered to
+    # contain a literal 0x1F in its id/lane could desync this field split.
+    # Encode both the same way `text` already is so every field that can
+    # carry attacker-controlled bytes travels opaquely; decoded back to plain
+    # strings immediately below, before any further use.
     # ---------------------------------------------------------------------
     ft_newly_dispatched=""
     # shellcheck disable=SC2016
     _PY_EMIT_FINDING_TRIGGER_RECORDS='
 import sys, json, base64
 items = json.loads(sys.argv[1] or "[]")
+def b64(s):
+    return base64.b64encode((s or "").encode("utf-8")).decode("ascii")
 for it in items:
-    text_b64 = base64.b64encode((it.get("text", "") or "").encode("utf-8")).decode("ascii")
     fields = [
         it.get("dedup_token", ""), it.get("login", ""), it.get("trigger_type", ""),
-        it.get("finding_id", ""), it.get("lane", ""), it.get("comment_id", ""),
-        it.get("path", ""), it.get("line", ""), text_b64,
+        b64(it.get("finding_id", "")), b64(it.get("lane", "")), it.get("comment_id", ""),
+        it.get("path", ""), it.get("line", ""), b64(it.get("text", "")),
     ]
     print("\x1f".join(fields))
 '
-    while IFS=$'\x1f' read -r ft_token ft_login ft_type ft_finding_id ft_lane ft_comment_id ft_path ft_line ft_text_b64; do
+    while IFS=$'\x1f' read -r ft_token ft_login ft_type ft_finding_id_b64 ft_lane_b64 ft_comment_id ft_path ft_line ft_text_b64; do
       [ -n "$ft_token" ] || continue
       if ! cv_pr_watch_human_has_access "$full_repo" "$ft_login"; then
-        echo "con-voyage-pr-watch: [PART B] ${full_repo}#${pr_number}: SUPPRESS finding-trigger ${ft_token} (login='${ft_login}' is a bot or lacks repo access) — not routing" >&2
+        if [ "$CV_PR_WATCH_LAST_ACCESS_API_OK" = "0" ]; then
+          echo "con-voyage-pr-watch: [PART B] ${full_repo}#${pr_number}: SUPPRESS finding-trigger ${ft_token} (login='${ft_login}': permission lookup API call failed — treating as no-access, fail-closed) — not routing" >&2
+        else
+          echo "con-voyage-pr-watch: [PART B] ${full_repo}#${pr_number}: SUPPRESS finding-trigger ${ft_token} (login='${ft_login}' is a bot or lacks repo access) — not routing" >&2
+        fi
         continue
       fi
+      ft_finding_id="$(printf '%s' "$ft_finding_id_b64" | base64 -d 2>/dev/null)"
+      ft_lane="$(printf '%s' "$ft_lane_b64" | base64 -d 2>/dev/null)"
       ft_text="$(printf '%s' "$ft_text_b64" | base64 -d 2>/dev/null)"
       ft_loc=""
       if [ -n "$ft_path" ]; then
@@ -2157,24 +2310,13 @@ for it in items:
         echo "con-voyage-pr-watch: [PART B] WARNING: could not build a trustworthy fenced body for finding-trigger ${ft_finding_id} on ${full_repo}#${pr_number}; skipping this cycle" >&2
         continue
       }
-      if ft_sling_out="$(printf '%s\n\n%s\n' "$ft_title" "$ft_body" \
-        | "$GC" --city "$GC_CITY" sling "$route_target" --stdin 2>&1)"; then
-        echo "con-voyage-pr-watch: [PART B] ${full_repo}#${pr_number}: routed finding-trigger ${ft_finding_id} (${ft_type} by ${ft_login}) to ${route_target}"
-        [ -z "$ft_sling_out" ] || printf '%s\n' "$ft_sling_out"
+      if cv_pr_watch_sling_with_fallback "$route_target" "$pool_route_target" "$full_repo" "$pr_number" \
+          "finding-trigger ${ft_finding_id}" \
+          "finding-trigger ${ft_finding_id} (${ft_type} by ${ft_login}) " \
+          "finding-trigger ${ft_finding_id} " \
+          "$ft_title" "$ft_body"; then
         ft_newly_dispatched="${ft_newly_dispatched}${ft_token}
 "
-      elif [ "$route_target" != "$pool_route_target" ]; then
-        echo "con-voyage-pr-watch: [PART B] WARNING: gc sling to recorded implementor ${route_target} failed for finding-trigger ${ft_finding_id} (${ft_sling_out}) — falling back to pool route ${pool_route_target}" >&2
-        if ft_sling_out="$(printf '%s\n\n%s\n' "$ft_title" "$ft_body" \
-          | "$GC" --city "$GC_CITY" sling "$pool_route_target" --stdin 2>&1)"; then
-          echo "con-voyage-pr-watch: [PART B] ${full_repo}#${pr_number}: routed finding-trigger ${ft_finding_id} to pool fallback ${pool_route_target}"
-          ft_newly_dispatched="${ft_newly_dispatched}${ft_token}
-"
-        else
-          echo "con-voyage-pr-watch: [PART B] WARNING: gc sling also failed for pool route ${pool_route_target} for finding-trigger ${ft_finding_id} (${ft_sling_out}); will retry next cycle" >&2
-        fi
-      else
-        echo "con-voyage-pr-watch: [PART B] WARNING: gc sling failed for finding-trigger ${ft_finding_id} (${ft_sling_out}); will retry next cycle" >&2
       fi
     done < <(python3 -c "$_PY_EMIT_FINDING_TRIGGER_RECORDS" "$finding_triggers_line" 2>/dev/null)
 
@@ -2257,31 +2399,14 @@ print(','.join(sorted(x['id'] for x in items)))" 2>/dev/null || echo "unknown")
     # retrying the same unroutable target forever (review fk-pbadx
     # BLOCKING-1: the old code never fell back here, so a live-but-unroutable
     # implementor silently black-holed every cycle's feedback for that PR).
-    sling_out=""
-    if sling_out="$(printf '%s\n\n%s\n' "$route_title" "$route_body" \
-      | "$GC" --city "$GC_CITY" sling "$route_target" --stdin 2>&1)"; then
-      echo "con-voyage-pr-watch: [PART B] ${full_repo}#${pr_number}: routed to ${route_target}"
-      [ -z "$sling_out" ] || printf '%s\n' "$sling_out"
-      # Persist updated seen-IDs only on successful route
+    if cv_pr_watch_sling_with_fallback "$route_target" "$pool_route_target" "$full_repo" "$pr_number" \
+        "${full_repo}#${pr_number}" "" "" "$route_title" "$route_body"; then
+      # Persist updated seen-IDs only on successful route (either path)
       if [ -n "$updated_seen_ids" ]; then
         printf '%s\n' "$updated_seen_ids" | save_seen_ids "$state_file"
       fi
-    elif [ "$route_target" != "$pool_route_target" ]; then
-      echo "con-voyage-pr-watch: [PART B] WARNING: gc sling to recorded implementor ${route_target} failed for ${full_repo}#${pr_number} (${sling_out}) — falling back to pool route ${pool_route_target}" >&2
-      if sling_out="$(printf '%s\n\n%s\n' "$route_title" "$route_body" \
-        | "$GC" --city "$GC_CITY" sling "$pool_route_target" --stdin 2>&1)"; then
-        echo "con-voyage-pr-watch: [PART B] ${full_repo}#${pr_number}: routed to pool fallback ${pool_route_target}"
-        if [ -n "$updated_seen_ids" ]; then
-          printf '%s\n' "$updated_seen_ids" | save_seen_ids "$state_file"
-        fi
-      else
-        echo "con-voyage-pr-watch: [PART B] WARNING: gc sling also failed for pool route ${pool_route_target} for ${full_repo}#${pr_number} (${sling_out}); will retry next cycle" >&2
-        # Do NOT update state file — we'll retry on next cycle
-      fi
-    else
-      echo "con-voyage-pr-watch: [PART B] WARNING: gc sling failed for ${full_repo}#${pr_number} (${sling_out}); will retry next cycle" >&2
-      # Do NOT update state file — we'll retry on next cycle
     fi
+    # On total failure, do NOT update state file — we'll retry next cycle.
 
   done < <(printf '%s' "$open_prs_json" | python3 -c "
 import sys, json
@@ -2295,32 +2420,15 @@ for pr in data:
   # This prevents unbounded accumulation of seen-ID files for merged/closed PRs.
   # ---------------------------------------------------------------------------
   if [ -n "$open_pr_numbers" ]; then
-    # Build set of expected state-file basenames for open PRs
-    for existing_state in "${CV_STATE_DIR}/${owner}_${repo}_"*.seen-ids; do
-      [ -f "$existing_state" ] || continue
-      basename_no_ext="${existing_state%.seen-ids}"
-      # Extract PR number suffix: state key is owner_repo_<number>
-      pr_num_from_file="${basename_no_ext##*_}"
-      if ! printf '%s\n' "$open_pr_numbers" | grep -qx "$pr_num_from_file"; then
-        echo "con-voyage-pr-watch: [PART B] GC: removing stale state for closed PR #${pr_num_from_file} (${full_repo})"
-        rm -f "$existing_state"
-      fi
-    done
-    # fk-khcrhm (review BLOCKING-3): the finding-trigger dedup state file
-    # (written above as "${state_key}.finding-triggers.seen") shares the same
-    # per-PR state_key as .seen-ids but a different suffix, so it never
-    # matched the glob above — it leaked forever once its PR closed, the
-    # exact unbounded-accumulation class this GC block exists to stop. Mirror
-    # the same closed-PR sweep for it.
-    for existing_finding_state in "${CV_STATE_DIR}/${owner}_${repo}_"*.finding-triggers.seen; do
-      [ -f "$existing_finding_state" ] || continue
-      basename_no_ext="${existing_finding_state%.finding-triggers.seen}"
-      pr_num_from_file="${basename_no_ext##*_}"
-      if ! printf '%s\n' "$open_pr_numbers" | grep -qx "$pr_num_from_file"; then
-        echo "con-voyage-pr-watch: [PART B] GC: removing stale finding-trigger state for closed PR #${pr_num_from_file} (${full_repo})"
-        rm -f "$existing_finding_state"
-      fi
-    done
+    # review fk-y67x7w LOW-7 (mayor reopen FIX-7): .seen-ids and
+    # .finding-triggers.seen used to each get their own hand-copied sweep
+    # loop, identical except for the glob suffix and log wording — the same
+    # copy-paste shape the BLOCKING-3 fix (fk-khcrhm) itself had to patch in
+    # once already, after the first state-file kind's sweep shipped without
+    # it. A third per-PR state-file kind would otherwise either get a third
+    # near-identical loop or get forgotten. One helper, called per kind.
+    cv_pr_watch_gc_stale_state "$open_pr_numbers" "${CV_STATE_DIR}/${owner}_${repo}_" ".seen-ids" "state" "$full_repo"
+    cv_pr_watch_gc_stale_state "$open_pr_numbers" "${CV_STATE_DIR}/${owner}_${repo}_" ".finding-triggers.seen" "finding-trigger state" "$full_repo"
   fi
 
 done

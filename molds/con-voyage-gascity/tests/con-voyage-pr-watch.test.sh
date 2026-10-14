@@ -81,6 +81,29 @@ case "$sub" in
   api)
     apisub="${2:-}"
     if [ "$apisub" = "graphql" ]; then
+      # review fk-y67x7w LOW-1 (mayor reopen BLOCKING-1): the node(id:...)
+      # follow-up query the real script issues to paginate a comment's
+      # reactions past the first page. Detected by the literal "node(id:"
+      # substring in the query text so this branch only fires for THAT
+      # follow-up call, never for the main reviewThreads query below.
+      # CVFIND_REACTIONS_PAGE2 is a comma-separated login:content list for
+      # the second (and final, in these tests) reactions page.
+      if printf '%s\n' "$@" | grep -q 'node(id:'; then
+        python3 - <<'PYEOF'
+import json
+import os
+
+reactions_env = os.environ.get("CVFIND_REACTIONS_PAGE2", "")
+reactions = []
+if reactions_env:
+    for pair in reactions_env.split(","):
+        login, content = pair.split(":", 1)
+        reactions.append({"content": content, "user": {"login": login}})
+out = {"data": {"node": {"reactions": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": reactions}}}}
+print(json.dumps(out))
+PYEOF
+        exit 0
+      fi
       # `gh api graphql -f query=... -F owner=O -F repo=R -F num=N` — PART B's
       # best-effort inline review-thread (reviewThreads) fetch. Returns the
       # GraphQL envelope shape the script's merge step unwraps
@@ -302,6 +325,16 @@ if reactions_env:
         login, content = pair.split(":", 1)
         reactions.append({"content": content, "user": {"login": login}})
 
+# review fk-y67x7w LOW-1 (mayor reopen BLOCKING-1): CVFIND_REACTIONS_PAGINATE=1
+# makes this first page report hasNextPage=true (the real reactions(first:50)
+# cap), so CVFIND_REACTIONS alone models the (possibly empty/decoy) first
+# page and the real target reaction only ever appears via the node(id:)
+# follow-up query's CVFIND_REACTIONS_PAGE2 (handled above) — proving the
+# script's own pagination actually reaches it, not just the first page.
+reactions_block = {"nodes": reactions}
+if os.environ.get("CVFIND_REACTIONS_PAGINATE", "0") == "1":
+    reactions_block["pageInfo"] = {"hasNextPage": True, "endCursor": "CURSOR1"}
+
 finding_comment = {
     "id": "PRRC_cvfind_1",
     "databaseId": 660001,
@@ -313,7 +346,7 @@ finding_comment = {
         "Details and a concrete fix.\n\n"
         "<!-- cv-finding v1 id=%s severity=%s lane=security -->"
     ) % (sev.upper(), finding_id, sev),
-    "reactions": {"nodes": reactions},
+    "reactions": reactions_block,
 }
 nodes = [finding_comment]
 if reply_author:
@@ -4492,6 +4525,177 @@ if [ -f "$OPEN_FINDING_SEEN" ]; then
 else
   fail "open PR #11's .finding-triggers.seen survives the sweep"
 fi
+
+# ===========================================================================
+# CASE 81 — fk-y67x7w LOW-1 (mayor reopen on PR#205 BLOCKING-1): the
+#   reactions(first:50) selection caps at 50 reactions per comment, so a
+#   qualifying 👍 beyond the 50th was never seen before pagination. The first
+#   page here (CVFIND_REACTIONS) carries only a decoy reaction and reports
+#   hasNextPage=true; the real operator 👍 only exists on the SECOND page
+#   (CVFIND_REACTIONS_PAGE2, served by the gh stub's node(id:) branch). This
+#   only routes if the script actually walks the pagination cursor forward.
+# ===========================================================================
+start_case "81: fk-y67x7w LOW-1 — a 👍 beyond the first reactions page is still found via pagination"
+setup_case_env "81"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_PR11_EMPTY="1" STUB_GQL_THREADS_CVFINDING="1" CVFIND_SEVERITY="low" \
+  CVFIND_REACTIONS_PAGINATE="1" CVFIND_REACTIONS="a-stranger:THUMBS_DOWN" \
+  CVFIND_REACTIONS_PAGE2="kriscoleman:THUMBS_UP" STUB_COLLAB_PERMS="kriscoleman=admin,a-stranger=none"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 1 "the 👍 on the second reactions page still dispatches a finding-trigger route"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin STDIN:.*finding-abc123' 1 "the routed bead names the finding id (proving it resolved the real operator reaction, not the first-page decoy)"
+
+# ===========================================================================
+# CASE 82 — fk-y67x7w LOW-2 (mayor reopen BLOCKING-2): the \x1f-joined
+#   finding-trigger transport record must not desync when finding_id/lane
+#   carry a literal 0x1F byte. (Note: Python's `\s`/`\S` classify 0x1F as
+#   whitespace, so CV_FINDING_MARKER_RE's `\S+` capture can never actually
+#   deliver a raw 0x1F through a real marker end-to-end — confirmed directly:
+#   `python3 -c "import re; re.match(r'\S', chr(0x1f))"` is False. The
+#   encoding fix is still correct defense-in-depth per the original review
+#   ("reaching this requires an actor who already passes the write-or-above
+#   access gate"), and a FUTURE change to the marker regex or to what feeds
+#   finding_id/lane could still deliver one. This unit-tests the actual
+#   encode/decode round trip the script uses, independent of whether today's
+#   marker regex can reach it.)
+# ===========================================================================
+start_case "82: fk-y67x7w LOW-2 — the \\x1f-joined finding-trigger transport round-trips a literal 0x1F byte in finding_id/lane without desync"
+setup_case_env "82"
+# Mirrors _PY_EMIT_FINDING_TRIGGER_RECORDS's encode step exactly (base64 every
+# field that can carry attacker-influenced bytes), then decodes the record
+# back the same way the real bash loop does (IFS=$'\x1f' read + base64 -d).
+_PY_EMIT_FOR_TEST='
+import sys, json, base64
+items = json.loads(sys.argv[1] or "[]")
+def b64(s):
+    return base64.b64encode((s or "").encode("utf-8")).decode("ascii")
+for it in items:
+    fields = [
+        it.get("dedup_token", ""), it.get("login", ""), it.get("trigger_type", ""),
+        b64(it.get("finding_id", "")), b64(it.get("lane", "")), it.get("comment_id", ""),
+        it.get("path", ""), it.get("line", ""), b64(it.get("text", "")),
+    ]
+    print("\x1f".join(fields))
+'
+FINDING_ID_WITH_SEP="$(printf 'fak\037id')"
+LANE_WITH_SEP="$(printf 'sec\037urity')"
+ITEMS_JSON="$(FID="$FINDING_ID_WITH_SEP" LN="$LANE_WITH_SEP" python3 -c "
+import json, os
+print(json.dumps([{
+    'dedup_token': 'tok1', 'login': 'kriscoleman', 'trigger_type': 'reaction',
+    'finding_id': os.environ['FID'], 'lane': os.environ['LN'],
+    'comment_id': '660001', 'path': 'src/finding.go', 'line': '9', 'text': 'thumb',
+}]))
+")"
+RECORD_LINE="$(python3 -c "$_PY_EMIT_FOR_TEST" "$ITEMS_JSON")"
+# Decode AND compare in one python3 call (avoids any bash IFS/read layering):
+# split the record on \x1f, base64-decode the finding_id/lane/text fields,
+# and verify finding_id/lane round-trip exactly while comment_id/path/line
+# stay correctly positioned (proving no field-level desync).
+if FID="$FINDING_ID_WITH_SEP" LN="$LANE_WITH_SEP" RL="$RECORD_LINE" python3 -c "
+import os, base64, sys
+rl = os.environ['RL']
+fields = rl.split(chr(0x1f))
+if len(fields) != 9:
+    sys.exit(1)
+dedup_token, login, trigger_type, finding_id_b64, lane_b64, comment_id, path, line, text_b64 = fields
+finding_id = base64.b64decode(finding_id_b64).decode('utf-8')
+lane = base64.b64decode(lane_b64).decode('utf-8')
+ok = (
+    finding_id == os.environ['FID']
+    and lane == os.environ['LN']
+    and comment_id == '660001'
+    and path == 'src/finding.go'
+    and line == '9'
+)
+sys.exit(0 if ok else 1)
+"; then
+  pass "finding_id and lane (each containing a literal 0x1F byte) decode back exactly, with comment_id/path/line still correctly positioned"
+else
+  fail "expected finding_id/lane to round-trip exactly and comment_id/path/line to stay correctly positioned"
+fi
+
+# ===========================================================================
+# CASE 83 — fk-y67x7w LOW-4 (mayor reopen BLOCKING-3): a collaborator-
+#   permission API failure (STUB_COLLAB_PERM_FAIL=1, same stub CASE 79
+#   already exercises for the fail-closed behavior) must now log a message
+#   that distinguishes "the API call itself failed" from "access was
+#   genuinely denied", so an operator tailing logs during a GitHub API
+#   incident gets a real signal instead of an indistinguishable SUPPRESS line.
+# ===========================================================================
+start_case "83: fk-y67x7w LOW-4 — a permission-lookup API failure logs distinctly from a genuine denial"
+setup_case_env "83"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_PR11_EMPTY="1" STUB_GQL_THREADS_CVFINDING="1" CVFIND_SEVERITY="low" \
+  CVFIND_REACTIONS="kriscoleman:THUMBS_UP" STUB_COLLAB_PERM_FAIL="1"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 0 "a permission-lookup API failure still never dispatches a finding-trigger route"
+if printf '%s' "$OUT" | grep -q "permission lookup API call failed — treating as no-access, fail-closed"; then
+  pass "logs the API-failure case distinctly"
+else
+  fail "expected a distinct API-failure log message"
+fi
+
+start_case "84: fk-y67x7w LOW-4 — a genuine permission denial still logs the original bot-or-no-access message"
+setup_case_env "84"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_PR11_EMPTY="1" STUB_GQL_THREADS_CVFINDING="1" CVFIND_SEVERITY="low" \
+  CVFIND_REACTIONS="a-stranger:THUMBS_UP" STUB_COLLAB_PERMS="a-stranger=read"
+assert_eq "0" "$RC" "script exits 0"
+if printf '%s' "$OUT" | grep -q "SUPPRESS finding-trigger .* (login='a-stranger' is a bot or lacks repo access) — not routing"; then
+  pass "logs the genuine-denial case with its original, distinct message"
+else
+  fail "expected the original bot-or-no-access message for a genuine denial"
+fi
+
+# ===========================================================================
+# CASE 85 — fk-y67x7w LOW-5 (mayor reopen BLOCKING-4): the finding-trigger
+#   dispatch's own pool-fallback path was untested — only the ordinary
+#   comment-routing fallback (CASE 49) had coverage. Reuses CASE 49's exact
+#   mechanism (a recorded implementor_session that resolves ALIVE but is in
+#   the bare gc.session_name form, which `gc sling` rejects live) against a
+#   finding-trigger reaction instead of an ordinary comment, proving the
+#   fallback this bead's own cv_pr_watch_sling_with_fallback helper provides
+#   actually reroutes the finding-trigger path too.
+# ===========================================================================
+start_case "85: fk-y67x7w LOW-5 — finding-trigger dispatch falls back to the pool route when the recorded implementor's sling fails live"
+setup_case_env "85"
+printf 'work_bead=va-85\nconvoy_id=cv-85\nrepo_full=kriscoleman/foundry\npr_number=11\npr_author=kriscoleman\nimplementor_session=gc__implementation-worker-rc-85\nlast_phase=awaiting_merge\n' \
+  > "${STATE_DIR}/cv-finalize-kriscoleman-foundry-11.finalize"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_SESSION_LIST_JSON='{"sessions":[{"id":"gc__implementation-worker-rc-85","state":"active"}]}' \
+  STUB_PR11_EMPTY="1" STUB_GQL_THREADS_CVFINDING="1" CVFIND_SEVERITY="low" \
+  CVFIND_REACTIONS="kriscoleman:THUMBS_UP" STUB_COLLAB_PERMS="kriscoleman=admin"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'sling gc__implementation-worker-rc-85 --stdin' 1 "attempts the recorded (bare-form) implementor first for the finding-trigger"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 1 "falls back to the pool route for the finding-trigger dispatch"
+if printf '%s' "$OUT" | grep -q "gc sling to recorded implementor gc__implementation-worker-rc-85 failed for finding-trigger finding-abc123"; then
+  pass "logs the sling-failure fallback distinctly for the finding-trigger dispatch"
+else
+  fail "expected an explicit sling-failure fallback log line for the finding-trigger dispatch"
+fi
+
+# ===========================================================================
+# CASE 86 — fk-y67x7w LOW-6 (mayor reopen BLOCKING-5): only the reaction
+#   trigger's dedup idempotency on replay had coverage (CASE 71); the reply
+#   trigger shares the same already_dispatched_tokens mechanism but had no
+#   case running a second poll after a reply. Mirrors CASE 71/72's shape.
+# ===========================================================================
+start_case "86: fk-y67x7w LOW-6 — a reply trigger is idempotent on a second poll (replay)"
+setup_case_env "86"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_PR11_EMPTY="1" STUB_GQL_THREADS_CVFINDING="1" CVFIND_SEVERITY="low" \
+  CVFIND_REPLY_AUTHOR="a-teammate" CVFIND_REPLY_BODY="please fix this" \
+  STUB_COLLAB_PERMS="a-teammate=write"
+assert_eq "0" "$RC" "first poll exits 0"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 1 "exactly one route is created for the reply trigger on the first poll"
+
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" \
+  STUB_PR11_EMPTY="1" STUB_GQL_THREADS_CVFINDING="1" CVFIND_SEVERITY="low" \
+  CVFIND_REPLY_AUTHOR="a-teammate" CVFIND_REPLY_BODY="please fix this" \
+  STUB_COLLAB_PERMS="a-teammate=write"
+assert_eq "0" "$RC" "second poll (replay) also exits 0"
+assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 1 "second poll does not re-dispatch the same reply trigger (idempotent)"
 
 # ===========================================================================
 # Summary
