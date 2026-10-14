@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.19.0](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.18.0...con-voyage-gascity-v0.19.0) (2026-10-14)
+
+
+### Features
+
+* **con-voyage:** add cv-pr-comment.sh review-inline, structured finding locations ([f804b7f](https://github.com/kriscoleman/foundry/commit/f804b7f79415e1a79b85d58f8addc74de7ab94fb))
+* **con-voyage:** add review-only escort formula for PRs con-voyage didn't build ([eec6dc4](https://github.com/kriscoleman/foundry/commit/eec6dc41afb990eb3e2292d97293c2497628e7d2))
+* **con-voyage:** gate LOW-finding PR repair on human 👍 or thread reply ([67fe1a5](https://github.com/kriscoleman/foundry/commit/67fe1a5d86d57cccac2f45da0757bf53ab656940))
+
+
+### Bug Fixes
+
+* add test coverage for finalize's claim-unpersisted mayor escalation (review fk-eruo3s) ([e87a5c5](https://github.com/kriscoleman/foundry/commit/e87a5c55b0d6d75fad2e421857f392b125c8681f))
+* add test coverage for finding-triggers.seen closed-PR GC sweep (review fk-khcrhm) ([7e13e83](https://github.com/kriscoleman/foundry/commit/7e13e8398844d5e943332d23b667bccaaed62868))
+* address con-voyage review BLOCKING-1..8 (review fk-eruo3s) ([9e82c50](https://github.com/kriscoleman/foundry/commit/9e82c50075035bf21f233dce9212a74e9a2c8343))
+* address con-voyage review BLOCKING-1/2/4 on cv-pr-comment.sh review-inline (review fk-ppj8bx) ([8fa41ea](https://github.com/kriscoleman/foundry/commit/8fa41ea5133a6a2d43609b8c252a8504676d1bcf))
+* address Mayor's re-opened review findings on review-escort formula (review fk-eruo3s) ([2ee77a2](https://github.com/kriscoleman/foundry/commit/2ee77a2bf3e6e4b557dc3154239fcf0c7373e2a1))
+* address review fk-ppj8bx re-opened findings on cv-pr-comment.sh review-inline ([0c1d3f8](https://github.com/kriscoleman/foundry/commit/0c1d3f833eecb3bd5fd4c8eafe737082ab143796))
+* correct stale review-inline docblock, pin three-shape location wording (review fk-ppj8bx) ([2eb1e77](https://github.com/kriscoleman/foundry/commit/2eb1e774e7cb817bf3744dc4b57de5c1bc622fa5))
+* gate review-inline file-level comments on confirmed-changed paths (review fk-ppj8bx) ([daa5535](https://github.com/kriscoleman/foundry/commit/daa55353e841f3d6f4bca1c7385b05d54542912c))
+* make cv_claim_once's persist failure observable with bounded retry (review fk-eruo3s) ([3f8ea1f](https://github.com/kriscoleman/foundry/commit/3f8ea1fe77e135adb700c71525f1183a748c3faa))
+* require write-or-above access and GC finding-trigger state (review fk-khcrhm) ([f03fcdb](https://github.com/kriscoleman/foundry/commit/f03fcdbf98a65a243a25547e60dcdc5c5a939b41))
+
 ## [0.18.0](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.17.0...con-voyage-gascity-v0.18.0) (2026-10-14)
 
 
