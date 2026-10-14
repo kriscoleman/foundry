@@ -108,6 +108,10 @@ assert_contains "$FINALIZE_MD" "cv_claim_once" "finalize gates the comment post 
 assert_contains "$FINALIZE_MD" "gc.review_escort.comment_posted" "finalize uses a dedicated idempotency flag for the comment post"
 assert_not_contains "$FINALIZE_MD" "<path to the assembled JSON manifest" "finalize no longer embeds a prose placeholder in the --manifest argument"
 
+start_case "the finalize step escalates to the mayor when the comment_posted flag fails to persist (review fk-eruo3s BLOCKING-1)"
+assert_contains "$FINALIZE_MD" "claim-unpersisted" "finalize distinguishes an unpersisted claim from a genuine one"
+assert_contains "$FINALIZE_MD" "comment_posted flag failed to persist" "finalize escalates to the mayor when the comment_posted flag failed to persist"
+
 start_case "the finalize step cleans up the review-escort worktree (review fk-hbsmk BLOCKING-2)"
 assert_contains "$FINALIZE_MD" "git worktree remove --force" "finalize removes the attached worktree"
 
