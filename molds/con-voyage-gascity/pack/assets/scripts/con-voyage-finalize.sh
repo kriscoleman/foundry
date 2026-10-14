@@ -468,7 +468,15 @@ for CV_STATE_DIR in "${CV_STATE_DIRS_ALL[@]}"; do
     #    re-running a close that already succeeded is a safe no-op. Do this LAST
     #    so a crash before here just re-runs the (idempotent) close next cycle.
     if [ "$work_bead_close_rc" -eq 0 ] && [ "$convoy_close_rc" -eq 0 ] && [ "$root_close_rc" -eq 0 ] && [ "$branch_rc" -eq 0 ]; then
-      rm -f "$finalize_file" "${finalize_file}.mayor-notified"
+      # fk-7bmhlz LOW-4 (code-review/native-language fk-202t44): a deferred
+      # ci-repair status (con-voyage-lib.sh's cv_defer_status_append) can
+      # orphan as this sibling "<dedup_key>.pending-status" file with no
+      # re-review round ever landing to fold it in before the PR merges or
+      # closes. Remove it alongside the .finalize record so it doesn't
+      # linger in CV_STATE_DIR forever — PR numbers are monotonic and never
+      # reused, so there is no later round this leftover could ever still
+      # apply to.
+      rm -f "$finalize_file" "${finalize_file}.mayor-notified" "${finalize_file%.finalize}.pending-status"
       echo "con-voyage-finalize: done ${label} — finalize record removed"
     else
       echo "con-voyage-finalize: WARNING: ${label} — teardown incomplete (work_bead_rc=${work_bead_close_rc}, convoy_rc=${convoy_close_rc}, root_rc=${root_close_rc}, branch_rc=${branch_rc}); keeping finalize record for retry next cycle" >&2

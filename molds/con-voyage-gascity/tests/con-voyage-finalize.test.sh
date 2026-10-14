@@ -514,6 +514,13 @@ start_case "3: merged PR -> close work bead (landed), close convoy, release, cle
 setup_case_env "3"
 write_finalize "$STATE_DIR" "cv-finalize-kriscoleman-foundry-29" \
   "fk-work" "fk-convoy" "kriscoleman/foundry" "29" "kriscoleman" "foundry/impl-1" "awaiting_merge"
+# review fk-7bmhlz LOW-4 (code-review/native-language fk-202t44, carried
+# forward from iteration 1): a deferred ci-repair status can orphan as a
+# sibling "<dedup_key>.pending-status" file with no re-review round ever
+# landing to fold it in before this PR merges. Finalize teardown must clean
+# it up alongside the .finalize record, not just the record itself.
+printf -- '- orphaned deferred ci-repair status, no round folded it in before merge\n' \
+  > "${STATE_DIR}/cv-finalize-kriscoleman-foundry-29.pending-status"
 run_script "${DEFAULT_ENV[@]}" \
   STUB_PR_MAP="kriscoleman/foundry|29|MERGED|2026-09-18T10:00:00Z|2026-09-18T10:00:00Z|||" \
   STUB_BDSHOW_MAP=$'fk-work|in_progress\nfk-convoy|open'
@@ -523,6 +530,7 @@ assert_log_count "$GC_LOG" 'bd close fk-convoy' 1 "convoy closed"
 assert_log_count "$GC_LOG" 'mail send foundry/impl-1' 1 "implementor released via mail"
 assert_out_contains 'FINALIZE kriscoleman/foundry#29' "logs a FINALIZE line for the PR"
 assert_file_absent "${STATE_DIR}/cv-finalize-kriscoleman-foundry-29.finalize" "finalize record removed after finalize"
+assert_file_absent "${STATE_DIR}/cv-finalize-kriscoleman-foundry-29.pending-status" "orphaned sibling pending-status file removed alongside the finalize record (fk-7bmhlz LOW-4)"
 assert_log_count "$GC_LOG" '--city' 0 "no bd/mail call in this run passes --city (fk-7v3r: --city alone routes to the wrong store)"
 
 # ===========================================================================
