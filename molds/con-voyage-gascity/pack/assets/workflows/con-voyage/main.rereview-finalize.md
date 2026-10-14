@@ -194,7 +194,12 @@ if [ -n "${CV_BIN:-}" ]; then
     --city-root "${GC_CITY:-.}" \
     --formula con-voyage-rereview --agent "<rig>/gc.run-operator" 2>&1)"; then
     echo "con-voyage rereview-finalize: comment-aggregate failed: ${CV_AGGREGATE_OUT}" >&2
-    gc mail send mayor \
+    # mayor regrade BLOCKING-1 (was LOW-2, SRE, 2026-10-14): every mayor-mail
+    # escalation call in this file must be bounded by cv_with_timeout — an
+    # unbounded `gc mail send` can hang the whole finalize step on a stuck
+    # store call (confirmed live hangs: fk-4ilhcc, fk-kzesq) instead of
+    # degrading past it.
+    source "$CV_LIB" && cv_with_timeout 30 gc mail send mayor \
       -s "con-voyage re-review: aggregated comment failed for ${REPO_FULL}#${PR_NUMBER}" \
       -m "cv-pr-comment.sh comment-aggregate failed for re-review round ${REVIEW_ROUND}: ${CV_AGGREGATE_OUT}" \
       2>&1 || echo "note: escalation mail failed too (continuing)" >&2
@@ -249,13 +254,14 @@ if [ -n "${CV_BIN:-}" ]; then
             # warning here is easy to lose — this is the same fail-safe-path
             # escalation every other unrecoverable branch in this step already
             # does (push failure, missing worktree, missing vars above).
-            # cv_defer_status_clear_through only returns non-zero when the
-            # pending-status content no longer has EXPECTED as a prefix at
-            # all (an unexpected external change since this round's peek), so
-            # this is rare enough to warrant a human looking at it, not just a
-            # log line nobody tails.
+            # cv_defer_status_clear_through only returns non-zero when either
+            # the pending-status content no longer has EXPECTED as a prefix
+            # at all, or the record has disappeared entirely since the peek
+            # (an unexpected external change since this round's peek either
+            # way), so this is rare enough to warrant a human looking at it,
+            # not just a log line nobody tails.
             echo "con-voyage rereview-finalize: WARNING: deferred ci-repair status at ${CLEAR_FINALIZE_KEY} changed since this round's peek — leaving it untouched for the next round rather than risk dropping unposted content" >&2
-            gc mail send mayor \
+            source "$CLEAR_CV_LIB" && cv_with_timeout 30 gc mail send mayor \
               -s "con-voyage re-review: deferred ci-repair status mismatch for ${REPO_FULL}#${PR_NUMBER}" \
               -m "rereview-finalize peeked a deferred ci-repair status for ${CLEAR_FINALIZE_KEY} and posted it in this round's aggregated comment, but the pending-status record changed in a way that no longer has the peeked content as a prefix (an unexpected external change, not the normal peek-then-append race) by the time this round tried to clear it. The record was left untouched for the next round rather than risk dropping unposted content — a human should check ${CLEAR_CV_STATE_DIR}/${CLEAR_FINALIZE_KEY}.pending-status for a duplicate or corrupted entry." \
               2>&1 || echo "note: escalation mail failed too (continuing)" >&2
@@ -293,7 +299,7 @@ if [ -n "$CV_LIB" ]; then
 fi
 if [ -z "$WORKTREE" ] || [ ! -d "$WORKTREE" ]; then
   echo "con-voyage rereview-finalize: could not resolve the reviewed worktree from ${ROOT_ID}'s gc.build.source_anchor_work_dir — refusing to finalize without knowing what was actually reviewed" >&2
-  gc mail send mayor \
+  source "$CV_LIB" && cv_with_timeout 30 gc mail send mayor \
     -s "con-voyage re-review: cannot finalize ${REPO_FULL}#${PR_NUMBER} — no reviewed worktree" \
     -m "rereview-finalize could not resolve gc.build.source_anchor_work_dir from workflow root ${ROOT_ID}; refusing to report approval or advance last_reviewed_head_sha without knowing what was reviewed." \
     2>&1 || echo "note: escalation mail failed too (continuing)" >&2
@@ -322,7 +328,7 @@ if [ -n "$LOCAL_HEAD_SHA" ] && [ "$LOCAL_HEAD_SHA" != "$REMOTE_HEAD_SHA" ]; then
   fi
   if [ "$PUSH_OK" != "true" ]; then
     echo "con-voyage rereview-finalize: failed to push the converged fix commit(s) back to ${BRANCH} — refusing to report approval or advance last_reviewed_head_sha against unpushed content" >&2
-    gc mail send mayor \
+    source "$CV_LIB" && cv_with_timeout 30 gc mail send mayor \
       -s "con-voyage re-review: push failed for ${REPO_FULL}#${PR_NUMBER}" \
       -m "rereview-finalize's reviewed worktree (${WORKTREE}) has a converged fix at ${LOCAL_HEAD_SHA} that could not be pushed to ${BRANCH} (hygiene guard or push failure — see this step's stderr). The PR branch still has the original, unreviewed commit. This needs a human to land the fix manually." \
       2>&1 || echo "note: escalation mail failed too (continuing)" >&2
@@ -349,7 +355,7 @@ are surfaced here, never silently auto-accepted) and advance the `.finalize`
 record so con-voyage-rereview-watch.sh can detect the NEXT push:
 
 ```bash
-gc mail send mayor \
+source "$CV_LIB" && cv_with_timeout 30 gc mail send mayor \
   -s "RE-REVIEW COMPLETE: ${REPO_FULL}#${PR_NUMBER}" \
   -m "con-voyage re-review round ${REVIEW_ROUND} finished for ${REPO_FULL}#${PR_NUMBER}: <overall_line from review-synthesis.md>" \
   || echo "note: mayor mail failed (continuing)" >&2

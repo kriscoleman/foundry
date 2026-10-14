@@ -3855,9 +3855,10 @@ cv_defer_status_peek() {
 #   - strips only the EXPECTED prefix when the current content is EXPECTED
 #     followed by more lines (an append landed after the peek — preserves
 #     exactly that appended tail for the next round's peek);
-#   - otherwise leaves the file completely untouched and returns 1 (the
-#     current content no longer has EXPECTED as a prefix at all — an
-#     unexpected external change; failing safe here never risks destroying
+#   - otherwise leaves the file completely untouched and returns 1 (either
+#     the current content no longer has EXPECTED as a prefix at all, or the
+#     pending-status record has disappeared entirely since the peek — both
+#     an unexpected external change; failing safe here never risks destroying
 #     content nobody has confirmed posting).
 # A blank EXPECTED is a caller error (there is nothing to clear a confirmed
 # post of) — returns 1 without touching the file.
