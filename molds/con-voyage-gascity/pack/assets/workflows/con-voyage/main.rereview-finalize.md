@@ -72,14 +72,114 @@ fi
 [ -n "${CV_STATE_DIR:-}" ] || CV_STATE_DIR="${GC_CITY:-.}/.gc/cv-pr-watch"
 ```
 
+## Fold in any deferred ci-repair status (fk-shpd87, AC3)
+
+Before building the manifest, read and clear any routine ci-repair status
+deferred since this PR's last aggregated comment (a rebase/merge-conflict
+resolution with no human decision needed — see
+`{target}.ci-repair.md`'s "Defer this summary instead of commenting"). This
+is the one place the design doc's "next comment-aggregate round" lands:
+folding it in here is what lets ci-repair stay silent on the PR for routine
+actions (AC3) without losing the audit trail — it still reaches a human,
+just inside this round's one comment instead of as its own.
+
+```bash
+# review fk-drbqfj BLOCKING-1 (simplicity, iteration 4): each fenced ```bash```
+# block in a con-voyage step .md executes as its own independent shell — a
+# variable assigned in an earlier fence (CV_LIB/FINALIZE_KEY/ROOT_ID from
+# "Resolve this run's inputs" above) does NOT survive into this one. Re-derive
+# every one of them here rather than reusing names from the earlier fence,
+# the same remedy already applied elsewhere in this pack
+# (main.apply-review-findings.md).
+#
+# review fk-7bmhlz LOW-6 (SRE reliability): CV_LIB/CV_PACK_ROOT are resolved
+# BEFORE the ROOT_ID fallback below (reordered from the earlier fix) so the
+# fallback's own `gc bd show` call can be wrapped in cv_with_timeout once
+# CV_LIB is known to be available — an unwrapped call here is the one this
+# fence can actually reach (GC_ROOT_BEAD_ID is unset) if a hung/slow store
+# ever makes it the live path, unlike every other `gc`/`bd` call in this
+# file, which only runs on failure branches that already exit immediately.
+GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
+
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
+
+# review fk-z6rts BLOCKING-2 (iteration 2, QA/test-engineering): resolve via
+# the shared cv_step_root_bead_id helper (GC_ROOT_BEAD_ID env var, else a
+# timeout-bounded live lookup) so this fence and the posting fence below
+# cannot drift onto two different fallback behaviors again.
+if [ -n "$CV_LIB" ]; then
+  ROOT_ID="$(source "$CV_LIB" && cv_step_root_bead_id "$GC_BEAD_ID")"
+else
+  ROOT_ID="${GC_ROOT_BEAD_ID:-$GC_BEAD_ID}"
+fi
+[ -n "$ROOT_ID" ] || ROOT_ID="$GC_BEAD_ID"
+
+FINALIZE_KEY=""
+CV_STATE_DIR=""
+if [ -n "$CV_LIB" ]; then
+  FINALIZE_KEY="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.var.finalize_key)"
+  CV_STATE_DIR="$(source "$CV_LIB" && cv_default_state_dir)"
+fi
+[ -n "${CV_STATE_DIR:-}" ] || CV_STATE_DIR="${GC_CITY:-.}/.gc/cv-pr-watch"
+
+# review fk-7bmhlz LOW-5 (code-review/native-language fk-202t44): PEEK, don't
+# clear, here. This fence runs before the aggregate comment is actually
+# posted (below); clearing the per-PR record now and having the post later
+# fail would silently drop this round's only chance to surface it — it
+# would never be re-offered to a later round. The posting fence clears the
+# record for real, and only once that post is CONFIRMED to have succeeded.
+CV_DEFERRED_STATUS=""
+if [ -n "$CV_LIB" ] && [ -n "$FINALIZE_KEY" ]; then
+  CV_DEFERRED_STATUS="$(export CV_STATE_DIR; source "$CV_LIB" && cv_defer_status_peek "$FINALIZE_KEY")"
+fi
+
+# Same absolute-rig-root resolution main.publish.md uses for every lane
+# body_file below (fk-jg0ieq: a relative path resolves against this step's
+# own cwd, not the rig root, and every lane silently renders as "report file
+# unavailable").
+CV_RIG_ROOT="${GC_RIG_ROOT:-}"
+[ -n "$CV_RIG_ROOT" ] || [ -z "$CV_LIB" ] || CV_RIG_ROOT="$(source "$CV_LIB" && cv_default_rig_root)"
+[ -n "$CV_RIG_ROOT" ] || CV_RIG_ROOT="${GC_CITY:-.}"
+CV_BUILD_DIR="${CV_RIG_ROOT}/.gc/build/${ROOT_ID}"
+
+mkdir -p "$CV_BUILD_DIR"
+if [ -n "$CV_DEFERRED_STATUS" ]; then
+  printf '%s\n' "$CV_DEFERRED_STATUS" > "${CV_BUILD_DIR}/ci-repair-status.md"
+else
+  # mayor regrade BLOCKING-1 (was LOW-1, 2026-10-14): a round with nothing
+  # newly deferred must still clear any ci-repair-status.md left behind by a
+  # PRIOR round — otherwise a stale file from an earlier round (this round's
+  # manifest assembly below only checks whether the file exists, not which
+  # round wrote it) gets re-included in THIS round's aggregated comment,
+  # posting the same ci-repair status twice.
+  rm -f "${CV_BUILD_DIR}/ci-repair-status.md"
+fi
+```
+
+`$CV_DEFERRED_STATUS` is empty when nothing was deferred (the common case —
+most rounds involve no ci-repair activity at all) — in that case add no
+extra lane to the manifest below. When it is non-empty, the block above
+already wrote it to `${CV_BUILD_DIR}/ci-repair-status.md` (ABSOLUTE path,
+same rule as every other `body_file` below); add ONE extra entry to the
+manifest's
+`lanes[]`: `{"agent": "con-voyage-ci-repair", "lens": "ci-repair-status",
+"verdict": "info", "findings": 0, "body_file":
+"${CV_BUILD_DIR}/ci-repair-status.md"}` — rendered as its own `<details>`
+block by `comment-aggregate`, exactly like any other lane, no schema change
+needed.
+
 ## Post the round's ONE aggregated review comment
 
 Same shape as con-voyage's own publish step (main.publish.md): build a JSON
-manifest from `review-synthesis.md` and each active lane's own
-`.gc/build/${ROOT_ID}/*-review.md`, with `round = $REVIEW_ROUND` (NOT `1` —
-this is a later round, and the marker
-`<!-- con-voyage-review:<root_bead_id> round=<round> -->` must stay unique
-per PR), then post it once:
+manifest from `review-synthesis.md`, each active lane's own
+`.gc/build/${ROOT_ID}/*-review.md`, and the optional deferred-ci-repair-status
+lane above, with `round = $REVIEW_ROUND` (NOT `1` — this is a later round,
+and the marker `<!-- con-voyage-review:<root_bead_id> round=<round> -->`
+must stay unique per PR), then post it once:
 
 ```bash
 if [ -n "$CV_LIB" ]; then
@@ -94,10 +194,81 @@ if [ -n "${CV_BIN:-}" ]; then
     --city-root "${GC_CITY:-.}" \
     --formula con-voyage-rereview --agent "<rig>/gc.run-operator" 2>&1)"; then
     echo "con-voyage rereview-finalize: comment-aggregate failed: ${CV_AGGREGATE_OUT}" >&2
-    gc mail send mayor \
+    # mayor regrade BLOCKING-1 (was LOW-2, SRE, 2026-10-14): every mayor-mail
+    # escalation call in this file must be bounded by cv_with_timeout — an
+    # unbounded `gc mail send` can hang the whole finalize step on a stuck
+    # store call (confirmed live hangs: fk-4ilhcc, fk-kzesq) instead of
+    # degrading past it.
+    source "$CV_LIB" && cv_with_timeout 30 gc mail send mayor \
       -s "con-voyage re-review: aggregated comment failed for ${REPO_FULL}#${PR_NUMBER}" \
       -m "cv-pr-comment.sh comment-aggregate failed for re-review round ${REVIEW_ROUND}: ${CV_AGGREGATE_OUT}" \
       2>&1 || echo "note: escalation mail failed too (continuing)" >&2
+  else
+    # review fk-7bmhlz LOW-5 (code-review/native-language fk-202t44): only
+    # clear the deferred ci-repair pending-status once THIS round's
+    # aggregate comment is CONFIRMED posted (the fold-in fence above only
+    # peeked it, on purpose — see its own comment). Re-derive CV_LIB and the
+    # finalize key fully self-contained here, independent of whatever this
+    # fence's own $CV_LIB/$ROOT_ID happen to resolve to above, so this clear
+    # is correct even if this fence runs on its own: a failed post leaves
+    # the per-PR pending-status file untouched, so the NEXT round's fold-in
+    # naturally re-peeks and re-offers it instead of this round silently
+    # discarding it on a post failure.
+    CLEAR_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+    CLEAR_CV_LIB="${CLEAR_TOPLEVEL:+${CLEAR_TOPLEVEL}/molds/con-voyage-gascity/pack/assets/scripts/con-voyage-lib.sh}"
+    [ -n "$CLEAR_CV_LIB" ] && [ -f "$CLEAR_CV_LIB" ] || CLEAR_CV_LIB="${GC_CITY:-.}/packs/con-voyage/assets/scripts/con-voyage-lib.sh"
+    [ -f "$CLEAR_CV_LIB" ] || CLEAR_CV_LIB=""
+    if [ -n "$CLEAR_CV_LIB" ]; then
+      # review fk-z6rts BLOCKING-2 (iteration 2): same shared helper the
+      # fold-in fence above uses. This fence's own `gc bd show` fallback was
+      # missing outright, so CLEAR_ROOT_ID silently resolved to this
+      # rereview-finalize STEP bead (which carries no gc.var.finalize_key)
+      # instead of the workflow root whenever GC_ROOT_BEAD_ID did not
+      # survive into this separately-invoked fence — silently skipping the
+      # clear on every successful post in the realistic production case.
+      CLEAR_ROOT_ID="$(source "$CLEAR_CV_LIB" && cv_step_root_bead_id "$GC_BEAD_ID")"
+      CLEAR_FINALIZE_KEY="$(source "$CLEAR_CV_LIB" && cv_bead_metadata "$CLEAR_ROOT_ID" gc.var.finalize_key)"
+      CLEAR_CV_STATE_DIR="$(source "$CLEAR_CV_LIB" && cv_default_state_dir)"
+      [ -n "$CLEAR_CV_STATE_DIR" ] || CLEAR_CV_STATE_DIR="${GC_CITY:-.}/.gc/cv-pr-watch"
+      if [ -n "$CLEAR_FINALIZE_KEY" ]; then
+        # review fk-z6rts BLOCKING-1 (iteration 2): clear only the content
+        # this round's fold-in fence actually peeked and just included in
+        # the post confirmed above — never whatever is in the file at clear
+        # time. A concurrent con-voyage-ci-repair append landing in the
+        # (network-call-length) window between that peek and this confirmed
+        # post must survive into the NEXT round's peek, not be silently
+        # destroyed by a blind read_and_clear here. The fold-in fence above
+        # wrote the exact peeked content to ci-repair-status.md (under the
+        # same rig-root/root-bead-id-keyed build dir) whenever it peeked
+        # something non-empty; re-read that file here as the expected
+        # content to clear through.
+        CLEAR_RIG_ROOT="${GC_RIG_ROOT:-}"
+        [ -n "$CLEAR_RIG_ROOT" ] || CLEAR_RIG_ROOT="$(source "$CLEAR_CV_LIB" && cv_default_rig_root)"
+        [ -n "$CLEAR_RIG_ROOT" ] || CLEAR_RIG_ROOT="${GC_CITY:-.}"
+        CLEAR_EXPECTED_FILE="${CLEAR_RIG_ROOT}/.gc/build/${CLEAR_ROOT_ID}/ci-repair-status.md"
+        CLEAR_EXPECTED_CONTENT=""
+        [ -f "$CLEAR_EXPECTED_FILE" ] && CLEAR_EXPECTED_CONTENT="$(cat "$CLEAR_EXPECTED_FILE")"
+        if [ -n "$CLEAR_EXPECTED_CONTENT" ]; then
+          if ! (export CV_STATE_DIR="$CLEAR_CV_STATE_DIR"; source "$CLEAR_CV_LIB" && cv_defer_status_clear_through "$CLEAR_FINALIZE_KEY" "$CLEAR_EXPECTED_CONTENT" >/dev/null); then
+            # mayor regrade BLOCKING-2 (was LOW-5, 2026-10-14): a stderr-only
+            # warning here is easy to lose — this is the same fail-safe-path
+            # escalation every other unrecoverable branch in this step already
+            # does (push failure, missing worktree, missing vars above).
+            # cv_defer_status_clear_through only returns non-zero when either
+            # the pending-status content no longer has EXPECTED as a prefix
+            # at all, or the record has disappeared entirely since the peek
+            # (an unexpected external change since this round's peek either
+            # way), so this is rare enough to warrant a human looking at it,
+            # not just a log line nobody tails.
+            echo "con-voyage rereview-finalize: WARNING: deferred ci-repair status at ${CLEAR_FINALIZE_KEY} changed since this round's peek — leaving it untouched for the next round rather than risk dropping unposted content" >&2
+            source "$CLEAR_CV_LIB" && cv_with_timeout 30 gc mail send mayor \
+              -s "con-voyage re-review: deferred ci-repair status mismatch for ${REPO_FULL}#${PR_NUMBER}" \
+              -m "rereview-finalize peeked a deferred ci-repair status for ${CLEAR_FINALIZE_KEY} and posted it in this round's aggregated comment, but the pending-status record changed in a way that no longer has the peeked content as a prefix (an unexpected external change, not the normal peek-then-append race) by the time this round tried to clear it. The record was left untouched for the next round rather than risk dropping unposted content — a human should check ${CLEAR_CV_STATE_DIR}/${CLEAR_FINALIZE_KEY}.pending-status for a duplicate or corrupted entry." \
+              2>&1 || echo "note: escalation mail failed too (continuing)" >&2
+          fi
+        fi
+      fi
+    fi
   fi
 else
   echo "cv-pr-comment.sh not found — skipping the aggregated review comment" >&2
@@ -128,7 +299,7 @@ if [ -n "$CV_LIB" ]; then
 fi
 if [ -z "$WORKTREE" ] || [ ! -d "$WORKTREE" ]; then
   echo "con-voyage rereview-finalize: could not resolve the reviewed worktree from ${ROOT_ID}'s gc.build.source_anchor_work_dir — refusing to finalize without knowing what was actually reviewed" >&2
-  gc mail send mayor \
+  source "$CV_LIB" && cv_with_timeout 30 gc mail send mayor \
     -s "con-voyage re-review: cannot finalize ${REPO_FULL}#${PR_NUMBER} — no reviewed worktree" \
     -m "rereview-finalize could not resolve gc.build.source_anchor_work_dir from workflow root ${ROOT_ID}; refusing to report approval or advance last_reviewed_head_sha without knowing what was reviewed." \
     2>&1 || echo "note: escalation mail failed too (continuing)" >&2
@@ -157,7 +328,7 @@ if [ -n "$LOCAL_HEAD_SHA" ] && [ "$LOCAL_HEAD_SHA" != "$REMOTE_HEAD_SHA" ]; then
   fi
   if [ "$PUSH_OK" != "true" ]; then
     echo "con-voyage rereview-finalize: failed to push the converged fix commit(s) back to ${BRANCH} — refusing to report approval or advance last_reviewed_head_sha against unpushed content" >&2
-    gc mail send mayor \
+    source "$CV_LIB" && cv_with_timeout 30 gc mail send mayor \
       -s "con-voyage re-review: push failed for ${REPO_FULL}#${PR_NUMBER}" \
       -m "rereview-finalize's reviewed worktree (${WORKTREE}) has a converged fix at ${LOCAL_HEAD_SHA} that could not be pushed to ${BRANCH} (hygiene guard or push failure — see this step's stderr). The PR branch still has the original, unreviewed commit. This needs a human to land the fix manually." \
       2>&1 || echo "note: escalation mail failed too (continuing)" >&2
@@ -184,7 +355,7 @@ are surfaced here, never silently auto-accepted) and advance the `.finalize`
 record so con-voyage-rereview-watch.sh can detect the NEXT push:
 
 ```bash
-gc mail send mayor \
+source "$CV_LIB" && cv_with_timeout 30 gc mail send mayor \
   -s "RE-REVIEW COMPLETE: ${REPO_FULL}#${PR_NUMBER}" \
   -m "con-voyage re-review round ${REVIEW_ROUND} finished for ${REPO_FULL}#${PR_NUMBER}: <overall_line from review-synthesis.md>" \
   || echo "note: mayor mail failed (continuing)" >&2
