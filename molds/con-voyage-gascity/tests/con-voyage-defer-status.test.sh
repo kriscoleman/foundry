@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
 # con-voyage-defer-status.test.sh — hermetic unit tests for
-# cv_defer_status_append/cv_defer_status_read_and_clear (fk-shpd87, PR noise
-# reduction design doc slice B / AC3).
+# cv_defer_status_append/cv_defer_status_peek/cv_defer_status_clear_through
+# (fk-shpd87, PR noise reduction design doc slice B / AC3).
 #
 # Why this exists: ci-repair workers used to post a top-level PR comment for
 # every routine action (rebase, retry, "not actually blocked"), each one a
 # fresh gh pr comment that can re-trigger a full reviewer cycle for no
-# reason. These two helpers give ci-repair a "defer" path: write a one-line
+# reason. These helpers give ci-repair a "defer" path: write a one-line
 # summary to shared per-PR state instead of posting immediately, so the
 # NEXT comment-aggregate round (main.rereview-finalize.md) can fold it into
 # that round's single comment instead. This suite proves the write/read
 # primitives in isolation, offline, with no gh/gc calls at all.
+#
+# mayor regrade FIX-5 (2026-10-14): cv_defer_status_read_and_clear had no
+# production caller (main.rereview-finalize.md uses peek-then-clear_through,
+# never a destructive single-shot read) — it was removed from
+# con-voyage-lib.sh, and every case below that used to exercise it now
+# exercises the real peek/clear_through pair production code actually calls.
 #
 # Run:  bash tests/con-voyage-defer-status.test.sh   (exit 0 => all passed)
 
@@ -47,41 +53,55 @@ fresh_state_dir() {
   printf '%s' "$d"
 }
 
-# ===========================================================================
-# CASE 1 — reading with nothing deferred yet is empty, not an error.
-# ===========================================================================
-start_case "1: read_and_clear on a dedup_key with no pending status is empty and succeeds"
-CV_STATE_DIR="$(fresh_state_dir)"
-out="$(cv_defer_status_read_and_clear "cv-finalize-acme-widgets-42")"
-rc=$?
-assert_eq "0" "$rc" "read_and_clear exit status with nothing pending"
-assert_eq "" "$out" "read_and_clear output with nothing pending"
+# clear_all KEY — drain a dedup_key's pending-status via the real
+# peek-then-clear_through pair, the exact sequence production code uses.
+clear_all() {
+  local key="$1"
+  local peeked
+  peeked="$(cv_defer_status_peek "$key")"
+  [ -n "$peeked" ] && cv_defer_status_clear_through "$key" "$peeked" >/dev/null
+}
 
 # ===========================================================================
-# CASE 2 — a single deferred status round-trips exactly.
+# CASE 1 — peeking with nothing deferred yet is empty, not an error.
 # ===========================================================================
-start_case "2: a single appended status is readable, then cleared"
+start_case "1: peek on a dedup_key with no pending status is empty and succeeds"
+CV_STATE_DIR="$(fresh_state_dir)"
+out="$(cv_defer_status_peek "cv-finalize-acme-widgets-42")"
+rc=$?
+assert_eq "0" "$rc" "peek exit status with nothing pending"
+assert_eq "" "$out" "peek output with nothing pending"
+
+# ===========================================================================
+# CASE 2 — a single deferred status round-trips exactly through peek, then
+# clear_through removes it once "posted".
+# ===========================================================================
+start_case "2: a single appended status is readable via peek, then cleared via clear_through"
 CV_STATE_DIR="$(fresh_state_dir)"
 cv_defer_status_append "cv-finalize-acme-widgets-42" "rebased onto origin/main, 3 commits replayed clean"
 [ -f "${CV_STATE_DIR}/cv-finalize-acme-widgets-42.pending-status" ] && pass "append creates the per-PR pending-status file" \
   || fail "append did not create the per-PR pending-status file"
-out="$(cv_defer_status_read_and_clear "cv-finalize-acme-widgets-42")"
+out="$(cv_defer_status_peek "cv-finalize-acme-widgets-42")"
 case "$out" in
-  *"rebased onto origin/main, 3 commits replayed clean"*) pass "read_and_clear returns the appended text" ;;
-  *) fail "read_and_clear did not return the appended text (got: ${out})" ;;
+  *"rebased onto origin/main, 3 commits replayed clean"*) pass "peek returns the appended text" ;;
+  *) fail "peek did not return the appended text (got: ${out})" ;;
 esac
-[ -f "${CV_STATE_DIR}/cv-finalize-acme-widgets-42.pending-status" ] && fail "pending-status file still exists after read_and_clear" \
-  || pass "read_and_clear deletes the pending-status file (never posted twice)"
+[ -f "${CV_STATE_DIR}/cv-finalize-acme-widgets-42.pending-status" ] || fail "peek should not have removed the pending-status file"
+clear_rc=0
+cv_defer_status_clear_through "cv-finalize-acme-widgets-42" "$out" || clear_rc=$?
+assert_eq "0" "$clear_rc" "clear_through succeeds for the content just peeked"
+[ -f "${CV_STATE_DIR}/cv-finalize-acme-widgets-42.pending-status" ] && fail "pending-status file still exists after clear_through" \
+  || pass "clear_through deletes the pending-status file (never posted twice)"
 
 # ===========================================================================
 # CASE 3 — multiple deferred statuses accumulate in append order and are
-# cleared together by one read_and_clear.
+# cleared together by one clear_through once peeked together.
 # ===========================================================================
 start_case "3: multiple appends accumulate, oldest first, cleared together"
 CV_STATE_DIR="$(fresh_state_dir)"
 cv_defer_status_append "cv-finalize-acme-widgets-42" "retried failed job 'unit-tests' (flake)"
 cv_defer_status_append "cv-finalize-acme-widgets-42" "rebased onto origin/main, 1 commit replayed clean"
-out="$(cv_defer_status_read_and_clear "cv-finalize-acme-widgets-42")"
+out="$(cv_defer_status_peek "cv-finalize-acme-widgets-42")"
 first_line="$(printf '%s\n' "$out" | sed -n '1p')"
 case "$first_line" in
   *"retried failed job"*) pass "first appended status comes first" ;;
@@ -89,8 +109,9 @@ case "$first_line" in
 esac
 n_lines="$(printf '%s\n' "$out" | grep -c '^-')"
 assert_eq "2" "$n_lines" "two distinct deferred statuses are both present"
-out2="$(cv_defer_status_read_and_clear "cv-finalize-acme-widgets-42")"
-assert_eq "" "$out2" "a second read_and_clear after the first finds nothing left (never posted twice)"
+cv_defer_status_clear_through "cv-finalize-acme-widgets-42" "$out" >/dev/null
+out2="$(cv_defer_status_peek "cv-finalize-acme-widgets-42")"
+assert_eq "" "$out2" "a peek after clear_through finds nothing left (never posted twice)"
 
 # ===========================================================================
 # CASE 4 — deferred status is scoped per dedup_key (per-PR), not global.
@@ -99,8 +120,9 @@ start_case "4: deferred status is scoped to its own dedup_key"
 CV_STATE_DIR="$(fresh_state_dir)"
 cv_defer_status_append "cv-finalize-acme-widgets-42" "status for PR 42"
 cv_defer_status_append "cv-finalize-acme-gadgets-7" "status for PR 7"
-out42="$(cv_defer_status_read_and_clear "cv-finalize-acme-widgets-42")"
-out7_untouched_check="$(cv_defer_status_read_and_clear "cv-finalize-acme-gadgets-7")"
+out42="$(cv_defer_status_peek "cv-finalize-acme-widgets-42")"
+cv_defer_status_clear_through "cv-finalize-acme-widgets-42" "$out42" >/dev/null
+out7_untouched_check="$(cv_defer_status_peek "cv-finalize-acme-gadgets-7")"
 case "$out42" in
   *"status for PR 42"*) pass "PR 42's own status is isolated to its dedup_key" ;;
   *) fail "PR 42's status leaked or was missing (got: ${out42})" ;;
@@ -122,18 +144,18 @@ line_count="$(wc -l < "${CV_STATE_DIR}/cv-finalize-acme-widgets-42.pending-statu
 assert_eq "1" "$line_count" "an embedded newline does not split the pending-status file into extra lines"
 
 # ===========================================================================
-# CASE 6 — both helpers actually consult the per-dedup_key lock instead of
-# racing straight past it (review fk-drbqfj BLOCKING-1: the un-guarded
-# `cat`+`rm` in read_and_clear can otherwise destroy an append landing in
-# that window, silently and with no error — a pure timing race is too flaky
-# to assert on directly, so this proves the mechanism deterministically).
+# CASE 6 — append and peek actually consult the per-dedup_key lock instead of
+# racing straight past it (review fk-drbqfj BLOCKING-1: an un-guarded
+# `cat`+write can otherwise destroy an append landing in that window,
+# silently and with no error — a pure timing race is too flaky to assert on
+# directly, so this proves the mechanism deterministically).
 # `acquire_lock` is overridden to always report "held by someone else", the
-# same observable state a real concurrent holder produces. Against the
-# pre-fix helpers (which never called acquire_lock/release_lock at all) this
-# override has no effect and both calls below would silently succeed anyway
-# — so this case only passes once the lock is genuinely wired in.
+# same observable state a real concurrent holder produces. Against helpers
+# that never called acquire_lock/release_lock at all this override would have
+# no effect and both calls below would silently succeed anyway — so this
+# case only passes once the lock is genuinely wired in.
 # ===========================================================================
-start_case "6: both helpers back off instead of writing past a held lock"
+start_case "6: append and peek back off instead of writing/reading past a held lock"
 CV_STATE_DIR="$(fresh_state_dir)"
 LOCK_KEY="cv-finalize-acme-locked-7"
 PRE_EXISTING_FILE="${CV_STATE_DIR}/${LOCK_KEY}.pending-status"
@@ -154,10 +176,10 @@ case "$file_contents_after_append" in
     pass "the pre-existing pending-status file is untouched by the backed-off append" ;;
 esac
 
-read_out="$(cv_defer_status_read_and_clear "$LOCK_KEY")"
-assert_eq "" "$read_out" "read_and_clear returns nothing when it cannot acquire the lock (does not read past it)"
-[ -f "$PRE_EXISTING_FILE" ] && pass "read_and_clear left the pending-status file in place when it could not acquire the lock" \
-  || fail "read_and_clear deleted the pending-status file despite never acquiring the lock"
+peek_out="$(cv_defer_status_peek "$LOCK_KEY")"
+assert_eq "" "$peek_out" "peek returns nothing when it cannot acquire the lock (does not read past it)"
+[ -f "$PRE_EXISTING_FILE" ] && pass "peek left the pending-status file in place when it could not acquire the lock" \
+  || fail "peek deleted the pending-status file despite never acquiring the lock"
 
 unset -f acquire_lock release_lock
 source "$LIB"  # restore the real implementations for any later case
@@ -209,11 +231,10 @@ unset -f acquire_lock __real_acquire_lock
 source "$LIB"  # restore the real implementations for any later case
 
 # ===========================================================================
-# CASE 8 — read_and_clear's bounded retry actually recovers, same scenario
-# as CASE 7 but for the read/clear side (review fk-drbqfj iteration-2
-# BLOCKING-1).
+# CASE 8 — peek's bounded retry actually recovers, same scenario as CASE 7
+# but for the read side (review fk-drbqfj iteration-2 BLOCKING-1).
 # ===========================================================================
-start_case "8: read_and_clear succeeds after transient lock contention (fails N times, then acquires on retry)"
+start_case "8: peek succeeds after transient lock contention (fails N times, then acquires on retry)"
 CV_STATE_DIR="$(fresh_state_dir)"
 READ_LOCK_KEY="cv-finalize-acme-retry-read"
 PRE_FILE="${CV_STATE_DIR}/${READ_LOCK_KEY}.pending-status"
@@ -234,21 +255,20 @@ CASE8_OUT_FILE="${SANDBOX}/case8-read-out-$$"
 # Redirect stdout to a file rather than capturing via $(...): a command
 # substitution subshell would increment ACQUIRE_LOCK_CALLS in a forked
 # process, silently discarding the count once the subshell exits.
-cv_defer_status_read_and_clear "$READ_LOCK_KEY" > "$CASE8_OUT_FILE"
+cv_defer_status_peek "$READ_LOCK_KEY" > "$CASE8_OUT_FILE"
 read_out="$(cat "$CASE8_OUT_FILE")"
 case "$read_out" in
-  *"status pending before the transient lock holder released"*) pass "read_and_clear returns the pending text once the retry succeeds" ;;
-  *) fail "read_and_clear did not return the pending text after the retry succeeds (got: ${read_out})" ;;
+  *"status pending before the transient lock holder released"*) pass "peek returns the pending text once the retry succeeds" ;;
+  *) fail "peek did not return the pending text after the retry succeeds (got: ${read_out})" ;;
 esac
-assert_eq "3" "$ACQUIRE_LOCK_CALLS" "read_and_clear retried acquire_lock exactly until the 3rd (succeeding) attempt"
-[ -f "$PRE_FILE" ] && fail "pending-status file still exists after read_and_clear succeeds" \
-  || pass "read_and_clear deletes the pending-status file once the retry succeeds"
+assert_eq "3" "$ACQUIRE_LOCK_CALLS" "peek retried acquire_lock exactly until the 3rd (succeeding) attempt"
+[ -f "$PRE_FILE" ] || fail "peek should never remove the pending-status file"
 
 unset -f acquire_lock __real_acquire_lock
 source "$LIB"  # restore the real implementations for any later case
 
 # ===========================================================================
-# CASE 9 — empty dedup_key is refused by both helpers instead of touching
+# CASE 9 — empty dedup_key is refused by append and peek instead of touching
 # "CV_STATE_DIR/.pending-status" (review fk-7bmhlz LOW-3, carried forward
 # from iteration 1: these edge cases were never directly exercised before).
 # ===========================================================================
@@ -260,17 +280,23 @@ assert_eq "1" "$empty_key_append_rc" "cv_defer_status_append refuses an empty de
 [ -f "${CV_STATE_DIR}/.pending-status" ] && fail "cv_defer_status_append wrote a .pending-status file for an empty dedup_key" \
   || pass "cv_defer_status_append wrote nothing for an empty dedup_key"
 
-start_case "9b: an empty dedup_key is refused by cv_defer_status_read_and_clear, returns nothing"
+start_case "9b: an empty dedup_key is refused by cv_defer_status_peek, returns nothing"
 CV_STATE_DIR="$(fresh_state_dir)"
 empty_key_read_rc=0
-empty_key_out="$(cv_defer_status_read_and_clear "" )" || empty_key_read_rc=$?
-assert_eq "1" "$empty_key_read_rc" "cv_defer_status_read_and_clear refuses an empty dedup_key"
-assert_eq "" "$empty_key_out" "cv_defer_status_read_and_clear prints nothing for an empty dedup_key"
+empty_key_out="$(cv_defer_status_peek "" )" || empty_key_read_rc=$?
+assert_eq "1" "$empty_key_read_rc" "cv_defer_status_peek refuses an empty dedup_key"
+assert_eq "" "$empty_key_out" "cv_defer_status_peek prints nothing for an empty dedup_key"
+
+start_case "9c: an empty dedup_key is refused by cv_defer_status_clear_through, returns nothing touched"
+CV_STATE_DIR="$(fresh_state_dir)"
+empty_key_clear_rc=0
+cv_defer_status_clear_through "" "some expected content" || empty_key_clear_rc=$?
+assert_eq "1" "$empty_key_clear_rc" "cv_defer_status_clear_through refuses an empty dedup_key"
 
 # ===========================================================================
-# CASE 10 — a missing CV_STATE_DIR does not crash either helper; append
-# surfaces the failure (no silent data loss), read_and_clear reports nothing
-# pending (review fk-7bmhlz LOW-3).
+# CASE 10 — a missing CV_STATE_DIR does not crash append or peek; append
+# surfaces the failure (no silent data loss), peek reports nothing pending
+# (review fk-7bmhlz LOW-3).
 # ===========================================================================
 start_case "10: a missing CV_STATE_DIR does not crash cv_defer_status_append"
 CV_STATE_DIR="${SANDBOX}/does-not-exist-$$-${RANDOM}"
@@ -284,12 +310,12 @@ case "$missing_dir_append_rc" in
   *) fail "cv_defer_status_append exited abnormally (rc=${missing_dir_append_rc}) when CV_STATE_DIR does not exist" ;;
 esac
 
-start_case "10b: a missing CV_STATE_DIR does not crash cv_defer_status_read_and_clear"
+start_case "10b: a missing CV_STATE_DIR does not crash cv_defer_status_peek"
 CV_STATE_DIR="${SANDBOX}/still-does-not-exist-$$-${RANDOM}"
-missing_dir_read_out="$(cv_defer_status_read_and_clear "cv-finalize-acme-missing-dir" 2>&1)"
+missing_dir_read_out="$(cv_defer_status_peek "cv-finalize-acme-missing-dir" 2>&1)"
 missing_dir_read_rc=$?
-assert_eq "0" "$missing_dir_read_rc" "cv_defer_status_read_and_clear exits 0 (no crash) when CV_STATE_DIR does not exist"
-assert_eq "" "$missing_dir_read_out" "cv_defer_status_read_and_clear prints nothing when CV_STATE_DIR does not exist"
+assert_eq "0" "$missing_dir_read_rc" "cv_defer_status_peek exits 0 (no crash) when CV_STATE_DIR does not exist"
+assert_eq "" "$missing_dir_read_out" "cv_defer_status_peek prints nothing when CV_STATE_DIR does not exist"
 
 # ===========================================================================
 # CASE 11 — real-process concurrency: a REAL backgrounded OS process holding
@@ -408,6 +434,52 @@ cv_defer_status_clear_through "$BLANK_KEY" "" || clear_rc=$?
 assert_eq "1" "$clear_rc" "clear_through refuses a blank EXPECTED"
 [ -f "${CV_STATE_DIR}/${BLANK_KEY}.pending-status" ] && pass "clear_through left the pending-status file in place for a blank EXPECTED" \
   || fail "clear_through deleted the pending-status file despite a blank EXPECTED"
+
+# ===========================================================================
+# CASE 16 — mayor regrade BLOCKING-4 (was LOW-7, 2026-10-14): the '/' and
+# '..' charset guards in cv_defer_status_append, cv_defer_status_peek, and
+# cv_defer_status_clear_through are direct safety checks against a dedup_key
+# that could otherwise escape CV_STATE_DIR (path traversal) or be
+# interpreted as a nested path — exercise each guard directly instead of
+# only relying on the dedup_key convention never producing one in practice.
+# A pre-existing sibling file both outside and inside CV_STATE_DIR proves no
+# write happens anywhere on a rejected key.
+# ===========================================================================
+start_case "16: append refuses a dedup_key containing '/' and writes nothing"
+CV_STATE_DIR="$(fresh_state_dir)"
+TRAVERSAL_KEY="../escape"
+append_traversal_rc=0
+cv_defer_status_append "$TRAVERSAL_KEY" "should never be written" || append_traversal_rc=$?
+assert_eq "1" "$append_traversal_rc" "append refuses a dedup_key containing '..'"
+[ -f "${SANDBOX}/escape.pending-status" ] && fail "append escaped CV_STATE_DIR via a '..' dedup_key" \
+  || pass "append wrote nothing outside CV_STATE_DIR for a '..' dedup_key"
+
+start_case "16b: append refuses a dedup_key containing a nested '/' and writes nothing"
+CV_STATE_DIR="$(fresh_state_dir)"
+NESTED_KEY="sub/dir-key"
+append_nested_rc=0
+cv_defer_status_append "$NESTED_KEY" "should never be written" || append_nested_rc=$?
+assert_eq "1" "$append_nested_rc" "append refuses a dedup_key containing '/'"
+[ -d "${CV_STATE_DIR}/sub" ] && fail "append created a nested directory for a '/' dedup_key" \
+  || pass "append created no nested directory for a '/' dedup_key"
+
+start_case "16c: peek refuses a dedup_key containing '/' or '..' and returns nothing"
+CV_STATE_DIR="$(fresh_state_dir)"
+peek_traversal_out="$(cv_defer_status_peek "../escape" 2>&1)"
+assert_eq "" "$peek_traversal_out" "peek returns nothing for a '..' dedup_key"
+peek_nested_out="$(cv_defer_status_peek "sub/dir-key" 2>&1)"
+assert_eq "" "$peek_nested_out" "peek returns nothing for a '/' dedup_key"
+
+start_case "16d: clear_through refuses a dedup_key containing '/' or '..' and touches nothing"
+CV_STATE_DIR="$(fresh_state_dir)"
+clear_traversal_rc=0
+cv_defer_status_clear_through "../escape" "some expected content" || clear_traversal_rc=$?
+assert_eq "1" "$clear_traversal_rc" "clear_through refuses a '..' dedup_key"
+clear_nested_rc=0
+cv_defer_status_clear_through "sub/dir-key" "some expected content" || clear_nested_rc=$?
+assert_eq "1" "$clear_nested_rc" "clear_through refuses a '/' dedup_key"
+[ -f "${SANDBOX}/escape.pending-status" ] && fail "clear_through escaped CV_STATE_DIR via a '..' dedup_key" \
+  || pass "clear_through touched nothing outside CV_STATE_DIR for a '..' dedup_key"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
