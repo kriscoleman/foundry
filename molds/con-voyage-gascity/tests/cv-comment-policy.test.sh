@@ -71,6 +71,13 @@ assert_not_contains() {
   fi
 }
 
+# Extracts the "Comment bloat" numbered item's own text from a standards doc,
+# stopping at either the next heading or the next numbered item (FIX-2,
+# review fk-bwqk7d: previously duplicated inline in two case bodies below).
+extract_comment_bloat_block() {
+  awk '/Comment bloat/{flag=1} flag{ if (/^#/ || (/^[0-9]+\. \*\*/ && !/Comment bloat/)) exit; print }' "$1"
+}
+
 start_case "the shared comment-policy constant is defined"
 if [ -z "${CV_COMMENT_POLICY_REMINDER:-}" ]; then
   echo "  FAIL: CV_COMMENT_POLICY_REMINDER is not defined by ${LIB}" >&2
@@ -139,7 +146,7 @@ assert_contains "$STANDARDS_JANITOR" "Comment bloat" \
 assert_not_contains "$STANDARDS_JANITOR" \
   "LOW severity unless egregious" \
   "cv-standards-janitor no longer grades comment bloat LOW-unless-egregious"
-BLOAT_BLOCK="$(awk '/Comment bloat/{flag=1} flag{ if (/^#/ || (/^[0-9]+\. \*\*/ && !/Comment bloat/)) exit; print }' "$STANDARDS_JANITOR")"
+BLOAT_BLOCK="$(extract_comment_bloat_block "$STANDARDS_JANITOR")"
 case "$BLOAT_BLOCK" in
   *"BLOCKING"*)
     echo "  PASS: the Comment bloat item itself states BLOCKING" ;;
@@ -164,7 +171,7 @@ cat > "$FIXTURE" <<'FIXTURE_EOF'
 
 In reviewer mode, a BLOCKING finding here means something else entirely.
 FIXTURE_EOF
-FIXTURE_BLOCK="$(awk '/Comment bloat/{flag=1} flag{ if (/^#/ || (/^[0-9]+\. \*\*/ && !/Comment bloat/)) exit; print }' "$FIXTURE")"
+FIXTURE_BLOCK="$(extract_comment_bloat_block "$FIXTURE")"
 rm -f "$FIXTURE"
 case "$FIXTURE_BLOCK" in
   *"## Reviewer mode"*)

@@ -96,7 +96,7 @@ start_case "every formula-dispatched workflow node carries the communal-duty rem
 # CV_CODE_WRITING_NODE_RE is the one detector pattern, shared below with the
 # divergence case (fk-bwqk7d review BLOCKING-1) so that case can never carry
 # a stale private copy that drifts from what this loop actually uses.
-CV_CODE_WRITING_NODE_RE='git commit'
+CV_CODE_WRITING_NODE_RE='^[[:space:]]*git commit'
 node_count=0
 comment_policy_node_count=0
 for formula in "${MOLD_DIR}"/pack/formulas/*.toml; do
@@ -169,6 +169,23 @@ else
   echo "  PASS: old literal pattern (grep -qF 'git commit -m') does NOT match the fixture, confirming the broadening changes real behavior"
 fi
 rm -f "$fixture_file"
+
+start_case "the code-writing-node detector does not flag a prose-only mention of git commit (review fk-bwqk7d BLOCKING-1)"
+# ci-repair's "Do NOT push an empty commit (\`git commit --allow-empty\`)"
+# warning line is prose that merely mentions the command inside a sentence —
+# it must not make the detector think the node writes code. Every real
+# command invocation in these node files starts at column 0 (a standalone
+# shell line or code-block line); a prose mention never does.
+prose_fixture="$(mktemp)"
+printf -- '- **Do NOT push an empty commit** (`git commit --allow-empty`) or any no-op.\n' > "$prose_fixture"
+
+if grep -qE "$CV_CODE_WRITING_NODE_RE" "$prose_fixture" 2>/dev/null; then
+  echo "  FAIL: \$CV_CODE_WRITING_NODE_RE matched a prose-only mention of git commit — it should only match real command usage" >&2
+  FAILURES=$((FAILURES+1))
+else
+  echo "  PASS: \$CV_CODE_WRITING_NODE_RE does NOT match a prose-only mention of git commit"
+fi
+rm -f "$prose_fixture"
 
 start_case "the routed PR-feedback bead body (con-voyage-pr-watch.sh) includes the reminder"
 if declare -f cv_build_pr_feedback_body >/dev/null 2>&1; then
