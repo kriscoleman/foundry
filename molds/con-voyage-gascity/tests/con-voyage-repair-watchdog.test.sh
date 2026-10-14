@@ -1203,6 +1203,59 @@ else
 fi
 
 # ===========================================================================
+# CASE 26d — review fk-0r3km0 BLOCKING-1: a genuinely valid empty orphan list
+#   (`[]`, the normal "no duplicates" case) must NOT be misreported as
+#   unparseable JSON. Distinct from CASE 26 (garbage JSON) and CASE 26b
+#   (bd list call failure outright) — this is the overwhelmingly common
+#   healthy path, where the fix's own WARNING previously fired every time.
+# ===========================================================================
+start_case "26d: DEFECT 2 fix — a clean empty orphan list does not log an unparseable-JSON WARNING"
+setup_case_env "26d"
+write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-263" \
+  "gc__impl-rc-dead" "wd-bead263" "merge_conflict" "kriscoleman" "vandoor/gc.implementation-worker" \
+  "kriscoleman/foundry" "263" "fix/thing" "0" "0"
+run_script "${DEFAULT_ENV[@]}" STUB_BDSHOW_MAP="wd-bead263|open|$(iso_ago 30)" \
+  STUB_SESSION_LIST_JSON='{"sessions":[]}' STUB_BD_CREATE_ID="wd-bead263b" \
+  STUB_BDLIST_JSON='[]'
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" '\-\-rig vandoor bd create' 1 "the fallback mint still happens with a clean empty orphan list"
+assert_log_count "$GC_LOG" 'sling vandoor/gc.implementation-worker wd-bead263b --on con-voyage-ci-repair' 1 "the re-dispatch still fires"
+if printf '%s' "$OUT" | grep -q 'WARNING.*unparseable JSON'; then
+  fail "a genuinely empty orphan list ([]) must not be reported as unparseable JSON"
+else
+  pass "a genuinely empty orphan list logs no unparseable-JSON WARNING"
+fi
+
+# ===========================================================================
+# CASE 25b — review fk-ewz4un BLOCKING-2: the orphan sweep must cap how many
+#   duplicate beads it force-closes in a single cycle (CV_MAX_ORPHANS_PER_SWEEP)
+#   so an unbounded loop over a double-digit orphan count (the live
+#   incident's own shape) cannot hold the per-dedup_key lock past
+#   CV_LOCK_STALE_SECONDS and let a concurrent watchdog steal it mid-sweep.
+# ===========================================================================
+start_case "25b: DEFECT 2 fix — the orphan sweep caps force-closes per cycle at CV_MAX_ORPHANS_PER_SWEEP"
+setup_case_env "25b"
+write_state "$STATE_DIR" "cv-ci-repair-kriscoleman-foundry-251" \
+  "gc__impl-rc-dead" "wd-bead251" "merge_conflict" "kriscoleman" "vandoor/gc.implementation-worker" \
+  "kriscoleman/foundry" "251" "fix/thing" "0" "0"
+run_script "${DEFAULT_ENV[@]}" STUB_BDSHOW_MAP="wd-bead251|open|$(iso_ago 30)" \
+  STUB_SESSION_LIST_JSON='{"sessions":[]}' STUB_BD_CREATE_ID="wd-bead251b" \
+  CV_MAX_ORPHANS_PER_SWEEP="3" \
+  STUB_BDLIST_JSON='[{"id":"wd-orphan251a","status":"open"},{"id":"wd-orphan251b","status":"open"},{"id":"wd-orphan251c","status":"open"},{"id":"wd-orphan251d","status":"open"},{"id":"wd-orphan251e","status":"open"},{"id":"wd-bead251","status":"open"}]'
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd close wd-orphan251a .*orphaned duplicate' 1 "orphan 1 (within the cap) is force-closed"
+assert_log_count "$GC_LOG" 'bd close wd-orphan251b .*orphaned duplicate' 1 "orphan 2 (within the cap) is force-closed"
+assert_log_count "$GC_LOG" 'bd close wd-orphan251c .*orphaned duplicate' 1 "orphan 3 (within the cap) is force-closed"
+assert_log_count "$GC_LOG" 'bd close wd-orphan251d .*orphaned duplicate' 0 "orphan 4 (past the cap) is left for a later cycle"
+assert_log_count "$GC_LOG" 'bd close wd-orphan251e .*orphaned duplicate' 0 "orphan 5 (past the cap) is left for a later cycle"
+assert_log_count "$GC_LOG" '\-\-rig vandoor bd create' 1 "the fallback mint still happens after a capped sweep"
+if printf '%s' "$OUT" | grep -q 'orphan sweep hit the CV_MAX_ORPHANS_PER_SWEEP cap'; then
+  pass "logs that the sweep hit its cap"
+else
+  fail "expected a message noting the orphan sweep hit CV_MAX_ORPHANS_PER_SWEEP"
+fi
+
+# ===========================================================================
 # CASE 27 — fk-6rj8zo DEFECT 3: a tracked bead with NO known implementor
 #   that is still UNCLAIMED (bd status "open") and only past CV_STALL_SECONDS
 #   (not CV_UNCLAIMED_STALL_SECONDS) must NOT be treated as stalled — claim

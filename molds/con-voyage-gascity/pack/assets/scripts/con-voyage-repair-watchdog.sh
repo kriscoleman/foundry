@@ -262,6 +262,22 @@
 #                     con-voyage-pr-watch.sh. Default: rebase.
 #   CV_GH_TIMEOUT_SECONDS  Wall-clock bound (via cv_with_timeout) on the Fix 3
 #                     pre-dispatch `gh pr view` recheck. Default: 20.
+#   CV_MAX_ORPHANS_PER_SWEEP  review fk-ewz4un BLOCKING-2: caps how many
+#                     orphaned duplicate beads the DEFECT-2 orphan sweep
+#                     force-closes in a single cycle while holding the
+#                     per-dedup_key lock. Each force-close costs up to
+#                     2*CV_LENS_STORE_TIMEOUT_SECONDS (a bd show plus a bd
+#                     close, both store calls), so an uncapped sweep's worst
+#                     case (N orphans * up to 60s) can exceed
+#                     CV_LOCK_STALE_SECONDS and let a concurrent watchdog
+#                     steal the lock mid-sweep — reproducing the exact
+#                     N-simultaneously-live-repairs incident this watchdog
+#                     exists to close. Orphans beyond the cap are left for a
+#                     later cycle; the sweep already tolerates being re-run.
+#                     Keep CV_MAX_ORPHANS_PER_SWEEP *
+#                     2*CV_LENS_STORE_TIMEOUT_SECONDS comfortably under
+#                     CV_LOCK_STALE_SECONDS. Default: 3 (3*2*30s = 180s, well
+#                     under the default 300s CV_LOCK_STALE_SECONDS).
 #
 # Exit codes:
 #   0 — completed (some, all, or none of the tracked records needed action)
@@ -299,6 +315,9 @@ CV_GH_TIMEOUT_SECONDS="${CV_GH_TIMEOUT_SECONDS:-20}"
 # same knob and default as every sibling store-enumeration call in this pack
 # (con-voyage-marshal-bead-sweep.sh, con-voyage-orphan-sweep.sh).
 CV_LENS_STORE_TIMEOUT_SECONDS="${CV_LENS_STORE_TIMEOUT_SECONDS:-30}"
+# review fk-ewz4un BLOCKING-2: caps orphan force-closes per sweep cycle —
+# see the header doc above for the lock-hold-time rationale.
+CV_MAX_ORPHANS_PER_SWEEP="${CV_MAX_ORPHANS_PER_SWEEP:-3}"
 # Forwarded, NOT read, by this script (see header) — declared here with the
 # other tunables rather than left as an inline ${..:-default} at each use
 # site, so every configuration knob resolves in one place.
@@ -330,6 +349,9 @@ case "$CV_GH_TIMEOUT_SECONDS" in
 esac
 case "$CV_LENS_STORE_TIMEOUT_SECONDS" in
   *[!0-9]*|'') CV_LENS_STORE_TIMEOUT_SECONDS="30" ;;
+esac
+case "$CV_MAX_ORPHANS_PER_SWEEP" in
+  *[!0-9]*|'') CV_MAX_ORPHANS_PER_SWEEP="3" ;;
 esac
 
 # ---------------------------------------------------------------------------
@@ -731,21 +753,31 @@ process_state_record() {
     if [ -z "$orphan_json" ]; then
       echo "con-voyage-repair-watchdog: WARNING: orphan sweep bd list failed or returned empty for ${label} (dedup_key=${dedup_key}); skipping the sweep this cycle, proceeding with re-dispatch" >&2
     else
+      # fk-0r3km0 BLOCKING-1: a genuinely valid empty orphan list (`[]`, the
+      # normal "no duplicates" case) and truly unparseable JSON both printed
+      # nothing from the python snippet below, so the two were
+      # indistinguishable and `[]` was misreported as a parse failure on
+      # every clean re-dispatch. Fail loud (sys.exit(2)) on a real parse
+      # error instead of swallowing it into an empty result, drop the
+      # `|| true` that discarded python's exit code, and branch on that exit
+      # code rather than on whether any rows printed — `[]` with exit 0 is
+      # silently fine, only a non-zero exit logs the WARNING.
       orphan_rows="$(printf '%s' "$orphan_json" | python3 -c "
 import json, sys
 try:
     data = json.load(sys.stdin)
 except Exception:
-    data = []
+    sys.exit(2)
 if not isinstance(data, list):
-    data = []
+    sys.exit(2)
 for item in data:
     if isinstance(item, dict) and item.get('id'):
         print('%s|%s' % (item['id'], item.get('status') or ''))
-" 2>/dev/null || true)"
-      if [ -z "$orphan_rows" ]; then
+")"
+      orphan_parse_rc=$?
+      if [ "$orphan_parse_rc" -ne 0 ]; then
         echo "con-voyage-repair-watchdog: WARNING: orphan sweep bd list returned unparseable JSON for ${label} (dedup_key=${dedup_key}); skipping the sweep this cycle, proceeding with re-dispatch" >&2
-      else
+      elif [ -n "$orphan_rows" ]; then
         # review fk-wmhr96 BLOCKING-4 (QA/test-engineering fk-5lhtbk,
         # test-evidence fk-wjpega): close_if_open is fail-safe by design — a
         # failed force-close logs a WARNING and leaves the bead open rather
@@ -757,15 +789,32 @@ for item in data:
         # live-incident shape (N simultaneously-live repair workers on one
         # PR) this bead exists to close, just reached via this sweep instead
         # of the main supersede path DEFECT 1 already guards.
+        # review fk-ewz4un BLOCKING-2: bound the number of orphans this cycle
+        # force-closes (CV_MAX_ORPHANS_PER_SWEEP, see header doc) rather than
+        # walking every row unbounded — an uncapped loop over a double-digit
+        # orphan count (the live incident's own shape) can hold the
+        # per-dedup_key lock past CV_LOCK_STALE_SECONDS and let a concurrent
+        # watchdog steal it mid-sweep. Any rows left over are picked up by a
+        # later cycle's sweep, which already tolerates being re-run.
         orphan_close_failed=0
+        orphan_closed_count=0
+        orphan_capped=0
         while IFS='|' read -r orphan_id orphan_status; do
           [ -n "${orphan_id// /}" ] || continue
           [ "$orphan_id" = "$ST_INFLIGHT" ] && continue
+          if [ "$orphan_closed_count" -ge "$CV_MAX_ORPHANS_PER_SWEEP" ]; then
+            orphan_capped=1
+            continue
+          fi
           close_if_open "$orphan_id" "superseded: orphaned duplicate repair bead for ${label} (dedup_key=${dedup_key})" "" "$orphan_status" "1"
+          orphan_closed_count=$((orphan_closed_count + 1))
           if [ "${CV_CLOSE_RC:-0}" -ne 0 ]; then
             orphan_close_failed=1
           fi
         done <<< "$orphan_rows"
+        if [ "$orphan_capped" -eq 1 ]; then
+          echo "con-voyage-repair-watchdog: ${label} orphan sweep hit the CV_MAX_ORPHANS_PER_SWEEP cap (${CV_MAX_ORPHANS_PER_SWEEP}, dedup_key=${dedup_key}); remaining orphans left for a later cycle" >&2
+        fi
         if [ "$orphan_close_failed" -eq 1 ]; then
           echo "con-voyage-repair-watchdog: WARNING: ${label} orphan-sweep force-close of at least one duplicate (dedup_key=${dedup_key}) did not complete; not minting a replacement this cycle, will retry the sweep next cycle" >&2
           return
