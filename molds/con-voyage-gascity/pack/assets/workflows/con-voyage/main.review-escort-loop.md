@@ -32,20 +32,10 @@ CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
 CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
 [ -f "$CV_LIB" ] || CV_LIB=""
 
-ROOT_BEAD_STATUS=""
 if [ -n "$CV_LIB" ]; then
-  IFS=$'\x1f' read -r ROOT_BEAD_STATUS _ <<< "$(source "$CV_LIB" && bead_status "$ROOT_ID" id)"
-fi
-if [ "$ROOT_BEAD_STATUS" = "closed" ]; then
-  echo "con-voyage review-escort loop: workflow root ${ROOT_ID} is already closed — abandoning this step and any pending descendants, minting nothing" >&2
-  if [ -n "$CV_LIB" ]; then
-    source "$CV_LIB" && cv_close_workflow_root "$ROOT_ID" "workflow root already closed before the review-escort loop ran; aborting, minting nothing"
+  if source "$CV_LIB" && cv_root_closed_guard "$ROOT_ID" "$CLAIMED_BEAD_ID" "review-escort loop" "review"; then
+    exit 0
   fi
-  bd update "$CLAIMED_BEAD_ID" \
-    --set-metadata 'gc.outcome=skipped' \
-    --set-metadata 'gc.skip_reason=workflow root already closed'
-  bd close "$CLAIMED_BEAD_ID" --reason 'Skipped: workflow root already closed, nothing to review.'
-  exit 0
 fi
 
 SETUP_OUTCOME=""
@@ -97,6 +87,8 @@ for dep in (d.get('dependents') or []):
     print(dep.get('id') or '')
 " 2>/dev/null))
 
+GC="${GC:-gc}"; GC_CITY="${GC_CITY:-.}"
+ROOT_ID="${GC_ROOT_BEAD_ID:-$GC_BEAD_ID}"
 CV_LENS_CLAIM_SECONDS="{cv_lens_claim_seconds}"
 CV_LENS_MAX_REDISPATCH="{cv_lens_max_redispatch}"
 case "$CV_LENS_CLAIM_SECONDS" in
@@ -105,7 +97,20 @@ esac
 case "$CV_LENS_MAX_REDISPATCH" in
   *[!0-9]*|'') CV_LENS_MAX_REDISPATCH="3" ;;
 esac
-CV_LENS_ESCALATE_TARGET="{cv_lens_escalate_target}"
+# review fk-eruo3s LOW-1: `{cv_lens_escalate_target}` is a literal token in a
+# file above gc's inline-substitution threshold and never substitutes — read
+# the real value back from the workflow root's metadata instead, same
+# pattern as every other over-threshold `{var}` in this pack (cv_bead_metadata).
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
+CV_LENS_ESCALATE_TARGET=""
+if [ -n "$CV_LIB" ]; then
+  CV_LENS_ESCALATE_TARGET="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.var.cv_lens_escalate_target)"
+fi
+[ -n "$CV_LENS_ESCALATE_TARGET" ] || CV_LENS_ESCALATE_TARGET="human"
 declare -A CV_LENS_ATTEMPTS
 pending=("${LANE_BEAD_IDS[@]}")
 start_ts=$(date +%s)
@@ -206,11 +211,23 @@ print((d.get('metadata') or {}).get('gc.attempt') or '0')
 " 2>/dev/null)"
 SYNTH_STEP_ID="${THIS_STEP_ID%.review-escort-loop}.synthesize-review"
 
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
+
 CV_LENS_GATE_TIMEOUT_SECONDS="{cv_lens_claim_seconds}"
 case "$CV_LENS_GATE_TIMEOUT_SECONDS" in
   *[!0-9]*|'') CV_LENS_GATE_TIMEOUT_SECONDS="300" ;;
 esac
-CV_LENS_ESCALATE_TARGET="{cv_lens_escalate_target}"
+# review fk-eruo3s LOW-1: `{cv_lens_escalate_target}` never substitutes (file
+# is above gc's inline-substitution threshold) — resolve dynamically instead.
+CV_LENS_ESCALATE_TARGET=""
+if [ -n "$CV_LIB" ]; then
+  CV_LENS_ESCALATE_TARGET="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.var.cv_lens_escalate_target)"
+fi
+[ -n "$CV_LENS_ESCALATE_TARGET" ] || CV_LENS_ESCALATE_TARGET="human"
 
 gate_start=$(date +%s)
 last_mailed_elapsed=-1

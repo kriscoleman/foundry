@@ -73,7 +73,21 @@ credentials. Refuse before fetching or attaching anything unless the PR
 author is trusted:
 
 ```bash
-AUTHOR_ASSOC="$(gh pr view "$PR_NUMBER" --repo "$REPO_FULL" --json authorAssociation --jq .authorAssociation 2>/dev/null)"
+CV_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
+[ -f "${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh" ] || CV_PACK_ROOT="${GC_CITY:-.}/packs/con-voyage"
+CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
+[ -f "$CV_LIB" ] || CV_LIB=""
+
+# review fk-eruo3s LOW-5: this `gh` call used to have no wall-clock bound,
+# same convention gap as finalize's ls-remote (LOW-4) — a hung `gh` process
+# would stall the seed step forever instead of failing safe into the refusal
+# branch below.
+if [ -n "$CV_LIB" ]; then
+  AUTHOR_ASSOC="$(source "$CV_LIB" && cv_with_timeout 30 gh pr view "$PR_NUMBER" --repo "$REPO_FULL" --json authorAssociation --jq .authorAssociation 2>/dev/null)"
+else
+  AUTHOR_ASSOC="$(gh pr view "$PR_NUMBER" --repo "$REPO_FULL" --json authorAssociation --jq .authorAssociation 2>/dev/null)"
+fi
 case "$AUTHOR_ASSOC" in
   OWNER|MEMBER|COLLABORATOR) ;;
   *)
@@ -129,7 +143,14 @@ fi
 [ -n "${RIG_ROOT:-}" ] || RIG_ROOT="${GC_CITY:-.}"
 
 WORKTREE="${RIG_ROOT}/worktrees/review-escort-${ROOT_ID}"
+# review fk-eruo3s LOW-2: `rm -rf` alone removes the directory but not git's
+# own worktree registration — a leftover registration at this same path (from
+# a prior process crash mid-seed, before this step ever reached the `add`
+# below) would make `git worktree add` refuse the path outright on a re-mint.
+# Clear any stale registration before removing the directory.
+git worktree remove --force "$WORKTREE" >/dev/null 2>&1 || true
 rm -rf "$WORKTREE"
+git worktree prune >/dev/null 2>&1 || true
 mkdir -p "$(dirname "$WORKTREE")"
 
 SEED_FAIL=""

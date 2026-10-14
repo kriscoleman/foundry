@@ -2220,6 +2220,43 @@ for _, bead_id in rows:
   CV_CLOSE_RC="$root_close_rc"
 }
 
+# cv_root_closed_guard ROOT_ID CLAIMED_BEAD_ID STEP_LABEL NOOP_NOUN — shared
+# "is the workflow root already closed" entry guard (fk-jg6rm), extracted
+# (review fk-eruo3s LOW-3) from six near-identical inline copies in
+# main.review-escort-loop.md, main.con-voyage-review-loop.md, main.build.md,
+# main.apply-review-findings.md, main.setup-con-voyage-review.md, and
+# main.synthesize-review.md: a `needs` edge in graph.v2 is satisfied once its
+# dependency bead is CLOSED regardless of outcome, and graph.v2 can mint a
+# fresh step bead even after the workflow's root has already been closed
+# (mayor abandon, a terminal failure elsewhere in the tree). Every one of
+# those six steps must check this before doing any real work.
+#
+# STEP_LABEL is the human-readable step name for the stderr log line (e.g.
+# "review-escort loop", "build"); NOOP_NOUN is the short verb-phrase for the
+# close reason (e.g. "review", "build", "synthesize").
+#
+# Returns 1 (does nothing) when the root is open OR its status is unknown
+# (bead_status failure) — "unknown" falls through to the normal pass exactly
+# like every inline copy did, never treated as "confirmed open". Returns 0
+# when the root is closed, and by that point has ALREADY echoed the abandon
+# line, swept the whole workflow tree via cv_close_workflow_root, and closed
+# CLAIMED_BEAD_ID itself with gc.outcome=skipped. The caller must `exit 0`
+# immediately on a 0 return — this function never exits the caller's shell.
+cv_root_closed_guard() {
+  local root_id="${1:-}" claimed_bead_id="${2:-}" step_label="${3:-}" noop_noun="${4:-}"
+  local gc_bin="${GC:-gc}"
+  local root_status
+  IFS=$'\x1f' read -r root_status _ <<< "$(bead_status "$root_id" id)"
+  [ "$root_status" = "closed" ] || return 1
+  echo "con-voyage ${step_label}: workflow root ${root_id} is already closed — abandoning this step and any pending descendants, minting nothing" >&2
+  cv_close_workflow_root "$root_id" "workflow root already closed before ${step_label} ran; aborting, minting nothing"
+  "$gc_bin" bd update "$claimed_bead_id" \
+    --set-metadata 'gc.outcome=skipped' \
+    --set-metadata 'gc.skip_reason=workflow root already closed' >/dev/null 2>&1
+  "$gc_bin" bd close "$claimed_bead_id" --reason "Skipped: workflow root already closed, nothing to ${noop_noun}." >/dev/null 2>&1
+  return 0
+}
+
 # ===========================================================================
 # GLOBAL BEAD-STATE-EVENT HELPERS (fk-7mw7 FIX-A)
 #

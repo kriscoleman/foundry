@@ -75,12 +75,36 @@ done
 assert_contains "$SEED_MD" "refs/pull/\${PR_NUMBER}/head" "seed fetches the PR head ref"
 assert_contains "$SEED_MD" "worktree add -q --detach" "seed attaches a DETACHED worktree"
 
+start_case "the seed step clears a stale git worktree registration before re-attaching (review fk-eruo3s LOW-2)"
+assert_contains "$SEED_MD" "git worktree remove --force \"\$WORKTREE\"" \
+  "seed removes any existing worktree registration at the target path"
+assert_contains "$SEED_MD" "git worktree prune" \
+  "seed also prunes stale registrations whose directory is already gone"
+
+start_case "the seed step's trust-gate gh pr view call is bounded by a timeout (review fk-eruo3s LOW-5)"
+assert_contains "$SEED_MD" "cv_with_timeout 30 gh pr view \"\$PR_NUMBER\"" \
+  "the authorAssociation lookup is wrapped in cv_with_timeout"
+
 start_case "the review-escort loop never waits on an apply-review-findings bead"
 assert_not_contains "$LOOP_MD" "APPLY_STEP_ID" "loop defines no APPLY_STEP_ID to poll for"
 assert_not_contains "$LOOP_MD" "code_review.fix_commit" "loop never gates on a fix commit"
 for needle in "git push" "git commit" "git rebase" "git merge "; do
   assert_not_contains "$LOOP_MD" "$needle" "loop does not contain '${needle}'"
 done
+
+start_case "the loop resolves cv_lens_escalate_target dynamically instead of relying on dead inline substitution (review fk-eruo3s LOW-1)"
+assert_not_contains "$LOOP_MD" 'CV_LENS_ESCALATE_TARGET="{cv_lens_escalate_target}"' \
+  "no literal, never-substituted {cv_lens_escalate_target} token is assigned directly"
+assert_count "$LOOP_MD" 'cv_bead_metadata "$ROOT_ID" gc.var.cv_lens_escalate_target' "2" \
+  "both escalate-target sites (lane re-dispatch, synthesis wait) resolve it via cv_bead_metadata"
+assert_count "$LOOP_MD" 'CV_LENS_ESCALATE_TARGET="human"' "2" \
+  "both sites fall back to the formula var's own default (human) when metadata is unresolved"
+
+start_case "the loop delegates the root-already-closed entry guard to the shared lib helper (review fk-eruo3s LOW-3)"
+assert_contains "$LOOP_MD" 'cv_root_closed_guard "$ROOT_ID" "$CLAIMED_BEAD_ID" "review-escort loop" "review"' \
+  "the entry guard calls the shared cv_root_closed_guard helper"
+assert_not_contains "$LOOP_MD" "cv_close_workflow_root \"\$ROOT_ID\" \"workflow root already closed before the review-escort loop ran" \
+  "the duplicated inline guard body is gone, not just renamed"
 
 start_case "the finalize step never pushes, commits, rebases, merges, or opens a PR"
 for needle in "git push" "git commit " "git rebase" "git merge " "cv-pr-comment.sh create" "finalize_write"; do
@@ -97,6 +121,10 @@ assert_contains "$FINALIZE_MD" "--formula con-voyage-review-escort" "finalize id
 start_case "the finalize step verifies the PR head was never moved by this formula"
 assert_contains "$FINALIZE_MD" "ls-remote origin \"refs/pull/\${PR_NUMBER}/head\"" "finalize re-reads the PR's live remote head"
 assert_contains "$FINALIZE_MD" "gc.review_escort.pr_head_sha" "finalize compares against the seeded head sha"
+
+start_case "the finalize step's push-safety ls-remote call is bounded by a timeout (review fk-eruo3s LOW-4)"
+assert_contains "$FINALIZE_MD" "cv_with_timeout 30 git ls-remote origin" \
+  "the ls-remote push-safety check is wrapped in cv_with_timeout"
 
 start_case "the finalize step mails the mayor regardless of verdict (review fk-hbsmk BLOCKING-8)"
 assert_contains "$FINALIZE_MD" "gc mail send mayor" "finalize mails the mayor"

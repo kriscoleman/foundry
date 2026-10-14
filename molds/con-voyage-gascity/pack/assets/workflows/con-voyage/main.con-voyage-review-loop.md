@@ -39,20 +39,10 @@ CV_PACK_ROOT="${CV_TOPLEVEL:+${CV_TOPLEVEL}/molds/con-voyage-gascity/pack}"
 CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
 [ -f "$CV_LIB" ] || CV_LIB=""
 
-ROOT_BEAD_STATUS=""
 if [ -n "$CV_LIB" ]; then
-  IFS=$'\x1f' read -r ROOT_BEAD_STATUS _ <<< "$(source "$CV_LIB" && bead_status "$ROOT_ID" id)"
-fi
-if [ "$ROOT_BEAD_STATUS" = "closed" ]; then
-  echo "con-voyage review loop: workflow root ${ROOT_ID} is already closed — abandoning this step and any pending descendants, minting nothing" >&2
-  if [ -n "$CV_LIB" ]; then
-    source "$CV_LIB" && cv_close_workflow_root "$ROOT_ID" "workflow root already closed before the review loop ran; aborting, minting nothing"
+  if source "$CV_LIB" && cv_root_closed_guard "$ROOT_ID" "$CLAIMED_BEAD_ID" "review loop" "review"; then
+    exit 0
   fi
-  bd update "$CLAIMED_BEAD_ID" \
-    --set-metadata 'gc.outcome=skipped' \
-    --set-metadata 'gc.skip_reason=workflow root already closed'
-  bd close "$CLAIMED_BEAD_ID" --reason 'Skipped: workflow root already closed, nothing to review.'
-  exit 0
 fi
 
 SETUP_OUTCOME=""
