@@ -220,6 +220,38 @@ else
 fi
 
 # ===========================================================================
+# CASE 2b — mayor regrade BLOCKING-1 (was LOW-1, 2026-10-14): a round with
+# nothing newly deferred must still CLEAR a stale ci-repair-status.md left
+# behind by a PRIOR round, or that prior round's status gets silently
+# re-included (and re-posted) by this round's manifest assembly, which only
+# checks whether the file exists. Seed a stale file directly (simulating
+# leftover from a prior round) with no pending-status on disk at all, then
+# confirm the fence itself removes it — unlike CASE 2 above, this test does
+# NOT pre-clean ci-repair-status.md itself.
+# ===========================================================================
+start_case "the fold-in fence clears a STALE ci-repair-status.md from a prior round when nothing is newly deferred"
+
+rm -f "$PENDING_FILE"
+printf '%s\n' "- ci-repair: stale status from a prior round, never cleared" > "${CV_BUILD_DIR}/ci-repair-status.md"
+[ -f "${CV_BUILD_DIR}/ci-repair-status.md" ] || { echo "FATAL: could not seed a stale ci-repair-status.md" >&2; exit 2; }
+
+OUTPUT_STALE="$(run_fence)"
+RUN_EXIT_STALE=$?
+echo "$OUTPUT_STALE"
+
+if [ "$RUN_EXIT_STALE" -ne 0 ]; then
+  fail "the extracted fold-in fence exited non-zero while clearing a stale status (${RUN_EXIT_STALE})"
+else
+  pass "the fence exits 0 while clearing a stale status"
+fi
+
+if [ -f "${CV_BUILD_DIR}/ci-repair-status.md" ]; then
+  fail "the stale ci-repair-status.md from a prior round was NOT cleared — it would be re-included in this round's aggregated comment, posting the same status twice"
+else
+  pass "the stale ci-repair-status.md from a prior round was cleared when nothing is newly deferred"
+fi
+
+# ===========================================================================
 # CASE 3/4 — the "Post the round's ONE aggregated review comment" fence's own
 # clear-on-confirmed-post / leave-on-failure behavior (review fk-7bmhlz
 # LOW-5). This fence's own PR_NUMBER/REPO_FULL/CV_LIB/CV_PACK_ROOT inputs are
@@ -463,6 +495,46 @@ case "$RACE_REMAINING" in
     fail "the status appended after the peek was destroyed by the clear (got: ${RACE_REMAINING})" ;;
 esac
 rm -f "$POSTING_PENDING_FILE" "${CV_BUILD_DIR}/ci-repair-status.md"
+
+# ===========================================================================
+# CASE 7 — mayor regrade BLOCKING-2/BLOCKING-3 (was LOW-5/LOW-6, 2026-10-14):
+# the fail-closed warning path — the peeked content no longer has EXPECTED
+# as a prefix of the pending-status file's current content at all (an
+# unexpected external change, not the normal peek-then-append race CASE 6
+# covers) — must be exercised end-to-end through the real posting fence, and
+# must escalate to the mayor by mail, not just log a stderr line nobody
+# tails. Write the pending-status file directly with content that shares no
+# prefix with what ci-repair-status.md recorded as peeked, simulating an
+# external change between the fold-in fence's peek and this posting fence's
+# clear.
+# ===========================================================================
+start_case "the posting fence escalates to the mayor and leaves the file untouched when the peeked content no longer matches at clear time"
+printf -- '- ci-repair: status that was peeked earlier\n' > "${CV_BUILD_DIR}/ci-repair-status.md"
+printf -- '- ci-repair: a completely different status — unexpected external change\n' > "$POSTING_PENDING_FILE"
+rm -f "${WORKDIR}/mail.log"
+
+POSTING_OUT_MISMATCH="$(run_posting_fence "1")"
+echo "$POSTING_OUT_MISMATCH"
+
+case "$POSTING_OUT_MISMATCH" in
+  *"WARNING: deferred ci-repair status"*"changed since this round's peek"*)
+    pass "the fail-closed warning is logged to stderr" ;;
+  *)
+    fail "expected the fail-closed WARNING in output, got: ${POSTING_OUT_MISMATCH}" ;;
+esac
+
+if [ -f "${WORKDIR}/mail.log" ] && grep -qF "deferred ci-repair status mismatch" "${WORKDIR}/mail.log"; then
+  pass "the mismatch is escalated to the mayor by mail, not just logged to stderr"
+else
+  fail "expected a mayor-mail escalation for the content mismatch (mail.log: $(cat "${WORKDIR}/mail.log" 2>/dev/null || echo '<missing>'))"
+fi
+
+if [ -f "$POSTING_PENDING_FILE" ] && grep -qF "a completely different status" "$POSTING_PENDING_FILE"; then
+  pass "the pending-status file is left completely untouched on a content mismatch"
+else
+  fail "the pending-status file was modified or removed despite a content mismatch"
+fi
+rm -f "$POSTING_PENDING_FILE" "${CV_BUILD_DIR}/ci-repair-status.md" "${WORKDIR}/mail.log"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

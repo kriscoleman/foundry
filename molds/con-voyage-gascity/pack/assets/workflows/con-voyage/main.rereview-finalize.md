@@ -146,8 +146,17 @@ CV_RIG_ROOT="${GC_RIG_ROOT:-}"
 [ -n "$CV_RIG_ROOT" ] || CV_RIG_ROOT="${GC_CITY:-.}"
 CV_BUILD_DIR="${CV_RIG_ROOT}/.gc/build/${ROOT_ID}"
 
+mkdir -p "$CV_BUILD_DIR"
 if [ -n "$CV_DEFERRED_STATUS" ]; then
   printf '%s\n' "$CV_DEFERRED_STATUS" > "${CV_BUILD_DIR}/ci-repair-status.md"
+else
+  # mayor regrade BLOCKING-1 (was LOW-1, 2026-10-14): a round with nothing
+  # newly deferred must still clear any ci-repair-status.md left behind by a
+  # PRIOR round — otherwise a stale file from an earlier round (this round's
+  # manifest assembly below only checks whether the file exists, not which
+  # round wrote it) gets re-included in THIS round's aggregated comment,
+  # posting the same ci-repair status twice.
+  rm -f "${CV_BUILD_DIR}/ci-repair-status.md"
 fi
 ```
 
@@ -235,8 +244,22 @@ if [ -n "${CV_BIN:-}" ]; then
         CLEAR_EXPECTED_CONTENT=""
         [ -f "$CLEAR_EXPECTED_FILE" ] && CLEAR_EXPECTED_CONTENT="$(cat "$CLEAR_EXPECTED_FILE")"
         if [ -n "$CLEAR_EXPECTED_CONTENT" ]; then
-          (export CV_STATE_DIR="$CLEAR_CV_STATE_DIR"; source "$CLEAR_CV_LIB" && cv_defer_status_clear_through "$CLEAR_FINALIZE_KEY" "$CLEAR_EXPECTED_CONTENT" >/dev/null) \
-            || echo "con-voyage rereview-finalize: WARNING: deferred ci-repair status at ${CLEAR_FINALIZE_KEY} changed since this round's peek — leaving it untouched for the next round rather than risk dropping unposted content" >&2
+          if ! (export CV_STATE_DIR="$CLEAR_CV_STATE_DIR"; source "$CLEAR_CV_LIB" && cv_defer_status_clear_through "$CLEAR_FINALIZE_KEY" "$CLEAR_EXPECTED_CONTENT" >/dev/null); then
+            # mayor regrade BLOCKING-2 (was LOW-5, 2026-10-14): a stderr-only
+            # warning here is easy to lose — this is the same fail-safe-path
+            # escalation every other unrecoverable branch in this step already
+            # does (push failure, missing worktree, missing vars above).
+            # cv_defer_status_clear_through only returns non-zero when the
+            # pending-status content no longer has EXPECTED as a prefix at
+            # all (an unexpected external change since this round's peek), so
+            # this is rare enough to warrant a human looking at it, not just a
+            # log line nobody tails.
+            echo "con-voyage rereview-finalize: WARNING: deferred ci-repair status at ${CLEAR_FINALIZE_KEY} changed since this round's peek — leaving it untouched for the next round rather than risk dropping unposted content" >&2
+            gc mail send mayor \
+              -s "con-voyage re-review: deferred ci-repair status mismatch for ${REPO_FULL}#${PR_NUMBER}" \
+              -m "rereview-finalize peeked a deferred ci-repair status for ${CLEAR_FINALIZE_KEY} and posted it in this round's aggregated comment, but the pending-status record changed in a way that no longer has the peeked content as a prefix (an unexpected external change, not the normal peek-then-append race) by the time this round tried to clear it. The record was left untouched for the next round rather than risk dropping unposted content — a human should check ${CLEAR_CV_STATE_DIR}/${CLEAR_FINALIZE_KEY}.pending-status for a duplicate or corrupted entry." \
+              2>&1 || echo "note: escalation mail failed too (continuing)" >&2
+          fi
         fi
       fi
     fi
