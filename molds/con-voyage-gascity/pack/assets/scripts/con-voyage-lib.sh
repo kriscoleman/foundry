@@ -3040,6 +3040,41 @@ cv_root_bead_id() {
   printf '%s' "${root:-$bead_id}"
 }
 
+# cv_step_root_bead_id BEAD_ID — resolve the live workflow root bead id for
+# BEAD_ID (this step's own claimed bead), preferring a pre-exported
+# GC_ROOT_BEAD_ID (every gc-spawned top-level agent shell carries it) and
+# falling back to a timeout-bounded live `gc bd show BEAD_ID` lookup of its
+# gc.root_bead_id metadata when GC_ROOT_BEAD_ID does not survive into a
+# separately-invoked fenced bash block (every multi-fence step .md in this
+# pack runs each fence as its own independent shell, so an earlier fence's
+# exported env var is not visible here). Falls back to BEAD_ID itself when
+# gc.root_bead_id is unset (BEAD_ID already IS the root, or resolution
+# failed) — never silently empty.
+#
+# review fk-z6rts BLOCKING-2 (con-voyage-rereview round 2): factored out so
+# every fence resolving a step's workflow root does it identically instead
+# of each fence copying its own ad hoc fallback — a fence that skips the
+# GC_ROOT_BEAD_ID env-var-then-live-lookup fallback silently resolves to its
+# OWN step bead id instead of the workflow root, which then reads as empty
+# for any workflow-root-only metadata (e.g. gc.var.finalize_key).
+cv_step_root_bead_id() {
+  local bead_id="$1"
+  local root="${GC_ROOT_BEAD_ID:-}"
+  if [ -z "$root" ] && [ -n "$bead_id" ]; then
+    root="$(cv_with_timeout "${CV_LENS_STORE_TIMEOUT_SECONDS:-30}" "${GC:-gc}" bd show "$bead_id" --json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    d = d[0] if isinstance(d, list) else d
+except Exception:
+    d = {}
+print((d.get('metadata') or {}).get('gc.root_bead_id') or '')
+" 2>/dev/null)"
+  fi
+  [ -n "$root" ] || root="$bead_id"
+  printf '%s' "$root"
+}
+
 # cv_known_roster_vars — print, one per line, every `enable_*` roster var
 # name declared as a `[vars.enable_X]` table in con-voyage.formula.toml
 # (fk-ed0c5). Read from the formula directly (via cv_pack_root) rather than
@@ -3828,6 +3863,67 @@ cv_defer_status_peek() {
   [ -f "$f" ] && cat "$f"
   release_lock "$dedup_key"
   return 0
+}
+
+# cv_defer_status_clear_through DEDUP_KEY EXPECTED — clear only the content
+# a caller actually peeked and has now confirmed posted (EXPECTED, exactly
+# as returned by cv_defer_status_peek above), never whatever happens to be
+# in the file at clear time. Fixes the race cv_defer_status_read_and_clear
+# has when a caller does peek-then-post-then-clear across a real network
+# call: a concurrent cv_defer_status_append landing in that window appends
+# content the peek never saw and the post never included, and a blind
+# read_and_clear destroys it with no trace. This instead:
+#   - removes the file outright when its current content is EXACTLY
+#     EXPECTED (the common case: nothing appended since the peek);
+#   - strips only the EXPECTED prefix when the current content is EXPECTED
+#     followed by more lines (an append landed after the peek — preserves
+#     exactly that appended tail for the next round's peek);
+#   - otherwise leaves the file completely untouched and returns 1 (the
+#     current content no longer has EXPECTED as a prefix at all — an
+#     unexpected external change; failing safe here never risks destroying
+#     content nobody has confirmed posting).
+# A blank EXPECTED is a caller error (there is nothing to clear a confirmed
+# post of) — returns 1 without touching the file.
+#
+# review fk-z6rts BLOCKING-1 (con-voyage-rereview round 2): same
+# acquire_lock/release_lock mutex as every other reader/writer of this
+# convention, so the read-compare-write here is atomic with respect to a
+# concurrent cv_defer_status_append.
+cv_defer_status_clear_through() {
+  local dedup_key="$1" expected="$2"
+  [ -n "$dedup_key" ] || return 1
+  case "$dedup_key" in
+    */*|*..*) return 1 ;;
+  esac
+  [ -n "$expected" ] || return 1
+  local f="${CV_STATE_DIR}/${dedup_key}.pending-status"
+  local attempt=0
+  while ! acquire_lock "$dedup_key"; do
+    attempt=$((attempt + 1))
+    [ "$attempt" -lt 10 ] || return 1
+    sleep 0.2 2>/dev/null || sleep 1
+  done
+  local rc=0
+  if [ -f "$f" ]; then
+    local current
+    current="$(cat "$f")"
+    if [ "$current" = "$expected" ]; then
+      rm -f "$f"
+    else
+      case "$current" in
+        "${expected}"$'\n'*)
+          printf '%s\n' "${current#"${expected}"$'\n'}" > "$f"
+          ;;
+        *)
+          rc=1
+          ;;
+      esac
+    fi
+  else
+    rc=1
+  fi
+  release_lock "$dedup_key"
+  return "$rc"
 }
 
 # ===========================================================================

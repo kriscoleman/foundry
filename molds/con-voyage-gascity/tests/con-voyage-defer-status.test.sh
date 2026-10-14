@@ -330,6 +330,85 @@ case "$final_contents" in
     fail "expected both lines present in append order, got: ${final_contents}" ;;
 esac
 
+# ===========================================================================
+# CASE 12 — cv_defer_status_clear_through clears the whole file when the
+# current content exactly matches what was peeked and posted (the common
+# case: nothing appended since the peek).
+# ===========================================================================
+start_case "12: clear_through removes the file when current content exactly matches EXPECTED"
+CV_STATE_DIR="$(fresh_state_dir)"
+CLEAR_KEY="cv-finalize-acme-clear-exact"
+cv_defer_status_append "$CLEAR_KEY" "only status, nothing appended after the peek"
+peeked="$(cv_defer_status_peek "$CLEAR_KEY")"
+clear_rc=0
+cv_defer_status_clear_through "$CLEAR_KEY" "$peeked" || clear_rc=$?
+assert_eq "0" "$clear_rc" "clear_through succeeds on an exact match"
+[ -f "${CV_STATE_DIR}/${CLEAR_KEY}.pending-status" ] && fail "clear_through left the pending-status file in place on an exact match" \
+  || pass "clear_through removed the pending-status file on an exact match"
+
+# ===========================================================================
+# CASE 13 — the race this fix exists to close: a status appended AFTER the
+# peek (e.g. a concurrent ci-repair run, while the aggregate comment post is
+# still in flight) must survive clear_through, not be destroyed along with
+# the posted prefix (review fk-z6rts BLOCKING-1).
+# ===========================================================================
+start_case "13: clear_through preserves a status appended after the peek"
+CV_STATE_DIR="$(fresh_state_dir)"
+RACE_KEY="cv-finalize-acme-clear-race"
+cv_defer_status_append "$RACE_KEY" "status A, present at peek time"
+peeked_a="$(cv_defer_status_peek "$RACE_KEY")"
+# Simulate a concurrent cv_defer_status_append landing in the window between
+# the peek above and the clear below (the post is a live network call in
+# the real caller).
+cv_defer_status_append "$RACE_KEY" "status B, appended after the peek while posting A was still in flight"
+clear_rc=0
+cv_defer_status_clear_through "$RACE_KEY" "$peeked_a" || clear_rc=$?
+assert_eq "0" "$clear_rc" "clear_through succeeds when the current content is EXPECTED plus a later append"
+remaining="$(cat "${CV_STATE_DIR}/${RACE_KEY}.pending-status" 2>/dev/null)"
+case "$remaining" in
+  *"status A"*) fail "clear_through left the already-posted status A behind (got: ${remaining})" ;;
+esac
+case "$remaining" in
+  *"status B, appended after the peek while posting A was still in flight"*)
+    pass "clear_through preserved status B, appended after the peek, for the next round's peek" ;;
+  *)
+    fail "clear_through destroyed status B, appended after the peek (got: ${remaining})" ;;
+esac
+
+# ===========================================================================
+# CASE 14 — if the current content no longer has EXPECTED as a prefix at
+# all (an unexpected external change), clear_through fails closed: it
+# leaves the file completely untouched and reports failure rather than
+# risk destroying content nobody has confirmed posting.
+# ===========================================================================
+start_case "14: clear_through leaves the file untouched and fails when EXPECTED is not a prefix of the current content"
+CV_STATE_DIR="$(fresh_state_dir)"
+MISMATCH_KEY="cv-finalize-acme-clear-mismatch"
+cv_defer_status_append "$MISMATCH_KEY" "status that was never actually peeked"
+clear_rc=0
+cv_defer_status_clear_through "$MISMATCH_KEY" "status that was peeked but does not match current content" || clear_rc=$?
+assert_eq "1" "$clear_rc" "clear_through reports failure on a content mismatch"
+mismatch_contents="$(cat "${CV_STATE_DIR}/${MISMATCH_KEY}.pending-status" 2>/dev/null)"
+case "$mismatch_contents" in
+  *"status that was never actually peeked"*) pass "clear_through left the mismatched file's content untouched" ;;
+  *) fail "clear_through modified the file despite a content mismatch (got: ${mismatch_contents})" ;;
+esac
+
+# ===========================================================================
+# CASE 15 — a blank EXPECTED is a caller error (nothing was peeked, so there
+# is nothing confirmed-posted to clear); clear_through refuses it outright
+# without touching the file.
+# ===========================================================================
+start_case "15: clear_through refuses a blank EXPECTED and touches nothing"
+CV_STATE_DIR="$(fresh_state_dir)"
+BLANK_KEY="cv-finalize-acme-clear-blank"
+cv_defer_status_append "$BLANK_KEY" "status present when EXPECTED is blank"
+clear_rc=0
+cv_defer_status_clear_through "$BLANK_KEY" "" || clear_rc=$?
+assert_eq "1" "$clear_rc" "clear_through refuses a blank EXPECTED"
+[ -f "${CV_STATE_DIR}/${BLANK_KEY}.pending-status" ] && pass "clear_through left the pending-status file in place for a blank EXPECTED" \
+  || fail "clear_through deleted the pending-status file despite a blank EXPECTED"
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "ALL CASES PASSED"
