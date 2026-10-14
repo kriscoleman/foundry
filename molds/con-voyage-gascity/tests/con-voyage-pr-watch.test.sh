@@ -4451,6 +4451,49 @@ assert_eq "0" "$RC" "script exits 0"
 assert_log_count "$GC_LOG" 'sling gc.implementation-worker --stdin' 0 "a permission-lookup API failure never dispatches a finding-trigger route"
 
 # ===========================================================================
+# CASE 80 — review fk-pg8jmw (test-evidence BLOCKING-1): the closed-PR GC
+#   sweep for the `.finding-triggers.seen` state file (added as iteration-2's
+#   BLOCKING-3 fix) had zero test coverage. Seed stale `.seen-ids` AND
+#   `.finding-triggers.seen` files for a PR number (99) that is NOT in the
+#   stubbed open-PR set (only #11 is open per the default `gh pr list`
+#   fixture), run the script, and assert BOTH files are swept. Also seed the
+#   matching pair for the still-open PR #11 and assert those survive, proving
+#   the sweep is scoped to closed PRs only, not a blanket wipe.
+# ===========================================================================
+start_case "80: fk-pg8jmw — closed-PR GC sweeps both .seen-ids and .finding-triggers.seen"
+setup_case_env "80"
+CLOSED_SEEN_IDS="${STATE_DIR}/kriscoleman_foundry_99.seen-ids"
+CLOSED_FINDING_SEEN="${STATE_DIR}/kriscoleman_foundry_99.finding-triggers.seen"
+OPEN_SEEN_IDS="${STATE_DIR}/kriscoleman_foundry_11.seen-ids"
+OPEN_FINDING_SEEN="${STATE_DIR}/kriscoleman_foundry_11.finding-triggers.seen"
+echo "IC_stale" > "$CLOSED_SEEN_IDS"
+echo "stale-trigger-token" > "$CLOSED_FINDING_SEEN"
+echo "IC_test_11" > "$OPEN_SEEN_IDS"
+echo "open-trigger-token" > "$OPEN_FINDING_SEEN"
+run_script CV_PR_AUTHOR="kriscoleman" STUB_GH_USER_LOGIN="kriscoleman" STUB_PR11_EMPTY="1"
+assert_eq "0" "$RC" "script exits 0"
+if [ ! -f "$CLOSED_SEEN_IDS" ]; then
+  pass "closed PR #99's .seen-ids is swept"
+else
+  fail "closed PR #99's .seen-ids is swept"
+fi
+if [ ! -f "$CLOSED_FINDING_SEEN" ]; then
+  pass "closed PR #99's .finding-triggers.seen is swept"
+else
+  fail "closed PR #99's .finding-triggers.seen is swept"
+fi
+if [ -f "$OPEN_SEEN_IDS" ]; then
+  pass "open PR #11's .seen-ids survives the sweep"
+else
+  fail "open PR #11's .seen-ids survives the sweep"
+fi
+if [ -f "$OPEN_FINDING_SEEN" ]; then
+  pass "open PR #11's .finding-triggers.seen survives the sweep"
+else
+  fail "open PR #11's .finding-triggers.seen survives the sweep"
+fi
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 echo
