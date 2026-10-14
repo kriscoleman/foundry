@@ -179,6 +179,17 @@ COMMENT_CLAIM="$(source "$CV_LIB" && cv_claim_once "$CLAIMED_BEAD_ID" "gc.review
 if [ "$COMMENT_CLAIM" = "skip" ]; then
   echo "con-voyage review-escort-finalize: aggregated comment already posted on a prior attempt of ${CLAIMED_BEAD_ID} — skipping duplicate post" >&2
 else
+  if [ "$COMMENT_CLAIM" = "claim-unpersisted" ]; then
+    # review fk-eruo3s BLOCKING-1: the claim flag failed to persist after
+    # cv_claim_once's own retries — still post this round's comment (never
+    # drop the only human-visible verdict), but escalate so the mayor knows a
+    # max_attempts retry of this SAME bead could re-post a duplicate comment,
+    # since the flag it would check next time never stuck.
+    gc mail send mayor \
+      -s "con-voyage review-escort: comment_posted flag failed to persist for ${REPO_FULL}#${PR_NUMBER}" \
+      -m "cv_claim_once could not persist gc.review_escort.comment_posted=true on ${CLAIMED_BEAD_ID} after its own retries. The aggregated comment is being posted this pass, but a later max_attempts retry of this same bead may re-post a duplicate — please check ${REPO_FULL}#${PR_NUMBER} for a repeated comment if this bead is re-dispatched." \
+      2>&1 || echo "note: escalation mail failed too (continuing)" >&2
+  fi
   CV_PACK_ROOT_BIN="$CV_PACK_ROOT"
   [ -f "${CV_PACK_ROOT_BIN}/assets/scripts/cv-pr-comment.sh" ] || CV_PACK_ROOT_BIN="${GC_CITY:-.}/packs/con-voyage"
   CV_BIN="${CV_PACK_ROOT_BIN}/assets/scripts/cv-pr-comment.sh"

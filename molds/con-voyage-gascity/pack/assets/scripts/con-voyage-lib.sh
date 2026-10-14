@@ -2968,10 +2968,25 @@ print(val if isinstance(val, str) else json.dumps(val))
 # posting a PR comment, for instance — must not repeat that side effect on
 # every retry). Prints "claim" and sets KEY=true on BEAD_ID the first time
 # KEY is not already "true" — the caller should perform the gated action
-# immediately after seeing "claim". Prints "skip" on every later call for the
-# same BEAD_ID/KEY once the flag is set. A metadata lookup/persist failure
-# degrades to "claim" (fail toward re-running the gated action, never toward
-# silently dropping the only human-visible signal it produces).
+# immediately after seeing "claim" or "claim-unpersisted". Prints "skip" on
+# every later call for the same BEAD_ID/KEY once the flag is set. A metadata
+# lookup failure degrades to "claim" (fail toward re-running the gated
+# action, never toward silently dropping the only human-visible signal it
+# produces).
+#
+# review fk-eruo3s BLOCKING-1 (sre, qa-test): a persist failure used to be
+# swallowed (`|| true`), printing "claim" indistinguishable from a genuinely
+# persisted claim — a later max_attempts retry against the same bead then
+# read the still-unset flag and claimed (and so re-ran the gated action) a
+# second time, reopening the exact duplicate-post defect this helper exists
+# to close. The persist is now retried a few times with a short backoff
+# (mirroring cv_ensure_work_branch_name's established pattern) before giving
+# up, and a failure that survives every retry stamps a durable
+# `${key}_unpersisted=true` marker on BEAD_ID and prints "claim-unpersisted"
+# instead of "claim" — an observable signal distinct from a genuine claim, so
+# a caller can still perform the gated action this pass (fail-safe) while
+# escalating the risk of a repeat on a later retry, rather than trusting an
+# unconfirmed flag silently.
 cv_claim_once() {
   local bead_id="${1:-}" key="${2:-}"
   local gc_bin="${GC:-gc}"
@@ -2981,7 +2996,21 @@ cv_claim_once() {
     printf 'skip'
     return 0
   fi
-  "$gc_bin" bd update "$bead_id" --set-metadata "${key}=true" >/dev/null 2>&1 || true
+  local attempt persisted=""
+  for attempt in 1 2 3; do
+    if "$gc_bin" bd update "$bead_id" --set-metadata "${key}=true" >/dev/null 2>&1; then
+      persisted="1"
+      break
+    fi
+    [ "$attempt" -eq 3 ] || sleep "$attempt"
+  done
+  if [ -z "$persisted" ]; then
+    echo "cv_claim_once: WARNING: failed to persist ${key}=true on ${bead_id} after 3 attempts — the gated action may repeat on a later retry of this bead" >&2
+    "$gc_bin" bd update "$bead_id" --set-metadata "${key}_unpersisted=true" >/dev/null 2>&1 \
+      || echo "cv_claim_once: WARNING: also failed to stamp ${key}_unpersisted=true on ${bead_id}" >&2
+    printf 'claim-unpersisted'
+    return 0
+  fi
   printf 'claim'
   return 0
 }
