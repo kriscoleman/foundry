@@ -92,6 +92,11 @@ start_case "every formula-dispatched workflow node carries the communal-duty rem
 # Discover every description_file a formula references — the real dispatch
 # graph, not a hand-maintained list — so a new node added later without the
 # reminder fails here instead of shipping a blind spot.
+#
+# CV_CODE_WRITING_NODE_RE is the one detector pattern, shared below with the
+# divergence case (fk-bwqk7d review BLOCKING-1) so that case can never carry
+# a stale private copy that drifts from what this loop actually uses.
+CV_CODE_WRITING_NODE_RE='git commit'
 node_count=0
 comment_policy_node_count=0
 for formula in "${MOLD_DIR}"/pack/formulas/*.toml; do
@@ -112,7 +117,7 @@ for formula in "${MOLD_DIR}"/pack/formulas/*.toml; do
     # set the same way node_count discovers nodes: from file content, not a
     # hand-maintained list, catching a new code-writing node the same way a
     # new node is already caught above.
-    if grep -qE 'git commit' "$node_path" 2>/dev/null; then
+    if grep -qE "$CV_CODE_WRITING_NODE_RE" "$node_path" 2>/dev/null; then
       comment_policy_node_count=$((comment_policy_node_count+1))
       assert_contains "$node_path" "$CV_COMMENT_POLICY_REMINDER" \
         "$(basename "$formula"): $(basename "$rel_path") (comment policy)"
@@ -134,20 +139,26 @@ echo "  (checked ${node_count} formula-dispatched workflow nodes)"
 
 start_case "the broadened code-writing-node detector actually catches more than the old literal pattern (qa-test fk-sag938 / test-evidence fk-h18i5k BLOCKING-1)"
 # The iteration-2 fix broadened the detector from the literal
-# `grep -qF 'git commit -m'` to `grep -qE 'git commit'` so that a
-# code-writing node whose only commit invocation uses a different flag
-# spelling (e.g. `git commit -am`) still gets caught. Every real node the
-# sweep discovers today happens to also contain a literal `git commit -m`
-# line, so nothing in the suite actually exercised the broadening — this
-# case proves the divergence directly against a throwaway fixture file
-# instead of relying on a real node to happen to differ.
+# `grep -qF 'git commit -m'` to `$CV_CODE_WRITING_NODE_RE` ('git commit') so
+# that a code-writing node whose only commit invocation uses a different
+# flag spelling (e.g. `git commit -am`) still gets caught. Every real node
+# the sweep discovers today happens to also contain a literal
+# `git commit -m` line, so nothing in the suite actually exercised the
+# broadening — this case proves the divergence directly against a throwaway
+# fixture file instead of relying on a real node to happen to differ.
+#
+# This case drives the fixture through the SAME $CV_CODE_WRITING_NODE_RE the
+# discovery loop above actually uses (review fk-bwqk7d BLOCKING-1: a prior
+# version of this case re-typed the pattern inline, so narrowing the real
+# detector at line 115 left this case green — it proved a fact about two
+# string literals, not about the detector).
 fixture_file="$(mktemp)"
 printf 'some prose\ngit commit -am "x"\nmore prose\n' > "$fixture_file"
 
-if grep -qE 'git commit' "$fixture_file" 2>/dev/null; then
-  echo "  PASS: broadened pattern (grep -qE 'git commit') matches a git-commit-am-only fixture"
+if grep -qE "$CV_CODE_WRITING_NODE_RE" "$fixture_file" 2>/dev/null; then
+  echo "  PASS: broadened pattern (\$CV_CODE_WRITING_NODE_RE) matches a git-commit-am-only fixture"
 else
-  echo "  FAIL: broadened pattern (grep -qE 'git commit') did not match a git-commit-am-only fixture" >&2
+  echo "  FAIL: broadened pattern (\$CV_CODE_WRITING_NODE_RE) did not match a git-commit-am-only fixture" >&2
   FAILURES=$((FAILURES+1))
 fi
 
