@@ -2250,10 +2250,25 @@ cv_root_closed_guard() {
   [ "$root_status" = "closed" ] || return 1
   echo "con-voyage ${step_label}: workflow root ${root_id} is already closed — abandoning this step and any pending descendants, minting nothing" >&2
   cv_close_workflow_root "$root_id" "workflow root already closed before ${step_label} ran; aborting, minting nothing"
-  "$gc_bin" bd update "$claimed_bead_id" \
+  # fk-6n0bgy (mayor regrade, was LOW-1 review fk-wrem7x): the only safety net
+  # that made a silent, unbounded `bd update`/`bd close` here tolerable was
+  # the sweep cv_close_workflow_root just ran above — an unenforced caller
+  # precondition, not a guarantee. Bound both store writes the same way
+  # close_if_open already bounds its own `bd close` (cv_with_timeout) and
+  # surface a failure instead of swallowing it.
+  local store_timeout="${CV_LENS_STORE_TIMEOUT_SECONDS:-30}"
+  local update_output
+  if ! update_output="$(cv_with_timeout "$store_timeout" "$gc_bin" bd update "$claimed_bead_id" \
     --set-metadata 'gc.outcome=skipped' \
-    --set-metadata 'gc.skip_reason=workflow root already closed' >/dev/null 2>&1
-  "$gc_bin" bd close "$claimed_bead_id" --reason "Skipped: workflow root already closed, nothing to ${noop_noun}." >/dev/null 2>&1
+    --set-metadata 'gc.skip_reason=workflow root already closed' 2>&1)"; then
+    echo "cv_root_closed_guard: WARNING: failed to stamp gc.outcome=skipped on ${claimed_bead_id}: ${update_output}" >&2
+  fi
+  # The claimed bead is this step's own in-flight work bead — always open at
+  # this point by construction (graph.v2 only hands out a ready bead) — so
+  # pass known_status explicitly rather than letting close_if_open's
+  # unknown-status fail-safe (treats an unresolvable `bd show` as "leave it
+  # alone") turn a transient lookup hiccup into a silently stranded bead.
+  close_if_open "$claimed_bead_id" "Skipped: workflow root already closed, nothing to ${noop_noun}." "" "open"
   return 0
 }
 

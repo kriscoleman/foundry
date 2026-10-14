@@ -196,6 +196,13 @@ if [ "${args[$i]:-}" = "bd" ] && [ "${args[$((i+1))]:-}" = "update" ]; then
   if [ "${!var:-0}" = "1" ]; then
     exit 1
   fi
+  # fk-6n0bgy (mayor regrade, was LOW-1 review fk-wrem7x): simulates a hung
+  # `bd update` call so a test can assert cv_root_closed_guard's own
+  # cv_with_timeout wrap actually bounds it, mirroring
+  # STUB_BDCLOSE_HANG_SECONDS above for close_if_open's `bd close` call.
+  if [ -n "${STUB_BDUPDATE_HANG_SECONDS:-}" ]; then
+    sleep "$STUB_BDUPDATE_HANG_SECONDS"
+  fi
   # review fk-eruo3s LOW-6: STUB_BDUPDATE_FAIL_FIRST_N_<id>=N simulates a
   # persist that fails on its first N attempts then succeeds — distinct from
   # STUB_BDUPDATE_FAIL_<id>, which fails every attempt forever. Mirrors the
@@ -1968,6 +1975,30 @@ assert_eq "1" "$(grep -c 'workflow root fk-rootclosed is already closed' "$GUARD
 assert_log_count 'bd update fk-claimedclosed --set-metadata gc\.outcome=skipped' 1 "stamps gc.outcome=skipped on the claimed bead exactly once"
 assert_log_count 'bd close fk-claimedclosed --reason Skipped: workflow root already closed, nothing to do a thing\.' 1 "closes the claimed bead with a reason naming the caller-supplied noop noun"
 unset STUB_BDSHOW_JSON_fk_rootclosed
+
+start_case "cv_root_closed_guard: the claimed-bead update AND close are each bounded by a timeout, not left to hang (fk-6n0bgy, mayor regrade of review fk-wrem7x LOW-1)"
+export STUB_BDSHOW_JSON_fk_rootclosed2='{"id":"fk-rootclosed2","status":"closed","metadata":{},"dependencies":[]}'
+export STUB_BDUPDATE_HANG_SECONDS=5
+export CV_LENS_STORE_TIMEOUT_SECONDS=1
+rm -f "$STUB_SWEEP_COUNTER_FILE"
+: > "$GC_LOG"
+GUARD_STDERR="${SANDBOX}/root_closed_guard_hang.stderr"
+TIMEOUT_START="$(date +%s)"
+if cv_root_closed_guard "fk-rootclosed2" "fk-claimedclosed2" "test step" "do a thing" 2>"$GUARD_STDERR"; then
+  echo "  PASS: still returns true once the root reads back closed, even though the update hung"
+else
+  echo "  FAIL: expected a zero (true) return for a closed root" >&2
+  FAILURES=$((FAILURES+1))
+fi
+TIMEOUT_ELAPSED=$(( $(date +%s) - TIMEOUT_START ))
+if [ "$TIMEOUT_ELAPSED" -lt 5 ]; then
+  echo "  PASS: cv_root_closed_guard returned in ${TIMEOUT_ELAPSED}s, well under the stubbed 5s hang — the update call was bounded"
+else
+  echo "  FAIL: cv_root_closed_guard took ${TIMEOUT_ELAPSED}s — the bd update call was not bounded by a timeout" >&2
+  FAILURES=$((FAILURES+1))
+fi
+assert_eq "1" "$(grep -c 'WARNING.*fk-claimedclosed2' "$GUARD_STDERR")" "a timed-out update is surfaced as a non-silent warning, not swallowed"
+unset STUB_BDSHOW_JSON_fk_rootclosed2 STUB_BDUPDATE_HANG_SECONDS CV_LENS_STORE_TIMEOUT_SECONDS
 
 start_case "close_if_open: the bd close call itself is bounded by a timeout, not left to hang (fk-0ks7ui, review fk-sku8km BLOCKING-1)"
 export STUB_BDCLOSE_HANG_SECONDS=5
