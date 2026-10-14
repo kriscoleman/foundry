@@ -102,6 +102,25 @@ for a in "$@"; do
   prev="$a"
 done
 
+# Retry-testing support (review fk-ppj8bx BLOCKING-5): when
+# STUB_GH_FAIL_FIRST_N is set, fail with STUB_GH_TRANSIENT_EXIT on the first
+# N invocations (tracked via a counter file at STUB_GH_ATTEMPT_COUNTER) and
+# succeed (exit 0) from then on — simulating a transient failure that
+# recovers on retry. Independent of STUB_GH_EXIT, which remains the
+# always-fail knob the other cases use.
+if [ -n "${STUB_GH_FAIL_FIRST_N:-}" ]; then
+  n=0
+  if [ -n "${STUB_GH_ATTEMPT_COUNTER:-}" ] && [ -f "${STUB_GH_ATTEMPT_COUNTER}" ]; then
+    n="$(cat "${STUB_GH_ATTEMPT_COUNTER}")"
+  fi
+  n=$((n + 1))
+  [ -n "${STUB_GH_ATTEMPT_COUNTER:-}" ] && printf '%s' "$n" > "${STUB_GH_ATTEMPT_COUNTER}"
+  if [ "$n" -le "${STUB_GH_FAIL_FIRST_N}" ]; then
+    exit "${STUB_GH_TRANSIENT_EXIT:-1}"
+  fi
+  exit 0
+fi
+
 exit "${STUB_GH_EXIT:-0}"
 GH_STUB
 chmod +x "${STUBDIR}/gh"
@@ -683,7 +702,7 @@ JSON
 # line when --diff-lines-file confirms it's actually in the diff (fail-safe
 # default otherwise) — supply one covering both findings' lines.
 DIFF_LINES_25="${SANDBOX}/diff-lines-25.txt"
-printf 'src/auth.go:42\nsrc/util.go:7\n' > "$DIFF_LINES_25"
+printf 'src/auth.go:42:RIGHT\nsrc/util.go:7:RIGHT\n' > "$DIFF_LINES_25"
 ARGS=(review-inline 42 --repo kriscoleman/foundry --commit deadbeef1234 --findings "$FINDINGS" --diff-lines-file "$DIFF_LINES_25" --rig foundry-kc --agent reviewer-3)
 run_script
 assert_eq "0" "$RC" "script exits 0"
@@ -739,7 +758,7 @@ python3 -c "
 import json, sys
 d = json.load(open('${BODY_LOG}'))
 comments = d.get('comments') or []
-sys.exit(0 if all('path' not in c or c.get('path') != '' for c in comments) and 'missing test evidence' in d.get('body','') else 1)
+sys.exit(0 if len(comments) == 0 and 'missing test evidence' in d.get('body','') else 1)
 " && pass "PR-level finding lands in the top body, not as a line comment" || fail "PR-level finding did not land in the top body"
 
 # ===========================================================================
@@ -756,7 +775,7 @@ cat > "$FINDINGS" <<JSON
 ]
 JSON
 DIFF_LINES="${SANDBOX}/diff-lines-27.txt"
-printf 'src/legacy.go:5\nsrc/legacy.go:6\n' > "$DIFF_LINES"
+printf 'src/legacy.go:5:RIGHT\nsrc/legacy.go:6:RIGHT\n' > "$DIFF_LINES"
 ARGS=(review-inline 42 --repo kriscoleman/foundry --commit deadbeef1234 --findings "$FINDINGS" --diff-lines-file "$DIFF_LINES" --rig foundry-kc --agent reviewer-5)
 run_script
 assert_eq "0" "$RC" "script exits 0"
@@ -787,7 +806,7 @@ printf 'cvf-alreadyopen1\n' > "$SKIP_IDS"
 # confirmed changed, so give both findings' paths a --diff-lines-file entry
 # -- this case is proving skip-ids dedup, not path confirmation.
 DIFF_LINES_28="${SANDBOX}/diff-lines-28.txt"
-printf 'src/a.go:1\nsrc/b.go:2\n' > "$DIFF_LINES_28"
+printf 'src/a.go:1:RIGHT\nsrc/b.go:2:RIGHT\n' > "$DIFF_LINES_28"
 ARGS=(review-inline 42 --repo kriscoleman/foundry --commit deadbeef1234 --findings "$FINDINGS" --skip-ids-file "$SKIP_IDS" --diff-lines-file "$DIFF_LINES_28" --rig foundry-kc --agent reviewer-3)
 run_script
 assert_eq "0" "$RC" "script exits 0"
@@ -853,8 +872,8 @@ start_case "32: review-inline gh failure propagates"
 setup_case_env "32"
 FINDINGS="${SANDBOX}/findings-32.json"
 printf '[{"lane": "security", "severity": "blocking", "path": "src/d.go", "line": 1, "title": "unreachable finding", "body": "would have 422ed"}]\n' > "$FINDINGS"
-ARGS=(review-inline 42 --repo kriscoleman/foundry --commit deadbeef1234 --findings "$FINDINGS")
-OUT="$(env GH="${STUBDIR}/gh" STUB_GH_LOG="$GH_LOG" STUB_BODY_LOG="$BODY_LOG" STUB_GH_EXIT=7 bash "$SCRIPT" "${ARGS[@]}" 2>&1)"
+ARGS=(review-inline 42 --repo kriscoleman/foundry --commit deadbeef1234 --findings "$FINDINGS" --rig foundry-kc --agent reviewer-3)
+OUT="$(env GH="${STUBDIR}/gh" STUB_GH_LOG="$GH_LOG" STUB_BODY_LOG="$BODY_LOG" STUB_GH_EXIT=7 CV_REVIEW_INLINE_RETRY_SLEEP=0 bash "$SCRIPT" "${ARGS[@]}" 2>&1)"
 RC=$?
 assert_eq "7" "$RC" "script propagates gh's exit code verbatim"
 # review fk-ppj8bx BLOCKING-4: the rendered review payload must survive the
@@ -984,7 +1003,7 @@ cat > "$FINDINGS" <<JSON
 ]
 JSON
 DIFF_LINES="${SANDBOX}/diff-lines-36b.txt"
-printf 'src/changed.go:10\n' > "$DIFF_LINES"
+printf 'src/changed.go:10:RIGHT\n' > "$DIFF_LINES"
 ARGS=(review-inline 42 --repo kriscoleman/foundry --commit deadbeef1234 --findings "$FINDINGS" --diff-lines-file "$DIFF_LINES" --rig foundry-kc --agent reviewer-3)
 run_script
 assert_eq "0" "$RC" "script exits 0"
@@ -1013,6 +1032,170 @@ if grep -qE 'mktemp "\$\{TMPDIR:-/tmp\}/[^"]*XXXXXX\.[A-Za-z]+"' "$SCRIPT"; then
 else
   pass "no mktemp template in this script has a suffix after XXXXXX"
 fi
+
+# ===========================================================================
+# CASE 38 — review-inline: missing --rig is a hard error; gh never invoked
+#   (review fk-ppj8bx BLOCKING-1 re-opened — --rig was documented as
+#   required but never enforced, silently degrading to "unknown-rig").
+# ===========================================================================
+start_case "38: review-inline without --rig is rejected before invoking gh"
+setup_case_env "38"
+FINDINGS="${SANDBOX}/findings-38.json"
+printf '[]\n' > "$FINDINGS"
+ARGS=(review-inline 42 --repo kriscoleman/foundry --commit deadbeef1234 --findings "$FINDINGS")
+run_script
+if [ "$RC" -ne 0 ]; then pass "script exits non-zero"; else fail "expected non-zero exit for missing --rig"; fi
+assert_log_count "$GH_LOG" '.' 0 "gh is never invoked when --rig is missing"
+
+# ===========================================================================
+# CASE 39 — review-inline: the in-diff check is side-aware (review fk-ppj8bx
+#   BLOCKING-2 re-opened). A finding anchored to the RIGHT side only matches
+#   a path:line:RIGHT diff-lines entry, not a path:line:LEFT entry for the
+#   identical path/line — the two sides are genuinely different anchors in
+#   GitHub's diff model, and conflating them risks a 422 on a comment GitHub
+#   does not consider "in the diff" for that side.
+# ===========================================================================
+start_case "39: review-inline in-diff membership check is side-aware"
+setup_case_env "39"
+FINDINGS="${SANDBOX}/findings-39.json"
+cat > "$FINDINGS" <<JSON
+[
+  {"lane": "security", "severity": "low", "path": "src/h.go", "line": 50, "side": "LEFT", "title": "left-side finding", "body": "anchored to the deleted line"},
+  {"lane": "security", "severity": "low", "path": "src/h.go", "line": 50, "side": "RIGHT", "title": "right-side finding", "body": "anchored to the new line"}
+]
+JSON
+DIFF_LINES_39="${SANDBOX}/diff-lines-39.txt"
+printf 'src/h.go:50:LEFT\n' > "$DIFF_LINES_39"
+ARGS=(review-inline 42 --repo kriscoleman/foundry --commit deadbeef1234 --findings "$FINDINGS" --diff-lines-file "$DIFF_LINES_39" --rig foundry-kc --agent reviewer-3)
+run_script
+assert_eq "0" "$RC" "script exits 0"
+python3 -c "
+import json, sys
+d = json.load(open('${BODY_LOG}'))
+comments = d.get('comments') or []
+left = [c for c in comments if 'left-side finding' in c.get('body', '')]
+right = [c for c in comments if 'right-side finding' in c.get('body', '')]
+ok = (len(left) == 1 and left[0].get('line') == 50 and left[0].get('side') == 'LEFT'
+      and len(right) == 1 and right[0].get('subject_type') == 'FILE' and 'line' not in right[0])
+sys.exit(0 if ok else 1)
+" && pass "LEFT-side finding anchors to the line; RIGHT-side finding (not in diff-lines) degrades instead of reusing the LEFT match" || fail "side was not respected in the in-diff membership check"
+
+# ===========================================================================
+# CASE 40 — review-inline: the cv-finding v1 marker emits the NORMALIZED
+#   severity (matching the header's BLOCKING/LOW label), not the finding's
+#   raw severity string (review fk-ppj8bx BLOCKING-3 re-opened). An
+#   unrecognized severity value normalizes to LOW in the header; the marker
+#   must agree, not echo the raw unrecognized value.
+# ===========================================================================
+start_case "40: review-inline cv-finding marker emits normalized severity, matching the header label"
+setup_case_env "40"
+FINDINGS="${SANDBOX}/findings-40.json"
+cat > "$FINDINGS" <<JSON
+[
+  {"lane": "security", "severity": "critical", "path": "src/i.go", "line": 1, "title": "weird severity value", "body": "severity is not 'blocking' or 'low'"}
+]
+JSON
+DIFF_LINES_40="${SANDBOX}/diff-lines-40.txt"
+printf 'src/i.go:1:RIGHT\n' > "$DIFF_LINES_40"
+ARGS=(review-inline 42 --repo kriscoleman/foundry --commit deadbeef1234 --findings "$FINDINGS" --diff-lines-file "$DIFF_LINES_40" --rig foundry-kc --agent reviewer-3)
+run_script
+assert_eq "0" "$RC" "script exits 0"
+if grep -qF '**LOW** weird severity value' "$BODY_LOG"; then
+  pass "header normalizes the unrecognized severity to LOW"
+else
+  fail "header did not normalize the unrecognized severity"
+fi
+if grep -qF 'severity=low' "$BODY_LOG"; then
+  pass "marker emits the normalized severity (low), agreeing with the header"
+else
+  fail "marker emitted the raw/disagreeing severity instead of the normalized value"
+fi
+if grep -qF 'severity=critical' "$BODY_LOG"; then
+  fail "marker still emits the raw unrecognized severity value"
+else
+  pass "marker does not emit the raw unrecognized severity value"
+fi
+
+# ===========================================================================
+# CASE 41 — review-inline: the summary-only hygiene die branch (a token
+#   shape found in --summary-file with zero findings supplied) is exercised
+#   directly (review fk-ppj8bx BLOCKING-4 re-opened — this branch previously
+#   had no direct test coverage).
+# ===========================================================================
+start_case "41: review-inline hygiene scan blocks on a token shape in --summary-file with zero findings"
+setup_case_env "41"
+FINDINGS="${SANDBOX}/findings-41.json"
+printf '[]\n' > "$FINDINGS"
+SUMMARY_41="${SANDBOX}/summary-41.txt"
+printf 'Leaked credential in summary: ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n' > "$SUMMARY_41"
+ARGS=(review-inline 42 --repo kriscoleman/foundry --commit deadbeef1234 --findings "$FINDINGS" --summary-file "$SUMMARY_41" --rig foundry-kc --agent reviewer-3)
+run_script
+if [ "$RC" -ne 0 ]; then pass "script exits non-zero when the summary-only body contains a token shape"; else fail "expected non-zero exit for a token-shaped --summary-file with zero findings"; fi
+assert_log_count "$GH_LOG" '.' 0 "gh is never invoked when the summary-only hygiene scan blocks"
+
+# ===========================================================================
+# CASE 42 — review-inline: the review POST retries a bounded number of times
+#   with backoff and recovers from a transient failure (review fk-ppj8bx
+#   BLOCKING-5 re-opened). A stub that fails once and succeeds on the second
+#   attempt must still result in an overall success with exactly 2 gh
+#   invocations.
+# ===========================================================================
+start_case "42: review-inline review POST retries and recovers from a transient failure"
+setup_case_env "42"
+FINDINGS="${SANDBOX}/findings-42.json"
+printf '[]\n' > "$FINDINGS"
+COUNTER_42="${SANDBOX}/attempt-counter-42"
+ARGS=(review-inline 42 --repo kriscoleman/foundry --commit deadbeef1234 --findings "$FINDINGS" --rig foundry-kc --agent reviewer-3)
+run_script STUB_GH_FAIL_FIRST_N=1 STUB_GH_ATTEMPT_COUNTER="$COUNTER_42" CV_REVIEW_INLINE_RETRY_SLEEP=0
+assert_eq "0" "$RC" "script eventually exits 0 after one transient failure"
+assert_log_count "$GH_LOG" '^api --method POST repos/kriscoleman/foundry/pulls/42/reviews' 2 "gh was invoked twice: one transient failure, one successful retry"
+
+# ===========================================================================
+# CASE 43 — review-inline: the review POST retry is bounded — a
+#   persistently failing gh is retried exactly CV_REVIEW_INLINE_RETRY_MAX
+#   times total, then the failure propagates (review fk-ppj8bx BLOCKING-5
+#   re-opened).
+# ===========================================================================
+start_case "43: review-inline review POST retry is bounded and propagates the final failure"
+setup_case_env "43"
+FINDINGS="${SANDBOX}/findings-43.json"
+printf '[]\n' > "$FINDINGS"
+ARGS=(review-inline 42 --repo kriscoleman/foundry --commit deadbeef1234 --findings "$FINDINGS" --rig foundry-kc --agent reviewer-3)
+run_script STUB_GH_EXIT=7 CV_REVIEW_INLINE_RETRY_MAX=2 CV_REVIEW_INLINE_RETRY_SLEEP=0
+assert_eq "7" "$RC" "script propagates gh's exit code after exhausting retries"
+assert_log_count "$GH_LOG" '^api --method POST repos/kriscoleman/foundry/pulls/42/reviews' 2 "gh was invoked exactly CV_REVIEW_INLINE_RETRY_MAX (2) times, no more"
+
+# ===========================================================================
+# CASE 44 — review-inline: an EMPTY --diff-lines-file (present, zero
+#   path:line:side entries) is rejected outright rather than silently
+#   treated as "confirmed nothing changed" (review fk-ppj8bx BLOCKING-7
+#   re-opened, was LOW-8).
+# ===========================================================================
+start_case "44: review-inline with an empty --diff-lines-file is rejected before invoking gh"
+setup_case_env "44"
+FINDINGS="${SANDBOX}/findings-44.json"
+cat > "$FINDINGS" <<JSON
+[
+  {"lane": "security", "severity": "low", "path": "src/j.go", "line": 1, "title": "finding on a changed path", "body": "body text"}
+]
+JSON
+DIFF_LINES_44="${SANDBOX}/diff-lines-44.txt"
+: > "$DIFF_LINES_44"
+ARGS=(review-inline 42 --repo kriscoleman/foundry --commit deadbeef1234 --findings "$FINDINGS" --diff-lines-file "$DIFF_LINES_44" --rig foundry-kc --agent reviewer-3)
+run_script
+if [ "$RC" -ne 0 ]; then pass "script exits non-zero for an empty --diff-lines-file"; else fail "expected non-zero exit for an empty --diff-lines-file"; fi
+assert_log_count "$GH_LOG" '.' 0 "gh is never invoked when --diff-lines-file is present but empty"
+
+# ===========================================================================
+# CASE 45 — static regression guard (review fk-ppj8bx FIX-8, was LOW-6): the
+#   hygiene-scan TOKEN_RE regex is defined exactly once in the script source,
+#   not copy-pasted once per rendered Python block. Both comment-aggregate's
+#   and review-inline's rendered scripts now prepend the same shared
+#   $HYGIENE_PY file instead of each redefining TOKEN_RE/hygiene_rewrite.
+# ===========================================================================
+start_case "45: TOKEN_RE hygiene regex is defined exactly once in the script source (not duplicated per rendered block)"
+assert_log_count "$SCRIPT" 'TOKEN_RE = re\.compile' 1 "TOKEN_RE is defined exactly once"
+assert_log_count "$SCRIPT" 'def hygiene_rewrite' 1 "hygiene_rewrite is defined exactly once"
 
 # ===========================================================================
 # Summary
