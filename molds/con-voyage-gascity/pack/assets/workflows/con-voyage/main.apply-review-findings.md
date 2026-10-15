@@ -699,3 +699,7 @@ This Bash tool runs whichever shell the operator has configured — bash or zsh,
 ## No interactive prompts (con-voyage-gascity pack)
 
 This session runs headless — nobody is watching a terminal, so an interactive prompt tool (for example AskUserQuestion) blocks the session forever with no one able to answer it. Never call an interactive prompt tool. When a real decision is needed, mail the mayor (`gc mail`) with the question, then either wait for a reply or close the bead as blocked with the open question recorded in the close reason.
+
+## Code comment policy (con-voyage-gascity pack)
+
+Code comment policy: default to NO new comments. Add one only when the code does something exceedingly special or unexpected that is NOT obvious from the code itself — the WHY, never the WHAT. Never add a comment that narrates what the code does, restates a name, labels a section, logs a changelog/"fixed X"/review-round/bead-ID note, or leaves a TODO. When you edit a line, do not add a comment to it. Leave existing comments alone unless they become wrong.

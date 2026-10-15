@@ -65,6 +65,11 @@ if [ -z "${CV_PR_REPLY_INTEGRITY_REMINDER:-}" ]; then
   exit 2
 fi
 
+if [ -z "${CV_COMMENT_POLICY_REMINDER:-}" ]; then
+  echo "FATAL: CV_COMMENT_POLICY_REMINDER is not defined by ${LIB}" >&2
+  exit 2
+fi
+
 FAILURES=0
 start_case() { echo; echo "=== CASE: $1 ==="; }
 
@@ -87,26 +92,230 @@ start_case "every formula-dispatched workflow node carries the communal-duty rem
 # Discover every description_file a formula references — the real dispatch
 # graph, not a hand-maintained list — so a new node added later without the
 # reminder fails here instead of shipping a blind spot.
+#
+# CV_CODE_WRITING_NODE_RE is the one detector pattern, shared below with the
+# divergence case (fk-bwqk7d review BLOCKING-1) so that case can never carry
+# a stale private copy that drifts from what this loop actually uses.
+#
+# The line-start anchor (review fk-bwqk7d/fk-n7vy64) relied on an unenforced
+# convention: the command is the first token on its line. A real
+# code-writing node realistically writes a compound command — `cd "$WT" &&
+# git commit ...`, `( ... ; git commit ...)` — where `git commit` is a
+# command word after a command separator (&&, ;, |, () rather than the first
+# token on the line (Mayor regrade round-3, review fk-qc3yua BLOCKING-1). The
+# pattern now matches `git commit` at the start of a line (optionally
+# $-prompt-prefixed) OR immediately after a command-separator character or a
+# shell command-introducer keyword (`then`, `else`, `elif`, `do`) or a brace
+# command-group opener (`{`), so it still excludes a mid-sentence mention
+# like `` `git commit --allow-empty` `` that sits right after a backtick, not
+# a separator (Mayor regrade iteration-5, review fk-qc3yua BLOCKING-2 /
+# LOW-1-regraded-BLOCKING: `if ...; then`/`; do` is the dominant
+# compound-command idiom in this codebase and was dropping out of the
+# matched set silently).
+#
+# The boundary after `commit` requires end-of-line or a non-word,
+# non-hyphen character next, rather than a plain `\b` — `\b` only requires a
+# word/non-word transition, and a hyphen is non-word, so it also matched
+# real git subcommands like `git commit-graph`, `git commit-tree`, and
+# `git commit-msg` that never write a new commit (review fk-qy462o round-2
+# iteration-4 BLOCKING-1). A prior fix for this narrowed the boundary to a
+# whitelist of separators, which over-corrected and silently excluded real
+# trailing separators like `;`, `)`, `&`, `|` (review fk-qc3yua iteration-5
+# BLOCKING-1) — excluding only word/hyphen continuation characters instead
+# keeps both the subcommand exclusion and every real separator case.
+CV_CODE_WRITING_NODE_RE='(^|[&;({|]|\b(then|else|elif|do)\b)[[:space:]]*(\$[[:space:]]+)?git commit($|[^[:alnum:]_-])'
+
+# A line that is only a comment (`# ...`) never contains a real command
+# invocation, so it is excluded before the pattern above is applied —
+# otherwise a comment that merely discusses `git commit` in prose would be
+# mistaken for a command separator match (e.g. `# run git commit after
+# staging files` has no leading separator today, but excluding comment lines
+# up front keeps the detector correct even if the pattern broadens further).
+cv_is_code_writing_node() {
+  grep -vE '^[[:space:]]*#' "$1" 2>/dev/null | grep -qE "$CV_CODE_WRITING_NODE_RE"
+}
 node_count=0
+comment_policy_node_count=0
 for formula in "${MOLD_DIR}"/pack/formulas/*.toml; do
   formula_dir="$(dirname "$formula")"
   while IFS= read -r rel_path; do
     [ -n "$rel_path" ] || continue
     node_count=$((node_count+1))
-    assert_contains "${formula_dir}/${rel_path}" "$CV_COMMUNAL_DUTY_REMINDER" \
+    node_path="${formula_dir}/${rel_path}"
+    assert_contains "$node_path" "$CV_COMMUNAL_DUTY_REMINDER" \
       "$(basename "$formula"): $(basename "$rel_path") (communal duty)"
-    assert_contains "${formula_dir}/${rel_path}" "$CV_SHELL_SAFETY_REMINDER" \
+    assert_contains "$node_path" "$CV_SHELL_SAFETY_REMINDER" \
       "$(basename "$formula"): $(basename "$rel_path") (shell safety)"
-    assert_contains "${formula_dir}/${rel_path}" "$CV_NO_INTERACTIVE_PROMPT_REMINDER" \
+    assert_contains "$node_path" "$CV_NO_INTERACTIVE_PROMPT_REMINDER" \
       "$(basename "$formula"): $(basename "$rel_path") (no interactive prompts)"
+    # The comment policy is only for code-writing steps, not review-only
+    # lanes — a node that commits to the worktree (`git commit`, any flag
+    # spelling) is a code-writing step by construction, so this discovers the
+    # set the same way node_count discovers nodes: from file content, not a
+    # hand-maintained list, catching a new code-writing node the same way a
+    # new node is already caught above.
+    if cv_is_code_writing_node "$node_path"; then
+      comment_policy_node_count=$((comment_policy_node_count+1))
+      assert_contains "$node_path" "$CV_COMMENT_POLICY_REMINDER" \
+        "$(basename "$formula"): $(basename "$rel_path") (comment policy)"
+    fi
   done < <(grep -oE 'description_file *= *"[^"]+"' "$formula" | sed -E 's/description_file *= *"([^"]+)"/\1/')
 done
+
+if [ "$comment_policy_node_count" -eq 0 ]; then
+  echo "FATAL: discovered zero code-writing (git commit, any flag spelling) nodes across pack/formulas/*.toml — detector broken?" >&2
+  exit 2
+fi
+echo "  (checked ${comment_policy_node_count} code-writing workflow nodes for the comment policy)"
 
 if [ "$node_count" -eq 0 ]; then
   echo "FATAL: discovered zero description_file entries across pack/formulas/*.toml — parser broken?" >&2
   exit 2
 fi
 echo "  (checked ${node_count} formula-dispatched workflow nodes)"
+
+start_case "the broadened code-writing-node detector actually catches more than the old literal pattern (qa-test fk-sag938 / test-evidence fk-h18i5k BLOCKING-1)"
+# The iteration-2 fix broadened the detector from the literal
+# `grep -qF 'git commit -m'` to `$CV_CODE_WRITING_NODE_RE` ('git commit') so
+# that a code-writing node whose only commit invocation uses a different
+# flag spelling (e.g. `git commit -am`) still gets caught. Every real node
+# the sweep discovers today happens to also contain a literal
+# `git commit -m` line, so nothing in the suite actually exercised the
+# broadening — this case proves the divergence directly against a throwaway
+# fixture file instead of relying on a real node to happen to differ.
+#
+# This case drives the fixture through the SAME $CV_CODE_WRITING_NODE_RE the
+# discovery loop above actually uses (review fk-bwqk7d BLOCKING-1: a prior
+# version of this case re-typed the pattern inline, so narrowing the real
+# detector at line 115 left this case green — it proved a fact about two
+# string literals, not about the detector).
+fixture_file="$(mktemp)"
+printf 'some prose\ngit commit -am "x"\nmore prose\n' > "$fixture_file"
+
+if cv_is_code_writing_node "$fixture_file"; then
+  echo "  PASS: broadened pattern (\$CV_CODE_WRITING_NODE_RE) matches a git-commit-am-only fixture"
+else
+  echo "  FAIL: broadened pattern (\$CV_CODE_WRITING_NODE_RE) did not match a git-commit-am-only fixture" >&2
+  FAILURES=$((FAILURES+1))
+fi
+
+if grep -qF 'git commit -m' "$fixture_file" 2>/dev/null; then
+  echo "  FAIL: old literal pattern (grep -qF 'git commit -m') unexpectedly matched a git-commit-am-only fixture — the two patterns no longer diverge, the fix is unproven" >&2
+  FAILURES=$((FAILURES+1))
+else
+  echo "  PASS: old literal pattern (grep -qF 'git commit -m') does NOT match the fixture, confirming the broadening changes real behavior"
+fi
+rm -f "$fixture_file"
+
+start_case "the code-writing-node detector does not flag a prose-only mention of git commit (review fk-bwqk7d BLOCKING-1)"
+# ci-repair's "Do NOT push an empty commit (\`git commit --allow-empty\`)"
+# warning line is prose that merely mentions the command inside a sentence —
+# it must not make the detector think the node writes code. Every real
+# command invocation in these node files starts at column 0 (a standalone
+# shell line or code-block line); a prose mention never does.
+prose_fixture="$(mktemp)"
+printf -- '- **Do NOT push an empty commit** (`git commit --allow-empty`) or any no-op.\n' > "$prose_fixture"
+
+if cv_is_code_writing_node "$prose_fixture"; then
+  echo "  FAIL: \$CV_CODE_WRITING_NODE_RE matched a prose-only mention of git commit — it should only match real command usage" >&2
+  FAILURES=$((FAILURES+1))
+else
+  echo "  PASS: \$CV_CODE_WRITING_NODE_RE does NOT match a prose-only mention of git commit"
+fi
+rm -f "$prose_fixture"
+
+start_case "the code-writing-node detector still matches a \$-prompt-prefixed git commit line (Mayor regrade round-2 BLOCKING-1, review fk-n7vy64)"
+# The line-start anchor from the prior fix (review fk-bwqk7d BLOCKING-1) relies
+# on an unenforced convention: the command is the first token on its line. A
+# node written with a shell-prompt prefix (e.g. `$ git commit ...`, as a doc
+# author might type to show a copy-pasteable command) silently falls outside
+# the anchored pattern and drops out of the matched set with no FATAL guard
+# tripped, hiding a real regression. The detector must tolerate an optional
+# `$ ` prompt prefix without losing the prose-only exclusion proven above.
+prompt_fixture="$(mktemp)"
+printf '$ git commit -m "x"\n' > "$prompt_fixture"
+
+if cv_is_code_writing_node "$prompt_fixture"; then
+  echo "  PASS: \$CV_CODE_WRITING_NODE_RE matches a \$-prompt-prefixed git commit line"
+else
+  echo "  FAIL: \$CV_CODE_WRITING_NODE_RE did not match a \$-prompt-prefixed git commit line — a prompt-prefixed code-writing node silently drops out of the matched set" >&2
+  FAILURES=$((FAILURES+1))
+fi
+rm -f "$prompt_fixture"
+
+start_case "the code-writing-node detector matches git commit as a command word anywhere on a compound line (Mayor regrade round-3 BLOCKING-1, review fk-qc3yua)"
+# The line-start anchor (even with the $-prompt tolerance above) still relies
+# on git commit being the FIRST token on its line. A real code-writing node
+# realistically writes a compound command — `cd "$WT" && git commit ...`, a
+# `;`-separated sequence, or `git commit` inside a subshell — where
+# `git commit` is a command word after a separator, not the first token.
+# Each case below falls out of the matched set silently (no FATAL guard) if
+# the detector regresses back to a pure line-start anchor.
+compound_cases=(
+  'cd "$WT" && git commit -m "x"|&&-joined compound command'
+  'echo done; git commit -m "x"|;-joined compound command'
+  '( git commit -m "x" )|subshell-wrapped command'
+  'if true; then git commit -m "x"; fi|then-introduced command (review fk-qc3yua BLOCKING-2)'
+  'if false; then echo no; else git commit -m "x"; fi|else-introduced command (review fk-qc3yua BLOCKING-2)'
+  'for f in a b; do git commit -m "x"; done|do-introduced command (review fk-qc3yua BLOCKING-2)'
+  '{ git commit -m "x"; }|brace-group command (review fk-qc3yua LOW-1 regraded BLOCKING)'
+  'echo ok | git commit -m "x"|pipe-joined compound command (review fk-qy462o)'
+)
+for case_spec in "${compound_cases[@]}"; do
+  # Split on the LAST "|" rather than the first — the pipe-joined compound
+  # fixture's command text legitimately contains its own "|", so splitting
+  # on the first occurrence would truncate the command instead of
+  # separating it from its trailing label.
+  compound_line="${case_spec%|*}"
+  compound_label="${case_spec##*|}"
+  compound_fixture="$(mktemp)"
+  printf '%s\n' "$compound_line" > "$compound_fixture"
+  if cv_is_code_writing_node "$compound_fixture"; then
+    echo "  PASS: \$CV_CODE_WRITING_NODE_RE matches a $compound_label"
+  else
+    echo "  FAIL: \$CV_CODE_WRITING_NODE_RE did not match a $compound_label — git commit as a non-first command word silently drops out of the matched set" >&2
+    FAILURES=$((FAILURES+1))
+  fi
+  rm -f "$compound_fixture"
+done
+
+start_case "the code-writing-node detector does not flag a git-commit-prefixed subcommand that does not write a new commit (review fk-qy462o round-2 iteration-4 BLOCKING-1)"
+# \b only requires a word/non-word transition, and a hyphen is non-word, so
+# a plain \b boundary after `commit` also matched real git subcommands like
+# `git commit-graph`, `git commit-tree`, and `git commit-msg` — none of which
+# write a new commit and none of which should trip the comment-policy gate.
+subcommand_cases=(
+  'git commit-graph write'
+  'git commit-tree -p HEAD'
+  'git commit-msg'
+)
+for subcommand_line in "${subcommand_cases[@]}"; do
+  subcommand_fixture="$(mktemp)"
+  printf '%s\n' "$subcommand_line" > "$subcommand_fixture"
+  if cv_is_code_writing_node "$subcommand_fixture"; then
+    echo "  FAIL: \$CV_CODE_WRITING_NODE_RE matched '$subcommand_line' — a git subcommand that does not write a new commit should not trip the detector" >&2
+    FAILURES=$((FAILURES+1))
+  else
+    echo "  PASS: \$CV_CODE_WRITING_NODE_RE does NOT match '$subcommand_line'"
+  fi
+  rm -f "$subcommand_fixture"
+done
+
+start_case "the code-writing-node detector does not flag a comment-only mention of git commit (Mayor regrade round-3 FIX-ALSO, review fk-qc3yua)"
+# A shell/toml comment line that merely discusses `git commit` in prose (not
+# inside a sentence with backticks, just a bare comment) must not be mistaken
+# for a real invocation now that the detector matches mid-line, not just the
+# first token.
+comment_fixture="$(mktemp)"
+printf '# run git commit after staging files\n' > "$comment_fixture"
+
+if cv_is_code_writing_node "$comment_fixture"; then
+  echo "  FAIL: \$CV_CODE_WRITING_NODE_RE matched a comment-only mention of git commit — it should only match real command usage" >&2
+  FAILURES=$((FAILURES+1))
+else
+  echo "  PASS: \$CV_CODE_WRITING_NODE_RE does NOT match a comment-only mention of git commit"
+fi
+rm -f "$comment_fixture"
 
 start_case "the routed PR-feedback bead body (con-voyage-pr-watch.sh) includes the reminder"
 if declare -f cv_build_pr_feedback_body >/dev/null 2>&1; then

@@ -103,11 +103,11 @@ start_case "cv-api-platform-contract explicitly verifies exported-signature brea
 assert_contains "${AGENTS_DIR}/cv-api-platform-contract/prompt.template.md" "Exported-signature break" \
   "cv-api-platform-contract names exported-signature break explicitly"
 
-start_case "cv-standards-janitor explicitly verifies comment bloat (failure mode 5, LOW unless egregious)"
+start_case "cv-standards-janitor explicitly verifies comment bloat (failure mode 5, BLOCKING per fk-qc3yua)"
 assert_contains "${AGENTS_DIR}/cv-standards-janitor/prompt.template.md" "Comment bloat" \
   "cv-standards-janitor names comment bloat explicitly"
-assert_contains "${AGENTS_DIR}/cv-standards-janitor/prompt.template.md" "egregious" \
-  "cv-standards-janitor keeps comment bloat LOW unless egregious"
+assert_contains "${AGENTS_DIR}/cv-standards-janitor/prompt.template.md" "BLOCKING severity" \
+  "cv-standards-janitor grades comment bloat BLOCKING (fk-qc3yua: workers left far too many comments)"
 
 start_case "cv-security-reviewer explicitly verifies secret leak across the full diff, fixtures, and re-added code (failure mode 6)"
 assert_contains "${AGENTS_DIR}/cv-security-reviewer/prompt.template.md" "test fixtures" \
