@@ -104,10 +104,26 @@ start_case "every formula-dispatched workflow node carries the communal-duty rem
 # command word after a command separator (&&, ;, |, () rather than the first
 # token on the line (Mayor regrade round-3, review fk-qc3yua BLOCKING-1). The
 # pattern now matches `git commit` at the start of a line (optionally
-# $-prompt-prefixed) OR immediately after a command-separator character, so
-# it still excludes a mid-sentence mention like `` `git commit --allow-empty` ``
-# that sits right after a backtick, not a separator.
-CV_CODE_WRITING_NODE_RE='(^|[&;(|])[[:space:]]*(\$[[:space:]]+)?git commit\b'
+# $-prompt-prefixed) OR immediately after a command-separator character or a
+# shell command-introducer keyword (`then`, `else`, `elif`, `do`) or a brace
+# command-group opener (`{`), so it still excludes a mid-sentence mention
+# like `` `git commit --allow-empty` `` that sits right after a backtick, not
+# a separator (Mayor regrade iteration-5, review fk-qc3yua BLOCKING-2 /
+# LOW-1-regraded-BLOCKING: `if ...; then`/`; do` is the dominant
+# compound-command idiom in this codebase and was dropping out of the
+# matched set silently).
+#
+# The boundary after `commit` requires end-of-line or a non-word,
+# non-hyphen character next, rather than a plain `\b` — `\b` only requires a
+# word/non-word transition, and a hyphen is non-word, so it also matched
+# real git subcommands like `git commit-graph`, `git commit-tree`, and
+# `git commit-msg` that never write a new commit (review fk-qy462o round-2
+# iteration-4 BLOCKING-1). A prior fix for this narrowed the boundary to a
+# whitelist of separators, which over-corrected and silently excluded real
+# trailing separators like `;`, `)`, `&`, `|` (review fk-qc3yua iteration-5
+# BLOCKING-1) — excluding only word/hyphen continuation characters instead
+# keeps both the subcommand exclusion and every real separator case.
+CV_CODE_WRITING_NODE_RE='(^|[&;({|]|\b(then|else|elif|do)\b)[[:space:]]*(\$[[:space:]]+)?git commit($|[^[:alnum:]_-])'
 
 # A line that is only a comment (`# ...`) never contains a real command
 # invocation, so it is excluded before the pattern above is applied —
@@ -239,10 +255,19 @@ compound_cases=(
   'cd "$WT" && git commit -m "x"|&&-joined compound command'
   'echo done; git commit -m "x"|;-joined compound command'
   '( git commit -m "x" )|subshell-wrapped command'
+  'if true; then git commit -m "x"; fi|then-introduced command (review fk-qc3yua BLOCKING-2)'
+  'if false; then echo no; else git commit -m "x"; fi|else-introduced command (review fk-qc3yua BLOCKING-2)'
+  'for f in a b; do git commit -m "x"; done|do-introduced command (review fk-qc3yua BLOCKING-2)'
+  '{ git commit -m "x"; }|brace-group command (review fk-qc3yua LOW-1 regraded BLOCKING)'
+  'echo ok | git commit -m "x"|pipe-joined compound command (review fk-qy462o)'
 )
 for case_spec in "${compound_cases[@]}"; do
-  compound_line="${case_spec%%|*}"
-  compound_label="${case_spec#*|}"
+  # Split on the LAST "|" rather than the first — the pipe-joined compound
+  # fixture's command text legitimately contains its own "|", so splitting
+  # on the first occurrence would truncate the command instead of
+  # separating it from its trailing label.
+  compound_line="${case_spec%|*}"
+  compound_label="${case_spec##*|}"
   compound_fixture="$(mktemp)"
   printf '%s\n' "$compound_line" > "$compound_fixture"
   if cv_is_code_writing_node "$compound_fixture"; then
@@ -252,6 +277,28 @@ for case_spec in "${compound_cases[@]}"; do
     FAILURES=$((FAILURES+1))
   fi
   rm -f "$compound_fixture"
+done
+
+start_case "the code-writing-node detector does not flag a git-commit-prefixed subcommand that does not write a new commit (review fk-qy462o round-2 iteration-4 BLOCKING-1)"
+# \b only requires a word/non-word transition, and a hyphen is non-word, so
+# a plain \b boundary after `commit` also matched real git subcommands like
+# `git commit-graph`, `git commit-tree`, and `git commit-msg` — none of which
+# write a new commit and none of which should trip the comment-policy gate.
+subcommand_cases=(
+  'git commit-graph write'
+  'git commit-tree -p HEAD'
+  'git commit-msg'
+)
+for subcommand_line in "${subcommand_cases[@]}"; do
+  subcommand_fixture="$(mktemp)"
+  printf '%s\n' "$subcommand_line" > "$subcommand_fixture"
+  if cv_is_code_writing_node "$subcommand_fixture"; then
+    echo "  FAIL: \$CV_CODE_WRITING_NODE_RE matched '$subcommand_line' — a git subcommand that does not write a new commit should not trip the detector" >&2
+    FAILURES=$((FAILURES+1))
+  else
+    echo "  PASS: \$CV_CODE_WRITING_NODE_RE does NOT match '$subcommand_line'"
+  fi
+  rm -f "$subcommand_fixture"
 done
 
 start_case "the code-writing-node detector does not flag a comment-only mention of git commit (Mayor regrade round-3 FIX-ALSO, review fk-qc3yua)"
