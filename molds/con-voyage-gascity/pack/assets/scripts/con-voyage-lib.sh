@@ -3528,6 +3528,116 @@ print(state + SEP + merged_at + SEP + closed_at, end='')
 " 2>/dev/null || printf '%s%s' "$SEP" "$SEP"
 }
 
+# cv_delete_pr_branch REPO PR_NUMBER — delete a finished PR's con-voyage run
+# branch on GitHub (fk-branch-gc). Called by con-voyage-finalize.sh once the
+# PR is MERGED or CLOSED; before this nothing ever deleted the remote branch,
+# so every finished run left one behind (~80 in kriscoleman/foundry).
+#
+# Deletes only when ALL of these hold, and otherwise leaves the branch alone:
+#   - the head branch is named con-voyage/* (never main or a human's branch)
+#   - it lives in REPO itself, not a fork
+#   - its current tip is still the PR's head commit (nothing was pushed after
+#     the PR finished that a delete would lose)
+#   - no open PR is stacked on it (deleting a base branch closes those PRs)
+#
+# Sets CV_BRANCH_RC: 0 = deleted, already gone, or deliberately kept; 1 = a
+# GitHub call failed and the caller should retry next cycle. REST only (`gh
+# api`), each call bounded by CV_GH_TIMEOUT_SECONDS like pr_finalize_state.
+cv_delete_pr_branch() {
+  local repo="$1" pr_number="$2"
+  local secs="${CV_GH_TIMEOUT_SECONDS:-30}"
+  CV_BRANCH_RC=0
+  case "$pr_number" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  [ -n "${repo// /}" ] || return 0
+
+  local pr_json head
+  pr_json="$(cv_with_timeout "$secs" "$GH" api "repos/${repo}/pulls/${pr_number}" 2>/dev/null)" || pr_json=""
+  head="$(printf '%s' "$pr_json" | python3 -c "
+import sys, json
+try:
+    h = json.load(sys.stdin)['head']
+    print('{}\x1f{}\x1f{}'.format(h['ref'], h['sha'], (h.get('repo') or {}).get('full_name') or ''))
+except Exception:
+    pass
+" 2>/dev/null)"
+  if [ -z "$head" ]; then
+    echo "con-voyage-finalize: WARNING: could not read head branch of ${repo}#${pr_number}; will retry branch cleanup next cycle" >&2
+    CV_BRANCH_RC=1
+    return 0
+  fi
+  local ref sha head_repo
+  IFS=$'\x1f' read -r ref sha head_repo <<< "$head"
+
+  case "$ref" in
+    con-voyage/*) ;;
+    *) return 0 ;;
+  esac
+  if [ "$head_repo" != "$repo" ]; then
+    echo "con-voyage-finalize: keeping branch ${ref} of ${repo}#${pr_number} — head lives in ${head_repo:-an unknown repo}, not ${repo}"
+    return 0
+  fi
+
+  local ref_json ref_err tip
+  ref_err="$(mktemp)"
+  ref_json="$(cv_with_timeout "$secs" "$GH" api "repos/${repo}/git/ref/heads/${ref}" 2>"$ref_err")" || ref_json=""
+  if [ -z "$ref_json" ]; then
+    if grep -q 'HTTP 404' "$ref_err"; then
+      rm -f "$ref_err"
+      echo "con-voyage-finalize: branch ${ref} of ${repo}#${pr_number} already gone"
+      return 0
+    fi
+    rm -f "$ref_err"
+    echo "con-voyage-finalize: WARNING: could not read branch ${ref} of ${repo}; will retry branch cleanup next cycle" >&2
+    CV_BRANCH_RC=1
+    return 0
+  fi
+  rm -f "$ref_err"
+  tip="$(printf '%s' "$ref_json" | python3 -c "
+import sys, json
+try:
+    print(json.load(sys.stdin)['object']['sha'])
+except Exception:
+    pass
+" 2>/dev/null)"
+  if [ -z "$tip" ] || [ "$tip" != "$sha" ]; then
+    echo "con-voyage-finalize: keeping branch ${ref} of ${repo}#${pr_number} — tip ${tip:-unknown} is not the PR head ${sha}"
+    return 0
+  fi
+
+  local enc stacked
+  enc="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$ref")"
+  stacked="$(cv_with_timeout "$secs" "$GH" api "repos/${repo}/pulls?state=open&base=${enc}&per_page=1" 2>/dev/null \
+    | python3 -c "
+import sys, json
+try:
+    print(len(json.load(sys.stdin)))
+except Exception:
+    pass
+" 2>/dev/null)"
+  case "$stacked" in
+    0) ;;
+    ''|*[!0-9]*)
+      echo "con-voyage-finalize: WARNING: could not check for PRs stacked on ${ref} of ${repo}; will retry branch cleanup next cycle" >&2
+      CV_BRANCH_RC=1
+      return 0
+      ;;
+    *)
+      echo "con-voyage-finalize: keeping branch ${ref} of ${repo}#${pr_number} — an open PR is stacked on it"
+      return 0
+      ;;
+  esac
+
+  if cv_with_timeout "$secs" "$GH" api -X DELETE "repos/${repo}/git/refs/heads/${ref}" >/dev/null 2>&1; then
+    echo "con-voyage-finalize: deleted branch ${ref} of ${repo}#${pr_number}"
+  else
+    echo "con-voyage-finalize: WARNING: could not delete branch ${ref} of ${repo}; will retry next cycle" >&2
+    CV_BRANCH_RC=1
+  fi
+  return 0
+}
+
 # cv_parse_pr_monitor_blocks CITY_TOML — enumerate every [[github.pr_monitor]]
 # block in CITY_TOML, one line per block:
 #   owner<0x1f>repo<0x1f>rig<0x1f>repair_route<0x1f>base_branches_csv
