@@ -69,6 +69,42 @@
 #
 # Run:  con-voyage-marshal-bead-sweep.sh
 
+# ---------------------------------------------------------------------------
+# bash 4+ preflight.
+#
+# This pack requires bash 4+ (mapfile, associative arrays, ${var^^}) — see
+# con-voyage-lib.sh's header. macOS ships bash 3.2 as /bin/bash, and
+# `#!/usr/bin/env bash` resolves to it whenever /bin precedes a newer bash on
+# PATH — which is the default even AFTER `brew install bash`, because
+# /opt/homebrew/bin is typically appended, not prepended.
+#
+# Without this guard the failure is both silent and actively misleading:
+#   * `mapfile` reports "command not found" and leaves its target array UNSET,
+#     so the next reference dies on `unbound variable` under `set -u` — the
+#     order just fails every tick and `gc doctor` says only "N order(s)
+#     failing repeatedly (advisory)".
+#   * `declare -A map` is rejected, but the following `map[key]=value` still
+#     "succeeds" as ARITHMETIC indexing on a normal array, so every key
+#     collapses onto index 0. That path produces confidently WRONG results
+#     rather than stopping.
+#
+# So: re-exec under a capable bash when one is installed, else fail fast with
+# an actionable message instead of either failure mode above.
+# ---------------------------------------------------------------------------
+if [ -z "${CV_BASH_REEXEC:-}" ] && [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
+  for _cv_bash in /opt/homebrew/bin/bash /usr/local/bin/bash /opt/local/bin/bash /usr/bin/bash; do
+    [ -x "$_cv_bash" ] || continue
+    _cv_major="$("$_cv_bash" -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null)"
+    case "$_cv_major" in ''|*[!0-9]*) continue ;; esac
+    [ "$_cv_major" -ge 4 ] || continue
+    CV_BASH_REEXEC=1 exec "$_cv_bash" "$0" "$@"
+  done
+  echo "${0##*/}: con-voyage requires bash 4+, but this is bash ${BASH_VERSION:-unknown}." >&2
+  echo "${0##*/}: macOS ships bash 3.2 as /bin/bash. Install a newer bash:" >&2
+  echo "${0##*/}:   brew install bash" >&2
+  exit 78
+fi
+
 set -uo pipefail
 
 GC="${GC:-gc}"
