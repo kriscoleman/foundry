@@ -224,6 +224,13 @@ CV_CONFLICT_STRATEGY="${CV_CONFLICT_STRATEGY:-rebase}"
 CV_LOCK_STALE_SECONDS="${CV_LOCK_STALE_SECONDS:-300}"
 CV_MINT_MAX_ATTEMPTS="${CV_MINT_MAX_ATTEMPTS:-3}"
 CV_ESCALATE_TARGET="${CV_ESCALATE_TARGET:-human}"
+# Operator pause toggles (see cv-pause.sh): "self-heal" skips PART A and
+# PART A-native, "comment-repair" skips PART B. Read once per run.
+CV_PAUSE_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/cv-pause.sh"
+self_heal_paused=0
+GC_CITY="$GC_CITY" bash "$CV_PAUSE_SH" is-paused self-heal && self_heal_paused=1
+comment_repair_paused=0
+GC_CITY="$GC_CITY" bash "$CV_PAUSE_SH" is-paused comment-repair && comment_repair_paused=1
 
 # AUTHOR SCOPING (see HARD INVARIANT in the header). The single GitHub login
 # whose PRs this monitor may act on. Defaults to the authenticated gh login.
@@ -902,12 +909,17 @@ print(author + SEP + ("1" if skip_awaiting_human else "0"))
 # (empty login, gh error) is treated as "not ours" and skipped — fail closed.
 # It is always better to create NO bead than to create one for someone else.
 
+if [ "$self_heal_paused" -eq 1 ]; then
+  echo "con-voyage-pr-watch: [PART A] skipped — self-heal is paused (cv-pause.sh resume self-heal)"
+  backfill_json=""
+else
 echo "con-voyage-pr-watch: [PART A] report-only backfill (gc github pr backfill --json), author-filtering to '${CV_PR_AUTHOR}'"
 
 backfill_json=$("$GC" --city "$GC_CITY" github pr backfill --json 2>/dev/null) || {
   echo "con-voyage-pr-watch: [PART A] WARNING: report-only backfill returned non-zero; skipping repair-bead creation this cycle" >&2
   backfill_json=""
 }
+fi
 
 if [ -n "$backfill_json" ]; then
   # Emit EVERY result (actionable AND clean) as one JSON object per line for
@@ -1063,7 +1075,9 @@ fi
 # ("cv-ci-repair-<owner>-<repo>-<num>"), so a PR that somehow becomes
 # reachable by BOTH paths in the same cycle is still only ever minted once —
 # dedup is keyed on repo+PR number, never on which path discovered it.
-if [ "$CV_NATIVE_DISCOVERY" != "enabled" ]; then
+if [ "$self_heal_paused" -eq 1 ]; then
+  echo "con-voyage-pr-watch: [PART A-native] skipped — self-heal is paused (cv-pause.sh resume self-heal)"
+elif [ "$CV_NATIVE_DISCOVERY" != "enabled" ]; then
   echo "con-voyage-pr-watch: [PART A-native] skipped — CV_NATIVE_DISCOVERY is '${CV_NATIVE_DISCOVERY}' (set to 'enabled' to opt in)"
 else
 echo "con-voyage-pr-watch: [PART A-native] unlisted-base discovery for '${CV_PR_AUTHOR}'-authored PRs"
@@ -1189,6 +1203,13 @@ fi
 # The gc config does not provide a CLI to enumerate monitors directly, so we
 # read the city.toml to extract owner/repo pairs. If city.toml is not
 # accessible or parseable, we skip Part B gracefully.
+
+# Paused comment-repair skips the whole part before any seen-id state is
+# touched, so comments left during the pause are routed after resume.
+if [ "$comment_repair_paused" -eq 1 ]; then
+  echo "con-voyage-pr-watch: [PART B] skipped — comment-repair is paused (cv-pause.sh resume comment-repair)"
+  exit 0
+fi
 
 CITY_TOML="${GC_CITY}/city.toml"
 if [ ! -f "$CITY_TOML" ]; then

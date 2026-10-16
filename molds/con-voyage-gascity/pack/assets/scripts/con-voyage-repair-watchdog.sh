@@ -307,6 +307,14 @@ if [ -z "${CV_PR_AUTHOR// /}" ]; then
 fi
 echo "con-voyage-repair-watchdog: author-scoped to '${CV_PR_AUTHOR}'; stall=${CV_STALL_SECONDS}s max_attempts=${CV_MAX_ATTEMPTS} escalate_target=${CV_ESCALATE_TARGET}"
 
+# Operator pause toggle (see cv-pause.sh): a paused self-heal re-dispatches
+# nothing. State records are left untouched so the next cycle after resume
+# picks up exactly where this one would have.
+if GC_CITY="$GC_CITY" bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/cv-pause.sh" is-paused self-heal; then
+  echo "con-voyage-repair-watchdog: skipped — self-heal is paused (cv-pause.sh resume self-heal)"
+  exit 0
+fi
+
 # Shared per-PR state/dispatch helpers (state_read, state_write, now_iso8601,
 # bead_status, implementor_alive, close_if_open, cv_default_state_dir) were
 # sourced above, before CV_STATE_DIR's default was computed — see

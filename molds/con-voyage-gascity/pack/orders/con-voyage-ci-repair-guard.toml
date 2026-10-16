@@ -23,6 +23,10 @@
 #
 # No auto-merge ever occurs from this order — it only ever closes a bead.
 
+# PAUSE: while `cv-pause.sh pause self-heal` is in effect, this guard drops
+# EVERY open con-voyage-ci-repair bead regardless of author or CV_AUTHOR_GATE.
+# See README.md "Pausing self-heal and comment repairs".
+
 [order]
 description = "Close con-voyage-ci-repair beads not authored by the operator, before a worker can act on them"
 trigger = "event"
