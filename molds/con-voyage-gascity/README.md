@@ -1029,6 +1029,31 @@ beads that already exist; it does **not** widen which PRs pr-watch acts on.
 > operator who forgets to populate the list is never silently switched into
 > working every PR. This toggle is the pack-side bridge until #6280 ships.
 
+### Pausing self-heal and comment repairs (`cv-pause.sh`)
+
+Two autonomous PR-monitor features can burn a lot of tokens, so each has an
+operator pause switch that takes effect on the next order cycle, with no
+restart or re-cast:
+
+| Feature | What pausing stops | What keeps running |
+|---|---|---|
+| `self-heal` | `con-voyage-pr-watch` PART A / PART A-native mint and dispatch no CI repair; `con-voyage-repair-watchdog` re-dispatches nothing; `con-voyage-ci-repair-guard` closes every open, unclaimed `con-voyage-ci-repair` bead as `dropped: self-heal paused` (which also stops the native `[[github.pr_monitor]]`'s own repair mints) | PR comment routing, finalize, re-review, review lanes. A repair a worker already claimed runs to completion. |
+| `comment-repair` | `con-voyage-pr-watch` PART B routes no PR review comments or finding triggers to the implementor | CI repair, finalize, re-review. Comments left while paused are not marked seen, so they are routed on the first cycle after resume. |
+
+Run from the city root (the cast path of the pack's scripts):
+
+```bash
+packs/con-voyage/assets/scripts/cv-pause.sh pause self-heal "token budget"
+packs/con-voyage/assets/scripts/cv-pause.sh pause comment-repair
+packs/con-voyage/assets/scripts/cv-pause.sh status
+packs/con-voyage/assets/scripts/cv-pause.sh resume self-heal
+```
+
+Each pause is one city-wide flag file, `<city>/.gc/cv-<feature>.paused`
+(override the directory with `CV_PAUSE_DIR`), recording when, by whom and why.
+Nothing is paused by default. Deleting the file by hand is the same as
+`resume`.
+
 ### Nothing ever auto-merges
 
 `merge_queue = "observe"` is set in `[[github.pr_monitor]]`. The native monitor
