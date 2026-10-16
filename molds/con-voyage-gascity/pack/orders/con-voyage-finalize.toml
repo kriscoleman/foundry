@@ -14,6 +14,8 @@
 # PR's terminal state via `gh` and, on merged/closed:
 #   - closes the WORK BEAD with an accurate reason,
 #   - closes the con-voyage convoy,
+#   - deletes the PR's con-voyage/* head branch (same-repo only, tip still at
+#     the PR head, no open PR stacked on it),
 #   - releases the long-lived implementor (best-effort mail — never a kill),
 #   - removes the record.
 # While the PR is still open it reflects the live phase (awaiting_merge |
@@ -22,7 +24,7 @@
 #
 # No auto-merge, force-push, PR comment, or session kill ever occurs from this
 # order — it only closes beads/convoys the operator's own con-voyage created,
-# reflects phase, and mails a release note.
+# deletes their finished run branches, reflects phase, and mails a release note.
 #
 # REPAIR-STATE SWEEP (fk-f1vp FIX-B): this same order ALSO globs the ".state"
 # repair records con-voyage-pr-watch.sh/con-voyage-repair-watchdog.sh track
@@ -40,7 +42,7 @@
 # con-voyage's own author-scoped publish/dispatch; this is defense in depth.
 
 [order]
-description = "Finalize con-voyage work beads AND repair beads on PR merge/close: close work bead + convoy, release the implementor, sweep tracked/sibling repair beads, clean the records (author-scoped)"
+description = "Finalize con-voyage work beads AND repair beads on PR merge/close: close work bead + convoy, delete the run branch, release the implementor, sweep tracked/sibling repair beads, clean the records (author-scoped)"
 trigger = "cooldown"
 interval = "5m"
 exec = "$PACK_DIR/assets/scripts/con-voyage-finalize.sh"
@@ -51,8 +53,10 @@ exec = "$PACK_DIR/assets/scripts/con-voyage-finalize.sh"
 # CV_RELEASE_IMPLEMENTOR toggles the release note to the long-lived implementor
 # on finalize (default "1" = send it; "0" = skip the mail, still close the
 # bead/convoy). CV_ESCALATE_TARGET (fk-c1xa) is who gets mailed if a forced
-# work-bead/convoy close still fails outright.
+# work-bead/convoy close still fails outright. CV_DELETE_BRANCH toggles deleting
+# the finished PR's con-voyage/* head branch (default "1"; "0" keeps branches).
 [order.env]
 CV_PR_AUTHOR = "kriscoleman"
 CV_RELEASE_IMPLEMENTOR = "1"
+CV_DELETE_BRANCH = "1"
 CV_ESCALATE_TARGET = "mayor"

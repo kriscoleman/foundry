@@ -76,6 +76,62 @@ sub="${1:-}"
 case "$sub" in
   auth) exit 0 ;;
   api)
+    # Branch cleanup (fk-branch-gc) REST calls. `-X DELETE` may precede the
+    # path, so find the first arg that looks like an API path.
+    method="GET"
+    path=""
+    prev=""
+    for a in "${@:2}"; do
+      if [ "$prev" = "-X" ] || [ "$prev" = "--method" ]; then method="$a"
+      elif [ -z "$path" ] && [ "${a#repos/}" != "$a" ]; then path="$a"
+      fi
+      prev="$a"
+    done
+    if [ -n "$path" ]; then
+      repo="$(printf '%s' "$path" | cut -d/ -f2-3)"
+      rest="${path#repos/"${repo}"/}"
+      case "$method:$rest" in
+        GET:pulls/[0-9]*)
+          # STUB_PR_HEAD_MAP rows: "<repo>|<number>|<head_ref>|<head_sha>|<head_repo>".
+          # No row => a non-con-voyage head ref (exercises the prefix skip, so
+          # pre-existing cases see the production default unchanged).
+          [ "${STUB_PR_HEAD_FAIL:-0}" = "1" ] && { echo "gh: Server Error (HTTP 502)" >&2; exit 1; }
+          num="${rest#pulls/}"
+          row="$(printf '%s\n' "${STUB_PR_HEAD_MAP:-}" | awk -F'|' -v r="$repo" -v n="$num" '$1==r && $2==n {print; exit}')"
+          if [ -z "$row" ]; then row="${repo}|${num}|feature/not-a-run|0000|${repo}"; fi
+          ref="$(printf '%s' "$row" | cut -d'|' -f3)"
+          sha="$(printf '%s' "$row" | cut -d'|' -f4)"
+          hrepo="$(printf '%s' "$row" | cut -d'|' -f5)"
+          printf '{"head":{"ref":"%s","sha":"%s","repo":{"full_name":"%s"}}}\n' "$ref" "$sha" "$hrepo"
+          exit 0
+          ;;
+        GET:git/ref/heads/*)
+          # STUB_REF_MAP rows: "<repo>|<ref>|<tip_sha>". No row => 404.
+          [ "${STUB_REF_FAIL:-0}" = "1" ] && { echo "gh: Server Error (HTTP 502)" >&2; exit 1; }
+          ref="${rest#git/ref/heads/}"
+          tip="$(printf '%s\n' "${STUB_REF_MAP:-}" | awk -F'|' -v r="$repo" -v b="$ref" '$1==r && $2==b {print $3; exit}')"
+          [ -n "$tip" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
+          printf '{"ref":"refs/heads/%s","object":{"sha":"%s"}}\n' "$ref" "$tip"
+          exit 0
+          ;;
+        GET:pulls\?*)
+          # Open PRs stacked on a branch. STUB_STACKED_REFS: newline list of
+          # "<repo>|<url-encoded ref>" that have one open dependent PR.
+          base="$(printf '%s' "$rest" | sed -n 's/.*[?&]base=\([^&]*\).*/\1/p')"
+          if printf '%s\n' "${STUB_STACKED_REFS:-}" | grep -qxF -- "${repo}|${base}"; then
+            printf '[{"number":999}]\n'
+          else
+            printf '[]\n'
+          fi
+          exit 0
+          ;;
+        DELETE:git/refs/heads/*)
+          [ "${STUB_DELETE_FAIL:-0}" = "1" ] && { echo "gh: Resource not accessible by integration (HTTP 403)" >&2; exit 1; }
+          exit 0
+          ;;
+      esac
+      exit 0
+    fi
     # `gh api user --jq .login`
     if [ "${STUB_GH_USER_FAIL:-0}" = "1" ]; then exit 1; fi
     if [ -n "${STUB_GH_USER_LOGIN:-}" ]; then printf '%s\n' "${STUB_GH_USER_LOGIN}"; fi
@@ -1192,6 +1248,146 @@ run_script "${DEFAULT_ENV[@]}" \
 assert_eq "0" "$RC" "script exits 0"
 assert_log_count "$GC_LOG" '\-\-metadata-field' 0 "no root-bead sweep attempted without a root_bead_id"
 assert_file_absent "${STATE_DIR}/cv-finalize-kriscoleman-foundry-122.finalize" "finalize record removed as before"
+
+# ===========================================================================
+# CASES 41-51 — fk-branch-gc: delete the PR's run branch on land/abandon.
+#   Before this, finalize closed every bead but never the branch, so
+#   kriscoleman/foundry accumulated ~80 finished con-voyage/fk-* branches.
+# ===========================================================================
+BR="con-voyage/fk-br1-some-topic"
+BR_ENC="con-voyage%2Ffk-br1-some-topic"
+
+start_case "41: merged PR -> delete its con-voyage head branch, record removed"
+setup_case_env "41"
+write_finalize "$STATE_DIR" "cv-finalize-kriscoleman-foundry-201" \
+  "fk-w201" "fk-c201" "kriscoleman/foundry" "201" "kriscoleman" "" "awaiting_merge"
+run_script "${DEFAULT_ENV[@]}" \
+  STUB_PR_MAP="kriscoleman/foundry|201|MERGED|2026-10-15T12:00:00Z|2026-10-15T12:00:00Z|||" \
+  STUB_PR_HEAD_MAP="kriscoleman/foundry|201|${BR}|abc123|kriscoleman/foundry" \
+  STUB_REF_MAP="kriscoleman/foundry|${BR}|abc123"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GH_LOG" "api -X DELETE repos/kriscoleman/foundry/git/refs/heads/${BR} " 1 "head branch deleted"
+assert_out_contains "deleted branch ${BR}" "logs the branch deletion"
+assert_file_absent "${STATE_DIR}/cv-finalize-kriscoleman-foundry-201.finalize" "record removed"
+
+start_case "42: closed-without-merge PR -> branch deleted too (abandon)"
+setup_case_env "42"
+write_finalize "$STATE_DIR" "cv-finalize-kriscoleman-foundry-202" \
+  "fk-w202" "fk-c202" "kriscoleman/foundry" "202" "kriscoleman" "" "awaiting_merge"
+run_script "${DEFAULT_ENV[@]}" \
+  STUB_BDSHOW_MAP='fk-w202|in_progress' \
+  STUB_PR_MAP="kriscoleman/foundry|202|CLOSED||2026-10-15T12:00:00Z|||" \
+  STUB_PR_HEAD_MAP="kriscoleman/foundry|202|${BR}|abc123|kriscoleman/foundry" \
+  STUB_REF_MAP="kriscoleman/foundry|${BR}|abc123"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd close fk-w202 .*abandoned' 1 "work bead abandoned"
+assert_log_count "$GH_LOG" "api -X DELETE repos/kriscoleman/foundry/git/refs/heads/${BR} " 1 "head branch deleted"
+
+start_case "43: branch tip moved past the PR head -> keep branch (unreviewed commits)"
+setup_case_env "43"
+write_finalize "$STATE_DIR" "cv-finalize-kriscoleman-foundry-203" \
+  "fk-w203" "fk-c203" "kriscoleman/foundry" "203" "kriscoleman" "" "awaiting_merge"
+run_script "${DEFAULT_ENV[@]}" \
+  STUB_PR_MAP="kriscoleman/foundry|203|MERGED|2026-10-15T12:00:00Z|2026-10-15T12:00:00Z|||" \
+  STUB_PR_HEAD_MAP="kriscoleman/foundry|203|${BR}|abc123|kriscoleman/foundry" \
+  STUB_REF_MAP="kriscoleman/foundry|${BR}|def456"
+assert_log_count "$GH_LOG" 'DELETE' 0 "no DELETE when the tip moved"
+assert_out_contains "keeping branch ${BR}" "logs why the branch is kept"
+assert_file_absent "${STATE_DIR}/cv-finalize-kriscoleman-foundry-203.finalize" "record still removed (a deliberate skip is not a failure)"
+
+start_case "44: another open PR is stacked on the branch -> keep branch"
+setup_case_env "44"
+write_finalize "$STATE_DIR" "cv-finalize-kriscoleman-foundry-204" \
+  "fk-w204" "fk-c204" "kriscoleman/foundry" "204" "kriscoleman" "" "awaiting_merge"
+run_script "${DEFAULT_ENV[@]}" \
+  STUB_PR_MAP="kriscoleman/foundry|204|MERGED|2026-10-15T12:00:00Z|2026-10-15T12:00:00Z|||" \
+  STUB_PR_HEAD_MAP="kriscoleman/foundry|204|${BR}|abc123|kriscoleman/foundry" \
+  STUB_REF_MAP="kriscoleman/foundry|${BR}|abc123" \
+  STUB_STACKED_REFS="kriscoleman/foundry|${BR_ENC}"
+assert_log_count "$GH_LOG" 'DELETE' 0 "no DELETE under a stacked open PR"
+assert_out_contains "keeping branch ${BR}.*stacked" "logs the stacked-PR skip"
+assert_file_absent "${STATE_DIR}/cv-finalize-kriscoleman-foundry-204.finalize" "record removed"
+
+start_case "45: head branch lives in a fork -> never touched"
+setup_case_env "45"
+write_finalize "$STATE_DIR" "cv-finalize-kriscoleman-foundry-205" \
+  "fk-w205" "fk-c205" "kriscoleman/foundry" "205" "kriscoleman" "" "awaiting_merge"
+run_script "${DEFAULT_ENV[@]}" \
+  STUB_PR_MAP="kriscoleman/foundry|205|MERGED|2026-10-15T12:00:00Z|2026-10-15T12:00:00Z|||" \
+  STUB_PR_HEAD_MAP="kriscoleman/foundry|205|${BR}|abc123|someone/foundry" \
+  STUB_REF_MAP="kriscoleman/foundry|${BR}|abc123"
+assert_log_count "$GH_LOG" 'git/ref' 0 "no ref lookup or DELETE for a fork head"
+assert_file_absent "${STATE_DIR}/cv-finalize-kriscoleman-foundry-205.finalize" "record removed"
+
+start_case "46: non con-voyage head branch -> never touched"
+setup_case_env "46"
+write_finalize "$STATE_DIR" "cv-finalize-kriscoleman-foundry-206" \
+  "fk-w206" "fk-c206" "kriscoleman/foundry" "206" "kriscoleman" "" "awaiting_merge"
+run_script "${DEFAULT_ENV[@]}" \
+  STUB_PR_MAP="kriscoleman/foundry|206|MERGED|2026-10-15T12:00:00Z|2026-10-15T12:00:00Z|||" \
+  STUB_PR_HEAD_MAP="kriscoleman/foundry|206|main|abc123|kriscoleman/foundry" \
+  STUB_REF_MAP="kriscoleman/foundry|main|abc123"
+assert_log_count "$GH_LOG" 'git/ref' 0 "no ref lookup or DELETE for main"
+assert_file_absent "${STATE_DIR}/cv-finalize-kriscoleman-foundry-206.finalize" "record removed"
+
+start_case "47: branch already gone (404) -> nothing to do, record removed"
+setup_case_env "47"
+write_finalize "$STATE_DIR" "cv-finalize-kriscoleman-foundry-207" \
+  "fk-w207" "fk-c207" "kriscoleman/foundry" "207" "kriscoleman" "" "awaiting_merge"
+run_script "${DEFAULT_ENV[@]}" \
+  STUB_PR_MAP="kriscoleman/foundry|207|MERGED|2026-10-15T12:00:00Z|2026-10-15T12:00:00Z|||" \
+  STUB_PR_HEAD_MAP="kriscoleman/foundry|207|${BR}|abc123|kriscoleman/foundry"
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GH_LOG" 'DELETE' 0 "no DELETE for a branch that no longer exists"
+assert_file_absent "${STATE_DIR}/cv-finalize-kriscoleman-foundry-207.finalize" "record removed"
+
+start_case "48: DELETE fails -> keep record for retry next cycle"
+setup_case_env "48"
+write_finalize "$STATE_DIR" "cv-finalize-kriscoleman-foundry-208" \
+  "fk-w208" "fk-c208" "kriscoleman/foundry" "208" "kriscoleman" "" "awaiting_merge"
+run_script "${DEFAULT_ENV[@]}" \
+  STUB_BDSHOW_MAP='fk-w208|in_progress' \
+  STUB_PR_MAP="kriscoleman/foundry|208|MERGED|2026-10-15T12:00:00Z|2026-10-15T12:00:00Z|||" \
+  STUB_PR_HEAD_MAP="kriscoleman/foundry|208|${BR}|abc123|kriscoleman/foundry" \
+  STUB_REF_MAP="kriscoleman/foundry|${BR}|abc123" \
+  STUB_DELETE_FAIL=1
+assert_eq "0" "$RC" "script exits 0"
+assert_log_count "$GC_LOG" 'bd close fk-w208' 1 "work bead still closed"
+assert_file_present "${STATE_DIR}/cv-finalize-kriscoleman-foundry-208.finalize" "record kept for retry"
+assert_log_count "$GC_LOG" 'mail send mayor' 1 "mayor told once about the stuck branch"
+
+start_case "49: transient PR head lookup failure -> keep record, no DELETE"
+setup_case_env "49"
+write_finalize "$STATE_DIR" "cv-finalize-kriscoleman-foundry-209" \
+  "fk-w209" "fk-c209" "kriscoleman/foundry" "209" "kriscoleman" "" "awaiting_merge"
+run_script "${DEFAULT_ENV[@]}" \
+  STUB_PR_MAP="kriscoleman/foundry|209|MERGED|2026-10-15T12:00:00Z|2026-10-15T12:00:00Z|||" \
+  STUB_PR_HEAD_FAIL=1
+assert_log_count "$GH_LOG" 'DELETE' 0 "no DELETE without a resolved head"
+assert_file_present "${STATE_DIR}/cv-finalize-kriscoleman-foundry-209.finalize" "record kept for retry"
+
+start_case "50: CV_DELETE_BRANCH=0 -> branch cleanup disabled entirely"
+setup_case_env "50"
+write_finalize "$STATE_DIR" "cv-finalize-kriscoleman-foundry-210" \
+  "fk-w210" "fk-c210" "kriscoleman/foundry" "210" "kriscoleman" "" "awaiting_merge"
+run_script "${DEFAULT_ENV[@]}" CV_DELETE_BRANCH=0 \
+  STUB_PR_MAP="kriscoleman/foundry|210|MERGED|2026-10-15T12:00:00Z|2026-10-15T12:00:00Z|||" \
+  STUB_PR_HEAD_MAP="kriscoleman/foundry|210|${BR}|abc123|kriscoleman/foundry" \
+  STUB_REF_MAP="kriscoleman/foundry|${BR}|abc123"
+assert_log_count "$GH_LOG" 'api repos/kriscoleman/foundry/pulls' 0 "no branch-cleanup API calls"
+assert_log_count "$GH_LOG" 'DELETE' 0 "no DELETE"
+assert_file_absent "${STATE_DIR}/cv-finalize-kriscoleman-foundry-210.finalize" "record removed"
+
+start_case "51: still-open PR -> branch never looked at"
+setup_case_env "51"
+write_finalize "$STATE_DIR" "cv-finalize-kriscoleman-foundry-211" \
+  "fk-w211" "fk-c211" "kriscoleman/foundry" "211" "kriscoleman" "" "awaiting_merge"
+run_script "${DEFAULT_ENV[@]}" \
+  STUB_PR_MAP="kriscoleman/foundry|211|OPEN|||MERGEABLE|CLEAN|SUCCESS" \
+  STUB_PR_HEAD_MAP="kriscoleman/foundry|211|${BR}|abc123|kriscoleman/foundry" \
+  STUB_REF_MAP="kriscoleman/foundry|${BR}|abc123"
+assert_log_count "$GH_LOG" 'api ' 0 "no REST branch calls for an open PR"
+assert_file_present "${STATE_DIR}/cv-finalize-kriscoleman-foundry-211.finalize" "record kept"
 
 # ===========================================================================
 # Summary

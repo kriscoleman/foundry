@@ -49,6 +49,9 @@
 #          loop dispatching fresh synthesis/apply-review-findings rounds
 #          against an already-landed PR; see cv_close_workflow_root in
 #          con-voyage-lib.sh)
+#        - delete the PR's con-voyage/* head branch on GitHub, unless it moved
+#          past the PR head, lives in a fork, or has an open PR stacked on it
+#          (fk-branch-gc; see cv_delete_pr_branch in con-voyage-lib.sh)
 #        - RELEASE the long-lived implementor (best-effort mail; this monitor
 #          never force-kills a session — see the release note below)
 #        - remove the ".finalize" record (its job is done)
@@ -101,6 +104,8 @@
 #   CV_RELEASE_IMPLEMENTOR  When "1" (default), mail the recorded implementor a
 #                   release note on finalize. Set "0" to skip the release mail
 #                   (the bead/convoy close still happens).
+#   CV_DELETE_BRANCH  When "1" (default), delete the finished PR's con-voyage
+#                   head branch on GitHub (fk-branch-gc). Set "0" to keep it.
 #   CV_ESCALATE_TARGET  Mail recipient (default: "mayor") when a forced
 #                   work-bead/convoy close still fails — a real `bd close`
 #                   error, not the assignee guard --force already handles.
@@ -133,6 +138,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/con-voyage-lib.sh"
 CV_STATE_DIR="${CV_STATE_DIR:-$(cv_default_state_dir)}"
 CV_PR_AUTHOR="${CV_PR_AUTHOR:-}"
 CV_RELEASE_IMPLEMENTOR="${CV_RELEASE_IMPLEMENTOR:-1}"
+CV_DELETE_BRANCH="${CV_DELETE_BRANCH:-1}"
 # CV_ESCALATE_TARGET (fk-c1xa): mail recipient when a forced work-bead/convoy
 # close still fails (a real `bd close` error, not the assignee guard the
 # --force above already handles). Mirrors con-voyage-repair-watchdog.sh's own
@@ -391,6 +397,15 @@ for CV_STATE_DIR in "${CV_STATE_DIRS_ALL[@]}"; do
       root_close_rc="$CV_CLOSE_RC"
     fi
 
+    # 2c. Delete the PR's run branch (fk-branch-gc). A GitHub failure keeps the
+    #     record so the next cycle retries, same as a failed close above; a
+    #     deliberate keep (moved tip, fork, stacked PR) does not.
+    branch_rc=0
+    if [ "$CV_DELETE_BRANCH" = "1" ]; then
+      cv_delete_pr_branch "$FS_REPO_FULL" "$FS_PR_NUMBER"
+      branch_rc="$CV_BRANCH_RC"
+    fi
+
     # 3. Release the long-lived implementor (best-effort mail). This monitor
     #    NEVER force-kills a session: the implementor may be shared or mid-task on
     #    unrelated work, and we cannot prove exclusive ownership from a finalize
@@ -416,11 +431,11 @@ for CV_STATE_DIR in "${CV_STATE_DIRS_ALL[@]}"; do
     #    so the next cycle retries close_if_open against the still-open bead(s);
     #    re-running a close that already succeeded is a safe no-op. Do this LAST
     #    so a crash before here just re-runs the (idempotent) close next cycle.
-    if [ "$work_bead_close_rc" -eq 0 ] && [ "$convoy_close_rc" -eq 0 ] && [ "$root_close_rc" -eq 0 ]; then
+    if [ "$work_bead_close_rc" -eq 0 ] && [ "$convoy_close_rc" -eq 0 ] && [ "$root_close_rc" -eq 0 ] && [ "$branch_rc" -eq 0 ]; then
       rm -f "$finalize_file" "${finalize_file}.mayor-notified"
       echo "con-voyage-finalize: done ${label} — finalize record removed"
     else
-      echo "con-voyage-finalize: WARNING: ${label} — bd close failed (work_bead_rc=${work_bead_close_rc}, convoy_rc=${convoy_close_rc}, root_rc=${root_close_rc}); keeping finalize record for retry next cycle" >&2
+      echo "con-voyage-finalize: WARNING: ${label} — teardown incomplete (work_bead_rc=${work_bead_close_rc}, convoy_rc=${convoy_close_rc}, root_rc=${root_close_rc}, branch_rc=${branch_rc}); keeping finalize record for retry next cycle" >&2
       # fk-c1xa: a close that still fails even with --force is a real error
       # (not the assignee guard --force above already handles) and needs a
       # human/mayor to look — but only once per record, so a 5-minute
@@ -431,7 +446,7 @@ for CV_STATE_DIR in "${CV_STATE_DIRS_ALL[@]}"; do
       if [ ! -f "$notified_marker" ]; then
         if "$GC" mail send "$CV_ESCALATE_TARGET" \
           -s "con-voyage finalize: stuck closing ${label}" \
-          -m "PR ${label} is ${pr_state} but finalize could not close it out: work_bead ${FS_WORK_BEAD} (rc=${work_bead_close_rc}), convoy ${FS_CONVOY_ID:-<none>} (rc=${convoy_close_rc}), workflow root ${FS_ROOT_BEAD_ID:-<none>} (rc=${root_close_rc}). The finalize record is being kept and retried every cycle, but this has already failed once even with --force — please take a look." \
+          -m "PR ${label} is ${pr_state} but finalize could not close it out: work_bead ${FS_WORK_BEAD} (rc=${work_bead_close_rc}), convoy ${FS_CONVOY_ID:-<none>} (rc=${convoy_close_rc}), workflow root ${FS_ROOT_BEAD_ID:-<none>} (rc=${root_close_rc}), head branch delete (rc=${branch_rc}). The finalize record is being kept and retried every cycle, but this has already failed once even with --force — please take a look." \
           2>&1; then
           : > "$notified_marker"
           echo "con-voyage-finalize: notified ${CV_ESCALATE_TARGET} about ${label}'s stuck close"

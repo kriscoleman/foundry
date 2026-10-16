@@ -732,7 +732,8 @@ PRs with a CI failure, so they cannot serve that role. The monitor globs
 `*.finalize`, polls each PR via one `gh pr view`, and:
 
 - **merged** → close the work bead `"landed: PR #N merged"`, close the convoy,
-  mail the implementor a release note, remove the record;
+  delete the PR's `con-voyage/*` head branch, mail the implementor a release
+  note, remove the record;
 - **closed without merge** → same, with `"abandoned: PR #N closed without
   merge"`;
 - **still open** → reflect the live phase on the work bead as a `cv=` label
@@ -741,15 +742,20 @@ PRs with a CI failure, so they cannot serve that role. The monitor globs
   idempotent via the record's `last_phase`;
 - **unresolved state (gh error)** → fail safe: touch nothing, retry next cycle.
 
+The branch delete only happens when the head branch is a `con-voyage/*` branch
+in the same repo (never a fork), its tip is still the PR's head commit, and no
+open PR is stacked on it; otherwise the branch is kept and logged. A GitHub
+error while deleting keeps the record so the next cycle retries.
+
 Every action is idempotent (re-closing an already-closed bead is a guarded
 no-op via `close_if_open`; a re-poll after the record is gone is a clean
 no-op) and **author-scoped**: a record whose `pr_author` is not `CV_PR_AUTHOR`
 is skipped before any poll — the same fail-closed HARD INVARIANT as the other
-two monitors. It **never** merges, force-pushes, comments on a PR, or kills a
+two monitors. Apart from that branch delete, it **never** merges, force-pushes, comments on a PR, or kills a
 session (releasing the long-lived implementor is a best-effort *mail*, not a
 kill — the monitor cannot prove exclusive session ownership from a record
 alone). See `con-voyage-finalize.toml` for the tunables (`CV_PR_AUTHOR`,
-`CV_RELEASE_IMPLEMENTOR`).
+`CV_RELEASE_IMPLEMENTOR`, `CV_DELETE_BRANCH`).
 
 ### Coverage table
 
