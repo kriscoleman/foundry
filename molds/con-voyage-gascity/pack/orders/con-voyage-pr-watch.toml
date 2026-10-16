@@ -23,6 +23,10 @@
 # The native [[github.pr_monitor]] config cannot express an author filter, so
 # the scoping is enforced by the script — the sole runtime driver of the monitor.
 
+# PAUSE: `cv-pause.sh pause self-heal` skips PART A (CI repair) and
+# `cv-pause.sh pause comment-repair` skips PART B (comment routing) from the
+# next cycle on. See README.md "Pausing self-heal and comment repairs".
+
 [order]
 description = "Drive GitHub PR monitoring: CI-failure repair beads + human-comment routing (author-scoped)"
 trigger = "cooldown"

@@ -92,8 +92,19 @@ CV_AUTHOR_GATE="${CV_AUTHOR_GATE:-enabled}"
 # gc/gh/python3 preflight on purpose: a disabled gate does nothing, so it must
 # not hard-require those tools just to no-op.
 # ---------------------------------------------------------------------------
+# Operator pause toggle (see cv-pause.sh). A paused self-heal drops EVERY
+# open con-voyage-ci-repair step bead, whoever authored its PR, so it wins
+# over both the author gate and its "disabled" opt-out below. This is the
+# only layer that stops the native [[github.pr_monitor]]'s own repair mints.
+self_heal_paused=0
+if GC_CITY="$GC_CITY" bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/cv-pause.sh" is-paused self-heal; then
+  self_heal_paused=1
+fi
+
 gate_lc=$(printf '%s' "$CV_AUTHOR_GATE" | tr '[:upper:]' '[:lower:]')
-if [ "$gate_lc" = "disabled" ]; then
+if [ "$self_heal_paused" -eq 1 ]; then
+  echo "con-voyage-ci-repair-guard: self-heal is PAUSED — dropping every open con-voyage-ci-repair bead (cv-pause.sh resume self-heal)"
+elif [ "$gate_lc" = "disabled" ]; then
   echo "con-voyage-ci-repair-guard: author gate DISABLED (CV_AUTHOR_GATE=disabled) — leaving ALL con-voyage-ci-repair beads for workers regardless of author (native-parity opt-in)"
   echo "con-voyage-ci-repair-guard: done"
   exit 0
@@ -123,6 +134,9 @@ fi
 # exactly: an unscoped guard would be unable to tell an operator bead from a
 # stranger's, so it must refuse to touch ANY bead rather than guess.
 # ---------------------------------------------------------------------------
+# A paused self-heal drops every bead without an author check, so it needs
+# no resolved CV_PR_AUTHOR (and must not fail closed for lack of one).
+if [ "$self_heal_paused" -eq 0 ]; then
 if [[ "$CV_PR_AUTHOR" =~ ^[[:space:]]*$ ]]; then
   CV_PR_AUTHOR="$("$GH" api user --jq .login 2>/dev/null || true)"
 fi
@@ -135,6 +149,7 @@ if [[ "$CV_PR_AUTHOR" =~ ^[[:space:]]*$ ]]; then
   exit 1
 fi
 echo "con-voyage-ci-repair-guard: author gate ENABLED — guarding con-voyage-ci-repair beads, author-scoped to '${CV_PR_AUTHOR}'"
+fi
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -176,9 +191,9 @@ retry() {
 # Rely on cwd auto-detection instead, matching every other already-fixed bd
 # call in this pack.
 drop_bead() {
-  local step_id="$1" notes="$2"
+  local step_id="$1" notes="$2" reason="${3:-dropped: not authored by operator}"
   retry "$GC" bd update "$step_id" --notes "$notes" >/dev/null 2>&1 || true
-  retry "$GC" bd close  "$step_id" --reason "dropped: not authored by operator" >/dev/null 2>&1 || true
+  retry "$GC" bd close  "$step_id" --reason "$reason" >/dev/null 2>&1 || true
 }
 
 # ---------------------------------------------------------------------------
@@ -279,6 +294,12 @@ print(formula + SEP + pr + SEP + repo)
   # ever exists) is left completely untouched — not our bead to police.
   if [ "$formula_name" != "con-voyage-ci-repair" ]; then
     echo "con-voyage-ci-repair-guard: skipping ${step_id} (root ${root_id} formula='${formula_name:-<unresolved>}', not con-voyage-ci-repair)"
+    continue
+  fi
+
+  if [ "$self_heal_paused" -eq 1 ]; then
+    echo "con-voyage-ci-repair-guard: DROP ${step_id} (${repo:-<unresolved>}#${pr:-<unresolved>}) — self-heal paused"
+    drop_bead "$step_id" "dropped: self-heal paused by operator (cv-pause.sh resume self-heal to re-enable)" "dropped: self-heal paused"
     continue
   fi
 

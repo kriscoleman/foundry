@@ -27,6 +27,9 @@
 # con-voyage-pr-watch.sh's own author-scoped dispatch; this is defense in
 # depth, not the primary gate.
 
+# PAUSE: `cv-pause.sh pause self-heal` makes this order a no-op from the next
+# cycle on. See README.md "Pausing self-heal and comment repairs".
+
 [order]
 description = "Self-heal dead/stalled con-voyage repair rework: reassign a dead implementor, re-dispatch a stalled one, escalate after repeated failures"
 trigger = "cooldown"
