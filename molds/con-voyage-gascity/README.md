@@ -147,8 +147,14 @@ repair_route   = "<rig>/gc.implementation-worker"
 repair_workflow = "con-voyage-ci-repair"
 merge_queue    = "observe"
 
-# Wire the chief-of-staff orchestration fragment into the mayor
-[mayor]
+# Wire the chief-of-staff orchestration fragment into the mayor.
+# append_fragments is a per-agent field, so it goes through an agent patch —
+# there is no top-level [mayor] section. Spelling it as a bare [mayor] table
+# fails silently: `gc config show` warns `unknown field
+# "mayor.append_fragments"` and the mayor is primed with no con-voyage
+# runbook at all.
+[[patches.agent]]
+name = "mayor"
 append_fragments = ["con-voyage-orchestration"]
 ```
 
@@ -165,6 +171,42 @@ the pack to repair beads (instead of the default `mol-polecat-work`).
 > sole runtime driver of the monitor (the native `poll_interval` is inert without
 > it). The script only ever acts on PRs authored by `CV_PR_AUTHOR`. See
 > [Author scoping](#author-scoping) below.
+
+> **Per-operator order env you must change after casting.** Two `[order.env]`
+> defaults ship with *this* foundry's own values baked in, and a fresh cast
+> inherits them silently — nothing errors, the affected monitors simply act on
+> the wrong account or the wrong rig:
+>
+> | Key | Shipped default | Change it to | Orders carrying it |
+> |---|---|---|---|
+> | `CV_PR_AUTHOR` | `kriscoleman` | your own GitHub login | `con-voyage-pr-watch`, `con-voyage-finalize`, `con-voyage-repair-watchdog`, `con-voyage-rereview-watch`, `con-voyage-ci-repair-guard` |
+> | `CV_REREVIEW_RIG` | `foundry-kc` | the Gas City **rig name** the re-review round should mint its seed bead in | `con-voyage-rereview-watch` |
+>
+> Override them from the city rather than editing the pack in place, so a
+> recast does not revert your values. These orders are rig-scoped by default,
+> so the override needs `rig = "*"` (or an explicit rig name) — without it
+> `gc` matches only city-level orders and reports that rig-scoped instances
+> exist instead of applying the override. Env overrides merge per key, so the
+> other keys in each `[order.env]` block survive untouched:
+>
+> ```toml
+> # city.toml
+> [[orders.overrides]]
+> name = "con-voyage-pr-watch"
+> rig = "*"
+> [orders.overrides.env]
+> CV_PR_AUTHOR = "<your-github-login>"
+>
+> [[orders.overrides]]
+> name = "con-voyage-rereview-watch"
+> rig = "*"
+> [orders.overrides.env]
+> CV_PR_AUTHOR = "<your-github-login>"
+> CV_REREVIEW_RIG = "<your-rig-name>"
+> ```
+>
+> Repeat the first block for `con-voyage-finalize`,
+> `con-voyage-repair-watchdog`, and `con-voyage-ci-repair-guard`.
 
 > **Reviewer models:** the 16 `cv-*` reviewer agents bind to three pack-shipped
 > provider tiers (`cv-review-light` / `cv-review-standard` / `cv-review-intensive`),
