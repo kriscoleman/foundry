@@ -98,6 +98,34 @@ land the PR.
 
 ---
 
+## Requirements
+
+Beyond `gc` itself, the pack's order scripts need **bash 4 or newer** — they use
+`mapfile`, associative arrays and `${var^^}`.
+
+**macOS ships bash 3.2 as `/bin/bash`**, and the scripts' `#!/usr/bin/env bash`
+resolves to it whenever `/bin` precedes a newer bash on `PATH`. That is the
+default even after `brew install bash`, because Homebrew's bin directory is
+usually *appended*:
+
+```bash
+brew install bash
+bash --version          # may still report 3.2 — check which one env picks:
+env bash --version
+```
+
+The scripts carry a preflight that re-execs under a bash 4+ found in the usual
+Homebrew/MacPorts locations, so `brew install bash` is enough even if `PATH`
+still favours `/bin`. If no suitable bash exists the scripts exit 78 with an
+actionable message rather than failing obscurely — worth knowing, because the
+unguarded failure modes are nasty: `mapfile` leaves its array unset (dying on
+`unbound variable` under `set -u`, visible only as `gc doctor`'s "N order(s)
+failing repeatedly (advisory)"), and `declare -A` is rejected while
+`map[key]=value` still "succeeds" as *arithmetic* indexing, collapsing every
+key onto index 0 and producing confidently wrong results.
+
+---
+
 ## Cast + wire
 
 ### Step 1 — Cast the mold
