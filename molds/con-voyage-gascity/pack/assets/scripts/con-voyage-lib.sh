@@ -24,7 +24,11 @@
 # omitting both flags lets gc's own cwd-based store auto-detection resolve
 # the right store instead.
 #
-# Requires: bash 4+, gc CLI, python3, git.
+# Requires: bash 4+, gc CLI, python3, git. This file itself is bash-3.2 safe,
+# but the scripts that source it are not (mapfile, declare -A, ${var^^}), so
+# each carries a bash 4+ preflight that re-execs under a newer bash or exits
+# 78. See the "Requirements" section of the mold README for why that guard
+# exists and what the unguarded failures look like on macOS.
 
 # cv_pack_root_has_required_functions TOPLEVEL_LIB CITY_LIB — internal
 # staleness probe for cv_pack_root (fk-fzebe). Returns 0 when every function
