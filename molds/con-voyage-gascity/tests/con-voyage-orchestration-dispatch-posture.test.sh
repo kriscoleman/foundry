@@ -8,7 +8,8 @@
 # fk-mr07) out of "dirty-conflict" caution, even though con-voyage gives
 # every do-work its own worktree so builds never collide. This asserts the
 # fix against the real wiring, not against a doc a worker never sees:
-# README.md's `[mayor] append_fragments = ["con-voyage-orchestration"]`
+# README.md's `[[patches.agent]] name = "mayor"` +
+# `append_fragments = ["con-voyage-orchestration"]`
 # city.toml snippet appends pack/template-fragments/con-voyage-orchestration
 # .template.md verbatim into the mayor's own context (flux.yaml's pack
 # output is `process: false` — a raw pass-through, no templating rewrite).

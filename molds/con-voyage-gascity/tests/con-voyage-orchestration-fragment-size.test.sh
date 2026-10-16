@@ -4,8 +4,9 @@
 # .claude/plans/mayor-context-budget-2026-09-28.md item 6).
 #
 # The `con-voyage-orchestration` fragment is appended verbatim into every
-# mayor's SessionStart context (README.md's `[mayor] append_fragments =
-# ["con-voyage-orchestration"]`, flux.yaml's pack output is `process: false`
+# mayor's SessionStart context (README.md's `[[patches.agent]]` patch with
+# `name = "mayor"` and `append_fragments = ["con-voyage-orchestration"]`,
+# flux.yaml's pack output is `process: false`
 # — no templating rewrite). At 14.2KB it pushed the mayor's total prime to
 # 18.8KB, over Claude Code's SessionStart inline cap — the mayor either
 # starts without its operating contract or pays ~5K tokens to Read it.

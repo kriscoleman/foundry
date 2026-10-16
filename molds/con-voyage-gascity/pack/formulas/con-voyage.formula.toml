@@ -10,7 +10,9 @@ Never auto-merges. The branch is pushed and a PR opened, but a human must land i
 formula = "con-voyage"
 type = "expansion"
 version = 1
-contract = "graph.v2"
+
+[requires]
+formula_compiler = ">=2.0.0"
 
 [vars]
 [vars.push]
