@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: mold
 name: con-voyage-gastown
-version: 0.2.1
+version: 0.2.2
 description: >-
   [Gas Town / gt] Con voyage — Gas Town orchestration. Deliver an issue, bead,
   or task description with a polecat team through nested implementation, a
@@ -11,11 +11,7 @@ author:
   name: Kris Coleman
   url: https://github.com/kriscoleman
 requires:
-  ailloy: ">=0.6.17"
+  ailloy: '>=0.6.17'
 dependencies:
-  # Persona review-lens charters (the roster in SKILL.md). Casting con-voyage
-  # pulls these so the non-floor lenses are adoptable standalone. Resolves at
-  # merge: con-voyage-personas (PR kc-clv) merges and tags first, then this mold.
-  # The code+security floor charters stay inline in SKILL.md (graceful degradation).
   - mold: github.com/kriscoleman/foundry//molds/con-voyage-personas
-    version: "^0.1.1"
+    version: ^0.1.1
