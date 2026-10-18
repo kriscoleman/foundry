@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.20.0](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.19.0...con-voyage-gascity-v0.20.0) (2026-10-18)
+
+
+### Features
+
+* **con-voyage:** add pause/resume toggles for self-heal and comment repairs ([9392bd1](https://github.com/kriscoleman/foundry/commit/9392bd13cef9bc578ce1328b9f79a976597f966f))
+* **con-voyage:** default code-writing steps to no new comments, make comment bloat BLOCKING ([b17e96b](https://github.com/kriscoleman/foundry/commit/b17e96b0874931a0764653bc036d506fb39e6f1b))
+
+
+### Bug Fixes
+
+* address con-voyage review BLOCKING-1, LOW-1 (review fk-bwqk7d) ([0d2a592](https://github.com/kriscoleman/foundry/commit/0d2a592a4b93044be3ac67a94e7c1d5ac1fb8214))
+* address con-voyage review BLOCKING-2..4 (review fk-hgsc3n) ([05ee73a](https://github.com/kriscoleman/foundry/commit/05ee73afbf7fbb9f4da5a36c8ef2b9e23d81b440))
+* address Mayor regrade BLOCKING-1/FIX-2 (review fk-bwqk7d, fk-qc3yua) ([ef9e511](https://github.com/kriscoleman/foundry/commit/ef9e5116db12185357e2bf828e956e5064426b68))
+* bound and surface cv_root_closed_guard's claimed-bead store writes (review fk-wrem7x, fk-nzcvnt) ([80ac015](https://github.com/kriscoleman/foundry/commit/80ac01549617e7681994b4cd323aee8595e88e77))
+* broaden code-writing-node detector to match any git commit spelling (review fk-bwqk7d) ([8b744ec](https://github.com/kriscoleman/foundry/commit/8b744ec594dc028cc65a8710ca6d4e09f85c1501))
+* close 5 BLOCKING findings in repair-watchdog orphan sweep (review fk-5miw33) ([277e49b](https://github.com/kriscoleman/foundry/commit/277e49bce77eae4aaa3a585e1b3d4bb46fd088df))
+* **con-voyage-gascity:** delete a finished PR's run branch on land/abandon ([577f36e](https://github.com/kriscoleman/foundry/commit/577f36e85f8a2878b1a2f2c785061ffc94c62ac9))
+* **con-voyage-gascity:** guard pack scripts against macOS bash 3.2 ([2ee438b](https://github.com/kriscoleman/foundry/commit/2ee438b16ce2a234570d02f21a838b78647fac29))
+* **con-voyage:** stop ci-repair watchdog fanning out duplicate repairs ([5c51198](https://github.com/kriscoleman/foundry/commit/5c5119814b9460018d9a09af705b450d32d0331c))
+* distinguish empty orphan list from parse failure, cap orphan-sweep force-closes (review fk-l3doli) ([74ebf7c](https://github.com/kriscoleman/foundry/commit/74ebf7c225c8c985ff5cf05912fbcfe9b41cf7b4))
+* drive divergence test through the real detector pattern (review fk-bwqk7d) ([47580c5](https://github.com/kriscoleman/foundry/commit/47580c5ec48279b8523879f247b552929eaba3bb))
+* match git commit after then/else/elif/do/brace, and after a subcommand hyphen (review fk-qc3yua) ([5b539a6](https://github.com/kriscoleman/foundry/commit/5b539a634e28e2d7a306ead2f0120d84ae9a03b9))
+* match git commit as a command word, not just the first token (review fk-qc3yua) ([cc8bc60](https://github.com/kriscoleman/foundry/commit/cc8bc6043765bb1a125f473986ad794b84f4cdd3))
+* tolerate $-prompt-prefixed git commit in code-writing-node detector ([995e13f](https://github.com/kriscoleman/foundry/commit/995e13f794bacac280ff5508a388c8e5fe7bc77c))
+
 ## [0.19.0](https://github.com/kriscoleman/foundry/compare/con-voyage-gascity-v0.18.0...con-voyage-gascity-v0.19.0) (2026-10-14)
 
 
