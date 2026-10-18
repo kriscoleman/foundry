@@ -1571,8 +1571,22 @@ resolve_lock_stale_seconds() {
 # acquire_lock DEDUP_KEY — exit 0 (lock held) or 1 (held by someone else and
 # not stale). A stale lock (older than CV_LOCK_STALE_SECONDS — a crashed or
 # hung holder) is stolen rather than left to wedge this record forever.
+#
+# review fk-7bmhlz LOW-1 (security fk-10g34z, advisory): dedup_key is
+# interpolated directly into a filesystem path below with no charset check.
+# Not exploitable today — every real caller derives it from GitHub's own
+# restricted {owner}/{repo}/{pr} charset — but closing it here, at the one
+# shared primitive every dedup_key-keyed lock path in this pack goes
+# through, is cheaper than auditing every current and future caller
+# individually.
 acquire_lock() {
   local dedup_key="$1"
+  case "$dedup_key" in
+    */*|*..*)
+      echo "con-voyage-lib: REFUSING acquire_lock for unsafe dedup_key (contains '/' or '..'): ${dedup_key}" >&2
+      return 1
+      ;;
+  esac
   local lock_base="${CV_STATE_DIR}/.locks"
   local lockdir="${lock_base}/${dedup_key}.lock"
   mkdir -p "$lock_base" 2>/dev/null
@@ -1616,8 +1630,16 @@ sys.exit(0 if age > float(sys.argv[2]) else 1)
 
 # release_lock DEDUP_KEY — always safe to call even if the lock was never
 # acquired (e.g. a caller that skipped straight past acquire_lock's failure).
+# Same dedup_key guard as acquire_lock above (fk-7bmhlz LOW-1): refuses
+# rather than rm -rf'ing a path built from an unsafe key.
 release_lock() {
   local dedup_key="$1"
+  case "$dedup_key" in
+    */*|*..*)
+      echo "con-voyage-lib: REFUSING release_lock for unsafe dedup_key (contains '/' or '..'): ${dedup_key}" >&2
+      return 1
+      ;;
+  esac
   rm -rf "${CV_STATE_DIR}/.locks/${dedup_key}.lock" 2>/dev/null || true
 }
 
@@ -3145,6 +3167,41 @@ cv_root_bead_id() {
   printf '%s' "${root:-$bead_id}"
 }
 
+# cv_step_root_bead_id BEAD_ID — resolve the live workflow root bead id for
+# BEAD_ID (this step's own claimed bead), preferring a pre-exported
+# GC_ROOT_BEAD_ID (every gc-spawned top-level agent shell carries it) and
+# falling back to a timeout-bounded live `gc bd show BEAD_ID` lookup of its
+# gc.root_bead_id metadata when GC_ROOT_BEAD_ID does not survive into a
+# separately-invoked fenced bash block (every multi-fence step .md in this
+# pack runs each fence as its own independent shell, so an earlier fence's
+# exported env var is not visible here). Falls back to BEAD_ID itself when
+# gc.root_bead_id is unset (BEAD_ID already IS the root, or resolution
+# failed) — never silently empty.
+#
+# review fk-z6rts BLOCKING-2 (con-voyage-rereview round 2): factored out so
+# every fence resolving a step's workflow root does it identically instead
+# of each fence copying its own ad hoc fallback — a fence that skips the
+# GC_ROOT_BEAD_ID env-var-then-live-lookup fallback silently resolves to its
+# OWN step bead id instead of the workflow root, which then reads as empty
+# for any workflow-root-only metadata (e.g. gc.var.finalize_key).
+cv_step_root_bead_id() {
+  local bead_id="$1"
+  local root="${GC_ROOT_BEAD_ID:-}"
+  if [ -z "$root" ] && [ -n "$bead_id" ]; then
+    root="$(cv_with_timeout "${CV_LENS_STORE_TIMEOUT_SECONDS:-30}" "${GC:-gc}" bd show "$bead_id" --json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    d = d[0] if isinstance(d, list) else d
+except Exception:
+    d = {}
+print((d.get('metadata') or {}).get('gc.root_bead_id') or '')
+" 2>/dev/null)"
+  fi
+  [ -n "$root" ] || root="$bead_id"
+  printf '%s' "$root"
+}
+
 # cv_known_roster_vars — print, one per line, every `enable_*` roster var
 # name declared as a `[vars.enable_X]` table in con-voyage.formula.toml
 # (fk-ed0c5). Read from the formula directly (via cv_pack_root) rather than
@@ -3914,6 +3971,169 @@ finalize_write() {
     printf 'review_round=%s\n' "$review_round"
     printf 'rereview_root_bead_id=%s\n' "$rereview_root_bead_id"
   } > "$f"
+}
+
+# ---------------------------------------------------------------------------
+# Deferred, routine ci-repair status (fk-shpd87: PR noise reduction design
+# doc, slice B / AC3+AC4). File: "<CV_STATE_DIR>/<dedup_key>.pending-status",
+# one Markdown bullet line per deferred status, oldest first.
+#
+# A ci-repair action with no human decision needed (a rebase/merge-conflict
+# resolution, a flaky-CI retry) defers its one-line summary here instead of
+# posting a top-level PR comment immediately — each such comment used to
+# re-trigger a full reviewer cycle for nothing actionable. A human-actionable
+# event (branch protection, an unresolvable conflict) still posts immediately
+# via cv-pr-comment.sh, unchanged — this file is never consulted for those.
+# The next comment-aggregate round (main.rereview-finalize.md today) reads
+# and clears this file so its contents fold into that ONE round comment and
+# are never posted twice.
+#
+# Uses the SAME dedup_key convention as the .finalize record
+# ("cv-finalize-<owner>-<repo>-<pr_number>", see finalize_read/finalize_write
+# above) so ci-repair — a different formula (con-voyage-ci-repair) with no
+# gc.var.finalize_key of its own, dispatched straight off {repo}/{pr} — and
+# the review-round finalizer agree on one file without threading a new var
+# between two otherwise-unrelated formulas.
+# ---------------------------------------------------------------------------
+
+# cv_defer_status__lock_retry DEDUP_KEY — acquire DEDUP_KEY's lock with a
+# bounded retry (10 attempts, ~0.2s apart), echoing the exact backoff shape
+# every cv_defer_status_* reader/writer below needs. Returns 0 once acquired,
+# 1 once the retry budget is exhausted (review fk-drbqfj BLOCKING-1/iteration
+# 2 follow-up, mayor regrade FIX-7: this loop was copied verbatim into four
+# separate functions — extracted once here so a future change to the retry
+# shape (count, backoff) only has one place to make it).
+cv_defer_status__lock_retry() {
+  local dedup_key="$1"
+  local attempt=0
+  while ! acquire_lock "$dedup_key"; do
+    attempt=$((attempt + 1))
+    [ "$attempt" -lt 10 ] || return 1
+    sleep 0.2 2>/dev/null || sleep 1
+  done
+  return 0
+}
+
+# cv_defer_status_append DEDUP_KEY TEXT — append one deferred status line.
+# Any newline embedded in TEXT is flattened to a space so the file stays
+# exactly one bullet per deferred status (a reader can safely count/iterate
+# lines). This only ever appends, never dedups: two real, distinct repair
+# cycles are two real events worth recording as two lines.
+#
+# Guarded by the same per-dedup_key acquire_lock/release_lock mutex every
+# other reader/writer of this convention already uses (review fk-drbqfj
+# BLOCKING-1): without it, a concurrent cv_defer_status_clear_through can
+# read+rewrite this file in the window between this function's own read and
+# write, silently destroying an appended line with no error and no audit
+# trail. A bounded retry (not a bare acquire-or-fail) because losing a
+# deferred status is exactly the "never lost" property this helper exists to
+# guarantee — ci-repair and rereview-finalize are expected to race this lock
+# routinely, not just occasionally.
+cv_defer_status_append() {
+  local dedup_key="$1" text="$2"
+  [ -n "$dedup_key" ] || return 1
+  # fk-7bmhlz LOW-1: the retry helper below already refuses an unsafe
+  # dedup_key via acquire_lock, but failing here immediately (instead of only
+  # discovering it 10 retries and ~2s later via the bounded-retry loop) keeps
+  # the common-case latency of a genuinely held lock distinct from a
+  # permanently invalid key.
+  case "$dedup_key" in
+    */*|*..*) return 1 ;;
+  esac
+  local f="${CV_STATE_DIR}/${dedup_key}.pending-status"
+  local flat="${text//$'\n'/ }"
+  cv_defer_status__lock_retry "$dedup_key" || return 1
+  printf -- '- %s\n' "$flat" >> "$f"
+  local rc=$?
+  release_lock "$dedup_key"
+  return "$rc"
+}
+
+# cv_defer_status_peek DEDUP_KEY — print any deferred status lines for
+# DEDUP_KEY to stdout (nothing printed when none are pending) WITHOUT
+# clearing them. Returns 1 if DEDUP_KEY is empty; otherwise 0, whether or not
+# a file existed or the lock could be acquired.
+#
+# review fk-7bmhlz LOW-5 (code-review/native-language fk-202t44): a caller
+# that needs to fold pending status into content it builds BEFORE that
+# content is actually posted/confirmed (main.rereview-finalize.md's fold-in
+# fence, which runs before the aggregate-comment post) must not destroy the
+# source-of-truth record on a post that might still fail — use this to build
+# that content, then call cv_defer_status_clear_through below for real only
+# once posting is confirmed. A failed post then leaves the record intact for
+# the NEXT round to naturally re-peek and retry, instead of this round
+# silently discarding it.
+#
+# Same acquire_lock/release_lock mutex as cv_defer_status_append above: the
+# read here must not race a concurrent append.
+cv_defer_status_peek() {
+  local dedup_key="$1"
+  [ -n "$dedup_key" ] || return 1
+  case "$dedup_key" in
+    */*|*..*) return 0 ;;
+  esac
+  local f="${CV_STATE_DIR}/${dedup_key}.pending-status"
+  cv_defer_status__lock_retry "$dedup_key" || return 0
+  [ -f "$f" ] && cat "$f"
+  release_lock "$dedup_key"
+  return 0
+}
+
+# cv_defer_status_clear_through DEDUP_KEY EXPECTED — clear only the content
+# a caller actually peeked and has now confirmed posted (EXPECTED, exactly
+# as returned by cv_defer_status_peek above), never whatever happens to be
+# in the file at clear time. Fixes the race cv_defer_status_read_and_clear
+# has when a caller does peek-then-post-then-clear across a real network
+# call: a concurrent cv_defer_status_append landing in that window appends
+# content the peek never saw and the post never included, and a blind
+# read_and_clear destroys it with no trace. This instead:
+#   - removes the file outright when its current content is EXACTLY
+#     EXPECTED (the common case: nothing appended since the peek);
+#   - strips only the EXPECTED prefix when the current content is EXPECTED
+#     followed by more lines (an append landed after the peek — preserves
+#     exactly that appended tail for the next round's peek);
+#   - otherwise leaves the file completely untouched and returns 1 (either
+#     the current content no longer has EXPECTED as a prefix at all, or the
+#     pending-status record has disappeared entirely since the peek — both
+#     an unexpected external change; failing safe here never risks destroying
+#     content nobody has confirmed posting).
+# A blank EXPECTED is a caller error (there is nothing to clear a confirmed
+# post of) — returns 1 without touching the file.
+#
+# review fk-z6rts BLOCKING-1 (con-voyage-rereview round 2): same
+# acquire_lock/release_lock mutex as every other reader/writer of this
+# convention, so the read-compare-write here is atomic with respect to a
+# concurrent cv_defer_status_append.
+cv_defer_status_clear_through() {
+  local dedup_key="$1" expected="$2"
+  [ -n "$dedup_key" ] || return 1
+  case "$dedup_key" in
+    */*|*..*) return 1 ;;
+  esac
+  [ -n "$expected" ] || return 1
+  local f="${CV_STATE_DIR}/${dedup_key}.pending-status"
+  cv_defer_status__lock_retry "$dedup_key" || return 1
+  local rc=0
+  if [ -f "$f" ]; then
+    local current
+    current="$(cat "$f")"
+    if [ "$current" = "$expected" ]; then
+      rm -f "$f"
+    else
+      case "$current" in
+        "${expected}"$'\n'*)
+          printf '%s\n' "${current#"${expected}"$'\n'}" > "$f"
+          ;;
+        *)
+          rc=1
+          ;;
+      esac
+    fi
+  else
+    rc=1
+  fi
+  release_lock "$dedup_key"
+  return "$rc"
 }
 
 # ===========================================================================
