@@ -24,7 +24,9 @@ Never auto-merges; never pushes a second PR.
 formula = "con-voyage-rereview"
 type = "expansion"
 version = 1
-contract = "graph.v2"
+
+[requires]
+formula_compiler = ">=2.0.0"
 
 [vars]
 [vars.repo]
