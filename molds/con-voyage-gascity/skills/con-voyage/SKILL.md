@@ -31,16 +31,18 @@ Run this once per city before invoking `/con-voyage`. If the pack is already imp
 
 ## How it maps to `gc sling`
 
-After intake and roster selection (Phase 0–1 of the orchestration fragment), sling the formula:
+After intake and roster selection (Phase 0–1 of the orchestration fragment), sling the formula. Start it through `cv-sling.sh` (run from the city root), which adds `--on con-voyage` and honors the city's optional concurrency cap:
 
 ```bash
-gc sling <target> <work-bead> --on con-voyage \
+packs/con-voyage/assets/scripts/cv-sling.sh start <target> <work-bead> \
   --var push=true \
   --var open_pr=true \
   [--var code_lens=con-voyage.cv-frontend-principal-engineer] \
   --var enable_<lens>=true \
   [--var enable_<lens2>=true ...]
 ```
+
+With no cap configured that is exactly `gc sling <target> <work-bead> --on con-voyage ...`. When the city caps concurrent journeys (`con-voyage.toml` `[con_voyage] max_concurrent`) and the cap is reached, it prints `QUEUED` instead; the `con-voyage-queue-drain` order starts it when a slot frees and mails you, so take the journey up from that mail. Queuing is the operator's choice, not serial-by-habit, so don't hand-sling around it. `cv-sling.sh status` shows the cap, active journeys and queue.
 
 Each chosen roster lens is activated by its own `--var enable_<lens>=true`. Floor lanes (security, code, acceptance, test-evidence, simplicity) are always active — no var needed.
 
@@ -121,7 +123,7 @@ The always-resident `con-voyage-orchestration` template fragment (appended into 
 
 ```
 Intake → work bead + convoy
-  → SLING formula  (gc sling <target> <work-bead> --on con-voyage --var push=true --var open_pr=true --var enable_<lens>=true)
+  → SLING formula  (cv-sling.sh start <target> <work-bead> --var push=true --var open_pr=true --var enable_<lens>=true)
   → BUILD (if needed)  (fresh bead: first TDD round runs automatically; a bead
                          that already has a pre-built branch short-circuits
                          straight to REVIEW LOOP — nothing to do on your end
@@ -155,7 +157,7 @@ Then:
 5. **Check whether this slice depends on another unmerged PR/branch** (e.g. an epic sliced into sequential parts). If it does, declare it **at sling time**, with a `base_branch` formula var, not with a separate `gc convoy target` call before or after:
 
    ```bash
-   gc sling <target> <work-bead> --on con-voyage --var base_branch=<base-branch> [...other vars]
+   packs/con-voyage/assets/scripts/cv-sling.sh start <target> <work-bead> --var base_branch=<base-branch> [...other vars]
    ```
 
    Do **not** pre-create a convoy and call `gc convoy target <convoy-id> <base-branch>` on it before slinging — `gc sling ... --on con-voyage` always mints its own fresh input convoy (`convoy_id` is a reserved v2 token), so a pre-made convoy's target is silently ignored. Setting the target AFTER the sling instead races prepare-build, which can already be building off the default base by the time a post-sling `gc convoy target` call lands (fk-wmhr96: this cost two live runs a dead workflow and manual recovery). `base_branch` is applied deterministically inside prepare-build — before any worktree exists — so there is no window for the race: `con-voyage-lib.sh`'s `cv_resolve_base_branch` then threads it through the build's worktree base, the review diff, the hygiene guard, and the PR `--base` automatically, a **GitHub stacked PR** rather than a serial land-chain. If the dependency's own PR later merges, GitHub retargets the stacked PR at main and `con-voyage-pr-watch` rebases it the same way it repairs any other `behind_base` PR.
