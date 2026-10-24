@@ -60,9 +60,9 @@ start_case "formula: prepare-build node exists, routed to gc.run-operator, no ne
 assert_contains "$FORMULA" 'id = "{target}.prepare-build"' "prepare-build node is declared"
 assert_contains "$FORMULA" '"gc.run_target" = "gc.run-operator"' "gc.run-operator route exists in the formula"
 
-start_case "formula: build node exists, needs prepare-build, routed to {implementation_target}"
+start_case "formula: build node exists, needs prepare-build and plan, routed to {implementation_target}"
 assert_contains "$FORMULA" 'id = "{target}.build"' "build node is declared"
-assert_contains "$FORMULA" 'needs = ["{target}.prepare-build"]' "build node depends on prepare-build"
+assert_contains "$FORMULA" 'needs = ["{target}.prepare-build", "{target}.plan"]' "build node depends on prepare-build and the plan step"
 assert_contains "$FORMULA" '"gc.run_target" = "{implementation_target}"' "build node routes to {implementation_target}"
 
 start_case "formula: build node carries the implementation-summary artifact gate (mirrors do-work's implement step)"

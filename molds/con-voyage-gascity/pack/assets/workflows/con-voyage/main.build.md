@@ -35,6 +35,25 @@ An empty `$PREPARE_OUTCOME` (lib not found, or prepare-build not resolvable as
 a direct dependency by that exact title) is "unknown", not "confirmed pass" —
 fall through to the existing worktree-based guard below rather than guessing.
 
+The plan step (plan mode) is the other direct dependency. It closes
+`gc.outcome=pass` both when it planned and when it skipped itself (plan mode
+off, or a pre-built branch), so any other recorded outcome means the plan
+failed and there is nothing agreed to build:
+
+```bash
+PLAN_OUTCOME=""
+if [ -n "$CV_LIB" ]; then
+  PLAN_OUTCOME="$(source "$CV_LIB" && cv_dependency_outcome "$GC_BEAD_ID" "Con-voyage: plan the change")"
+fi
+if [ -n "$PLAN_OUTCOME" ] && [ "$PLAN_OUTCOME" != "pass" ]; then
+  bd update "$CLAIMED_BEAD_ID" \
+    --set-metadata 'gc.outcome=skipped' \
+    --set-metadata "gc.skip_reason=plan outcome=${PLAN_OUTCOME}, no plan to build against"
+  bd close "$CLAIMED_BEAD_ID" --reason 'Skipped: the plan step did not pass, so there is no plan to build against.'
+  exit 0
+fi
+```
+
 If the block above closes this bead, STOP — do not continue to "Read what
 prepare-build resolved" or any later section in this file.
 
@@ -394,6 +413,20 @@ CV_LIB="${CV_PACK_ROOT}/assets/scripts/con-voyage-lib.sh"
 [ -f "$CV_LIB" ] || CV_LIB=""
 WORK_BEAD="$(source "$CV_LIB" && cv_resolve_work_bead "$CONVOY_ID")"
 gc bd show "$WORK_BEAD" --json
+```
+
+If the plan step planned this journey, the workflow root carries the plan's
+path. Read it before writing any code and implement against it: write the
+failing tests its Given/When/Then criteria name first, keep to its approach and
+non-goals, and list it in your summary's `trace.upstream` (`path` relative to
+the rig root, `hash: sha256:<digest>` of the file). When the code shows the
+plan was wrong, follow the code and record the deviation under
+`## Remaining Risks`. No `gc.build.plan_path` (plan mode off) means the work
+bead alone is the requirement, as before:
+
+```bash
+PLAN_PATH="$(source "$CV_LIB" && cv_bead_metadata "$ROOT_ID" gc.build.plan_path)"
+[ -n "$PLAN_PATH" ] && [ -f "$PLAN_PATH" ] && cat "$PLAN_PATH"
 ```
 
 Implement the requested behavior from inside `$WORKTREE` using TDD: a failing test first, then the code to pass it, then refactor (con-voyage-gascity pack CLAUDE.md contract). Run the relevant proof commands and confirm they pass. Commit your changes from inside `$WORKTREE`:
