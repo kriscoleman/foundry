@@ -18,7 +18,7 @@ Casting this mold drops two things into the target city:
 A Gas City pack containing:
 
 - **`con-voyage` formula** — an `expansion`/`graph.v2` formula that runs the full
-  delivery pipeline: build (if needed) → setup → parallel review lanes →
+  delivery pipeline: plan → build (if needed) → setup → parallel review lanes →
   synthesize → apply findings → loop until approved → push branch → open PR.
   `push=true` and `open_pr=true` by default; the work branch is pushed to
   origin and a PR is opened, but `merge_queue="observe"` in `city.toml`
@@ -43,6 +43,14 @@ A Gas City pack containing:
   short-circuited). A reused anchor left on a detached HEAD by an older
   `do-work` run gets a stable branch created on it at this point, so publish
   has something to push.
+
+- **Plan mode (on by default)** — every journey kicks off with a
+  `{target}.plan` step between prepare-build and build. The implementor reads
+  the work bead and the code, checks the change against INVEST, writes
+  Given/When/Then acceptance criteria and a test-first approach, and records
+  a `gc.build.plan.v1` artifact (`gc.build.plan_path` on the workflow root)
+  that the build step implements against. See [Plan mode](#plan-mode) to turn
+  it off.
 
 - **Work-bead lifecycle** — the formula now drives the *work bead* it delivers
   through its full lifecycle so it moves on the dashboard and never sits open
@@ -1393,6 +1401,31 @@ gc sling <target> <bead> --on con-voyage \
 | `enable_api_platform` | API and platform contract review |
 | `enable_compliance` | Compliance and privacy review |
 | `enable_data_db` | Data and database review |
+
+### Plan mode
+
+Plan mode is on by default: the `{target}.plan` step runs before the first
+TDD round and gates on a valid `gc.build.plan.v1` artifact (`plan-ready.sh`).
+The plan proceeds to the build automatically; it is the implementor's working
+plan, not a human approval gate. A failed plan (an empty or contradictory work
+bead, the wrong repository) mails the mayor and abandons the journey before
+anything is built.
+
+A city opts out by committing a `con-voyage.toml` at its root (the same file
+that holds the optional concurrency cap):
+
+```toml
+[con_voyage]
+plan_mode = false
+```
+
+One journey overrides the city either way with `--var plan_mode=true` or
+`--var plan_mode=false` at sling time. `CV_PLAN_MODE` overrides the file for a
+one-off, and `CV_CON_VOYAGE_CONFIG` points at a different file. A value that
+isn't a boolean warns and is ignored, so a typo never skips planning. When
+plan mode is off, or prepare-build adopted a branch that is already built, the
+step records `gc.plan.skipped=true` on the workflow root and closes in
+seconds. Changes take effect on the next journey, with no restart or re-cast.
 
 ### Review loop semantics
 

@@ -84,10 +84,49 @@ title = "Prepare con-voyage build worktree"
 metadata = { "gc.run_target" = "gc.run-operator" }
 description_file = "../assets/workflows/con-voyage/main.prepare-build.md"
 
+# ---------------------------------------------------------------------------
+# Plan mode — every journey kicks off with a planning phase before the first
+# TDD round: the implementor reads the work bead and the code, evaluates the
+# change against INVEST, writes BDD acceptance criteria, and records a
+# gc.build.plan.v1 artifact that the build step implements against. ON by
+# default. A city opts out with `[con_voyage] plan_mode = false` in its
+# con-voyage.toml; one journey opts in or out with `--var plan_mode=...`.
+# The decision is made at RUNTIME by the step itself (cv-plan-mode.sh), so the
+# node always exists and an opted-out journey closes it in seconds with
+# gc.plan.skipped=true on the root, which plan-ready.sh accepts in place of an
+# artifact. A pre-built branch (prepare-build short-circuit) also skips: there
+# is nothing left to plan. The plan proceeds to build automatically; it does
+# not wait on a human.
+# ---------------------------------------------------------------------------
+
+[vars.plan_mode]
+description = """
+Start this journey with a planning phase before the first TDD round. Leave
+empty (default) to inherit the city setting — `[con_voyage] plan_mode` in the
+city's con-voyage.toml, which is on unless the city opts out. Set true or
+false to override the city setting for this one journey.
+"""
+default = ""
+
+[[template]]
+id = "{target}.plan"
+title = "Con-voyage: plan the change"
+needs = ["{target}.prepare-build"]
+metadata = { "gc.run_target" = "{implementation_target}", "gc.build.artifact_schema" = "gc.build.plan.v1", "gc.build.artifact_path_keys" = "gc.build.plan_path" }
+description_file = "../assets/workflows/con-voyage/main.plan.md"
+
+[template.check]
+max_attempts = 3
+
+[template.check.check]
+mode = "exec"
+path = ".gc/scripts/checks/plan-ready.sh"
+timeout = "5m"
+
 [[template]]
 id = "{target}.build"
 title = "Con-voyage: initial implementation (TDD)"
-needs = ["{target}.prepare-build"]
+needs = ["{target}.prepare-build", "{target}.plan"]
 metadata = { "gc.run_target" = "{implementation_target}", "gc.build.artifact_schema" = "gc.build.implementation-summary.v1", "gc.build.artifact_path_keys" = "gc.implementation.summary_path,gc.build.implementation_summary_path,gc.var.summary_path" }
 description_file = "../assets/workflows/con-voyage/main.build.md"
 

@@ -135,6 +135,12 @@ One sling is the whole journey — you never need to `gc sling ... --on do-work`
 first. The formula detects whether the target bead already has a branch and
 builds it itself when it does not.
 
+Plan mode is on by default: before the build, the implementor writes a plan
+(INVEST check, Given/When/Then acceptance, test-first approach) and the build
+implements against it. It runs and hands off on its own, so there is nothing to
+approve. Pass `--var plan_mode=false` to skip it for one journey; a city turns
+it off with `[con_voyage] plan_mode = false` in its `con-voyage.toml`.
+
 `push=true open_pr=true` is the correct posture — the branch is pushed to origin and a PR is opened, but auto-merge is blocked by `merge_queue="observe"` in `city.toml`. A human lands it.
 
 ### Phase 0 — Intake → work bead
