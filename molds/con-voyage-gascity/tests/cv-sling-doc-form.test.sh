@@ -81,9 +81,13 @@ start_case "SKILL.md documents the working --on form"
 assert_contains "$SKILL_FILE" 'gc sling <target> <work-bead> --on con-voyage' \
   "SKILL.md sling example uses --on con-voyage"
 
-start_case "mayor orchestration fragment documents the working --on form"
-assert_contains "$ORCHESTRATION_FRAGMENT" 'gc sling <target> <work-bead> --on con-voyage' \
-  "orchestration fragment sling example uses --on con-voyage"
+start_case "mayor orchestration fragment documents the working start form"
+# The facilitator starts journeys through cv-sling.sh (it honors the city's
+# optional concurrency cap), which slings `--on con-voyage` itself.
+assert_contains "$ORCHESTRATION_FRAGMENT" 'cv-sling.sh start <target> <work-bead>' \
+  "orchestration fragment starts journeys via cv-sling.sh"
+assert_contains "$ORCHESTRATION_FRAGMENT" '--on con-voyage' \
+  "orchestration fragment says the start slings --on con-voyage"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

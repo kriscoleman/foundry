@@ -1088,6 +1088,38 @@ Each pause is one city-wide flag file, `<city>/.gc/cv-<feature>.paused`
 Nothing is paused by default. Deleting the file by hand is the same as
 `resume`.
 
+### Capping concurrent con-voyages (`cv-sling.sh`)
+
+By default a city runs as many con-voyages side by side as the facilitator
+starts. A city that wants fewer at once (to bound token spend, or while it is
+being stabilized) opts in by committing a `con-voyage.toml` at its root:
+
+```toml
+[con_voyage]
+max_concurrent = 1   # raise it, or delete the file, to loosen the cap
+```
+
+The facilitator starts every journey through `cv-sling.sh`, which adds
+`--on con-voyage` itself:
+
+```bash
+packs/con-voyage/assets/scripts/cv-sling.sh start <target> <work-bead> --var push=true --var open_pr=true ...
+packs/con-voyage/assets/scripts/cv-sling.sh status   # cap, active journeys, queue
+```
+
+- **No cap (the default):** `start` is exactly `gc sling <target> <work-bead> --on con-voyage ...`. No store queries, no queue.
+- **Under the cap:** `start` slings right away.
+- **At the cap:** `start` slings nothing and queues the start under `<city>/.gc/cv-queue/` (FIFO, one record per work bead). The `con-voyage-queue-drain` order (2m cooldown) slings the oldest queued starts as slots free up and mails the mayor about each one. Lifting the cap drains the whole queue on the next cycle.
+
+A journey counts as active while its `con-voyage` workflow root is open or
+in progress, in the city store or any rig store. CI repairs, re-reviews and
+review escorts are separate formulas and don't count. When the count can't be
+read, `start` queues and the drain dispatches nothing (fail closed). A queued
+start whose sling fails 3 times (`CV_QUEUE_MAX_ATTEMPTS`) moves to
+`cv-queue/failed/` and the mayor is mailed. `CV_MAX_CONCURRENT` overrides the
+file for a one-off. Changes take effect on the next start or drain, with no
+restart or re-cast.
+
 ### Nothing ever auto-merges
 
 `merge_queue = "observe"` is set in `[[github.pr_monitor]]`. The native monitor

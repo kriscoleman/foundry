@@ -1,0 +1,28 @@
+# con-voyage-queue-drain — starts queued con-voyages when the city's
+# concurrency cap frees a slot.
+#
+# The cap is optional and OFF by default. A city opts in by committing a
+# con-voyage.toml at its root:
+#
+#   [con_voyage]
+#   max_concurrent = 1
+#
+# The facilitator starts every journey with
+# `packs/con-voyage/assets/scripts/cv-sling.sh start <target> <work-bead> ...`.
+# Under the cap that slings right away; at the cap it queues the start under
+# <city>/.gc/cv-queue/. This order slings the oldest queued starts while slots
+# are free (all of them once the cap is lifted) and mails the mayor about
+# each one. It fails closed: when the active count can't be read it
+# dispatches nothing that cycle.
+#
+# With nothing queued (always the case in an uncapped city) each run exits
+# without a single gc call, so the order costs nothing when unused.
+
+[order]
+description = "Start queued con-voyages when the city's optional concurrency cap (con-voyage.toml max_concurrent) frees a slot; no-op when nothing is queued"
+trigger = "cooldown"
+interval = "2m"
+exec = "$PACK_DIR/assets/scripts/con-voyage-queue-drain.sh"
+
+[order.env]
+CV_QUEUE_NOTIFY_TARGET = "mayor"
